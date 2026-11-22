@@ -354,18 +354,26 @@ pub(crate) fn drawn_width(text: &str) -> usize {
 
 /// The longest start of `text` that takes at most `room` cells, as
 /// [`drawn_width`] counts them, so a wide character that would straddle
-/// the edge is left for what follows. A colour's escape is taken whole,
-/// so a cut never opens one it doesn't close, and a joiner left at the
-/// cut goes, as it would join nothing.
+/// the edge is left for what follows. A colour's escape is one step, so
+/// a cut never leaves one half written, though it may leave a colour
+/// open, which is why each caller paints after cutting. A joiner left at
+/// the cut goes, as it would join nothing, and a pile of marks past
+/// [`STEPS_PER_CELL`] steps to a cell is cut.
 pub(crate) fn within(text: &str, room: usize) -> &str {
     // Each start is measured whole rather than summed a character at a
     // time: a selector widens the heart before it, and a joiner makes
     // two emoji one, so a start can draw wider or narrower than its
-    // characters. What's cut is a title or a row, so measuring each
-    // start costs little.
+    // characters. None narrows what came before it by more than a cell,
+    // so once a start is two cells past the room no longer one fits and
+    // the walk stops. With its steps capped too, a cut costs what its
+    // room does, never what its text does, which may be a peer's
+    // message of 256 KiB.
+    let most = room.saturating_add(1).saturating_mul(STEPS_PER_CELL);
     let mut kept = "";
     let mut at = 0;
-    while at < text.len() {
+    let mut steps = 0;
+    while at < text.len() && steps < most {
+        steps += 1;
         let rest = &text[at..];
         at += rest.strip_prefix("\u{1b}[").map_or_else(
             || rest.chars().next().map_or(1, char::len_utf8),
@@ -375,12 +383,21 @@ pub(crate) fn within(text: &str, room: usize) -> &str {
                     .map_or(after.len(), |end| end + 1)
             },
         );
-        if drawn_width(&text[..at]) <= room {
+        let drawn = drawn_width(&text[..at]);
+        if drawn <= room {
             kept = &text[..at];
+        } else if drawn > room.saturating_add(2) {
+            break;
         }
     }
     kept.trim_end_matches('\u{200D}')
 }
+
+/// The most steps, a character or a colour's escape, a cut keeps for
+/// each cell of its room. An emoji joined from seven characters takes
+/// two cells, and writing that stacks its marks puts fewer than eight on
+/// one, so only a pile meant to bury what's beside it loses any.
+const STEPS_PER_CELL: usize = 8;
 
 impl Look {
     /// Whether it is drawn [`WHOLE`], into a pipe.
@@ -429,7 +446,11 @@ impl Look {
 /// `text` cut to `width` cells, as [`drawn_width`] counts them, its last
 /// one an ellipsis where cut.
 pub(crate) fn fit(text: &str, width: usize) -> String {
-    if drawn_width(text) <= width {
+    // What draws within the width is kept whole, unless it piles more
+    // steps on its cells than a cut keeps.
+    if drawn_width(text) <= width
+        && within(text, width).len() == text.trim_end_matches('\u{200D}').len()
+    {
         return text.to_owned();
     }
     format!("{}…", within(text, width.saturating_sub(1)).trim_end())
