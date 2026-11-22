@@ -374,9 +374,7 @@ pub async fn run(
         held: starting.as_ref().map(|starting| starting.held.clone()),
         health: health_of(starting.as_ref()),
         declared: declared_of(starting.as_ref()),
-        lender: starting
-            .as_ref()
-            .and_then(|starting| starting.lender.clone()),
+        lender: lender_of(starting.as_ref()),
         node: starting.map(|starting| starting.node),
         answering,
         asks: HashMap::new(),
@@ -585,6 +583,12 @@ fn health_of(starting: Option<&Starting>) -> OwnHealth {
         told,
         _watching: watching,
     }
+}
+
+/// What this machine lends the other end, as `starting` says; none where
+/// the link carries no starts, so every lend it asks is refused.
+fn lender_of(starting: Option<&Starting>) -> Option<Arc<Lender>> {
+    starting.and_then(|starting| starting.lender.clone())
 }
 
 /// Holds the other end to the name its way in pinned, `named`, if it pins
