@@ -1368,7 +1368,8 @@ pub(super) mod tests {
             why_not(&chose(&realm, &[cell("s1")], &history)),
             "tern is a Mac, where a session brought back held would run outside any fence"
         );
-        realm.push(machine("osprey", 30.0));
+        // Less room than the Mac, but room: under a quarter's stall.
+        realm.push(machine("osprey", 20.0));
         let history = hot_for(&realm, 11);
         assert_eq!(
             carries(&chose(&realm, &[cell("s1")], &history)),
