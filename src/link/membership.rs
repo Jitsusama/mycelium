@@ -81,6 +81,12 @@ pub struct Hello {
     /// end older than this takes one as any start, so none is asked of it.
     #[serde(default)]
     pub reopens: bool,
+    /// Whether it carries lends of model calls, handing a worker's to its
+    /// machine's lender and streaming back what it answers, and refusing
+    /// every other machine's; an end older than this does neither, and
+    /// would end a link that asked.
+    #[serde(default)]
+    pub lends: bool,
 }
 
 /// Which machines a node links with.
@@ -125,6 +131,7 @@ impl Membership for Realm {
             shows: true,
             ends: true,
             reopens: true,
+            lends: true,
         }
     }
 

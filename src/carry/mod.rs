@@ -31,6 +31,7 @@ pub mod ground;
 pub mod kept;
 pub mod ordered;
 pub mod settle;
+pub mod sleep;
 pub mod through;
 
 use std::collections::BTreeSet;

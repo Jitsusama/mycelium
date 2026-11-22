@@ -21,7 +21,7 @@ use crate::awake::{self, Awake};
 use crate::builders::{self, Builders};
 use crate::carry::easing::{self, Eases, Easing};
 use crate::carry::settle::{self, Settler, Settles};
-use crate::carry::{chain, ease, ground, kept, ordered, through};
+use crate::carry::{chain, ease, ground, kept, ordered, sleep, through};
 use crate::daemon;
 use crate::facts::{self, Readiness};
 use crate::feed;
@@ -31,6 +31,7 @@ use crate::group::{Group, Pattern, Routes};
 use crate::handover::{self, Sleeping, Told};
 use crate::hold::{self, start, start::Starter};
 use crate::hosted_attach;
+use crate::lend::{Lend, Lent};
 use crate::link::dial::{Dial, Program};
 use crate::link::refused::Refusals;
 use crate::link::starts::{Asking, Asks, Starting};
@@ -536,6 +537,15 @@ pub struct Given {
     /// How it lets go of the trees a carry it ordered left here, once the
     /// carry has arrived, if it does (`carry::settle`).
     pub settles: Option<Settles>,
+    /// The machine this one borrows model calls from, if it borrows any
+    /// (`lend`): a worker's maker, through the link it was accepted by.
+    /// Named on the node's own command line; with none, a lend asked
+    /// here is refused, so a lender's own node hands on no lend.
+    pub lends_from: Option<String>,
+    /// The sealed file saying what this machine lends the machines it
+    /// made, if it lends any (`lend::lender`): their links' ends answer
+    /// each lend they ask by it, and refuse every one without it.
+    pub lend: Option<PathBuf>,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -1312,6 +1322,10 @@ struct Shared<S> {
     /// The person's table of which receptors' climbs are said
     /// (`stimuli`), if one is named.
     stimuli: Option<PathBuf>,
+    /// The machine this one borrows model calls from, if any.
+    lends_from: Option<Arc<str>>,
+    /// What this machine lends the machines it made, if it lends any.
+    lender: Option<Arc<crate::lend::lender::Lender>>,
     /// The ids of the signals this node said as its receptors this run,
     /// the only messages from a receptor's name it takes (`signals`).
     spoken: Arc<Mutex<HashSet<String>>>,
@@ -1472,6 +1486,8 @@ impl<S: Clone> Clone for Shared<S> {
             built: self.built.clone(),
             receptors: self.receptors.clone(),
             stimuli: self.stimuli.clone(),
+            lends_from: self.lends_from.clone(),
+            lender: self.lender.clone(),
             spoken: Arc::clone(&self.spoken),
             refused: Arc::clone(&self.refused),
             receptors_at: self.receptors_at.clone(),
@@ -2242,7 +2258,15 @@ impl<S: Store> Shared<S> {
             scratch,
             eases: _,
             settles,
+            lends_from,
+            lend,
         } = given;
+        let lender = lend.map(|file| {
+            Arc::new(crate::lend::lender::Lender::from_file(
+                file,
+                runs.declarers.clone(),
+            ))
+        });
         let said = Arc::<Said>::default();
         let inner = Arc::new(Mutex::new(Inner::after(&flows, &hello.realm)));
         let forages: forage::Held = Arc::new(Mutex::new(forage::Shelf::with_waits(waiting)));
@@ -2306,6 +2330,8 @@ impl<S: Store> Shared<S> {
             built: Arc::default(),
             receptors: held,
             stimuli,
+            lends_from: lends_from.map(Into::into),
+            lender,
             spoken: Arc::default(),
             refused: Arc::default(),
             receptors_at: receptors,
@@ -3469,6 +3495,7 @@ impl<S: Store> Shared<S> {
             Request::Relayed { .. } => Err("a relayed start is answered by `relayed`".to_owned()),
             Request::Sprout(_) => Err("a sprout is answered by `sprout`".to_owned()),
             Request::Run(_) => Err("a run is answered by `run`".to_owned()),
+            Request::Lend(_) => Err("a lend is answered by `lend`".to_owned()),
             Request::Offers => Err("offers are answered by `offers`".to_owned()),
             Request::Steer { .. } => Err("a steer is answered by `steer`".to_owned()),
             Request::End { .. } => Err("an end is answered by `end`".to_owned()),
@@ -3504,6 +3531,7 @@ impl<S: Store> Shared<S> {
             declared: Some(self.declared.clone()),
             kit: self.given_kit().cloned(),
             saturation: Some(self.saturation.clone()),
+            lender: self.lender.clone(),
         }
     }
 
@@ -4079,13 +4107,40 @@ impl<S: Store> Shared<S> {
     /// Looks each `eases.every` at what this machine would do to ease
     /// itself (`carry::easing`), keeping each choice in `eases.folder`;
     /// it makes the carries it chooses where `eases.carries` says so,
-    /// and otherwise does none of it. It begins once the carries kept here, which
-    /// say what moved lately, and its own lines of the last two days can
-    /// be read, saying why while they can't.
+    /// asks the harness to park the sessions it chooses to sleep where
+    /// `eases.sleeps` names a folder, taking each back once the machine
+    /// has been clear of its memory limit for five minutes, and otherwise does none
+    /// of it. It begins once the carries kept here, which say what moved
+    /// lately, and its own lines of the last two days can be read, saying
+    /// why while they can't.
     async fn ease(self, eases: Eases) {
         let mut easing = None;
         let mut sampler = easing::Sampler::default();
         let mut unread = None;
+        // What it asked to park; whatever an earlier node asked no longer
+        // stands, since what made it ask isn't known to hold now, and
+        // what of it can't be taken back now is taken back later.
+        let mut parking = None;
+        if let Some(folder) = eases.sleeps.clone() {
+            let sweeping = folder.clone();
+            let taken = tokio::task::spawn_blocking(move || sleep::withdraw_all(&sweeping))
+                .await
+                .map_err(|error| io::Error::other(error.to_string()))
+                .and_then(|taken| taken);
+            let (taken, left) = taken.unwrap_or_else(|error| {
+                eprintln!("the asks to park an earlier node left can't be taken back: {error}");
+                (0, std::collections::BTreeSet::new())
+            });
+            if taken > 0 || !left.is_empty() {
+                eprintln!(
+                    "took back {taken} asks to park an earlier node left in {}, {} left to \
+                     take back",
+                    folder.display(),
+                    left.len()
+                );
+            }
+            parking = Some(sleep::Parking::new(folder, left));
+        }
         let mut every = tokio::time::interval(eases.every);
         every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -4103,7 +4158,13 @@ impl<S: Store> Shared<S> {
                     .await
                     .and_then(|kept| Ok((kept, own_lines?)))
                 {
-                    Ok((kept, own_lines)) => easing = Some(Easing::after(&kept, own_lines)),
+                    Ok((kept, own_lines)) => {
+                        let mut after = Easing::after(&kept, own_lines);
+                        if parking.is_some() {
+                            after.acts_on_sleep();
+                        }
+                        easing = Some(after);
+                    }
                     Err(why) if unread.as_ref() == Some(&why) => continue,
                     Err(why) => {
                         let line = serde_json::json!({
@@ -4122,11 +4183,129 @@ impl<S: Store> Shared<S> {
                 .look_to_ease(easing, std::mem::take(&mut sampler), now)
                 .await;
             sampler = back;
+            if !easing.still_short()
+                && let Some(held) = parking.take_if(|held| !held.is_empty())
+            {
+                let (back, woken) = Self::unpark(held).await;
+                easing.woken(&woken);
+                parking = Some(back);
+            }
             if let Some(line) = line {
-                let line = self.act_to_ease(eases.carries, line).await;
+                let mut line = self.act_to_ease(eases.carries, line).await;
+                if let Some(parking) = &mut parking {
+                    self.sleep_to_ease(&mut line, parking, easing, now).await;
+                }
                 self.keep_easing(&eases.folder, now, line).await;
             }
         }
+    }
+
+    /// Asks the harness, in `parking`'s folder, to park the sessions a
+    /// sleep `line` chose, saying on it which were asked and why each
+    /// other wasn't, noting those asked in `parking`, and telling
+    /// `easing` how many were asked and which to choose again, whose
+    /// asks couldn't be written. Each is noted as its file is written,
+    /// with `parking` lent to the writing, so an ask the node stops
+    /// beside is still taken back as `parking` drops.
+    async fn sleep_to_ease(
+        &self,
+        line: &mut serde_json::Value,
+        parking: &mut sleep::Parking,
+        easing: &mut Easing,
+        now: jiff::Timestamp,
+    ) {
+        let Some(chosen) = sleep::chosen(line) else {
+            return;
+        };
+        let sessions = self.lock().state.sessions();
+        let why = format!("{} is over its limits", self.machine);
+        let asks = sleep::asks(&self.machine, &sessions, &chosen);
+        let folder = parking.folder().to_owned();
+        let unasked = chosen.clone();
+        let mut lent = std::mem::replace(
+            parking,
+            sleep::Parking::new(folder.clone(), std::collections::BTreeSet::new()),
+        );
+        // Each ask written, by its record's id to its own, or why not and,
+        // where only writing it failed, whose it was, to choose again.
+        let tried = tokio::task::spawn_blocking(move || {
+            let tried = asks
+                .into_iter()
+                .map(|ask| {
+                    let (record, own) = ask.map_err(|why| (None, why))?;
+                    match sleep::ask(&folder, &own, now, &why) {
+                        Ok(()) => {
+                            lent.asked(record.clone(), &own);
+                            Ok((record, own))
+                        }
+                        // A file of its name that isn't an ask stays so,
+                        // so asking again would only be refused again.
+                        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                            Err((None, format!("{own} can't be asked to park ({error})")))
+                        }
+                        Err(error) => {
+                            let why = format!("{own} can't be asked to park ({error})");
+                            Err((Some(record), why))
+                        }
+                    }
+                })
+                .collect::<Vec<_>>();
+            (lent, tried)
+        })
+        .await;
+        let tried = match tried {
+            Ok((back, tried)) => {
+                *parking = back;
+                tried
+            }
+            // Only a panic ends it so, and dropping what was lent took
+            // back what it had asked.
+            Err(error) => {
+                let why = format!("none could be asked to park ({error})");
+                unasked
+                    .into_iter()
+                    .map(|id| Err((Some(id), why.clone())))
+                    .collect()
+            }
+        };
+        let mut asked = BTreeMap::new();
+        let (mut refused, mut retry) = (Vec::new(), Vec::new());
+        for one in tried {
+            match one {
+                Ok((record, own)) => {
+                    asked.insert(record, own);
+                }
+                Err((again, why)) => {
+                    retry.extend(again);
+                    refused.push(why);
+                }
+            }
+        }
+        easing.slept(asked.len(), &retry, now);
+        sleep::acted(line, &asked, &refused);
+    }
+
+    /// Takes back the asks `parking` holds, answering it with those that
+    /// couldn't be, to take back at the next look, and the sessions whose
+    /// asks are gone, by their record's id.
+    async fn unpark(
+        mut parking: sleep::Parking,
+    ) -> (sleep::Parking, std::collections::BTreeSet<String>) {
+        let folder = parking.folder().to_owned();
+        tokio::task::spawn_blocking(move || {
+            let woken = parking.withdraw();
+            (parking, woken)
+        })
+        .await
+        .unwrap_or_else(|error| {
+            // Only a panic ends it so, and dropping it took back what it
+            // could.
+            eprintln!("the asks to park can't be taken back: {error}");
+            (
+                sleep::Parking::new(folder, std::collections::BTreeSet::new()),
+                std::collections::BTreeSet::new(),
+            )
+        })
     }
 
     /// `line`, a look's choice, once its carry is made where `carries`
@@ -6781,6 +6960,10 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             hand_on_run(&shared, asked, lines, writing).await;
             return;
         }
+        if let Ok(Request::Lend(lend)) = request {
+            hand_on_lend(&shared, lend, lines, writing).await;
+            return;
+        }
         if let Ok(Request::Watch { groups, recent }) = request {
             keep_watching(&shared, groups.as_ref(), recent, lines, writing).await;
             return;
@@ -6996,6 +7179,49 @@ async fn hand_on_run<S: Store>(
                 }
             }
             // Dropping what it says stops the run.
+            _ = lines.next_line() => return,
+        }
+    }
+}
+
+/// Hands a lend asked here to the link reaching the machine this one
+/// borrows from, and writes what it answers a line each until it ends.
+/// A node borrowing from none refuses it, as one whose lender no link
+/// reaches now does. A client that hangs up lets the lend go.
+async fn hand_on_lend<S: Store>(
+    shared: &Shared<S>,
+    lend: Lend,
+    mut lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    mut writing: tokio::net::unix::OwnedWriteHalf,
+) {
+    let refused = |status, why: String| Lent::Refused { status, why };
+    let Some(lender) = shared.lends_from.clone() else {
+        let why = "this machine borrows from no lender: its node names none with --lends-from";
+        // A client that hung up hears nothing.
+        let _ = write(&mut writing, &refused(403, why.to_owned())).await;
+        return;
+    };
+    let mut answers = match shared.asks.lend(&lender, lend).await {
+        Ok(answers) => answers,
+        Err(why) => {
+            let _ = write(&mut writing, &refused(503, why)).await;
+            return;
+        }
+    };
+    loop {
+        tokio::select! {
+            said = answers.recv() => {
+                let said = said.unwrap_or_else(|| {
+                    // The link went before the lend ended, which a retry
+                    // may get past, as one no link reaches.
+                    refused(503, format!("the link to {lender} ended before its lend did"))
+                });
+                let ends = matches!(said, Lent::Done | Lent::Refused { .. });
+                if write(&mut writing, &said).await.is_err() || ends {
+                    return;
+                }
+            }
+            // Dropping what it answers lets the lend go.
             _ = lines.next_line() => return,
         }
     }
@@ -7243,6 +7469,8 @@ mod tests {
             settles: None,
             scratch: None,
             eases: None,
+            lends_from: None,
+            lend: None,
         }
     }
 
@@ -7383,6 +7611,8 @@ mod tests {
             scratch,
             eases: None,
             settles,
+            lends_from: None,
+            lend: None,
         }
     }
 
@@ -7461,6 +7691,7 @@ mod tests {
                     health: None,
                     kit: None,
                     saturation: None,
+                    lender: None,
                 };
                 // The test judges the link by what crosses it.
                 let _ = if proven {
@@ -7735,6 +7966,7 @@ mod tests {
             declared: Some(dir.path().join("declared.json")),
             kit: None,
             saturation: None,
+            lender: None,
         };
         let membership = Realm {
             name: "work".to_owned(),
@@ -10256,6 +10488,59 @@ esac
             json!({"cpu": 0.97}),
             "with the reading its look chose it by"
         );
+    }
+
+    #[tokio::test]
+    async fn a_node_asks_to_park_what_it_chose_to_sleep_and_takes_it_back() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("sleeps").join("work.sock");
+        let hosted = json!({"hosted": {"host": "work-background", "conversation": "c-harbour"}});
+        let shared = easing_skiff_with(&socket, &["remote"], &hosted, &harbour_quests()).await;
+        let mut easing = Easing::default();
+        easing.acts_on_sleep();
+        let now: jiff::Timestamp = "2026-11-19T07:00:00Z".parse().expect("a time");
+        let slept = json!({"at": "2026-11-19T07:00:00Z", "would": true,
+                           "choice": "sleep", "sessions": ["s-harbour", "s-gone"]});
+
+        let blocked = dir.path().join("blocked");
+        fs::write(&blocked, "").expect("a file where the folder would be");
+        let mut unwritable = sleep::Parking::new(blocked, std::collections::BTreeSet::new());
+        let mut line = slept.clone();
+        shared
+            .sleep_to_ease(&mut line, &mut unwritable, &mut easing, now)
+            .await;
+        assert_eq!(line["asked"], json!({}), "none is asked where none can be");
+        assert_eq!(
+            (easing.sleeps(), unwritable.is_empty()),
+            (0, true),
+            "and none counts as put to sleep"
+        );
+
+        let folder = dir.path().join("ease");
+        let mut parking = sleep::Parking::new(folder.clone(), std::collections::BTreeSet::new());
+        let mut line = slept;
+        shared
+            .sleep_to_ease(&mut line, &mut parking, &mut easing, now)
+            .await;
+        assert_eq!(
+            (&line["would"], &line["asked"], &line["refused"]),
+            (
+                &json!(false),
+                &json!({"s-harbour": "s-harbour"}),
+                &json!(["s-gone no longer runs here, so it isn't put to sleep"])
+            ),
+            "the line says who was asked and why the other wasn't"
+        );
+        assert!(folder.join("s-harbour").exists(), "its harness is asked");
+        assert_eq!(easing.sleeps(), 1, "only the one asked counts");
+
+        let (parking, woken) = Shared::<Memory>::unpark(parking).await;
+        assert_eq!(
+            woken,
+            std::collections::BTreeSet::from(["s-harbour".to_owned()])
+        );
+        assert!(parking.is_empty());
+        assert!(!folder.join("s-harbour").exists(), "and the ask taken back");
     }
 
     #[tokio::test]
@@ -14298,6 +14583,62 @@ esac
         stop([near, far]).await;
     }
 
+    /// What a node answers first to a lend asked of it at `socket`.
+    async fn lent_first(socket: &Path) -> Lent {
+        use tokio::io::AsyncWriteExt as _;
+        let lend = Lend {
+            budget: None,
+            method: "POST".to_owned(),
+            path: "/apis/anthropic/v1/messages".to_owned(),
+            headers: Vec::new(),
+            body: String::new(),
+        };
+        let mut line = serde_json::to_string(&Request::Lend(lend)).expect("a lend says itself");
+        line.push('\n');
+        let stream = UnixStream::connect(socket).await.expect("the node answers");
+        let (reading, mut writing) = stream.into_split();
+        writing
+            .write_all(line.as_bytes())
+            .await
+            .expect("the lend is asked");
+        let mut lines = BufReader::new(reading).lines();
+        let said = tokio::time::timeout(PATIENCE, lines.next_line())
+            .await
+            .expect("the node answers in time")
+            .expect("the node's answer reads")
+            .expect("the node answers a line");
+        serde_json::from_str(&said).expect("what a lend answers")
+    }
+
+    #[tokio::test]
+    async fn a_node_that_borrows_from_no_lender_refuses_a_lend() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let given = given_beside(&socket, None, None);
+        let (_stop, _node) = alone_with(&Memory::default(), &socket, given);
+        let Lent::Refused { status, why } = lent_first(&socket).await else {
+            panic!("a node named no lender lends nothing");
+        };
+        assert_eq!(status, 403, "{why}");
+        assert!(why.contains("--lends-from"), "{why}");
+    }
+
+    #[tokio::test]
+    async fn a_lend_whose_lender_no_link_reaches_is_refused_as_unavailable() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let given = Given {
+            lends_from: Some("osprey".to_owned()),
+            ..given_beside(&socket, None, None)
+        };
+        let (_stop, _node) = alone_with(&Memory::default(), &socket, given);
+        let Lent::Refused { status, why } = lent_first(&socket).await else {
+            panic!("a lender no link reaches lends nothing");
+        };
+        assert_eq!(status, 503, "{why}");
+        assert!(why.contains("osprey"), "{why}");
+    }
+
     #[tokio::test]
     async fn an_asker_that_hangs_up_stops_a_run_on_another_machine() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -17838,10 +18179,21 @@ esac
         let steers = dir.path().join("steer");
         let folder = dir.path().join("eases");
         let carries = dir.path().join("carries.jsonl");
+        // An ask to park an earlier node left no longer stands.
+        let parks = dir.path().join("parks");
+        fs::create_dir(&parks).expect("the harness's folder");
+        fs::write(
+            parks.join("s1-own"),
+            "{\"at\":\"2026-11-22T12:00:00Z\",\"why\":\"skiff is over\"}\n",
+        )
+        .expect("an earlier ask");
+        // A file that doesn't read as an ask isn't the node's to take.
+        fs::write(parks.join("s2-own"), "{}\n").expect("another's file");
         let eases = Eases {
             folder: folder.clone(),
             every: Duration::from_millis(10),
             carries: false,
+            sleeps: Some(parks.clone()),
         };
         let given = Given {
             eases: Some(eases),
@@ -17885,6 +18237,14 @@ esac
         assert!(
             !carries.exists(),
             "what it would do never reaches the record of carries"
+        );
+        assert!(
+            !parks.join("s1-own").exists(),
+            "an ask an earlier node left is taken back before it looks"
+        );
+        assert!(
+            parks.join("s2-own").exists(),
+            "a file that doesn't read as an ask is left"
         );
         let kept = fs::read_to_string(&day).expect("the day's file");
         assert_eq!(
@@ -17943,6 +18303,7 @@ esac
                 folder: folder.clone(),
                 every: Duration::from_millis(10),
                 carries: false,
+                sleeps: None,
             }),
             carries: dir.path().join("carries.jsonl"),
             processes: Processes::Folder(procs),
@@ -17968,6 +18329,7 @@ esac
                 folder: folder.clone(),
                 every: Duration::from_millis(10),
                 carries: false,
+                sleeps: None,
             }),
             carries: dir.path().join("carries.jsonl"),
             ..bare(dir.path().join("steer"), None)

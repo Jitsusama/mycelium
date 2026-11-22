@@ -69,6 +69,8 @@ use crate::carry::kept;
 use crate::facts::{self, Machine, Readiness};
 use crate::handover;
 use crate::hold;
+use crate::lend::lender::{self, Lender};
+use crate::lend::{BACKLOG, Lend, Lent};
 use crate::mesh;
 use crate::own_health;
 use crate::share::exchange::{Exchange, Places, Say};
@@ -214,14 +216,35 @@ pub enum Frame {
         /// What it says.
         ran: Ran,
     },
-    /// The asker of a run has taken a piece of its output, so one more
-    /// may be sent.
+    /// The asker of a run or a lend has taken a piece of what it says, so
+    /// one more may be sent.
     Taken {
         /// Which ask.
         ask: u64,
     },
     /// The asker of a run has let go of it, so it is stopped.
     Unrun {
+        /// Which ask.
+        ask: u64,
+    },
+    /// Make a model call with the other end's machine's credentials, if
+    /// this end's machine is a worker of it.
+    Lend {
+        /// Which ask, so what it answers finds it.
+        ask: u64,
+        /// The call.
+        lend: Lend,
+    },
+    /// What a lend asked of this end's machine answers as it comes, its
+    /// end last.
+    Lent {
+        /// Which ask.
+        ask: u64,
+        /// A piece of its answer.
+        lent: Lent,
+    },
+    /// The asker of a lend has let go of it, so it is let go.
+    Unlend {
         /// Which ask.
         ask: u64,
     },
@@ -352,6 +375,7 @@ pub async fn run(
         held: starting.as_ref().map(|starting| starting.held.clone()),
         health: health_of(starting.as_ref()),
         declared: declared_of(starting.as_ref()),
+        lender: lender_of(starting.as_ref()),
         node: starting.map(|starting| starting.node),
         answering,
         asks: HashMap::new(),
@@ -625,6 +649,12 @@ fn health_of(starting: Option<&Starting>) -> OwnHealth {
     }
 }
 
+/// What this machine lends the other end, as `starting` says; none where
+/// the link carries no starts, so every lend it asks is refused.
+fn lender_of(starting: Option<&Starting>) -> Option<Arc<Lender>> {
+    starting.and_then(|starting| starting.lender.clone())
+}
+
 /// Holds the other end to the name its way in pinned, `named`, if it pins
 /// one, pinning the first it says where none was yet, so a machine dialled
 /// as one can't say hello as another; one that does is refused, and why is
@@ -697,6 +727,7 @@ fn cannot_carry(asked: &Asked, said: &Hello) -> Option<&'static str> {
         Asked::Steer(_) => (said.steers, "carry steers"),
         Asked::Update => (said.updates, "be asked to update"),
         Asked::Run(..) => (said.runs, "run commands"),
+        Asked::Lend(..) => (said.lends, "lend model calls"),
         Asked::Carry { .. } => (said.carries, "carry sessions"),
         Asked::End { .. } => (said.ends, "end held sessions"),
     };
@@ -766,11 +797,13 @@ struct End<S> {
     following: Option<Following>,
     /// This machine's node's socket, which starts asked of it go to.
     node: Option<PathBuf>,
+    /// What answers the lends a worker asks of this machine, if it lends.
+    lender: Option<Arc<Lender>>,
     /// Where the answers to starts asked of this machine go, to be sent.
     answering: mpsc::UnboundedSender<(u64, Reply)>,
     /// Starts asked of the other machine and not yet answered.
     asks: HashMap<u64, oneshot::Sender<Reply>>,
-    /// The runs this end carries, either way.
+    /// The runs and lends this end carries, either way.
     runs: Runs,
     next_ask: u64,
     other: String,
@@ -803,14 +836,20 @@ struct OwnHealth {
     _watching: Option<own_health::Watching>,
 }
 
-/// The runs an end carries: those it asked of the other machine, and those
-/// the other end asked of this one.
+/// The runs and lends an end carries: those it asked of the other
+/// machine, and those the other end asked of this one. Both number their
+/// asks from one count, so a [`Frame::Taken`] names one or the other.
 struct Runs {
     /// Where what each run asked of the other machine says goes, by ask.
     asked: HashMap<u64, mpsc::UnboundedSender<Ran>>,
     /// Each run the other end asked of this machine, by its ask.
     here: HashMap<u64, RunningHere>,
-    /// Where runs tell the link's loop what to send.
+    /// Where what each lend asked of the other machine answers goes, by
+    /// ask.
+    borrowed: HashMap<u64, mpsc::UnboundedSender<Lent>>,
+    /// Each lend the other end asked of this machine, by its ask.
+    lending: HashMap<u64, RunningHere>,
+    /// Where runs and lends tell the link's loop what to send.
     saying: mpsc::UnboundedSender<RunSaid>,
 }
 
@@ -821,6 +860,8 @@ impl Runs {
         let runs = Self {
             asked: HashMap::new(),
             here: HashMap::new(),
+            borrowed: HashMap::new(),
+            lending: HashMap::new(),
             saying,
         };
         (runs, said)
@@ -839,10 +880,30 @@ impl Runs {
         }
     }
 
-    /// Lets the run asked as `ask` of this machine send one more piece.
+    /// Hands what the lend asked as `ask` of the other machine answered on
+    /// to its asker, letting go of it once it ends.
+    fn lent(&mut self, ask: u64, lent: Lent) {
+        let ends = lent.ends();
+        // A lend its asker let go of has nobody to hear it.
+        if let Some(asker) = self.borrowed.get(&ask) {
+            let _ = asker.send(lent);
+        }
+        if ends {
+            self.borrowed.remove(&ask);
+        }
+    }
+
+    /// Lets the run or lend asked as `ask` of this machine send one more
+    /// piece, widening its window by one the other end took; a lend's never
+    /// past [`BACKLOG`], so a worker saying it took what it was never sent
+    /// holds back no more of the lender's answer.
     fn taken(&self, ask: u64) {
         if let Some(running) = self.here.get(&ask) {
             running.window.add_permits(1);
+        } else if let Some(lending) = self.lending.get(&ask)
+            && lending.window.available_permits() < BACKLOG
+        {
+            lending.window.add_permits(1);
         }
     }
 }
@@ -1029,6 +1090,10 @@ impl<S: Store> End<S> {
             Frame::Taken { ask } => self.runs.taken(ask),
             // Dropping it stops it.
             Frame::Unrun { ask } => drop(self.runs.here.remove(&ask)),
+            Frame::Lend { ask, lend } => self.lend_here(ask, lend),
+            Frame::Lent { ask, lent } => self.runs.lent(ask, lent),
+            // Dropping it lets the lender's answer go.
+            Frame::Unlend { ask } => drop(self.runs.lending.remove(&ask)),
             Frame::Carry {
                 ask,
                 quest,
@@ -1107,7 +1172,13 @@ impl<S: Store> End<S> {
             // run the worker asked here, which is refused, is let go.
             | Frame::Ran { .. }
             | Frame::Taken { .. }
-            | Frame::Unrun { .. } => None,
+            | Frame::Unrun { .. }
+            // A worker's lend is answered by this machine's lender, which
+            // knows the worker by this link, never by what the lend says;
+            // a lend this machine asked of the worker answers nothing.
+            | Frame::Lend { .. }
+            | Frame::Lent { .. }
+            | Frame::Unlend { .. } => None,
         }
     }
 
@@ -1170,12 +1241,24 @@ impl<S: Store> End<S> {
         let id = self.next_ask;
         self.next_ask += 1;
         if let Asked::Run(run, asker) = ask.asked {
-            self.runs.asked.insert(id, self.follow_run(id, asker));
+            self.runs
+                .asked
+                .insert(id, self.follow(id, asker, RunSaid::Unrun(id)));
             // The asker may have given up; then the run is let go.
             let _ = ask.answer.send(Ok(Response::Running {
                 machine: self.other.clone(),
             }));
             return send(writing, &Frame::Run { ask: id, run }).await;
+        }
+        if let Asked::Lend(lend, asker) = ask.asked {
+            self.runs
+                .borrowed
+                .insert(id, self.follow(id, asker, RunSaid::Unlend(id)));
+            // A lend is under way as a run is; the asker may have given up.
+            let _ = ask.answer.send(Ok(Response::Running {
+                machine: self.other.clone(),
+            }));
+            return send(writing, &Frame::Lend { ask: id, lend }).await;
         }
         self.asks.insert(id, ask.answer);
         let frame = match ask.asked {
@@ -1195,27 +1278,31 @@ impl<S: Store> End<S> {
             },
             Asked::End { held, by } => Frame::End { ask: id, held, by },
             Asked::Run(..) => unreachable!("a run is sent above"),
+            Asked::Lend(..) => unreachable!("a lend is sent above"),
         };
         send(writing, &frame).await
     }
 
-    /// Hands what the run asked of the other machine as `ask` says on to
-    /// `asker`, telling the other end each time a piece is taken, so it
-    /// sends one more, and once `asker` lets go, so it stops the run.
-    /// Answers where the link puts what the run says.
-    fn follow_run(&self, ask: u64, asker: mpsc::Sender<Ran>) -> mpsc::UnboundedSender<Ran> {
-        let (said, mut saying) = mpsc::unbounded_channel::<Ran>();
+    /// Hands what the run or lend asked of the other machine as `ask`
+    /// says on to `asker`, telling the other end each time a piece is
+    /// taken, so it sends one more, and once `asker` lets go, with
+    /// `let_go`, so it stops. Answers where the link puts what it says.
+    fn follow<T: Piece>(
+        &self,
+        ask: u64,
+        asker: mpsc::Sender<T>,
+        let_go: RunSaid,
+    ) -> mpsc::UnboundedSender<T> {
+        let (said, mut saying) = mpsc::unbounded_channel::<T>();
         let (loop_, other) = (self.runs.saying.clone(), self.other.clone());
         tokio::spawn(async move {
             loop {
-                let ran = tokio::select! {
-                    ran = saying.recv() => ran.unwrap_or_else(|| {
-                        Ran::Failed(format!("the link to {other} dropped before the run ended"))
-                    }),
+                let piece = tokio::select! {
+                    piece = saying.recv() => piece.unwrap_or_else(|| T::dropped(&other)),
                     () = asker.closed() => break,
                 };
-                let ends = ran.ends();
-                if asker.send(ran).await.is_err() {
+                let ends = piece.last();
+                if asker.send(piece).await.is_err() {
                     break;
                 }
                 if ends {
@@ -1224,9 +1311,51 @@ impl<S: Store> End<S> {
                 // The link outlives what it carries, or nobody needs this.
                 let _ = loop_.send(RunSaid::Taken(ask));
             }
-            let _ = loop_.send(RunSaid::Unrun(ask));
+            let _ = loop_.send(let_go);
         });
         said
+    }
+
+    /// Hands a lend the other end asks of this machine to its lender, only
+    /// when the other end is a worker of this machine and this machine
+    /// lends. The lender knows the worker by this link's other end.
+    fn lend_here(&mut self, ask: u64, lend: Lend) {
+        let lender = if self.worker {
+            self.lender
+                .clone()
+                .ok_or_else(|| format!("{} lends nothing", self.here))
+        } else {
+            Err(format!(
+                "{} lends only to its workers, and {} isn't one",
+                self.here, self.other
+            ))
+        };
+        let lender = match lender {
+            Ok(lender) => lender,
+            Err(why) => {
+                eprintln!("{} asked {} to lend, refused: {why}", self.other, self.here);
+                let refused = Lent::Refused { status: 403, why };
+                // The link outlives this call, so its loop is there to send it.
+                let _ = self.runs.saying.send(RunSaid::Lent(ask, refused));
+                return;
+            }
+        };
+        let window = Arc::new(tokio::sync::Semaphore::new(BACKLOG));
+        let (stop, stopped) = oneshot::channel();
+        self.runs.lending.insert(
+            ask,
+            RunningHere {
+                window: window.clone(),
+                _stop: stop,
+            },
+        );
+        let answers = lender::answer(&lender, &self.other, lend);
+        tokio::spawn(hand_lent(
+            ask,
+            answers,
+            self.runs.saying.clone(),
+            (window, stopped),
+        ));
     }
 
     /// Hands a run the other end asks of this machine to its node, only
@@ -1288,6 +1417,16 @@ impl<S: Store> End<S> {
             RunSaid::Unrun(ask) => {
                 self.runs.asked.remove(&ask);
                 Frame::Unrun { ask }
+            }
+            RunSaid::Lent(ask, lent) => {
+                if lent.ends() {
+                    self.runs.lending.remove(&ask);
+                }
+                Frame::Lent { ask, lent }
+            }
+            RunSaid::Unlend(ask) => {
+                self.runs.borrowed.remove(&ask);
+                Frame::Unlend { ask }
             }
         };
         send(writing, &frame).await
@@ -1913,6 +2052,73 @@ fn refusal(reason: String) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, reason)
 }
 
+/// A piece of what a run or a lend asked of the other machine says, as
+/// the link hands it on.
+trait Piece: Send + 'static {
+    /// Whether nothing follows it.
+    fn last(&self) -> bool;
+    /// What its asker hears where the link to `other` drops first.
+    fn dropped(other: &str) -> Self;
+}
+
+impl Piece for Ran {
+    fn last(&self) -> bool {
+        self.ends()
+    }
+
+    fn dropped(other: &str) -> Self {
+        Self::Failed(format!("the link to {other} dropped before the run ended"))
+    }
+}
+
+impl Piece for Lent {
+    fn last(&self) -> bool {
+        self.ends()
+    }
+
+    fn dropped(other: &str) -> Self {
+        Self::Refused {
+            status: 503,
+            why: format!("the link to {other} dropped before the lend ended"),
+        }
+    }
+}
+
+/// Sends the other end each piece this machine's lender `answers` for its
+/// lend `ask`, through the link's loop at `saying`, one more each time the
+/// other end takes one, as its `window` allows. The other end letting go,
+/// which drops `stopped`'s sender, lets the lender's answer go.
+async fn hand_lent(
+    ask: u64,
+    mut answers: mpsc::Receiver<Lent>,
+    saying: mpsc::UnboundedSender<RunSaid>,
+    (window, mut stopped): (Arc<tokio::sync::Semaphore>, oneshot::Receiver<()>),
+) {
+    loop {
+        let permit = tokio::select! {
+            permit = window.acquire() => permit,
+            _ = &mut stopped => return,
+        };
+        // The window is never closed, so this only guards.
+        let Ok(permit) = permit else { return };
+        let lent = tokio::select! {
+            lent = answers.recv() => lent,
+            _ = &mut stopped => return,
+        };
+        // The lender always ends with its last piece, so one gone sooner
+        // failed, and its asker is told so rather than left waiting.
+        let lent = lent.unwrap_or_else(|| Lent::Refused {
+            status: 502,
+            why: "the lender ended before its answer did".to_owned(),
+        });
+        permit.forget();
+        let ends = lent.ends();
+        if saying.send(RunSaid::Lent(ask, lent)).is_err() || ends {
+            return;
+        }
+    }
+}
+
 /// `run`, asked over the link from `from`, as this end hands it to its
 /// node: one that doesn't say who asks is taken as a strictly fenced
 /// agent's, and the machine it came from is the one at the other end,
@@ -2429,6 +2635,7 @@ mod tests {
             declared: Some(dir.path().join("declared.json")),
             kit: None,
             saturation: None,
+            lender: None,
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();
@@ -2493,8 +2700,9 @@ mod tests {
     #[tokio::test]
     async fn a_kept_end_says_its_nodes_verdict_in_the_room_it_measures() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        // Its host tells it a room at pressure 90 with no verdict, as a host
-        // older than the band does, so the room it measures is known here.
+        // Its host tells it a room, at a pressure each reading sets and
+        // mostly with no verdict, as a host older than the band does, so
+        // the room it measures is known here.
         let host_says = dir.path().join("osprey.json");
         std::fs::write(
             dir.path().join("declared.json"),
@@ -2505,31 +2713,34 @@ mod tests {
             .to_string(),
         )
         .expect("declared");
-        let now = jiff::Timestamp::now();
-        let room = crate::room::Room {
-            said_at: now.to_string(),
-            memory_available: 8 << 30,
-            pressure: crate::room::Pressure {
-                cpu: 90.0,
-                memory: 0.0,
-                io: 0.0,
-            },
-            takes: crate::room::Takes {
-                builds: 1,
-                vm_tests: 1,
-            },
-            over: Some(Vec::new()),
-            saturated: None,
+        let telling = |cpu: f64, saturated: Option<bool>| {
+            let now = jiff::Timestamp::now();
+            let room = crate::room::Room {
+                said_at: now.to_string(),
+                memory_available: 8 << 30,
+                pressure: crate::room::Pressure {
+                    cpu,
+                    memory: 0.0,
+                    io: 0.0,
+                },
+                takes: crate::room::Takes {
+                    builds: 1,
+                    vm_tests: 1,
+                },
+                over: Some(Vec::new()),
+                saturated,
+            };
+            let said = crate::within::Said {
+                at: now,
+                power: None,
+                room: Some(room),
+            };
+            crate::within::tell(&host_says, &said).expect("told");
         };
-        let said = crate::within::Said {
-            at: now,
-            power: None,
-            room: Some(room),
-        };
-        crate::within::tell(&host_says, &said).expect("told");
+        telling(crate::placement::SATURATES_AT + 5.0, None);
         let band = Arc::new(crate::placement::Saturation::default());
         assert_eq!(
-            saturated_heard(dir.path(), Some(band)).await,
+            saturated_heard(dir.path(), Some(band.clone())).await,
             Some(true),
             "a link its node keeps says the node's verdict"
         );
@@ -2537,6 +2748,33 @@ mod tests {
             saturated_heard(dir.path(), None).await,
             None,
             "where it holds no band, it says none"
+        );
+        telling(
+            f64::midpoint(
+                crate::placement::UNSATURATES_UNDER,
+                crate::placement::SATURATES_AT,
+            ),
+            None,
+        );
+        assert_eq!(
+            saturated_heard(dir.path(), Some(band.clone())).await,
+            Some(true),
+            "inside the band, the link holds the verdict the band last judged"
+        );
+        assert_eq!(
+            saturated_heard(
+                dir.path(),
+                Some(Arc::new(crate::placement::Saturation::default()))
+            )
+            .await,
+            Some(false),
+            "and a band that never saturated holds it free there"
+        );
+        telling(crate::placement::SATURATES_AT + 5.0, Some(false));
+        assert_eq!(
+            saturated_heard(dir.path(), Some(band)).await,
+            Some(false),
+            "a host that says its own verdict is heard, not the band's"
         );
     }
 
@@ -2559,6 +2797,7 @@ mod tests {
             declared: Some(dir.join("declared.json")),
             kit: None,
             saturation,
+            lender: None,
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();
@@ -2600,6 +2839,7 @@ mod tests {
             declared: Some(dir.join("declared.json")),
             kit: Some(kit),
             saturation: None,
+            lender: None,
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();
@@ -2677,6 +2917,7 @@ mod tests {
             declared: None,
             kit: None,
             saturation: None,
+            lender: None,
         };
         let (reading, writing) = tokio::io::split(far);
         tokio::spawn(async move {
@@ -3140,6 +3381,7 @@ mod tests {
             shows: true,
             ends: true,
             reopens: true,
+            lends: true,
         };
         send(&mut far_writing, &Frame::Hello(personal))
             .await
@@ -3264,6 +3506,7 @@ mod tests {
             declared: None,
             kit: None,
             saturation: None,
+            lender: None,
         };
         let skiff_end = tokio::spawn(async move {
             run(
@@ -3823,6 +4066,7 @@ mod tests {
             declared: Some(dir.join("declared.json")),
             kit: None,
             saturation: None,
+            lender: None,
         }
     }
 
@@ -3850,6 +4094,102 @@ mod tests {
             .await
         });
         tokio::io::split(far)
+    }
+
+    /// What skiff answers a lend tern asks of it over a link, tern dialled
+    /// as its worker or not, skiff lending through `lender` or not.
+    async fn lent_to_tern(worker: bool, lender: Option<Lender>) -> Lent {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let starting = Starting {
+            lender: lender.map(Arc::new),
+            ..steering(dir.path())
+        };
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        tokio::spawn(async move {
+            run(
+                Memory::default(),
+                &realm("skiff"),
+                Connection {
+                    worker,
+                    ..connection(reading, writing)
+                },
+                None,
+                Some(starting),
+            )
+            .await
+        });
+        let (far_reading, mut far_writing) = tokio::io::split(far);
+        let lend = Lend {
+            budget: None,
+            method: "POST".to_owned(),
+            path: "/apis/anthropic/v1/messages".to_owned(),
+            headers: Vec::new(),
+            body: String::new(),
+        };
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("tern").hello()),
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(Vec::new()),
+                },
+                Frame::Lend { ask: 7, lend },
+            ],
+        )
+        .await;
+        let mut lines = BufReader::new(far_reading).lines();
+        tokio::time::timeout(PATIENCE, async {
+            loop {
+                let line = lines
+                    .next_line()
+                    .await
+                    .expect("the pipe reads")
+                    .expect("skiff answers");
+                if let Frame::Lent { ask: 7, lent } =
+                    serde_json::from_str::<Frame>(&line).expect("a frame")
+                {
+                    return lent;
+                }
+            }
+        })
+        .await
+        .expect("skiff answers the lend")
+    }
+
+    #[tokio::test]
+    async fn a_lend_is_answered_only_for_a_worker_where_this_machine_lends() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let unread = || {
+            Lender::new(
+                dir.path().join("lends.json"),
+                Vec::new(),
+                dir.path().join("lend"),
+                None,
+            )
+        };
+        assert_eq!(
+            lent_to_tern(false, Some(unread())).await,
+            Lent::Refused {
+                status: 403,
+                why: "skiff lends only to its workers, and tern isn't one".to_owned(),
+            },
+            "a machine that isn't skiff's worker borrows nothing"
+        );
+        assert_eq!(
+            lent_to_tern(true, None).await,
+            Lent::Refused {
+                status: 403,
+                why: "skiff lends nothing".to_owned(),
+            },
+            "nor does a worker where skiff lends nothing"
+        );
+        let lent = lent_to_tern(true, Some(unread())).await;
+        assert!(
+            matches!(lent, Lent::Refused { status: 503, .. }),
+            "a worker's lend reaches skiff's lender, which can't read what it may lend: {lent:?}"
+        );
     }
 
     #[tokio::test]

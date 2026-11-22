@@ -72,6 +72,11 @@ pub enum Request {
     /// runs, ending with its exit or why it couldn't run. A client that
     /// hangs up stops it.
     Run(Run),
+    /// Borrow a model call from the machine this one lends from, through
+    /// the link reaching it: answered with a [`crate::lend::Lent`] a line,
+    /// with no reply first, until it ends. A client that hangs up lets it
+    /// go.
+    Lend(crate::lend::Lend),
     /// Put what the person says into a session's steer inbox, on the one
     /// machine running the session that goes by `address`, in the
     /// harness's own shape: text, act, at, from and id.

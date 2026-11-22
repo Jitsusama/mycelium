@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::facts::{Machine, Readiness};
 use crate::record::{Session, State};
+use crate::room::Limit;
 
 mod shown;
 
@@ -130,6 +131,12 @@ pub struct Load {
     /// Whether it is over: its queue says it is past a limit, or its
     /// processor pressure is at [`OVER_CPU_PRESSURE`].
     pub over: bool,
+    /// The limits it is past: those its queue says, and its processor
+    /// where its pressure is at [`OVER_CPU_PRESSURE`]. It is
+    /// [`over`](Self::over) exactly when this isn't empty; a reading kept
+    /// before it was said has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub past: Vec<Limit>,
     /// Whether it has room for more: not over, stalling under
     /// [`ROOM_STALL`] and using under [`ROOM_MEMORY`] of its memory.
     pub room: bool,
@@ -242,10 +249,13 @@ fn load(machine: &Machine, sessions: &[Session], now: jiff::Timestamp) -> Load {
         .into_iter()
         .flatten()
         .reduce(f64::max);
-    let over = room.is_some_and(|room| {
-        room.over.as_ref().is_some_and(|over| !over.is_empty())
-            || room.pressure.cpu >= OVER_CPU_PRESSURE
-    });
+    let mut past: Vec<Limit> = room.and_then(|room| room.over.clone()).unwrap_or_default();
+    if room.is_some_and(|room| room.pressure.cpu >= OVER_CPU_PRESSURE)
+        && !past.contains(&Limit::Cpu)
+    {
+        past.push(Limit::Cpu);
+    }
+    let over = !past.is_empty();
     let has_room = !over
         && stall.is_some_and(|stall| stall < ROOM_STALL)
         && processor.is_some_and(|processor| processor < ROOM_PROCESSOR)
@@ -276,6 +286,7 @@ fn load(machine: &Machine, sessions: &[Session], now: jiff::Timestamp) -> Load {
         processor,
         load,
         over,
+        past,
         room: has_room,
         busy,
         idle: count(State::Idle),
@@ -401,7 +412,7 @@ pub fn keep_latest(folder: &Path, reading: &Reading) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::facts::{self, Sources};
-    use crate::room::{Limit, Pressure, Room, Takes};
+    use crate::room::{Pressure, Room, Takes};
     use serde_json::json;
 
     const NOW: &str = "2026-11-15T23:39:00Z";
@@ -457,6 +468,43 @@ mod tests {
             .iter()
             .find(|one| one.machine == name)
             .expect("the machine")
+    }
+
+    #[test]
+    fn a_load_says_each_limit_it_is_past_once_and_an_older_one_parses() {
+        let past = |over: Option<Vec<Limit>>| {
+            let mut one = machine("osprey", 12, 48, 41, 86.0, 40);
+            one.room.as_mut().expect("a room").over = over;
+            let load = load(&one, &[], now());
+            assert_eq!(
+                load.over,
+                !load.past.is_empty(),
+                "over exactly when past a limit"
+            );
+            load.past
+        };
+        assert_eq!(
+            past(Some(vec![Limit::Memory, Limit::Cpu])),
+            [Limit::Memory, Limit::Cpu],
+            "the queue's limits, the processor not said twice"
+        );
+        assert_eq!(
+            past(None),
+            [Limit::Cpu],
+            "a queue too old to say leaves the processor's pressure"
+        );
+        let calm = load(&machine("kestrel", 16, 64, 21, 4.6, 20), &[], now());
+        let line = serde_json::to_value(&calm).expect("a load");
+        assert!(line.get("past").is_none(), "none past is left out");
+        let mut older =
+            serde_json::to_value(load(&machine("osprey", 12, 48, 41, 86.0, 40), &[], now()))
+                .expect("a load");
+        older.as_object_mut().expect("an object").remove("past");
+        let older: Load = serde_json::from_value(older).expect("an older line parses");
+        assert!(
+            older.over && older.past.is_empty(),
+            "kept before it was said"
+        );
     }
 
     #[test]

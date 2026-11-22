@@ -534,6 +534,18 @@ enum Action {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
+    /// Borrows model calls from another machine, or lends them.
+    ///
+    /// A machine borrowing serves pi's model requests and hands each
+    /// to its node, which sends it over the link it holds to the
+    /// machine lending; PROTOCOL.md says how.
+    #[command(
+        after_help = "Example:\n  mycelium lend serve --listen \"$PI_PROXY_RELAY/agents.sock\""
+    )]
+    Lend {
+        #[command(subcommand)]
+        act: LendAct,
+    },
     /// Prints the node's events as they come.
     ///
     /// Each is a JSON line, the latest messages first.
@@ -546,6 +558,61 @@ enum Action {
         #[arg(long, default_value_t = 20)]
         recent: usize,
     },
+}
+
+/// What `mycelium lend` is asked to do.
+#[derive(Subcommand)]
+enum LendAct {
+    /// Serves pi's model requests through this machine's node.
+    ///
+    /// It listens on `--listen` as a machine's model relay does, so a pi
+    /// whose `PI_PROXY_RELAY` names its folder sends there. Each request
+    /// goes to the node as a lend, with none of pi's credentials and only
+    /// the headers a model's answer turns on, and its answer streams
+    /// back as it comes. It holds no key and asks for none.
+    #[command(
+        after_help = "Example:\n  mycelium lend serve --listen \"$PI_PROXY_RELAY/agents.sock\""
+    )]
+    Serve {
+        /// The socket pi's requests come to, in a folder only this
+        /// account may write, made so where it isn't there.
+        #[arg(long)]
+        listen: PathBuf,
+        /// The budget the lender counts these calls against, where it
+        /// keeps more than one.
+        #[arg(long)]
+        budget: Option<String>,
+    },
+    /// Cuts a machine off from this machine's lend, at once.
+    ///
+    /// Each lend it asks from now is refused, and each it is being
+    /// answered ends within a second; `--all` cuts every machine. It
+    /// holds until `lend uncut`.
+    #[command(after_help = "Example:\n  mycelium lend cut agents-1")]
+    Cut(Cutting),
+    /// Lets a machine cut off borrow again; `--all` lets every one.
+    #[command(after_help = "Example:\n  mycelium lend uncut agents-1")]
+    Uncut(Cutting),
+}
+
+/// Which machines a cut names.
+#[derive(clap::Args)]
+struct Cutting {
+    /// The machine, by its name on the realm.
+    #[arg(required_unless_present = "all", conflicts_with = "all")]
+    machine: Option<String>,
+    /// Every machine this one lends to.
+    #[arg(long)]
+    all: bool,
+}
+
+impl From<Cutting> for mycelium::lend::lender::Cut {
+    fn from(cutting: Cutting) -> Self {
+        match cutting.machine {
+            Some(machine) => Self::Machine(machine),
+            None => Self::All,
+        }
+    }
 }
 
 /// What a node or a link's end needs of this machine.
@@ -642,7 +709,7 @@ struct Node {
     #[arg(long)]
     health_socket: Option<PathBuf>,
     /// Look each minute at what this machine would do to ease itself
-    /// while over its limits and another has room, keeping each choice
+    /// while over its limits, sleeping or carrying, keeping each choice
     /// in the state folder's `eases`, a file each day; it does none of
     /// it.
     #[arg(long)]
@@ -653,6 +720,26 @@ struct Node {
     /// `node@<machine>`, or a carry is kept and told but never taken.
     #[arg(long, requires = "eases")]
     eases_carry: bool,
+    /// The machine this one borrows model calls from, through the link
+    /// it was accepted by, as a worker's image names its maker. Unnamed,
+    /// the node refuses every lend asked of it, so a lender's own node
+    /// hands on none.
+    #[arg(long)]
+    lends_from: Option<String>,
+    /// The sealed file saying what this machine lends the machines it
+    /// made: each by the start of its name, with its budget and how many
+    /// requests it may make a day, and each budget's relay, host, paths
+    /// and key. Read again at every lend; unnamed, every lend asked of
+    /// this machine is refused.
+    #[arg(long)]
+    lend: Option<PathBuf>,
+    /// Ask the harness to park the sessions `--eases` chooses to put to
+    /// sleep, each by a file named for it in this folder, the harness's
+    /// own, which parks one only once it is idle and its own rule holds;
+    /// each is taken back once the machine has been clear of its memory
+    /// limit for five minutes, and all of them as the node starts.
+    #[arg(long, requires = "eases")]
+    eases_sleep: Option<PathBuf>,
 }
 
 /// A machines file of builders to dial, as `--builders` gives it.
@@ -1487,6 +1574,10 @@ fn orchestrates(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per action, each handing it on, reads best as one table"
+)]
 fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Result<ExitCode> {
     let realm = realm.ok_or_else(|| {
         io::Error::new(
@@ -1540,6 +1631,15 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Start(asked) => start(&socket, asked),
         Action::Sprout(asked) => sprout(&socket, asked),
         Action::Run(asked) => return run_there(&socket, asked),
+        Action::Lend {
+            act: LendAct::Serve { listen, budget },
+        } => lend_serve(&listen, socket, budget),
+        Action::Lend {
+            act: LendAct::Cut(cutting),
+        } => lend_cuts(mycelium::lend::lender::cut, &cutting.into()),
+        Action::Lend {
+            act: LendAct::Uncut(cutting),
+        } => lend_cuts(mycelium::lend::lender::uncut, &cutting.into()),
         Action::Steer { address } => steer(&socket, address),
         Action::Orchestrates {
             heads,
@@ -1826,6 +1926,18 @@ fn processes_here(unattended: bool) -> node::Processes {
     }
 }
 
+/// How the node eases its machine, kept under `state`, if it `eases` at
+/// all: whether it `carries`, and where it asks the harness to park the
+/// sessions it `sleeps`.
+fn eases_given(eases: bool, carries: bool, sleeps: Option<PathBuf>, state: &Path) -> Option<Eases> {
+    eases.then(|| Eases {
+        folder: state.join("eases"),
+        every: carry::easing::EVERY,
+        carries,
+        sleeps,
+    })
+}
+
 /// Runs this machine's node on `socket`, as `node` says, until it is asked
 /// to stop.
 fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
@@ -1836,7 +1948,6 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     let providers = node.providers;
     let declared = node.declared.unwrap_or_else(place::declared);
     let processes = processes_here(node.unattended);
-    let kit = node.kit;
     let builders = builders::Given {
         files: node
             .builders
@@ -1849,7 +1960,6 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     let mut here = node.here;
     here.machine = Some(machine);
     let state = here.state.clone().unwrap_or_else(place::state);
-    let refused = state.join("refused");
     // Each realm's node on the machine keeps the one book, its makes named.
     let book = mycelium::made::Book::at(state.join("made.jsonl")).of_realm(&realm);
     let steers = here.steer.clone().unwrap_or_else(place::steer);
@@ -1866,7 +1976,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     let scratch = Some(shares.scratch.clone());
     let mut given = node::Given {
         sharing: Some(shares),
-        refusals: Refusals::kept_in(refused),
+        refusals: Refusals::kept_in(state.join("refused")),
         steers,
         waiting,
         starter: Some(Starter {
@@ -1903,23 +2013,21 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         placements: Some(mycelium::placements::Log::at(state.join("placements"))),
         health: node.health_socket,
         scratch,
-        eases: node.eases.then(|| Eases {
-            folder: state.join("eases"),
-            every: carry::easing::EVERY,
-            carries: node.eases_carry,
-        }),
+        eases: eases_given(node.eases, node.eases_carry, node.eases_sleep, &state),
         settles: Some(Settles {
             kept: state.join("settles.jsonl"),
             program: carry::PI_CARRY.into(),
             realm: membership.name.clone(),
             answers_within: carry::settle::ANSWERS_WITHIN,
         }),
+        lends_from: node.lends_from,
+        lend: node.lend,
     };
     tell!(
         "mycelium: {}",
         mycelium::declared::said_at_start(&declared, &given.runs.declarers)
     );
-    if let (Some(kit), Some(starter)) = (kit, given.starter.as_mut()) {
+    if let (Some(kit), Some(starter)) = (node.kit, given.starter.as_mut()) {
         let checked = mycelium::declared::kit_checked(&kit, &given.runs.declarers);
         tell!(
             "mycelium: {}",
@@ -1966,6 +2074,8 @@ fn run_link(here: Here, realm: String, socket: PathBuf, far: Option<String>) -> 
         kit: None,
         // A dialled link asks the node for its room, verdict and all.
         saturation: None,
+        // A dialled link lends nothing: its machine is lent to, not lending.
+        lender: None,
     };
     match far {
         Some(far) => {
@@ -2705,6 +2815,35 @@ fn said_within_home(folder: Option<PathBuf>) -> io::Result<Option<PathBuf>> {
             Err(_) => Some(folder),
         },
         (folder, _) => folder,
+    })
+}
+
+/// Changes this machine's lend cuts by `changing` them for `cut`, saying
+/// where it wrote them and what they hold now, so a cut written where
+/// the node doesn't read it shows.
+fn lend_cuts(
+    changing: fn(&Path, &mycelium::lend::lender::Cut) -> io::Result<Vec<String>>,
+    cut: &mycelium::lend::lender::Cut,
+) -> io::Result<()> {
+    let folder = mycelium::lend::lender::folder();
+    let cuts = changing(&folder, cut)?;
+    writeln!(
+        io::stdout().lock(),
+        "{}",
+        serde_json::json!({"cuts": folder.join("cuts.json"), "cut": cuts})
+    )
+}
+
+/// Serves pi's model requests on `listen`, each lent through the node at
+/// `node` from the budget `budget` names, until asked to stop.
+fn lend_serve(listen: &Path, node: PathBuf, budget: Option<String>) -> io::Result<()> {
+    runtime()?.block_on(async {
+        let bound = node::bind(listen)?;
+        tell!("mycelium: lending pi's model calls at {}", listen.display());
+        tokio::select! {
+            served = mycelium::lend::serve::serve(bound, node, budget) => served,
+            () = stopped() => Ok(()),
+        }
     })
 }
 
@@ -3450,6 +3589,17 @@ mod tests {
         assert!(
             node(&["--eases"]).is_ok(),
             "and one may ease only saying so"
+        );
+        assert_eq!(
+            node(&["--eases-sleep", "/run/park"])
+                .err()
+                .map(|error| error.kind()),
+            Some(clap::error::ErrorKind::MissingRequiredArgument),
+            "nor ask for sleep it doesn't choose"
+        );
+        assert!(
+            node(&["--eases", "--eases-sleep", "/run/park"]).is_ok(),
+            "one that eases can"
         );
     }
 

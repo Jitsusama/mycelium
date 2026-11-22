@@ -40,6 +40,10 @@ pub const DAY_HOLDS: u64 = 8 << 20;
 /// How long a process's use of the processor is said over.
 pub const CPU_OVER: SignedDuration = SignedDuration::from_mins(10);
 
+/// How many looks may choose to sleep a session whose ask can't be
+/// written, before it is passed over until next seen in a turn.
+pub const WRITES_TRIED: usize = 3;
+
 /// How many clock ticks a second a process's times are counted in: Linux
 /// says them to programs in hundredths, whatever its own clock.
 const TICKS_A_SECOND: f64 = 100.0;
@@ -55,6 +59,10 @@ pub struct Eases {
     /// Whether it makes the carries it chooses, under its own name, or
     /// only says them.
     pub carries: bool,
+    /// The folder where it asks its harness to park the sessions it
+    /// chooses to sleep (`carry::sleep`), or none where it only says
+    /// them.
+    pub sleeps: Option<PathBuf>,
 }
 
 /// What a node read for one look at its sessions.
@@ -449,7 +457,15 @@ fn resident(procs: &Path, pid: i32) -> Option<u64> {
 pub struct Easing {
     watch: Watch,
     history: History,
+    /// Each session put to sleep, or chosen to be, until it is next seen
+    /// in a turn or its ask is taken back.
     asleep: BTreeSet<String>,
+    /// How many times each session's ask couldn't be written since it
+    /// was last seen in a turn.
+    unwritten: BTreeMap<String, usize>,
+    /// Whether the node asks the harness to park what it chooses to
+    /// sleep, so that only those it asked count as put to sleep.
+    acts_on_sleep: bool,
     /// Each session a look chose to carry, with when.
     gone: BTreeMap<String, Timestamp>,
     /// The reason of the last line kept for doing nothing, with the doubt
@@ -501,6 +517,54 @@ impl Easing {
         }
     }
 
+    /// Says the node asks the harness to park the sessions its looks
+    /// choose to sleep, so a look no longer counts them put to sleep
+    /// itself; [`Easing::slept`] counts those asked.
+    pub fn acts_on_sleep(&mut self) {
+        self.acts_on_sleep = true;
+    }
+
+    /// Notes `asked` sessions put to sleep `at`, where any were, so the
+    /// next sleep waits its settling only after one; and passes over
+    /// no more those in `retry`, by their record's id, whose ask
+    /// couldn't be written, so a later look may choose them again, but
+    /// only [`WRITES_TRIED`] times, so a folder that always refuses
+    /// stops no carry. One refused for good, such as one kept by no
+    /// holder, stays passed over until it is seen in a turn, so looks
+    /// move on past it.
+    pub fn slept(&mut self, asked: usize, retry: &[String], at: Timestamp) {
+        for id in retry {
+            let tried = self.unwritten.entry(id.clone()).or_default();
+            *tried += 1;
+            if *tried < WRITES_TRIED {
+                self.asleep.remove(id);
+            }
+        }
+        if asked > 0 {
+            self.history.slept(asked, at);
+        }
+    }
+
+    /// How many sessions it has put to sleep.
+    #[must_use]
+    pub fn sleeps(&self) -> usize {
+        self.history.sleeps()
+    }
+
+    /// Forgets `woken`, by their record's id, as asleep, their asks taken
+    /// back once the machine was no longer short of memory, so a later
+    /// spell short may ask for them again.
+    pub fn woken(&mut self, woken: &BTreeSet<String>) {
+        self.asleep.retain(|id| !woken.contains(id));
+    }
+
+    /// Whether its last look still held the machine short of memory, as
+    /// [`History::still_short`] says.
+    #[must_use]
+    pub fn still_short(&self) -> bool {
+        self.history.still_short()
+    }
+
     /// Takes `why` who orchestrates can't be told, or none once it can,
     /// for the lines that follow to say.
     pub fn doubt(&mut self, why: Option<String>) {
@@ -532,6 +596,7 @@ impl Easing {
         for cell in &cells {
             if cell.session.state == State::Busy {
                 self.asleep.remove(&cell.session.id);
+                self.unwritten.remove(&cell.session.id);
             }
         }
         // One chosen to carry is passed over while its carry pins it, and
@@ -560,7 +625,9 @@ impl Easing {
             Choice::Sleep { sessions } => {
                 self.said = None;
                 self.asleep.extend(sessions.iter().cloned());
-                self.history.slept(sessions.len(), now);
+                if !self.acts_on_sleep {
+                    self.history.slept(sessions.len(), now);
+                }
             }
             Choice::Carry { session, to, .. } => {
                 self.said = None;
@@ -680,7 +747,7 @@ mod tests {
     use crate::balance;
     use crate::balance::Flag;
     use crate::carry::chain;
-    use crate::carry::ease::tests::{NOW, ago, cell, declaring, now, realm};
+    use crate::carry::ease::tests::{NOW, ago, cell, declaring, now, realm, short_realm};
     use crate::placement::Loads;
     use crate::room::{Limit, Pressure, Takes};
 
@@ -1532,8 +1599,8 @@ mod tests {
     }
 
     /// Each line `easing` would keep at skiff, looking each minute from 20
-    /// minutes ago, with skiff over and tern with room throughout, and no
-    /// carry of its node's kept.
+    /// minutes ago, with skiff past its memory limit and tern with room
+    /// throughout, and no carry of its node's kept.
     fn looks(easing: &mut Easing, cells: &[Cell]) -> Vec<Value> {
         looks_kept(easing, cells, &Ok(0))
     }
@@ -1545,12 +1612,21 @@ mod tests {
         cells: &[Cell],
         kept_eases: &Result<usize, String>,
     ) -> Vec<Value> {
-        let machines: Vec<Machine> = realm();
+        looks_in(&short_realm(), easing, cells, kept_eases)
+    }
+
+    /// As [`looks_kept`], in a realm of `machines` throughout.
+    fn looks_in(
+        machines: &[Machine],
+        easing: &mut Easing,
+        cells: &[Cell],
+        kept_eases: &Result<usize, String>,
+    ) -> Vec<Value> {
         let declared = declaring(&[Kind::Fence]);
         let here = Here {
             name: "skiff",
             declared: Some(&declared),
-            machines: &machines,
+            machines,
             loads: &Loads::new(),
         };
         let holds = [(
@@ -1564,7 +1640,7 @@ mod tests {
         (0..=20)
             .filter_map(|minute| {
                 let at = ago(20 - minute);
-                let reading = balance::read(&machines, &[], at);
+                let reading = balance::read(machines, &[], at);
                 easing.look(
                     &here,
                     reading,
@@ -1640,6 +1716,20 @@ mod tests {
                 &json!({"memory": 1 << 30, "cpu": 2.5})
             ),
             "once five minutes after the sleep still read over, saying what it holds"
+        );
+        let busy = looks_in(
+            &realm(),
+            &mut Easing::default(),
+            &[Cell {
+                asleep: false,
+                ..cell("s1")
+            }],
+            &Ok(0),
+        );
+        assert_eq!(
+            chosen(&busy).iter().find(|&&one| one != "nothing"),
+            Some(&"carry"),
+            "over on its processor alone, it carries with no sleep before: {busy:?}"
         );
         assert!(
             lines.iter().all(|line| line["reading"]["held"].is_array()),
@@ -1769,5 +1859,22 @@ mod tests {
                    "refused": "tern would land looser there"}),
             "and one refused says why"
         );
+    }
+
+    #[test]
+    fn a_session_whose_ask_cant_be_written_is_chosen_again_only_so_often() {
+        let mut easing = Easing::default();
+        let at = now();
+        let retry = ["s1".to_owned()];
+        for tried in 1..=WRITES_TRIED {
+            easing.asleep.insert("s1".to_owned());
+            easing.slept(0, &retry, at);
+            assert_eq!(
+                easing.asleep.contains("s1"),
+                tried == WRITES_TRIED,
+                "passed over only once tried {WRITES_TRIED} times, at {tried}"
+            );
+        }
+        assert_eq!(easing.sleeps(), 0, "none asked counts none");
     }
 }
