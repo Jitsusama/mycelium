@@ -43,7 +43,7 @@ use crate::offer::{self, Offer};
 use crate::own_health;
 use crate::place;
 use crate::placement::{self, DeclaredFence, Miss, Need, Placement, Work};
-use crate::placements::{self, Screen};
+use crate::placements;
 use crate::receptor;
 use crate::record::{Intent, Message, Session, State as SessionState};
 use crate::room;
@@ -3273,6 +3273,14 @@ impl<S: Store> Shared<S> {
         screen: Screen,
         admits: &Admits,
     ) -> Placement {
+        // Every caller raises an agent to at least a fence, which is what
+        // the record's readers are told; a later caller breaking that is
+        // told here, and its record still says what placing used.
+        debug_assert_ne!(
+            fence,
+            Some(crate::declared::Kind::None),
+            "an agent placed unfenced"
+        );
         // Measured before the lock is taken, since measuring reads this
         // machine and the store. This machine, first, is never booked.
         let mut machines = self.machines();
@@ -3332,9 +3340,6 @@ impl<S: Store> Shared<S> {
         let Some(log) = &self.placements else {
             return decision.placement;
         };
-        // Every caller raises an agent to at least a fence, so the record
-        // says only the fences it documents, whatever a later one passes.
-        let fence = fence.filter(|kind| *kind != crate::declared::Kind::None);
         let record = placements::Record {
             at: now.to_string(),
             start,
@@ -3342,8 +3347,8 @@ impl<S: Store> Shared<S> {
             machines,
             loads,
             refused,
-            fence,
-            screen: fence.map(|_| screen),
+            fence: fence.map(placements::Fence::from),
+            screen: fence.map(|_| screen.into()),
             decision,
         };
         let day = now.to_zoned(jiff::tz::TimeZone::system()).date();
@@ -6698,6 +6703,29 @@ fn told_unfenced_held(above: &[(String, serde_json::Value)], asked: &Start) -> S
         "program": asked.command.first(),
     });
     format!("an unfenced agent's held start, which a Mac may take: {line}")
+}
+
+/// What placement holds an agent's work to, beside ground as firm as
+/// where it asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Screen {
+    /// Firm ground alone.
+    Ground,
+    /// An agent's run: only where its fence runs a command.
+    Run,
+    /// An agent's held start: where its fence runs a command, and on no
+    /// Mac, whose holder would start it outside any fence.
+    Held,
+}
+
+impl From<Screen> for placements::Screen {
+    fn from(screen: Screen) -> Self {
+        match screen {
+            Screen::Ground => Self::Ground,
+            Screen::Run => Self::Run,
+            Screen::Held => Self::Held,
+        }
+    }
 }
 
 /// How a session started held in the fence `fence` is screened: placed
@@ -17634,13 +17662,15 @@ esac
         };
         let (stop, node) = alone_with(&Memory::default(), &socket, given);
 
-        let answer = tokio::task::spawn_blocking(move || {
+        let answers = tokio::task::spawn_blocking(move || {
             let mut client = Client::connect(&socket).expect("the client connects");
-            client
-                .ask(&Request::Place(work(Vec::new())))
-                .expect("the node answers")
+            let mut ask = |request: &Request| client.ask(request).expect("the node answers");
+            (
+                ask(&Request::Place(work(Vec::new()))),
+                ask(&Request::PlaceToStart(work(Vec::new()))),
+            )
         });
-        let answer = tokio::time::timeout(PATIENCE, answer)
+        let (answer, _) = tokio::time::timeout(PATIENCE, answers)
             .await
             .expect("the node answers in time")
             .expect("the client asks");
@@ -17659,8 +17689,8 @@ esac
             .lines()
             .map(|line| serde_json::from_str(line).expect("a record"))
             .collect();
-        let [record] = records.as_slice() else {
-            panic!("one placement kept: {records:?}");
+        let [record, start] = records.as_slice() else {
+            panic!("two placements kept, in the order asked: {records:?}");
         };
         assert!(!record.start, "asked where, not started");
         assert_eq!(record.decision.placement, placement, "as it answered");
@@ -17676,9 +17706,21 @@ esac
         assert_eq!(record.decision.judged.len(), 1, "and how it judged each");
         assert_eq!(
             (record.fence, record.screen),
-            (Some(crate::declared::Kind::Strict), Some(Screen::Run)),
+            (
+                Some(placements::Fence::Strict),
+                Some(placements::Screen::Run)
+            ),
             "and the fence it judged the asker in, strict where nothing of it can be read, \
-             with the run's screen an ask where is placed through"
+             with the run's screen, which an ask where is placed through"
+        );
+        assert!(start.start, "the ask to start is kept as a start");
+        assert_eq!(
+            (start.fence, start.screen),
+            (
+                Some(placements::Fence::Strict),
+                Some(placements::Screen::Held)
+            ),
+            "and placed through a held start's screen, which no Mac passes"
         );
         stop.send(()).expect("the node is still running");
         node.await

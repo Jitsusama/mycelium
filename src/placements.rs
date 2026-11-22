@@ -43,23 +43,26 @@ pub struct Record {
     pub refused: Vec<Miss>,
     /// The fence placement held the asker's work to, as the node judged
     /// the asker, so a refusal for looser ground, or its absence, reads
-    /// off the record: none where it was placed unfenced, as the person's
-    /// work is and a start relayed here, whose asker the asking machine
-    /// judged. None too in a record kept before it was said, or one
-    /// saying a fence this build doesn't know.
+    /// off the record. None where it was placed unfenced: the person's
+    /// work, and a start relayed here that this node took as the
+    /// person's, on the asking machine's word. A start relayed here that
+    /// this node took as an agent's says the fence it held it to. None
+    /// too in a record kept before it was said; a word this build doesn't
+    /// know reads as [`Fence::Unknown`], never as unfenced.
     #[serde(
         default,
-        deserialize_with = "or_none",
+        deserialize_with = "or_unknown",
         skip_serializing_if = "Option::is_none"
     )]
-    pub fence: Option<crate::declared::Kind>,
+    pub fence: Option<Fence>,
     /// The screen an agent's work was placed through beside its fence,
     /// where it was fenced, so a Mac taking an agent's held start reads
     /// as the run's screen the agent shown unfenced is placed through,
-    /// rather than as a refusal missing. None where `fence` is.
+    /// rather than as a refusal missing. None where `fence` is, as
+    /// placing writes it.
     #[serde(
         default,
-        deserialize_with = "or_none",
+        deserialize_with = "or_unknown",
         skip_serializing_if = "Option::is_none"
     )]
     pub screen: Option<Screen>,
@@ -67,27 +70,79 @@ pub struct Record {
     pub decision: Decision,
 }
 
-/// What placement holds an agent's work to, beside ground as firm as
-/// where it asks.
+/// The fence a record says placement held an agent's work to. Its words
+/// are spelled out one by one, so the file's words stay put whatever the
+/// fences are named in the code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+pub enum Fence {
+    /// No fence, which placing is never handed for an agent.
+    #[serde(rename = "none")]
+    None,
+    /// The agent fence.
+    #[serde(rename = "fence")]
+    Fence,
+    /// The strict fence.
+    #[serde(rename = "strict")]
+    Strict,
+    /// A word this build doesn't know, as a newer one may write: some
+    /// fence, so never read as unfenced.
+    #[serde(rename = "unknown")]
+    Unknown,
+}
+
+impl From<crate::declared::Kind> for Fence {
+    fn from(kind: crate::declared::Kind) -> Self {
+        match kind {
+            crate::declared::Kind::None => Self::None,
+            crate::declared::Kind::Fence => Self::Fence,
+            crate::declared::Kind::Strict => Self::Strict,
+        }
+    }
+}
+
+/// The screen a record says an agent's work was placed through, beside
+/// ground as firm as where it asks, its words spelled out as
+/// [`Fence`]'s are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Screen {
-    /// Firm ground alone.
+    /// Firm ground alone, which placing pairs with no fence.
+    #[serde(rename = "ground")]
     Ground,
     /// An agent's run: only where its fence runs a command.
+    #[serde(rename = "run")]
     Run,
     /// An agent's held start: where its fence runs a command, and on no
     /// Mac, whose holder would start it outside any fence.
+    #[serde(rename = "held")]
     Held,
+    /// A word this build doesn't know, as a newer one may write.
+    #[serde(rename = "unknown")]
+    Unknown,
 }
 
-/// A field as said, or none where it isn't in the shape this build reads,
-/// which spoils only that field, never the rest of the record.
-fn or_none<'de, D: serde::Deserializer<'de>, T: DeserializeOwned>(
+/// A word of a record's whose readers keep one they don't know apart
+/// from one never said.
+trait Unknowable: DeserializeOwned {
+    /// What a word this build doesn't know reads as.
+    const UNKNOWN: Self;
+}
+
+impl Unknowable for Fence {
+    const UNKNOWN: Self = Self::Unknown;
+}
+
+impl Unknowable for Screen {
+    const UNKNOWN: Self = Self::Unknown;
+}
+
+/// A field as said, none where it isn't, and unknown where it is in a
+/// shape this build doesn't read, which spoils only that field, never
+/// the rest of the record.
+fn or_unknown<'de, D: serde::Deserializer<'de>, T: Unknowable>(
     said: D,
 ) -> Result<Option<T>, D::Error> {
     Ok(Option::<serde_json::Value>::deserialize(said)?
-        .and_then(|field| serde_json::from_value(field).ok()))
+        .map(|field| serde_json::from_value(field).unwrap_or(T::UNKNOWN)))
 }
 
 /// Where a node keeps its placements: a folder of `<date>.jsonl` files,
@@ -156,7 +211,7 @@ pub(crate) fn let_go_before(folder: &Path, day: jiff::civil::Date) {
 mod tests {
     use super::*;
     use crate::placement::{Judgement, Placement};
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     fn record(machine: &str) -> Record {
         Record {
@@ -264,18 +319,16 @@ mod tests {
 
     #[test]
     fn a_record_says_the_askers_fence_and_screen_only_where_the_asker_was_fenced() {
-        use crate::declared::Kind;
-
         let person = serde_json::to_value(record("kestrel")).expect("a record");
         assert_eq!(
             (person.get("fence"), person.get("screen")),
             (None, None),
             "the person's says neither: {person}"
         );
+        // The pairs placing writes: an agent's held start, and its run.
         for (fence, screen, said_as) in [
-            (Kind::Fence, Screen::Held, ("fence", "held")),
-            (Kind::Strict, Screen::Run, ("strict", "run")),
-            (Kind::Fence, Screen::Ground, ("fence", "ground")),
+            (Fence::Fence, Screen::Held, ("fence", "held")),
+            (Fence::Strict, Screen::Run, ("strict", "run")),
         ] {
             let fenced = Record {
                 fence: Some(fence),
@@ -291,23 +344,40 @@ mod tests {
             assert_eq!(kept, fenced, "read back whole");
         }
 
-        let mut line = person.clone();
-        line.as_object_mut()
-            .expect("a record is an object")
-            .retain(|field, _| !matches!(field.as_str(), "refused" | "fence" | "screen"));
-        let kept: Record = serde_json::from_value(line.clone()).expect("a record");
+        // Without either key, as every line kept before them is.
+        let kept: Record = serde_json::from_value(person.clone()).expect("a record");
         assert_eq!(
             (kept.fence, kept.screen),
             (None, None),
-            "a line kept before either was said reads as neither"
+            "a line saying neither reads as neither"
         );
-        line["fence"] = json!("porous");
-        line["screen"] = json!({"later": true});
-        let kept: Record = serde_json::from_value(line).expect("the rest still reads");
+
+        // The file's words, as kept, whatever the code names them.
+        let read = |fence: Value, screen: Value| {
+            let mut line = person.clone();
+            line["fence"] = fence;
+            line["screen"] = screen;
+            let kept: Record = serde_json::from_value(line).expect("the rest still reads");
+            assert_eq!(kept.work, record("kestrel").work, "and the rest is spared");
+            (kept.fence, kept.screen)
+        };
         assert_eq!(
-            (kept.fence, kept.screen, kept.work),
-            (None, None, record("kestrel").work),
-            "a fence or screen this build doesn't know spoils only itself"
+            read(json!("fence"), json!("held")),
+            (Some(Fence::Fence), Some(Screen::Held))
+        );
+        assert_eq!(
+            read(json!("strict"), json!("run")),
+            (Some(Fence::Strict), Some(Screen::Run))
+        );
+        assert_eq!(
+            read(json!("porous"), json!({"later": true})),
+            (Some(Fence::Unknown), Some(Screen::Unknown)),
+            "a word this build doesn't know is some fence, never unfenced"
+        );
+        assert_eq!(
+            read(json!("strict"), json!("sideways")),
+            (Some(Fence::Strict), Some(Screen::Unknown)),
+            "and a known fence beside an unknown screen keeps both said"
         );
     }
 }

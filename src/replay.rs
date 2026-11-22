@@ -291,14 +291,18 @@ mod tests {
             machines,
             loads,
             refused: Vec::new(),
-            // A fenced asker's, so a rewrite dropping either says so.
-            fence: Some(crate::declared::Kind::Strict),
+            // A fenced asker's, so the round trip keeping both is shown.
+            fence: Some(crate::placements::Fence::Strict),
             screen: Some(crate::placements::Screen::Held),
             decision,
         };
         let said = serde_json::to_value(&record).expect("a record");
         assert_eq!(said["decision"]["weights"].get("running"), None, "{said}");
         let kept: Record = serde_json::from_value(said).expect("a record");
+        assert_eq!(
+            kept, record,
+            "read back whole, its fence and screen with it"
+        );
         let replay = replay(&[kept], &[], &Weights::STARTING);
         assert_eq!(replay.stale, 0, "its own weights still draw what it kept");
         assert_eq!(

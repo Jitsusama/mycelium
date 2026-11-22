@@ -1738,15 +1738,9 @@ work was placed and a replay can place it again under other weights:
 here), the `work`, every machine's facts as placing read them
 (`machines`), each machine's `loads` (`sessions` and `placed` starts
 beyond what its room says), the machines `refused` before they were
-judged and why, left out where none was, the `fence` placement held
-the asker's work to as the node judged the asker (`"fence"` or
-`"strict"`) with the `screen` it was placed through (`"ground"`,
-`"run"`, or `"held"`, which no Mac takes), both left out where it was
-placed unfenced, as the person's work is and a start relayed here,
-whose asker the asking machine judged; one this build doesn't know
-reads as none, sparing the rest of the record; and the `decision`:
-the `placement`
-answered and, for each machine, how it was `judged` (`machine`,
+judged and why, left out where none was, the `fence` and `screen`
+said below, and the `decision`: the `placement` answered and, for each
+machine, how it was `judged` (`machine`,
 `qualifies`, `over`, `unheard`, how many preferences it met as
 `preferred`, its `headroom`, and its `chance` of being the one chosen,
 one in as many as were near the best and none for the rest), and the
@@ -1759,6 +1753,18 @@ the node can't keep is said on its error output and answered all the
 same. When a day's file is
 first written, the files of days more than 14 before it are let go, so
 the log holds about two weeks.
+
+A record's `fence` is the fence placement held the asker's work to, as
+the node judged the asker: `"fence"` or `"strict"`, since an agent is
+never placed unfenced. Its `screen` is what that work was placed
+through beside its fence: `"run"`, or `"held"`, which no Mac takes.
+Both are left out where the work was placed unfenced: the person's
+work, and a start relayed here that this node took as the person's, on
+the asking machine's word. A start relayed here that this node took as
+an agent's says its fence, and `"held"`. A word a build doesn't know,
+in either, reads as `"unknown"`, never as unfenced, and spares the
+rest of the record.
+
 A processor reading that isn't a number counts as none, so every
 `headroom` is a number.
 
