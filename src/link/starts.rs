@@ -19,6 +19,7 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 use crate::client::Client;
 use crate::hold::end::Asker;
 use crate::hold::start::Kit;
+use crate::lend::{Lend, Lent};
 use crate::link::dial::{Dial, Ssh};
 use crate::placement::Need;
 use crate::share::exchange::Places;
@@ -69,6 +70,10 @@ pub struct Starting {
     /// does, so every machine hears the one verdict; read only with
     /// `declared`, since a dialled link asks the node for its room.
     pub saturation: Option<Arc<crate::placement::Saturation>>,
+    /// What this machine lends the other, by which the link's end answers
+    /// each lend it asks; none for a machine lending nothing, which
+    /// refuses every one.
+    pub lender: Option<Arc<crate::lend::lender::Lender>>,
 }
 
 /// How a link carries what this machine's node asks of the other machine.
@@ -94,6 +99,10 @@ pub(super) enum Asked {
     /// Run a command there, handing what it says to the sender as it
     /// comes; answered once the run is asked of the other end.
     Run(Run, mpsc::Sender<Ran>),
+    /// Borrow a model call from that machine, handing each piece of its
+    /// answer to the sender as it comes; answered once the lend is asked
+    /// of the other end. Dropping the receiver lets the lend go.
+    Lend(Lend, mpsc::Sender<Lent>),
     /// Carry `quest`'s sessions off that machine to the machine `to`, as
     /// the person asks, once this machine's node `checked` the person
     /// asked.
@@ -188,6 +197,16 @@ impl Asks {
         run.work = run.work.asked_there();
         let (ran, said) = mpsc::channel(crate::run::BACKLOG);
         self.send(machine, Asked::Run(run, ran), Some(ANSWERED_WITHIN))
+            .await??;
+        Ok(said)
+    }
+
+    /// Asks `machine` to lend `lend`, through the link reaching it,
+    /// answering each piece of the answer as it comes, or why it can't be
+    /// asked. Dropping what this answers lets the lend go there.
+    pub async fn lend(&self, machine: &str, lend: Lend) -> Result<mpsc::Receiver<Lent>, String> {
+        let (answer, said) = mpsc::channel(crate::lend::BACKLOG);
+        self.send(machine, Asked::Lend(lend, answer), Some(ANSWERED_WITHIN))
             .await??;
         Ok(said)
     }
@@ -369,10 +388,15 @@ pub(super) const RUN_WINDOW: usize = 8;
 pub(super) enum RunSaid {
     /// What a run asked of this machine says.
     Ran(u64, Ran),
-    /// A piece of a run asked of the other machine has been taken.
+    /// A piece of a run or a lend asked of the other machine has been
+    /// taken.
     Taken(u64),
     /// A run asked of the other machine has been let go.
     Unrun(u64),
+    /// What this machine's lender answers a lend the other end asked.
+    Lent(u64, Lent),
+    /// A lend asked of the other machine has been let go.
+    Unlend(u64),
 }
 
 /// A run the other end asked of this machine, while it runs.

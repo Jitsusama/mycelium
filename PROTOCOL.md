@@ -93,7 +93,7 @@ same code, each line a JSON value:
 
 1. `{"Hello": {"machine", "realm", "version", "facts", "starts",
    "steers", "releases", "updates", "runs", "carries", "shows",
-   "ends"}}`, first,
+   "ends", "lends"}}`, first,
    from each end. Each end's
    membership admits the other or refuses it, and nothing else crosses
    until it has. `facts` says the end hears and says what a machine is; an end
@@ -106,7 +106,8 @@ same code, each line a JSON value:
    older than any of them is asked none of it. `shows` says it tells of
    the carries its node ordered and keeps those the other end tells of;
    an end older than it is told none. `ends` says it carries an end of a
-   session held there; an end older than it is asked none.
+   session held there; an end older than it is asked none. `lends`
+   says it carries lends, as below; an end older than it is asked none.
    `machine` is the name the end's machine goes by, one name for every
    command there: the node's `--machine`, else the system's name up to
    its first dot, which the node records in its folder's `machine` file
@@ -280,10 +281,23 @@ same code, each line a JSON value:
     saying why. It ends the hold itself, as `"End"` on the socket does.
     No time limits the answer, since the session has ten seconds to
     save what it holds and what is killed past them two more to go.
+19. `{"Lend": {"ask", "lend"}}`: answer a model call through the other
+    end's lender, as a `"Lend"` request says it (Borrowing a Lend).
+    The other end takes it only where this end is its worker, known by
+    the link alone, and its node was started with `--lend`; otherwise
+    it refuses 403, saying why. Its lender names the borrowing machine
+    by the link's other end, never by what the lend says. It answers
+    `{"Lent": {"ask", "lent"}}` a line for each `Lent`, the last its
+    `"Done"` or `"Refused"`, at most four ahead of `{"Taken": {"ask"}}`,
+    which the asking end sends as its asker takes each, as for a run.
+    `{"Unlend": {"ask"}}` says the asker let go, and the lend is let
+    go; a link that drops lets go every lend it carried, and the
+    asker hears it refused 503.
 
 Only one link joins two machines, and whichever dialled first holds it,
 so each end carries what its own node asks of the other machine: starts,
-steers, updates, carries and ends, and runs from the dialling end only. The
+steers, updates, carries, ends and lends, and runs from the dialling end
+only. The
 dialling end runs in its node and takes them there. The dialled end runs
 in a process SSH started, outside its node, so it holds a `Carry`
 connection to its node's socket (see The Socket), asked again every
@@ -1151,6 +1165,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Update": {"machine"}}` | `{"Updated": ending}`, as its updater said it |
 | `{"End": {"held"}}` | `{"Ended": {"machine", "held", "ending"}}`, `ending` `gently` or `killed` (A Held Session) |
 | `{"Run": {"work", "folder", "command", "by", "from"}}` | `{"Running": {"machine"}}`, then a `Ran` a line |
+| `{"Lend": {"budget", "method", "path", "headers", "body"}}` | a `Lent` a line, no reply first (Borrowing a Lend) |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
 | `{"Send": {"from", "groups", "intent", "text", "re", "realm"}}` | `{"Sent": message}`, or refused |
@@ -2192,6 +2207,113 @@ again for the whole state.
 A group is named by dot-separated tokens: the mesh's `#quest/4uhc5q` is
 `quest.4uhc5q`, and a peer's `@4UHC5Q` is `peer.4uhc5q`. A pattern takes
 `*` for any one token and a final `>` for one or more.
+
+### Borrowing a Lend
+
+A machine borrowing model calls, as a worker does from its maker, has
+its node started with `--lends-from MACHINE`. A `"Lend"` asked of it
+goes over the link reaching that machine, which knows this one by the
+link alone, and the node writes each `Lent` it answers as a line:
+`{"Head": {"status", "headers"}}`, then `{"Body": base64}` as it comes,
+then `"Done"`; or `{"Refused": {"status", "why"}}`, before the head or
+after it, which ends it. A node named no lender refuses every lend 403,
+so a lender's own node hands none on, and one whose lender no link
+reaches now refuses it 503, as it ends one whose link ends first. A
+client that hangs up lets the lend go.
+
+Where the lender dialled this machine, as a maker dials its workers,
+the link runs apart from the node, and the lend crosses the `"Carry"`
+connection to it: the node hands it as `{"ask", "asked": {"Lend":
+lend}}`, and the link answers `{"ask", "reply"}` once it is asked, then
+`{"ask", "lent"}` a line a piece. The node never waits on a lend's
+reader: it holds at most 1024 pieces, 16 MiB at most, for one that
+has stopped taking them, and past that, or once the reader hangs up, it writes
+`{"unlend": ask}`, the link lets the lend go, and what was handed on
+ends short.
+
+`mycelium lend serve --listen PATH [--budget NAME]` serves pi's model
+requests on `PATH` as a machine's model relay does, so a pi whose
+`PI_PROXY_RELAY` names `PATH`'s folder sends there. It makes that
+folder open to its account alone, refuses one open to others, and
+binds the socket for its account alone. Each request, HTTP/1.1 with a
+body of a length or in chunks, at most 64 KiB of head and 32 MiB of
+body, goes to the node as a `"Lend"` with only its `content-type`,
+`anthropic-version`, `anthropic-beta` and `accept` headers, so pi's
+credentials never leave the machine, and the budget named. One whose
+body is coded is answered 415 unasked, which pi's zstd coding takes as
+leave to send it plain. The head is answered with the lender's headers
+but those of one connection, and the body in chunks as each `Body`
+comes. A refusal before the head, or a request that can't be read or
+lent, is answered with its status and an error shaped as Anthropic's,
+`{"type": "error", "error": {"type": "mycelium_lend", "message"}}`,
+and the connection carries the next request. A refusal after it, or a
+node that stops answering, ends the connection short of the last
+chunk, so pi reads the answer as failed. A pi that hangs up hangs up on
+the node. It holds no key and asks for none, and never answers 421,
+which pi reads as a relay sending it straight to the proxy: an
+upstream's 421 is answered 502.
+
+The lending machine's node is started with `--lend FILE`, a file
+sealed as `declared.json` is, read again at every lend:
+`{"vms": [{"prefix", "budget", "requests_a_day"}], "budgets": {NAME:
+{"upstream", "host", "paths", "auth_header", "key"}}}`. A link's end
+answers each lend the other machine asks by it, and a node started
+without one refuses every lend 403. A machine is known by its link's
+name, which a worker reached by `--via` says itself in its first hello,
+so a `prefix` trusts the machines its provider makes. A lend is
+refused 403 for a
+machine cut off, one no `prefix` starts or more than one does, a
+budget asked that isn't the machine's, a method but `POST` or `GET`,
+or a path not one of `paths`, nor below one of them ending `/*`
+(a path names only itself, since below one a model serves can lie
+another that spends far more, as a batch does), or holding a `.` or `..`
+segment or anything but letters, digits, `/`, `_`, `-` and `.`, with
+a query of those but `/`, and `=` and `&` besides; 400 for a header
+or body that
+can't be read, 413 for a body past 32 MiB, and 429 once the machine
+has made its `requests_a_day` that day, by UTC. A budget bounds how
+many requests and to which paths, not what each costs. The count is
+kept in `counts-DAY.json` in `lend/` under the account's state folder,
+whatever the node's `--state`, since `mycelium lend cut` asks no node,
+and changed under a lock on `lend/counts.lock`, so two nodes lending
+from one account lose no count; a lend waiting more than a moment for
+another node's hold on it is refused 503. A lend is counted before it
+is carried and given back, to the day it was counted in, where its key
+can't be had, its upstream can't be reached or asked, or the machine
+is cut off or its borrower lets go before it is asked whole, so a
+lender's outage spends no machine's day; never once it was asked
+whole, since an answer that fails may still have been made. A cut or
+a borrower letting go ends a lend while it is sent as well as while
+it is answered. An upstream that hasn't taken the whole request
+within two minutes, or begun its answer within ten, or that goes five
+minutes without a byte once it has, is answered 504. One that passes
+goes to
+`upstream`, a
+socket's path, or
+where relative one in the account's runtime folder, for `host`, with
+only the headers the shim hands on and `key`'s command's output in
+`auth_header`, where a key is named: the borrower's own credentials
+never leave it, and the key never crosses to it. A lend file that
+can't be read, which says why only in the lender's log, and there
+only what kind of fault and where, never the words found, or an
+upstream not answering is 503, and a key that
+can't be had is 502. An interim head the upstream sends, 1xx but 101,
+is passed over for the one after it, and a 204 or 304 has no body.
+`mycelium lend cut MACHINE`, or `--all`, cuts a machine off at once,
+kept in `lend/cuts.json`, changed under a lock on `lend/cuts.lock` so
+cuts made at once all hold: each lend it asks is refused, and each being
+answered ends short within a second, until `mycelium lend uncut` lets
+it back. Each prints a line of JSON, `cuts`, the file it wrote, and
+`cut`, the machines cut off now, and the node says in its log at start
+which file it reads, so a cut made where the node doesn't look shows.
+One machine isn't let back while every machine is cut off. Cuts that
+can't be read cut every machine off, saying why in the lender's log,
+until `--all` writes them anew. Each lend that reaches a lender,
+refused or not, is written to the node's log as one line,
+`mycelium-lend:`, a space and JSON of its `time`, `lender`, `vm`,
+`service`, `budget`, `model`, `upstream` host, `request_bytes`,
+`response_bytes`, `status`, `duration_ms` and `outcome`, and never its
+body, headers or key.
 
 ### A Hosted Session's Spawner
 

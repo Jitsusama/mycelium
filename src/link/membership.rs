@@ -76,6 +76,12 @@ pub struct Hello {
     /// neither, and would end a link that asked.
     #[serde(default)]
     pub ends: bool,
+    /// Whether it carries lends of model calls, handing a worker's to its
+    /// machine's lender and streaming back what it answers, and refusing
+    /// every other machine's; an end older than this does neither, and
+    /// would end a link that asked.
+    #[serde(default)]
+    pub lends: bool,
 }
 
 /// Which machines a node links with.
@@ -119,6 +125,7 @@ impl Membership for Realm {
             carries: true,
             shows: true,
             ends: true,
+            lends: true,
         }
     }
 

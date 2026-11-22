@@ -31,6 +31,7 @@ use crate::group::{Group, Pattern, Routes};
 use crate::handover::{self, Sleeping, Told};
 use crate::hold::{self, start, start::Starter};
 use crate::hosted_attach;
+use crate::lend::{Lend, Lent};
 use crate::link::dial::{Dial, Program};
 use crate::link::refused::Refusals;
 use crate::link::starts::{Asking, Asks, Starting};
@@ -530,6 +531,15 @@ pub struct Given {
     /// How it lets go of the trees a carry it ordered left here, once the
     /// carry has arrived, if it does (`carry::settle`).
     pub settles: Option<Settles>,
+    /// The machine this one borrows model calls from, if it borrows any
+    /// (`lend`): a worker's maker, through the link it was accepted by.
+    /// Named on the node's own command line; with none, a lend asked
+    /// here is refused, so a lender's own node hands on no lend.
+    pub lends_from: Option<String>,
+    /// The sealed file saying what this machine lends the machines it
+    /// made, if it lends any (`lend::lender`): their links' ends answer
+    /// each lend they ask by it, and refuse every one without it.
+    pub lend: Option<PathBuf>,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -1306,6 +1316,10 @@ struct Shared<S> {
     /// The person's table of which receptors' climbs are said
     /// (`stimuli`), if one is named.
     stimuli: Option<PathBuf>,
+    /// The machine this one borrows model calls from, if any.
+    lends_from: Option<Arc<str>>,
+    /// What this machine lends the machines it made, if it lends any.
+    lender: Option<Arc<crate::lend::lender::Lender>>,
     /// The ids of the signals this node said as its receptors this run,
     /// the only messages from a receptor's name it takes (`signals`).
     spoken: Arc<Mutex<HashSet<String>>>,
@@ -1466,6 +1480,8 @@ impl<S: Clone> Clone for Shared<S> {
             built: self.built.clone(),
             receptors: self.receptors.clone(),
             stimuli: self.stimuli.clone(),
+            lends_from: self.lends_from.clone(),
+            lender: self.lender.clone(),
             spoken: Arc::clone(&self.spoken),
             refused: Arc::clone(&self.refused),
             receptors_at: self.receptors_at.clone(),
@@ -2104,7 +2120,15 @@ impl<S: Store> Shared<S> {
             scratch,
             eases: _,
             settles,
+            lends_from,
+            lend,
         } = given;
+        let lender = lend.map(|file| {
+            Arc::new(crate::lend::lender::Lender::from_file(
+                file,
+                runs.declarers.clone(),
+            ))
+        });
         let said = Arc::<Said>::default();
         let inner = Arc::new(Mutex::new(Inner::after(&flows, &hello.realm)));
         let forages: forage::Held = Arc::new(Mutex::new(forage::Shelf::with_waits(waiting)));
@@ -2168,6 +2192,8 @@ impl<S: Store> Shared<S> {
             built: Arc::default(),
             receptors: held,
             stimuli,
+            lends_from: lends_from.map(Into::into),
+            lender,
             spoken: Arc::default(),
             refused: Arc::default(),
             receptors_at: receptors,
@@ -3317,6 +3343,7 @@ impl<S: Store> Shared<S> {
             Request::Relayed { .. } => Err("a relayed start is answered by `relayed`".to_owned()),
             Request::Sprout(_) => Err("a sprout is answered by `sprout`".to_owned()),
             Request::Run(_) => Err("a run is answered by `run`".to_owned()),
+            Request::Lend(_) => Err("a lend is answered by `lend`".to_owned()),
             Request::Offers => Err("offers are answered by `offers`".to_owned()),
             Request::Steer { .. } => Err("a steer is answered by `steer`".to_owned()),
             Request::End { .. } => Err("an end is answered by `end`".to_owned()),
@@ -3352,6 +3379,7 @@ impl<S: Store> Shared<S> {
             declared: Some(self.declared.clone()),
             kit: self.given_kit().cloned(),
             saturation: Some(self.saturation.clone()),
+            lender: self.lender.clone(),
         }
     }
 
@@ -6384,6 +6412,10 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             hand_on_run(&shared, asked, lines, writing).await;
             return;
         }
+        if let Ok(Request::Lend(lend)) = request {
+            hand_on_lend(&shared, lend, lines, writing).await;
+            return;
+        }
         if let Ok(Request::Watch { groups, recent }) = request {
             keep_watching(&shared, groups.as_ref(), recent, lines, writing).await;
             return;
@@ -6601,6 +6633,49 @@ async fn hand_on_run<S: Store>(
                 }
             }
             // Dropping what it says stops the run.
+            _ = lines.next_line() => return,
+        }
+    }
+}
+
+/// Hands a lend asked here to the link reaching the machine this one
+/// borrows from, and writes what it answers a line each until it ends.
+/// A node borrowing from none refuses it, as one whose lender no link
+/// reaches now does. A client that hangs up lets the lend go.
+async fn hand_on_lend<S: Store>(
+    shared: &Shared<S>,
+    lend: Lend,
+    mut lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    mut writing: tokio::net::unix::OwnedWriteHalf,
+) {
+    let refused = |status, why: String| Lent::Refused { status, why };
+    let Some(lender) = shared.lends_from.clone() else {
+        let why = "this machine borrows from no lender: its node names none with --lends-from";
+        // A client that hung up hears nothing.
+        let _ = write(&mut writing, &refused(403, why.to_owned())).await;
+        return;
+    };
+    let mut answers = match shared.asks.lend(&lender, lend).await {
+        Ok(answers) => answers,
+        Err(why) => {
+            let _ = write(&mut writing, &refused(503, why)).await;
+            return;
+        }
+    };
+    loop {
+        tokio::select! {
+            said = answers.recv() => {
+                let said = said.unwrap_or_else(|| {
+                    // The link went before the lend ended, which a retry
+                    // may get past, as one no link reaches.
+                    refused(503, format!("the link to {lender} ended before its lend did"))
+                });
+                let ends = matches!(said, Lent::Done | Lent::Refused { .. });
+                if write(&mut writing, &said).await.is_err() || ends {
+                    return;
+                }
+            }
+            // Dropping what it answers lets the lend go.
             _ = lines.next_line() => return,
         }
     }
@@ -6826,6 +6901,8 @@ mod tests {
             settles: None,
             scratch: None,
             eases: None,
+            lends_from: None,
+            lend: None,
         }
     }
 
@@ -6966,6 +7043,8 @@ mod tests {
             scratch,
             eases: None,
             settles,
+            lends_from: None,
+            lend: None,
         }
     }
 
@@ -7044,6 +7123,7 @@ mod tests {
                     health: None,
                     kit: None,
                     saturation: None,
+                    lender: None,
                 };
                 // The test judges the link by what crosses it.
                 let _ = if proven {
@@ -7318,6 +7398,7 @@ mod tests {
             declared: Some(dir.path().join("declared.json")),
             kit: None,
             saturation: None,
+            lender: None,
         };
         let membership = Realm {
             name: "work".to_owned(),
@@ -13879,6 +13960,62 @@ esac
         .expect("kestrel's ask of skiff is refused at the link skiff dialled");
         assert!(why.contains("skiff"), "{why}");
         stop([near, far]).await;
+    }
+
+    /// What a node answers first to a lend asked of it at `socket`.
+    async fn lent_first(socket: &Path) -> Lent {
+        use tokio::io::AsyncWriteExt as _;
+        let lend = Lend {
+            budget: None,
+            method: "POST".to_owned(),
+            path: "/apis/anthropic/v1/messages".to_owned(),
+            headers: Vec::new(),
+            body: String::new(),
+        };
+        let mut line = serde_json::to_string(&Request::Lend(lend)).expect("a lend says itself");
+        line.push('\n');
+        let stream = UnixStream::connect(socket).await.expect("the node answers");
+        let (reading, mut writing) = stream.into_split();
+        writing
+            .write_all(line.as_bytes())
+            .await
+            .expect("the lend is asked");
+        let mut lines = BufReader::new(reading).lines();
+        let said = tokio::time::timeout(PATIENCE, lines.next_line())
+            .await
+            .expect("the node answers in time")
+            .expect("the node's answer reads")
+            .expect("the node answers a line");
+        serde_json::from_str(&said).expect("what a lend answers")
+    }
+
+    #[tokio::test]
+    async fn a_node_that_borrows_from_no_lender_refuses_a_lend() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let given = given_beside(&socket, None, None);
+        let (_stop, _node) = alone_with(&Memory::default(), &socket, given);
+        let Lent::Refused { status, why } = lent_first(&socket).await else {
+            panic!("a node named no lender lends nothing");
+        };
+        assert_eq!(status, 403, "{why}");
+        assert!(why.contains("--lends-from"), "{why}");
+    }
+
+    #[tokio::test]
+    async fn a_lend_whose_lender_no_link_reaches_is_refused_as_unavailable() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let given = Given {
+            lends_from: Some("osprey".to_owned()),
+            ..given_beside(&socket, None, None)
+        };
+        let (_stop, _node) = alone_with(&Memory::default(), &socket, given);
+        let Lent::Refused { status, why } = lent_first(&socket).await else {
+            panic!("a lender no link reaches lends nothing");
+        };
+        assert_eq!(status, 503, "{why}");
+        assert!(why.contains("osprey"), "{why}");
     }
 
     #[tokio::test]
