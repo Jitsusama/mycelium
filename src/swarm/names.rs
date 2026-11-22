@@ -32,6 +32,17 @@ const SMALL: [&str; 38] = [
 /// The swarm's acts, which a team named the same would hide.
 const ACTS: [&str; 3] = ["say", "pause", "resume"];
 
+/// Whether `name`, copied after `swarm` into a shell, reads as one name
+/// and nothing more: one word of letters, digits, `-`, `_` and `.`,
+/// which no shell splits or acts on, and no act, which `swarm` would do.
+pub(super) fn one_word(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|each| each.is_alphanumeric() || matches!(each, '-' | '_' | '.'))
+        && !ACTS.contains(&name.to_lowercase().as_str())
+}
+
 /// The most words before a colon that still read as a name.
 const NAME_WORDS: usize = 3;
 

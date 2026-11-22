@@ -695,12 +695,19 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
     let first = within
         .get("")
         .and_then(|top| ordered(top.iter().copied()).first().copied());
-    // A chosen short name is a peer's text, so it is held to one line
-    // here as on its row.
-    let example = first.map_or_else(
-        || "<team>".to_owned(),
-        |team| unmarked(names::typed(team, &shorts)),
-    );
+    // A chosen short name is a peer's text, and the example is copied
+    // into a shell, so it is given only as a word a shell and `swarm`
+    // read as one name, then as the team's address, and otherwise not.
+    let example = first
+        .and_then(|team| {
+            let typed = unmarked(names::typed(team, &shorts));
+            if names::one_word(&typed) {
+                Some(typed)
+            } else {
+                crate::forage::is_address(address(team)).then(|| address(team).to_owned())
+            }
+        })
+        .unwrap_or_else(|| "<team>".to_owned());
     lines.push(look.paint(
         FAINT,
         &format!(
@@ -1036,7 +1043,8 @@ pub(crate) fn listed(names: &[&str]) -> String {
 /// Each of several choices by the name it's drawn with, and by its
 /// address too where another draws alike, so a refusal offering both
 /// still names something to type for each. An address is a peer's text
-/// too, so it is cleaned as a name is.
+/// too, so it is named only when it is one, letters and digits as a
+/// cell's is, and typing it reaches the team.
 pub(crate) fn told_apart(named: Vec<(String, &str)>) -> Vec<String> {
     let alike = |name: &str| {
         named
@@ -1049,7 +1057,11 @@ pub(crate) fn told_apart(named: Vec<(String, &str)>) -> Vec<String> {
         .iter()
         .map(|(name, address)| {
             if alike(name) {
-                format!("{name} ({})", unmarked(address))
+                if crate::forage::is_address(address) {
+                    format!("{name} ({address})")
+                } else {
+                    format!("{name} (no address to type)")
+                }
             } else {
                 name.clone()
             }

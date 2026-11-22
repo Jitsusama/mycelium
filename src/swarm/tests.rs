@@ -211,10 +211,42 @@ fn a_name_matching_none_or_several_is_said_plainly() {
         "two drawn alike are each named by their address too, so one can be typed"
     );
     alike.teams[0]["key"] = json!("team:RE\u{1b}]52;c;eA==\u{7}EF");
-    let why = team(&alike, "dock", &look()).expect_err("still two");
-    assert!(
-        !why.chars().any(char::is_control) && why.ends_with("or dock (HARBOR)"),
-        "a peer's address is cleaned before it is said: {why:?}"
+    assert_eq!(
+        team(&alike, "dock", &look()),
+        Err("dock could be dock (no address to type) or dock (HARBOR)".to_owned()),
+        "a peer's address is said only when it is one, so typing it reaches its team"
+    );
+}
+
+#[test]
+fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
+    let hint = |swarm: &Swarm| {
+        overview(swarm, &look())
+            .lines()
+            .last()
+            .and_then(|line| line.rsplit(' ').next())
+            .map(str::to_owned)
+    };
+    let mut acting = swarm();
+    acting.teams[1]["swarm"] = json!("harbour pause");
+    assert_eq!(
+        hint(&acting).as_deref(),
+        Some("HARBOR"),
+        "a short name that would act or split is given as the team's address"
+    );
+    acting.teams[1]["swarm"] = json!("harbour;ls");
+    assert_eq!(
+        hint(&acting).as_deref(),
+        Some("HARBOR"),
+        "or one a shell acts on"
+    );
+    // Kelp stays within it, so Harbour still leads.
+    acting.teams[1]["key"] = json!("team:HAR BOR");
+    acting.teams[2]["within"] = json!("HAR BOR");
+    assert_eq!(
+        hint(&acting).as_deref(),
+        Some("<team>"),
+        "and with no address to type, no example"
     );
 }
 
