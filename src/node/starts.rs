@@ -266,7 +266,8 @@ fn persons_pi(program: &str) -> bool {
 /// The session `command` reopens and does nothing more: the person's pi,
 /// as [`brings_back`] reads it, given `--session` and the session's bare
 /// id, with at most `--model` and a model after them, so no first words,
-/// other flags, file or shell ride into it. Whether such a session ended
+/// other flags, file or shell ride into it. A model is a provider's and
+/// its own name, never a path: none begins `/` or `.`, or holds `..`. Whether such a session ended
 /// is for its own machine's node to say, since another keeps none.
 #[must_use]
 pub fn reopens(command: &[String]) -> Option<&str> {
@@ -282,7 +283,12 @@ pub fn reopens(command: &[String]) -> Option<&str> {
     };
     let model = match rest {
         [] => true,
-        [model_flag, model] => model_flag == "--model" && bare(model),
+        [model_flag, model] => {
+            model_flag == "--model"
+                && bare(model)
+                && !model.starts_with(['/', '.'])
+                && !model.contains("..")
+        }
         _ => false,
     };
     let id = session
@@ -895,6 +901,18 @@ mod tests {
                 "a flag as model",
             ),
             (&["pi", "--session", "/tmp/x_s-gone_1.jsonl"], "a file"),
+            (
+                &["pi", "--session", "s-gone_1", "--model", "/tmp/model"],
+                "a path as model",
+            ),
+            (
+                &["pi", "--session", "s-gone_1", "--model", "./model"],
+                "a relative path as model",
+            ),
+            (
+                &["pi", "--session", "s-gone_1", "--model", "x/../../model"],
+                "a model climbing out",
+            ),
             (&["pi", "--session-id", "s-gone_1"], "another resuming flag"),
             (&["pi", "--session", "-x"], "a flag as session"),
             (
