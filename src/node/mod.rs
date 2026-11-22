@@ -1969,6 +1969,7 @@ fn judged_as(by: By, claims: &[String], unclaimed: &str) -> String {
 /// cells its presence names, and serves and relies on the needs it lists,
 /// each kept only where it reads.
 fn forage_cells(inner: &Inner, machine: &str, starts: &starts::Starts) -> Vec<forage::Cell> {
+    let starters = starts.starters();
     let mut cells: Vec<forage::Cell> = inner
         .state
         .sessions()
@@ -1978,7 +1979,8 @@ fn forage_cells(inner: &Inner, machine: &str, starts: &starts::Starts) -> Vec<fo
             let started = session
                 .held
                 .as_deref()
-                .and_then(|held| starts.started_by(machine, held));
+                .and_then(|held| starters.of(machine, held))
+                .map(str::to_owned);
             let lineage = &session.presence["lineage"];
             let split_from = lineage["split_from"]
                 .as_str()
@@ -2249,6 +2251,7 @@ impl<S: Store> Shared<S> {
     /// held on this machine, which the node also watches.
     fn read_sessions(&self) {
         let held = hold::held(&self.held);
+        let starters = self.starts.starters();
         let sessions = self
             .store
             .presences()
@@ -2263,7 +2266,8 @@ impl<S: Store> Shared<S> {
                 let booked = session
                     .held
                     .as_deref()
-                    .and_then(|held| self.starts.started_by(&session.machine, held));
+                    .and_then(|held| starters.of(&session.machine, held))
+                    .map(str::to_owned);
                 session.started_by = booked.or(session.started_by.take());
                 Some(session)
             })
@@ -3332,14 +3336,17 @@ impl<S: Store> Shared<S> {
             Request::Machine => Ok(Response::Machine(Box::new(self.measure()))),
             Request::Machines => Ok(Response::Machines(self.machines())),
             Request::Builders => Ok(Response::Builders(self.builders.builders())),
-            Request::StartedBy(held) => Ok(Response::StartedBy(
-                held.into_iter()
-                    .filter_map(|held| {
-                        let by = self.starts.started_by(&self.machine, &held)?;
-                        Some((held, by))
-                    })
-                    .collect(),
-            )),
+            Request::StartedBy(held) => {
+                let starters = self.starts.starters();
+                Ok(Response::StartedBy(
+                    held.into_iter()
+                        .filter_map(|held| {
+                            let by = starters.of(&self.machine, &held)?.to_owned();
+                            Some((held, by))
+                        })
+                        .collect(),
+                ))
+            }
             Request::Place(_) | Request::PlaceToStart(_) => {
                 Err("a placement is answered by `place_asked`".to_owned())
             }
@@ -5118,6 +5125,12 @@ impl<S: Store> Shared<S> {
                 .map_err(Clone::clone),
             joined,
         );
+        if started.is_ok() {
+            // Its session may be judged already, its presence written
+            // before its holder answered, so it is judged again now its
+            // book's line names its starter.
+            self.read_sessions();
+        }
         started.map(Response::Started)
     }
 
@@ -13158,6 +13171,19 @@ esac
     // so a map of the realm draws who started whom across machines.
     #[tokio::test]
     async fn a_cells_starter_by_its_machines_book_is_told_on_every_machine() {
+        // Skiff's book names none, so skiff says kestrel's word as its
+        // link carried it; then OAR002, as a start skiff relayed there
+        // would book it, which skiff's node says first.
+        for skiffs in [None, Some("OAR002")] {
+            a_cells_starter_is_told_on_both_machines(skiffs).await;
+        }
+    }
+
+    /// Kestrel's node has started `0e50`'s hold for OAR001 and skiff's
+    /// book says `skiffs` started it, and each machine's cell records say
+    /// the starter its own book names, else the one carried from
+    /// kestrel's.
+    async fn a_cells_starter_is_told_on_both_machines(skiffs: Option<&str>) {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let far_socket = dir.path().join("kestrel").join("work.sock");
         let near_socket = dir.path().join("skiff").join("work.sock");
@@ -13170,10 +13196,13 @@ esac
                 .create(dir.path().join(machine))
                 .expect("the node's folder");
         }
-        // Kestrel's book says OAR001 asked for the hold SAK9FZ runs in, and
-        // skiff's that OAR002 did, as a start skiff relayed there would
-        // book it, so each machine's node says its own book's word first.
-        for (socket, by) in [(&far_socket, "OAR001"), (&near_socket, "OAR002")] {
+        // Kestrel's book says OAR001 asked for the hold SAK9FZ runs in.
+        let near = skiffs.unwrap_or("OAR001");
+        let books = [(&far_socket, Some("OAR001")), (&near_socket, skiffs)];
+        for (socket, by) in books
+            .iter()
+            .filter_map(|(socket, by)| Some((*socket, (*by)?)))
+        {
             let started = json!({
                 "at": jiff::Timestamp::now().as_millisecond(), "by": {"Agent": "fence"},
                 "started_by": by, "machine": "kestrel", "held": "5e551011",
@@ -13203,8 +13232,8 @@ esac
         let carried = listed_as(near_socket.clone(), "0e50", |one| one.started_by.is_some()).await;
         assert_eq!(
             carried.started_by.as_deref(),
-            Some("OAR002"),
-            "the session carried says the starter skiff's own book holds"
+            Some(near),
+            "the session carried says the starter skiff's own book holds, else kestrel's"
         );
         // Kestrel's word crossed all the same, beside the presence.
         let crossed = |store: &Memory| {
@@ -13223,7 +13252,7 @@ esac
         .await
         .expect("kestrel's end says the starter kestrel's book holds");
 
-        for (socket, by) in [(&far_socket, "OAR001"), (&near_socket, "OAR002")] {
+        for (socket, by) in [(&far_socket, "OAR001"), (&near_socket, near)] {
             let (mut client, _hello) = Speaking::hello(socket).await;
             client
                 .ask(json!({"id": 2, "ask": "watch", "kind": "cell"}))

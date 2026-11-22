@@ -33,30 +33,53 @@ const ASKED_AGAIN_AFTER: Duration = Duration::from_secs(30);
 /// How long an ask waits for the node to answer. The node answers from the
 /// book it holds, so one slower than this is stuck, and the ids asked of it
 /// wait to be asked again.
-const ANSWERED_WITHIN: Duration = Duration::from_secs(5);
+pub(super) const ANSWERED_WITHIN: Duration = Duration::from_secs(5);
 
 /// Why the node named no starters for an ask, each told once by an end so
 /// a machine whose records say none can be told apart from one whose node
 /// can't say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Unasked {
-    /// Nothing answered on the node's socket, as while it restarts.
+    /// Nothing answered on the node's socket, as while it restarts, or the
+    /// node let the ask go without a word.
     NoNode,
     /// The node took the ask and said nothing within [`ANSWERED_WITHIN`].
     Unanswered,
-    /// The node refused the ask, as one older than [`Request::StartedBy`]
-    /// does, or answered something else.
+    /// The node can't read the ask, as one older than
+    /// [`Request::StartedBy`] says.
     Refused,
+    /// The node answered the ask with an error of its own, or with
+    /// something no node answers it with.
+    Failed,
 }
 
 impl fmt::Display for Unasked {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::NoNode => "no node answers on its socket",
-            Self::Unanswered => "its node took the ask and didn't answer within 5 seconds",
-            Self::Refused => "its node refused the ask, as one older than this end does",
-        })
+        match self {
+            Self::NoNode => f.write_str("no node answers on its socket"),
+            Self::Unanswered => write!(
+                f,
+                "its node took the ask and didn't answer within {} seconds",
+                ANSWERED_WITHIN.as_secs()
+            ),
+            Self::Refused => {
+                f.write_str("its node can't read the ask, as one older than this end can't")
+            }
+            Self::Failed => f.write_str("its node answered the ask with an error"),
+        }
     }
+}
+
+/// What an end tells of an ask's answer, where it tells anything: a way
+/// asks found nothing, the first time they do, or that its node names
+/// starters again after one was told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Told {
+    /// Asks found nothing this way, for the first time since the node
+    /// last answered.
+    Unasked(Unasked),
+    /// The node answers again, after a way it couldn't was told.
+    Again,
 }
 
 /// What one ask of the node found: the held ids it asked about, and the
@@ -76,7 +99,8 @@ pub(super) struct Starters {
     unnamed: BTreeMap<String, Instant>,
     /// Whether an ask is out, so no second one goes while it is.
     asking: bool,
-    /// Why asks found nothing, each kind told once.
+    /// Why asks found nothing since the node last answered, each kind
+    /// told once.
     told: BTreeSet<Unasked>,
     /// Where each ask's answer goes, for the link's loop.
     learning: mpsc::UnboundedSender<Learned>,
@@ -136,14 +160,22 @@ impl Starters {
         });
     }
 
-    /// Keeps what one ask found, at `now`, saying why it found nothing the
-    /// first time asks find nothing that way, for the end to tell.
-    pub(super) fn learned(&mut self, learned: Learned, now: Instant) -> Option<Unasked> {
+    /// Keeps what one ask found, at `now`, saying what the end tells of
+    /// it: why it found nothing, the first time asks find nothing that way
+    /// since the node last answered, or that the node answers again.
+    pub(super) fn learned(&mut self, learned: Learned, now: Instant) -> Option<Told> {
         self.asking = false;
         let Learned { due, answer } = learned;
-        let (named, why) = match answer {
-            Ok(named) => (named, None),
-            Err(why) => (BTreeMap::new(), Some(why)),
+        let (named, told) = match answer {
+            Ok(named) => {
+                let again = !self.told.is_empty();
+                self.told.clear();
+                (named, again.then_some(Told::Again))
+            }
+            Err(why) => (
+                BTreeMap::new(),
+                self.told.insert(why).then_some(Told::Unasked(why)),
+            ),
         };
         for held in due {
             match named.get(&held) {
@@ -156,7 +188,7 @@ impl Starters {
                 }
             }
         }
-        why.filter(|why| self.told.insert(*why))
+        told
     }
 
     /// The starter of the session held as `held`, as the node last named.
@@ -173,8 +205,7 @@ async fn asked(node: &PathBuf, held: Vec<String>) -> Result<BTreeMap<String, Str
             .await
             .map_err(|_| Unasked::NoNode)?
             .into_split();
-        let mut ask =
-            serde_json::to_vec(&Request::StartedBy(held)).map_err(|_| Unasked::Refused)?;
+        let mut ask = serde_json::to_vec(&Request::StartedBy(held)).map_err(|_| Unasked::Failed)?;
         ask.push(b'\n');
         writing.write_all(&ask).await.map_err(|_| Unasked::NoNode)?;
         let line = BufReader::new(reading)
@@ -182,10 +213,12 @@ async fn asked(node: &PathBuf, held: Vec<String>) -> Result<BTreeMap<String, Str
             .next_line()
             .await
             .map_err(|_| Unasked::NoNode)?
-            .ok_or(Unasked::Refused)?;
+            .ok_or(Unasked::NoNode)?;
         match serde_json::from_str::<Reply>(&line) {
             Ok(Ok(Response::StartedBy(named))) => Ok(named),
-            _ => Err(Unasked::Refused),
+            // What a node says of an ask it can't read.
+            Ok(Err(why)) if why.starts_with("not a request") => Err(Unasked::Refused),
+            _ => Err(Unasked::Failed),
         }
     };
     tokio::time::timeout(ANSWERED_WITHIN, asking)
@@ -206,6 +239,10 @@ mod tests {
         Naming(Arc<Mutex<BTreeMap<String, String>>>),
         /// As a node older than the ask does.
         Refusing,
+        /// With an error of its own.
+        Failing,
+        /// By letting the ask go without a word.
+        HangingUp,
         /// Never, though it takes the ask.
         Silent,
     }
@@ -227,6 +264,8 @@ mod tests {
                         kept.push(writing);
                         continue;
                     }
+                    (Answers::HangingUp, _) => continue,
+                    (Answers::Failing, _) => Err("the book can't be read".to_owned()),
                     (Answers::Naming(named), Ok(Request::StartedBy(held))) => {
                         let named = named.lock().expect("the stand-in's starters");
                         Ok(Response::StartedBy(
@@ -245,17 +284,18 @@ mod tests {
         });
     }
 
-    /// What `starters` learns asking the node on `socket` of `living`, as
-    /// the link's loop takes it, at `now`.
+    /// What `starters` tells, asking the node on `socket` of `living`, as
+    /// the link's loop takes the answer, kept as answered long enough ago
+    /// that each id it names no starter for is due again.
     async fn learn(
         starters: &mut Starters,
         learned: &mut mpsc::UnboundedReceiver<Learned>,
         socket: &Path,
         living: &[&str],
-    ) -> Option<Unasked> {
+    ) -> Option<Told> {
         starters.ask(socket, living);
         let answer = learned.recv().await.expect("the ask is answered");
-        starters.learned(answer, Instant::now())
+        starters.learned(answer, Instant::now() - ASKED_AGAIN_AFTER)
     }
 
     #[test]
@@ -303,8 +343,6 @@ mod tests {
             .lock()
             .expect("the stand-in's starters")
             .insert("h-1".to_owned(), "OAR001".to_owned());
-        // Due again, as it is once the wait has passed.
-        starters.unnamed.clear();
         learn(&mut starters, &mut learned, &socket, &["h-1"]).await;
         assert_eq!(
             starters.of("h-1"),
@@ -334,23 +372,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_node_that_cant_say_names_no_starter_and_says_why_once() {
+    async fn a_node_that_cant_say_names_no_starter_and_says_why_once_until_it_says_again() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let (mut starters, mut learned) = Starters::new();
         let nobody = dir.path().join("nobody.sock");
         let first = learn(&mut starters, &mut learned, &nobody, &["h-1"]).await;
-        assert_eq!((starters.of("h-1"), first), (None, Some(Unasked::NoNode)));
-        starters.unnamed.clear();
+        assert_eq!(
+            (starters.of("h-1"), first),
+            (None, Some(Told::Unasked(Unasked::NoNode)))
+        );
         let again = learn(&mut starters, &mut learned, &nobody, &["h-1"]).await;
         assert_eq!(again, None, "told once, not with every ask");
 
-        let older = dir.path().join("older.sock");
-        node(&older, Answers::Refusing);
-        let refused = learn(&mut starters, &mut learned, &older, &["h-2"]).await;
+        for (answers, why, said) in [
+            (
+                Answers::Refusing,
+                Unasked::Refused,
+                "an older node can't read the ask",
+            ),
+            (
+                Answers::Failing,
+                Unasked::Failed,
+                "a node erring is told apart",
+            ),
+        ] {
+            let socket = dir.path().join(format!("{why:?}.sock"));
+            node(&socket, answers);
+            let told = learn(&mut starters, &mut learned, &socket, &["h-2"]).await;
+            assert_eq!(
+                (starters.of("h-2"), told),
+                (None, Some(Told::Unasked(why))),
+                "{said}"
+            );
+        }
+        let hanging_up = dir.path().join("hanging-up.sock");
+        node(&hanging_up, Answers::HangingUp);
+        let told = learn(&mut starters, &mut learned, &hanging_up, &["h-2"]).await;
         assert_eq!(
-            (starters.of("h-2"), refused),
-            (None, Some(Unasked::Refused)),
-            "an older node refuses the ask"
+            told, None,
+            "a node letting the ask go is as no node, told already"
+        );
+
+        let back = dir.path().join("back.sock");
+        node(&back, Answers::Naming(Arc::default()));
+        let told = learn(&mut starters, &mut learned, &back, &["h-2"]).await;
+        assert_eq!(told, Some(Told::Again), "a node answering again is told");
+        let told = learn(&mut starters, &mut learned, &nobody, &["h-2"]).await;
+        assert_eq!(
+            told,
+            Some(Told::Unasked(Unasked::NoNode)),
+            "and a failure after it is told again"
         );
     }
 

@@ -750,9 +750,11 @@ async fn hello(
     }
 }
 
-/// A living session's presence, the leases it holds and the id its holder
-/// keeps it by, as last sent: the presence shared with the store's reading
-/// of it, so one unchanged is compared by pointer and never copied.
+/// A living session's presence, the leases it holds, the id its holder
+/// keeps it by and who started it, as its node names them, as last sent:
+/// the presence shared with the store's reading of it, so one unchanged is
+/// compared by pointer and never copied, and the starter compared too, so
+/// a presence goes again once its node names one.
 type Sent = (Arc<Value>, Vec<Value>, Option<String>, Option<String>);
 
 /// This end of a link, and what it knows of the other.
@@ -1824,18 +1826,23 @@ impl<S: Store> End<S> {
     }
 
     /// Keeps what an ask of this machine's node found of who started its
-    /// held sessions, telling once of each way it couldn't say, and sends
-    /// the presences whose starter it named.
+    /// held sessions, telling once of each way it couldn't say until it
+    /// says again, and sends the presences whose starter it named.
     async fn learned(
         &mut self,
         found: started::Learned,
         writing: &mut (impl AsyncWrite + Unpin),
     ) -> io::Result<()> {
-        if let Some(why) = self.starters.learned(found, tokio::time::Instant::now()) {
-            eprintln!(
+        match self.starters.learned(found, tokio::time::Instant::now()) {
+            Some(started::Told::Unasked(why)) => eprintln!(
                 "who started {}'s held sessions goes unsaid to {} until its node says: {why}",
                 self.here, self.other
-            );
+            ),
+            Some(started::Told::Again) => eprintln!(
+                "who started {}'s held sessions is said to {} again, as its node says",
+                self.here, self.other
+            ),
+            None => {}
         }
         self.send_presence(writing).await
     }
@@ -3145,19 +3152,75 @@ mod tests {
         );
     }
 
-    // A node slow to say who started a held session holds back nothing on
-    // the link: its presence goes at once, and again with the starter
-    // once the node names one.
-    #[tokio::test]
-    async fn a_held_sessions_presence_goes_before_its_node_names_its_starter_and_again_after() {
-        let dir = tempfile::tempdir().expect("a temporary folder");
+    /// What a stand-in node says of who started a held session, as the
+    /// test lets it.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Naming {
+        /// It takes the ask and waits to be let answer.
+        Waiting,
+        /// It names no starter, as before its book's line is written.
+        Nobody,
+        /// It names OAR001.
+        Named,
+    }
+
+    /// A node on `node` saying of who started `5e551011` as `naming` says,
+    /// and telling `holding` of each such ask as it takes it. The end asks
+    /// its node other things too, as what it measures the machine to be,
+    /// each over a connection of its own, so the node takes every one and
+    /// refuses all but who started what.
+    fn naming_node(
+        node: &std::path::Path,
+        naming: tokio::sync::watch::Receiver<Naming>,
+        holding: tokio::sync::mpsc::UnboundedSender<()>,
+    ) {
+        let listener = tokio::net::UnixListener::bind(node).expect("the node listens");
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let mut naming = naming.clone();
+                let holding = holding.clone();
+                tokio::spawn(async move {
+                    let (reading, mut writing) = stream.into_split();
+                    let Ok(Some(line)) = BufReader::new(reading).lines().next_line().await else {
+                        return;
+                    };
+                    let asked = serde_json::from_str::<crate::wire::Request>(&line);
+                    let reply: Reply = if matches!(asked, Ok(crate::wire::Request::StartedBy(_))) {
+                        // The test hears of it whether or not it waits.
+                        let _ = holding.send(());
+                        let said = naming
+                            .wait_for(|naming| *naming != Naming::Waiting)
+                            .await
+                            .map_or(Naming::Nobody, |naming| *naming);
+                        Ok(Response::StartedBy(if said == Naming::Named {
+                            BTreeMap::from([("5e551011".to_owned(), "OAR001".to_owned())])
+                        } else {
+                            BTreeMap::new()
+                        }))
+                    } else {
+                        Err(format!("not a request this node answers: {line}"))
+                    };
+                    let mut said = serde_json::to_vec(&reply).expect("a reply");
+                    said.push(b'\n');
+                    let _ = writing.write_all(&said).await;
+                });
+            }
+        });
+    }
+
+    /// Skiff's store, and both ends of a link between it and kestrel, whose
+    /// node on `node` holds `0e50` as `5e551011`.
+    fn holding_kestrel(
+        dir: &std::path::Path,
+        node: std::path::PathBuf,
+    ) -> (Memory, [tokio::task::JoinHandle<io::Result<()>>; 2]) {
         let kestrel = Memory::default();
-        let held = dir.path().join("held");
+        let held = dir.join("held");
         std::fs::create_dir(&held).expect("the held folder");
         let holds = hold::Held {
             id: "5e551011".to_owned(),
             command: vec!["pi".to_owned()],
-            folder: dir.path().to_owned(),
+            folder: dir.to_owned(),
             holder: std::process::id(),
             pid: 4242,
             parked: false,
@@ -3175,53 +3238,21 @@ mod tests {
             json!({"session": "0e50", "owner": {"pid": 4242}}),
             true,
         );
-        let node = dir.path().join("node.sock");
-        let (answer, answered) = tokio::sync::watch::channel(false);
-        let listener = tokio::net::UnixListener::bind(&node).expect("the node listens");
-        // The end asks its node other things too, as what it measures the
-        // machine to be, each over a connection of its own, so the node
-        // takes every one and refuses all but who started what.
-        tokio::spawn(async move {
-            while let Ok((stream, _)) = listener.accept().await {
-                let mut answered = answered.clone();
-                tokio::spawn(async move {
-                    let (reading, mut writing) = stream.into_split();
-                    let Ok(Some(line)) = BufReader::new(reading).lines().next_line().await else {
-                        return;
-                    };
-                    let asked = serde_json::from_str::<crate::wire::Request>(&line);
-                    let reply: Reply = if matches!(asked, Ok(crate::wire::Request::StartedBy(_))) {
-                        // The node names the starter only once the test
-                        // lets it.
-                        let _ = answered.wait_for(|let_go| *let_go).await;
-                        Ok(Response::StartedBy(BTreeMap::from([(
-                            "5e551011".to_owned(),
-                            "OAR001".to_owned(),
-                        )])))
-                    } else {
-                        Err(format!("not a request this node answers: {line}"))
-                    };
-                    let mut said = serde_json::to_vec(&reply).expect("a reply");
-                    said.push(b'\n');
-                    let _ = writing.write_all(&said).await;
-                });
-            }
-        });
         let skiff = Memory::default();
         let (near, far) = tokio::io::duplex(1 << 16);
-        let _near = end(&skiff, "skiff", near);
+        let near = end(&skiff, "skiff", near);
         let starting = Starting {
             node,
             held,
             asking: None,
-            steers: dir.path().join("steer"),
+            steers: dir.join("steer"),
             health: None,
             declared: None,
             kit: None,
             saturation: None,
         };
         let (reading, writing) = tokio::io::split(far);
-        let _far = tokio::spawn(async move {
+        let far = tokio::spawn(async move {
             run(
                 kestrel,
                 &realm("kestrel"),
@@ -3232,21 +3263,77 @@ mod tests {
             .await
             .map(|_| ())
         });
+        (skiff, [near, far])
+    }
 
+    /// Whether `store` keeps OAR001 as the starter of `0e50`.
+    fn named(store: &Memory) -> bool {
+        store
+            .presences()
+            .iter()
+            .any(|presence| presence.body[mesh::STARTED_BY_AS] == "OAR001")
+    }
+
+    // A node slow to say who started a held session holds back nothing on
+    // the link: its presence goes while the ask is out, and again with the
+    // starter once the node names one.
+    #[tokio::test]
+    async fn a_held_sessions_presence_goes_before_its_node_names_its_starter_and_again_after() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let node = dir.path().join("node.sock");
+        let (naming, named_as) = tokio::sync::watch::channel(Naming::Waiting);
+        let (holding, mut held) = tokio::sync::mpsc::unbounded_channel();
+        naming_node(&node, named_as, holding);
+        let (skiff, _ends) = holding_kestrel(dir.path(), node);
+
+        tokio::time::timeout(PATIENCE, held.recv())
+            .await
+            .expect("the end asks its node in time")
+            .expect("the node hears the ask");
+        let asked_at = tokio::time::Instant::now();
+        until(&skiff, |store| !store.presences().is_empty()).await;
+        assert!(
+            asked_at.elapsed() < started::ANSWERED_WITHIN,
+            "the presence goes while the ask is out, not once it is given up on"
+        );
+        assert_eq!(
+            starter_kept(&skiff, "0e50"),
+            Value::Null,
+            "and before the node has said"
+        );
+        naming.send(Naming::Named).expect("the node is let answer");
+        until(&skiff, named).await;
+    }
+
+    // A starter booked after the node's first answer is said by the next
+    // minute's keep, though nothing of the presence changes to ask again.
+    #[tokio::test(start_paused = true)]
+    async fn a_starter_booked_after_the_first_ask_is_said_by_the_next_keep() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let node = dir.path().join("node.sock");
+        let (naming, named_as) = tokio::sync::watch::channel(Naming::Nobody);
+        let (holding, mut held) = tokio::sync::mpsc::unbounded_channel();
+        naming_node(&node, named_as, holding);
+        let (skiff, _ends) = holding_kestrel(dir.path(), node);
+
+        held.recv().await.expect("the node hears the first ask");
         until(&skiff, |store| !store.presences().is_empty()).await;
         assert_eq!(
             starter_kept(&skiff, "0e50"),
             Value::Null,
-            "the presence goes before the node has said"
+            "the book names none yet"
         );
-        answer.send(true).expect("the node is let answer");
-        until(&skiff, |store| {
-            store
-                .presences()
-                .iter()
-                .any(|presence| presence.body[mesh::STARTED_BY_AS] == "OAR001")
+        naming
+            .send(Naming::Named)
+            .expect("the book's line is written");
+        let mut changes = skiff.changes().expect("a memory store tells its changes");
+        tokio::time::timeout(KEEP_EVERY + PATIENCE, async {
+            while !named(&skiff) {
+                changes.changes.recv().await;
+            }
         })
-        .await;
+        .await
+        .expect("the next keep asks again and says the starter");
     }
 
     #[tokio::test]

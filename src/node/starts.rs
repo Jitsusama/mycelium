@@ -16,7 +16,7 @@
 //! why it was refused (`"refused"`). The person's stop is the file
 //! `starts.stopped` beside it, there for as long as starts are stopped.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -283,6 +283,22 @@ pub fn begins_another(session: &Session, sessions: &[Session]) -> bool {
 pub struct Admitted {
     id: u64,
     asked: Kept,
+}
+
+/// Who started each session a node's book of starts names, as
+/// [`Starts::starters`] read it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Starters(BTreeMap<(String, String), String>);
+
+impl Starters {
+    /// The cell that started the session held as `held` on `machine`, if
+    /// the book names one.
+    #[must_use]
+    pub fn of(&self, machine: &str, held: &str) -> Option<&str> {
+        self.0
+            .get(&(machine.to_owned(), held.to_owned()))
+            .map(String::as_str)
+    }
 }
 
 /// The node's book of starts.
@@ -752,18 +768,24 @@ impl Starts {
         Ok(text.len() as u64)
     }
 
-    /// The cell that started the session held as `held` on `machine`, as
-    /// this node's book says, if this node started it for one.
+    /// The cell that started each session this node started for one, as
+    /// its book says, by the machine and held id it landed as: the newest
+    /// line for each, read under one hold of the book, so a node judging
+    /// every session holds back no start while it does.
     #[must_use]
-    pub fn started_by(&self, machine: &str, held: &str) -> Option<String> {
-        self.lock()
-            .kept
-            .iter()
-            .rev()
-            .find(|one| {
-                one.machine.as_deref() == Some(machine) && one.held.as_deref() == Some(held)
-            })
-            .and_then(|one| one.started_by.clone())
+    pub fn starters(&self) -> Starters {
+        let mut starters = BTreeMap::new();
+        for one in &self.lock().kept {
+            let (Some(machine), Some(held)) = (&one.machine, &one.held) else {
+                continue;
+            };
+            let landed = (machine.clone(), held.clone());
+            match &one.started_by {
+                Some(by) => starters.insert(landed, by.clone()),
+                None => starters.remove(&landed),
+            };
+        }
+        Starters(starters)
     }
 
     /// Counts one more ask under the name `once`, by `by` for the cell
@@ -1768,11 +1790,9 @@ mod tests {
         assert_eq!(kept.len(), 2, "{kept:?}");
         assert_eq!(kept[0].held.as_deref(), Some("h-1"));
         assert!(kept[1].refused.is_some(), "{kept:?}");
-        assert_eq!(
-            again.started_by("kestrel", "h-1").as_deref(),
-            Some("OSPREY")
-        );
-        assert_eq!(again.started_by("osprey", "h-1"), None, "another machine's");
+        let starters = again.starters();
+        assert_eq!(starters.of("kestrel", "h-1"), Some("OSPREY"));
+        assert_eq!(starters.of("osprey", "h-1"), None, "another machine's");
         assert!(again.stopped(), "the stop outlives the node");
     }
 
@@ -1817,7 +1837,7 @@ mod tests {
             "it counts from the file written again"
         );
         assert_eq!(
-            Starts::at(file).started_by("kestrel", "h-2").as_deref(),
+            Starts::at(file).starters().of("kestrel", "h-2"),
             Some("OSPREY")
         );
     }

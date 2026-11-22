@@ -2653,7 +2653,10 @@ characters a terminal draws as plain text), `usage`, the networks it
 session's record says a book of starts names, else the orchestrator it
 names, each only as an address other than its own) with
 `started_by_from` (`book` or `presence`; only `book` is a node's word,
-as `presence` is the session's own claim), `plan`, `cwd`, the
+as `presence` is the session's own claim; for a session elsewhere,
+`book` is its own machine's node's word as this machine's store keeps
+it, which its link writes there, so whatever can write that store can
+say it, as it can any presence), `plan`, `cwd`, the
 `trees` it holds, the folders it `shares`, a machine's or a
 receptor's `state`, a machine's `busy` and the sessions it `runs`, a
 receptor's `counts`, and the `networks` it joined. A session's `quest`

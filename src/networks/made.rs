@@ -504,14 +504,19 @@ fn events_of<'a>(session: &'a Value, cell: &'a Cell) -> impl Iterator<Item = Eve
 /// The cell that started `session`, by its address, and where that was
 /// read: the book of its machine's node, as its record says, else the
 /// orchestrator its record names, each only where it is an address and
-/// not the session's own, as no cell starts itself. Only the book's is
-/// a node's word; the orchestrator is the session's own.
+/// none the session goes by, as no cell starts itself. Only the book's is
+/// a node's word; the orchestrator is the session's own. A starter is
+/// said by the address it was named by, not followed through what it is
+/// called since.
 fn started_by(session: &Value) -> Option<(String, &'static str)> {
     let own = session["address"].as_str();
+    let also = session["presence"]["addresses"].as_array();
+    let its_own =
+        |said: &str| Some(said) == own || also.is_some_and(|all| all.iter().any(|one| one == said));
     let address = |field: &str| {
         session[field]
             .as_str()
-            .filter(|said| crate::forage::is_address(said) && Some(*said) != own)
+            .filter(|said| crate::forage::is_address(said) && !its_own(said))
             .map(str::to_owned)
     };
     address("started_by")
