@@ -558,19 +558,23 @@ pub async fn hold(
                 break status;
             }
             gone_runs = gone_runs_after(gone_runs, gone, began.elapsed());
-            let mut restarting = if gone {
+            let mut restarting = !gone && restarting(&files.waking);
+            // Parked before any window is told so, so a key typed the
+            // moment it is told wakes it rather than going to no program.
+            let mut parked = (!restarting).then(|| terminal.parks());
+            if gone {
                 away(&record, &shown);
-                false
-            } else {
-                restarting(&files.waking, &record, &shown)
-            };
+            } else if !restarting {
+                parks(&record, &shown, PARKED_LINE);
+            }
             let again = gone.then(|| gone_pause(gone_runs));
             // One that can't start again stays parked, saying why, rather than
             // ending: its session, its window and its next wake are all still
             // here, and a command named again may start.
             child = loop {
                 if !std::mem::take(&mut restarting) {
-                    let woke = told.before(woken_within(&terminal, &files, again));
+                    let parked = parked.take().unwrap_or_else(|| terminal.parks());
+                    let woke = told.before(woken_within(parked, &terminal, &files, again));
                     // A parked program has saved all it holds, so being told
                     // to end then ends only the holder.
                     if joining_until(woke, &socket, &mut joined, &serving)
@@ -593,7 +597,10 @@ pub async fn hold(
                 command = named(&files.chosen).or(its_own).unwrap_or(command);
                 match start(&command, terminal.size()) {
                     Ok(child) => break child,
-                    Err(error) => parks(&record, &shown, &unstarted(&error)),
+                    Err(error) => {
+                        parked = Some(terminal.parks());
+                        parks(&record, &shown, &unstarted(&error));
+                    }
                 }
             };
             record.runs(child.id().unwrap_or_default(), &command);
@@ -631,10 +638,11 @@ pub async fn hold(
 /// in a joined window starts it now, each window joining meanwhile told
 /// that it waits, and every window told once it is reopening.
 async fn its_turn(node: &Path, session: &str, terminal: &Terminal, shown: &Shown, files: &Files) {
+    let parked = terminal.parks();
     shown.says(WAITING_LINE);
     tokio::select! {
         () = turn::wait(node, session) => {}
-        () = woken(terminal, &files.waking, &files.steering) => {}
+        () = woken(parked, terminal, &files.waking, &files.steering) => {}
     }
     // Its turn may have come while it watched for a key.
     terminal.parked.send_replace(false);
@@ -679,12 +687,17 @@ fn away(record: &Record, shown: &Shown) {
 /// Waits as [`woken`] does, or until `after` has passed, if given: a
 /// program whose pi host is gone tries again by itself, as the host may
 /// be back.
-async fn woken_within(terminal: &Terminal, files: &Files, after: Option<Duration>) {
+async fn woken_within(
+    parked: watch::Receiver<bool>,
+    terminal: &Terminal,
+    files: &Files,
+    after: Option<Duration>,
+) {
     let Some(after) = after else {
-        return woken(terminal, &files.waking, &files.steering).await;
+        return woken(parked, terminal, &files.waking, &files.steering).await;
     };
     tokio::select! {
-        () = woken(terminal, &files.waking, &files.steering) => {}
+        () = woken(parked, terminal, &files.waking, &files.steering) => {}
         () = tokio::time::sleep(after) => {
             terminal.parked.send_replace(false);
         }
@@ -708,12 +721,8 @@ fn ended(holding: &Holding<'_>, pid: u32, command: &[String], status: ExitStatus
 /// does. It starts again at once, with no parked line drawn over its last
 /// frame, and a key typed meanwhile reaches what starts rather than being
 /// spent as a wake. Any other is parked, and its windows say so.
-fn restarting(waking: &Path, record: &Record, shown: &Shown) -> bool {
-    let restarting = fs::remove_file(waking).is_ok();
-    if !restarting {
-        parks(record, shown, PARKED_LINE);
-    }
-    restarting
+fn restarting(waking: &Path) -> bool {
+    fs::remove_file(waking).is_ok()
 }
 
 /// What every joined window shows while its program waits for its turn
@@ -784,12 +793,16 @@ async fn joining_until<T, Serving: Future<Output = ()> + Send + 'static>(
     }
 }
 
-/// Waits while the program is parked, until a key is typed in a joined
-/// terminal, the file `waking` appears, or a steer that wakes it lands in
-/// an inbox it named in `steering`, then spends the wake.
-async fn woken(terminal: &Terminal, waking: &Path, steering: &Path) {
-    let mut parked = terminal.parked.subscribe();
-    terminal.parked.send_replace(true);
+/// Waits while the program is `parked`, as [`Terminal::parks`] answered,
+/// until a key is typed in a joined terminal, the file `waking` appears,
+/// or a steer that wakes it lands in an inbox it named in `steering`,
+/// then spends the wake. A key typed since it parked wakes it at once.
+async fn woken(
+    mut parked: watch::Receiver<bool>,
+    terminal: &Terminal,
+    waking: &Path,
+    steering: &Path,
+) {
     let steers = Steers::read(steering);
     let (mut watching, mut heard) = steers
         .as_ref()
@@ -858,6 +871,17 @@ impl Terminal {
     /// that woke it is then not the program's to read.
     fn wakes(&self) -> bool {
         self.parked.send_if_modified(std::mem::take)
+    }
+
+    /// Parks the program, so a key typed from now wakes it, answering
+    /// what hears that wake. It is parked before any window is told so,
+    /// as a key typed the moment one is told would otherwise reach no
+    /// program and wake nothing, as one did on a loaded builder on 22
+    /// November.
+    fn parks(&self) -> watch::Receiver<bool> {
+        let parked = self.parked.subscribe();
+        self.parked.send_replace(true);
+        parked
     }
 
     /// Whether the program is parked.
@@ -1804,6 +1828,39 @@ mod tests {
         let (polled, wakes) = read_once(&reading);
         assert!(polled.is_pending(), "nothing more is shown: {polled:?}");
         assert_eq!(wakes, 0, "an idle terminal never wakes its reader");
+    }
+
+    #[tokio::test]
+    async fn a_key_typed_as_soon_as_its_window_is_told_it_parked_wakes_it() {
+        let (pty, _pts) = pty_process::open().expect("a terminal");
+        let (_, writing) = pty.into_split();
+        let (drawn, _) = broadcast::channel(OUTPUT_BACKLOG);
+        let terminal = Terminal {
+            writing: tokio::sync::Mutex::new(writing),
+            size: Mutex::new(WINDOW),
+            drawn,
+            parked: watch::Sender::new(false),
+        };
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        // Parked before a window is told, the key it types once told, before
+        // anything waits for one, is still the wake rather than the program's.
+        let parked = terminal.parks();
+        assert!(
+            terminal.wakes(),
+            "the key is a wake, never typed to no program"
+        );
+        tokio::time::timeout(
+            PATIENCE,
+            woken(
+                parked,
+                &terminal,
+                &dir.path().join("waking"),
+                &dir.path().join("steering"),
+            ),
+        )
+        .await
+        .expect("the key typed before the wait still wakes it");
+        assert!(!terminal.is_parked(), "woken, it is no longer parked");
     }
 
     #[tokio::test]
