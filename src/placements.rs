@@ -10,6 +10,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::facts::Machine;
@@ -40,13 +41,53 @@ pub struct Record {
     /// too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refused: Vec<Miss>,
-    /// The fence the node judged the asker to run in, none for the
-    /// person, so a refusal for looser ground, or its absence, reads off
-    /// the record. None too in a record kept before it was said.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The fence placement held the asker's work to, as the node judged
+    /// the asker, so a refusal for looser ground, or its absence, reads
+    /// off the record: none where it was placed unfenced, as the person's
+    /// work is and a start relayed here, whose asker the asking machine
+    /// judged. None too in a record kept before it was said, or one
+    /// saying a fence this build doesn't know.
+    #[serde(
+        default,
+        deserialize_with = "or_none",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub fence: Option<crate::declared::Kind>,
+    /// The screen an agent's work was placed through beside its fence,
+    /// where it was fenced, so a Mac taking an agent's held start reads
+    /// as the run's screen the agent shown unfenced is placed through,
+    /// rather than as a refusal missing. None where `fence` is.
+    #[serde(
+        default,
+        deserialize_with = "or_none",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub screen: Option<Screen>,
     /// How each machine was judged, and where the work went.
     pub decision: Decision,
+}
+
+/// What placement holds an agent's work to, beside ground as firm as
+/// where it asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Screen {
+    /// Firm ground alone.
+    Ground,
+    /// An agent's run: only where its fence runs a command.
+    Run,
+    /// An agent's held start: where its fence runs a command, and on no
+    /// Mac, whose holder would start it outside any fence.
+    Held,
+}
+
+/// A field as said, or none where it isn't in the shape this build reads,
+/// which spoils only that field, never the rest of the record.
+fn or_none<'de, D: serde::Deserializer<'de>, T: DeserializeOwned>(
+    said: D,
+) -> Result<Option<T>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(said)?
+        .and_then(|field| serde_json::from_value(field).ok()))
 }
 
 /// Where a node keeps its placements: a folder of `<date>.jsonl` files,
@@ -115,6 +156,7 @@ pub(crate) fn let_go_before(folder: &Path, day: jiff::civil::Date) {
 mod tests {
     use super::*;
     use crate::placement::{Judgement, Placement};
+    use serde_json::json;
 
     fn record(machine: &str) -> Record {
         Record {
@@ -132,6 +174,7 @@ mod tests {
             loads: Loads::new(),
             refused: Vec::new(),
             fence: None,
+            screen: None,
             decision: Decision {
                 placement: Placement::Placed {
                     machine: machine.to_owned(),
@@ -220,23 +263,51 @@ mod tests {
     }
 
     #[test]
-    fn a_record_says_the_askers_fence_only_where_the_asker_was_fenced() {
+    fn a_record_says_the_askers_fence_and_screen_only_where_the_asker_was_fenced() {
+        use crate::declared::Kind;
+
         let person = serde_json::to_value(record("kestrel")).expect("a record");
         assert_eq!(
-            person.get("fence"),
-            None,
-            "the person's says none: {person}"
+            (person.get("fence"), person.get("screen")),
+            (None, None),
+            "the person's says neither: {person}"
         );
-        let kept: Record = serde_json::from_value(person).expect("a record");
-        assert_eq!(kept.fence, None, "and one kept before it was said reads");
+        for (fence, screen, said_as) in [
+            (Kind::Fence, Screen::Held, ("fence", "held")),
+            (Kind::Strict, Screen::Run, ("strict", "run")),
+            (Kind::Fence, Screen::Ground, ("fence", "ground")),
+        ] {
+            let fenced = Record {
+                fence: Some(fence),
+                screen: Some(screen),
+                ..record("kestrel")
+            };
+            let said = serde_json::to_value(&fenced).expect("a record");
+            assert_eq!(
+                (&said["fence"], &said["screen"]),
+                (&json!(said_as.0), &json!(said_as.1))
+            );
+            let kept: Record = serde_json::from_value(said).expect("a record");
+            assert_eq!(kept, fenced, "read back whole");
+        }
 
-        let fenced = Record {
-            fence: Some(crate::declared::Kind::Strict),
-            ..record("kestrel")
-        };
-        let said = serde_json::to_value(&fenced).expect("a record");
-        assert_eq!(said["fence"], "strict", "{said}");
-        let kept: Record = serde_json::from_value(said).expect("a record");
-        assert_eq!(kept, fenced, "read back whole");
+        let mut line = person.clone();
+        line.as_object_mut()
+            .expect("a record is an object")
+            .retain(|field, _| !matches!(field.as_str(), "refused" | "fence" | "screen"));
+        let kept: Record = serde_json::from_value(line.clone()).expect("a record");
+        assert_eq!(
+            (kept.fence, kept.screen),
+            (None, None),
+            "a line kept before either was said reads as neither"
+        );
+        line["fence"] = json!("porous");
+        line["screen"] = json!({"later": true});
+        let kept: Record = serde_json::from_value(line).expect("the rest still reads");
+        assert_eq!(
+            (kept.fence, kept.screen, kept.work),
+            (None, None, record("kestrel").work),
+            "a fence or screen this build doesn't know spoils only itself"
+        );
     }
 }

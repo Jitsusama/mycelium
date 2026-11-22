@@ -43,7 +43,7 @@ use crate::offer::{self, Offer};
 use crate::own_health;
 use crate::place;
 use crate::placement::{self, DeclaredFence, Miss, Need, Placement, Work};
-use crate::placements;
+use crate::placements::{self, Screen};
 use crate::receptor;
 use crate::record::{Intent, Message, Session, State as SessionState};
 use crate::room;
@@ -3332,6 +3332,9 @@ impl<S: Store> Shared<S> {
         let Some(log) = &self.placements else {
             return decision.placement;
         };
+        // Every caller raises an agent to at least a fence, so the record
+        // says only the fences it documents, whatever a later one passes.
+        let fence = fence.filter(|kind| *kind != crate::declared::Kind::None);
         let record = placements::Record {
             at: now.to_string(),
             start,
@@ -3340,6 +3343,7 @@ impl<S: Store> Shared<S> {
             loads,
             refused,
             fence,
+            screen: fence.map(|_| screen),
             decision,
         };
         let day = now.to_zoned(jiff::tz::TimeZone::system()).date();
@@ -6719,19 +6723,6 @@ fn held_screen(fence: Option<crate::declared::Kind>) -> Screen {
     } else {
         Screen::Ground
     }
-}
-
-/// What placement holds an agent's work to, beside ground as firm as
-/// where it asks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Screen {
-    /// Firm ground alone.
-    Ground,
-    /// An agent's run: only where its fence runs a command.
-    Run,
-    /// An agent's held start: where its fence runs a command, and on no
-    /// Mac, whose holder would start it outside any fence.
-    Held,
 }
 
 /// Why `machine` refused the work with the refusal `key`, where it did.
@@ -17684,9 +17675,10 @@ esac
         );
         assert_eq!(record.decision.judged.len(), 1, "and how it judged each");
         assert_eq!(
-            record.fence,
-            Some(crate::declared::Kind::Strict),
-            "and the fence it judged the asker in, strict where nothing of it can be read"
+            (record.fence, record.screen),
+            (Some(crate::declared::Kind::Strict), Some(Screen::Run)),
+            "and the fence it judged the asker in, strict where nothing of it can be read, \
+             with the run's screen an ask where is placed through"
         );
         stop.send(()).expect("the node is still running");
         node.await
@@ -17793,6 +17785,12 @@ esac
                 .collect::<Vec<_>>(),
             [0, 0, 1, 1],
             "each placement after the start weighs it, and nothing else adds to it"
+        );
+        assert!(
+            records
+                .iter()
+                .all(|one| one.fence.is_none() && one.screen.is_none()),
+            "the person's work is placed unfenced, so its records say neither"
         );
         stop.send(()).expect("the node is still running");
         node.await

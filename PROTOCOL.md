@@ -1738,10 +1738,14 @@ work was placed and a replay can place it again under other weights:
 here), the `work`, every machine's facts as placing read them
 (`machines`), each machine's `loads` (`sessions` and `placed` starts
 beyond what its room says), the machines `refused` before they were
-judged and why, left out where none was, the `fence` the node judged
-the asker to run in (`"fence"` or `"strict"`), left out for the person
-and in a record kept before it was said, and the `decision`: the
-`placement`
+judged and why, left out where none was, the `fence` placement held
+the asker's work to as the node judged the asker (`"fence"` or
+`"strict"`) with the `screen` it was placed through (`"ground"`,
+`"run"`, or `"held"`, which no Mac takes), both left out where it was
+placed unfenced, as the person's work is and a start relayed here,
+whose asker the asking machine judged; one this build doesn't know
+reads as none, sparing the rest of the record; and the `decision`:
+the `placement`
 answered and, for each machine, how it was `judged` (`machine`,
 `qualifies`, `over`, `unheard`, how many preferences it met as
 `preferred`, its `headroom`, and its `chance` of being the one chosen,

@@ -396,6 +396,7 @@ mod tests {
             loads: Loads::new(),
             refused: Vec::new(),
             fence: None,
+            screen: None,
             decision: Decision {
                 placement: Placement::Placed {
                     machine: chosen.to_owned(),

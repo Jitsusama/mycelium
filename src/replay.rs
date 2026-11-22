@@ -203,6 +203,7 @@ mod tests {
             loads,
             refused: Vec::new(),
             fence: None,
+            screen: None,
             decision,
         }
     }
@@ -290,7 +291,9 @@ mod tests {
             machines,
             loads,
             refused: Vec::new(),
-            fence: None,
+            // A fenced asker's, so a rewrite dropping either says so.
+            fence: Some(crate::declared::Kind::Strict),
+            screen: Some(crate::placements::Screen::Held),
             decision,
         };
         let said = serde_json::to_value(&record).expect("a record");
