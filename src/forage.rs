@@ -2948,9 +2948,11 @@ mod tests {
     fn a_wide_kind_or_stage_keeps_the_titles_in_line() {
         let mut cell = forage("KESTRL", "kestrel", "QEST-1");
         cell["documents"] = json!([
-            {"kind": "調査", "title": "Hover", "stage": "build", "ticked": 2, "open": 2},
-            {"kind": "plan", "title": "Wind", "stage": "計画", "ticked": 1, "open": 1},
+            {"kind": "調査", "title": "Hover", "stage": "計画", "ticked": 2, "open": 2},
+            {"kind": "plan", "title": "Wind", "stage": "build", "ticked": 1, "open": 1},
         ]);
+        // Both wide fields share a row, so a miscount in one can't be
+        // made up by the other's in the next row.
         let drawn = draw(&[cell], None, 80);
         // Measured by Unicode's widths directly, not by the code under
         // test, as nothing here is coloured.
