@@ -1926,6 +1926,18 @@ fn processes_here(unattended: bool) -> node::Processes {
     }
 }
 
+/// How the node eases its machine, kept under `state`, if it `eases` at
+/// all: whether it `carries`, and where it asks the harness to park the
+/// sessions it `sleeps`.
+fn eases_given(eases: bool, carries: bool, sleeps: Option<PathBuf>, state: &Path) -> Option<Eases> {
+    eases.then(|| Eases {
+        folder: state.join("eases"),
+        every: carry::easing::EVERY,
+        carries,
+        sleeps,
+    })
+}
+
 /// Runs this machine's node on `socket`, as `node` says, until it is asked
 /// to stop.
 fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
@@ -2001,12 +2013,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         placements: Some(mycelium::placements::Log::at(state.join("placements"))),
         health: node.health_socket,
         scratch,
-        eases: node.eases.then(|| Eases {
-            folder: state.join("eases"),
-            every: carry::easing::EVERY,
-            carries: node.eases_carry,
-            sleeps: node.eases_sleep,
-        }),
+        eases: eases_given(node.eases, node.eases_carry, node.eases_sleep, &state),
         settles: Some(Settles {
             kept: state.join("settles.jsonl"),
             program: carry::PI_CARRY.into(),
