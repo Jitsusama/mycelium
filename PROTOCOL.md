@@ -1057,12 +1057,12 @@ names too (a session it doesn't know of can't be told apart),
 none whose id names more than letters, digits, dashes and
 underscores, and none that neither a holder nor a host keeps, since
 that is what would wake it. Nor does it replace a file of a session's
-name that isn't an ask (a link, a folder, a pipe or another's file),
-nor take one back, and never waits on a pipe; such a session is
-refused for good. One there as it looks is caught, not one made while
-it writes. It takes back what it asked
-once its machine's readings have said for five minutes that it isn't
-over while another machine has room, so too once none has room,
+name that isn't an ask (a link, a folder, a pipe, a socket or
+another's file), nor take one back, and opens none but a plain file;
+such a session is refused for good. One there as it looks is caught,
+not one made while it writes. It takes back what it asked once its
+machine's readings have said for five minutes that it isn't over
+while another machine has room, so too once none has room,
 though a sleep ends the run at the first reading that says so, and as
 its easing task ends; and as it starts, every file in the folder that
 reads as an ask or a half-written one, since what made an earlier

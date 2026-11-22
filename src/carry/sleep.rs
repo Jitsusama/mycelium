@@ -190,16 +190,24 @@ enum Found {
     Gone,
     /// An ask this node writes.
     Ask,
-    /// Something else: a link, a folder, a pipe, or a file saying more.
+    /// Something else: a link, a folder, a pipe, a socket, a device, or
+    /// a file saying more.
     Other,
     /// What can't be told, since it couldn't be opened or read.
     Unread(io::Error),
 }
 
-/// What is at `path`, never followed if a link and never waited on if a
-/// pipe: an ask if a file this node writes, a line saying `at` and `why`
-/// and nothing else, or, `writing` one, nothing yet.
+/// What is at `path`, looked at before it is opened, so that only a
+/// plain file is, and never followed if a link or waited on if a pipe put
+/// there since: an ask if a file this node writes, a line saying `at` and
+/// `why` and nothing else, or, `writing` one, nothing yet.
 fn found(path: &Path, writing: bool) -> Found {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Found::Other,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Found::Gone,
+        Err(error) => return Found::Unread(error),
+    }
     let file = match rustix::fs::open(
         path,
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
@@ -298,11 +306,19 @@ pub fn withdraw_all(folder: &Path) -> io::Result<(usize, BTreeSet<String>)> {
     let mut left = BTreeSet::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !written_here(&name)
-            || !entry.file_type().is_ok_and(|kind| kind.is_file())
-            || !matches!(found(&entry.path(), name.starts_with('.')), Found::Ask)
-        {
+        if !written_here(&name) || !entry.file_type().is_ok_and(|kind| kind.is_file()) {
             continue;
+        }
+        match found(&entry.path(), name.starts_with('.')) {
+            Found::Ask => {}
+            Found::Gone | Found::Other => continue,
+            // An ask can't be told from what can't be read, so it is
+            // kept to try again, as a later look does; one being
+            // written is read then as no longer being written.
+            Found::Unread(_) => {
+                left.insert(name);
+                continue;
+            }
         }
         match fs::remove_file(entry.path()) {
             Ok(()) => taken += 1,
@@ -631,6 +647,11 @@ mod tests {
         if fs::File::open(&named).is_err() {
             let ids = BTreeSet::from(["s1-own".to_owned()]);
             assert_eq!(withdraw(&folder, &ids), ids, "kept to take back later");
+            assert_eq!(
+                withdraw_all(&folder).expect("swept"),
+                (0, ids),
+                "a start sweep keeps it too"
+            );
             assert!(named.exists(), "and left until it can be read");
         }
         fs::set_permissions(&named, fs::Permissions::from_mode(0o600)).expect("readable");
@@ -657,6 +678,18 @@ mod tests {
                 .is_fifo(),
             "nor taken"
         );
+
+        let socket = std::os::unix::net::UnixListener::bind(folder.join("s3-own"))
+            .expect("a socket at the name");
+        assert_eq!(
+            ask(&folder, "s3-own", at, "over")
+                .expect_err("a socket isn't an ask")
+                .kind(),
+            io::ErrorKind::AlreadyExists,
+            "refused for good"
+        );
+        assert!(withdraw(&folder, &BTreeSet::from(["s3-own".to_owned()])).is_empty());
+        drop(socket);
     }
 
     #[test]
