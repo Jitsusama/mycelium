@@ -2264,16 +2264,24 @@ again makes its quest once. The id is a hint, never proof: any agent
 on the account can read a live sprout's id in its holder's `command`
 and start pi with it, so a harness that finds its quest by the id
 gives that session nothing an agent couldn't take with the quest
-tool, and must grant nothing on the id alone. `from` is the
+tool, and must grant nothing on the id alone. The same holds the
+other way: an agent that reads the id before the session makes its
+quest can make one under it first, which the session then takes up. `from` is the
 asker's word, tied as said with no model in between: the same trust
 the first words give it, naming a cell the asker could name there.
 The seed, its id with it, is left out where the link or words run
 past 4000 UTF-16 units, the most a session reads, and the first words
 alone stand, so a session of it started again can't tell it made its
 quest. Where a seed is sent, a `from` that isn't an address is left
-out of it and tied by the first words alone. The node's log says what
-was left out once the session has started, naming the sprout by its
-id and machine, and says nothing for a start refused. That address
+out of it, so a harness making the quest from the seed leaves the
+quest untied to that cell. What was left out is said once the session
+has started, naming the sprout by its id and machine: in the log of
+the node asked, or by `mycelium sprout` on its error stream where a
+node from before `"Sprout"` is asked, since that node knows nothing
+of it. Nothing is said for a start refused, nor for one whose answer
+was lost on its way back from another machine, though it may have
+started there; one that started is said even where its guard then
+ends it for beginning in home. That address
 and that length are what the node sends, never a guarantee: any agent
 starting pi can set the variable itself, so a harness checks every
 field again and treats it as a seed. Where a harness reads it, the

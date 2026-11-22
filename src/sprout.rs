@@ -328,8 +328,8 @@ pub struct Seeded {
 
 /// The seed a sprouted session makes its quest from, as JSON: its
 /// version, the link or the words, the cell it came from, only where
-/// that's an address, since a quest's id ties through the first words
-/// alone, and the sprout's own `id`, which its harness makes the quest
+/// that's an address, since a harness ties by address alone and a
+/// quest's id it leaves untied, and the sprout's own `id`, which its harness makes the quest
 /// once by, so the same sprout started again makes no second. Nothing
 /// where it says nothing or runs past [`SEED_MOST`], the id going with
 /// it. It is an agent's word, as the link and words are: the session
@@ -365,8 +365,8 @@ pub fn seeded(seed: &Seed, from: Option<&str>, id: &str) -> Seeded {
             data.insert("from".to_owned(), from.into());
         }
         Some(from) => left_out.push(format!(
-            "its seed leaves out the cell it came from: {from:?} isn't an address, so its \
-             first words alone tie the quest to it"
+            "its seed leaves out the cell it came from: {from:?} isn't an address, so a \
+             harness making the quest from the seed leaves it untied to that cell"
         )),
         None => {}
     }
@@ -396,7 +396,10 @@ pub struct Sprouted {
 
 /// What the node logs of what a sprout's seed left out, given what its
 /// start answered: all of it once a session started, and nothing where
-/// none did, since then no quest is made at all.
+/// none did, since then no quest is made at all. A start whose answer
+/// was lost on its way back from another machine counts as none, though
+/// it may have started there, and one that started counts even where
+/// its guard then ends it for beginning in home, which no answer says.
 #[must_use]
 pub fn told<'a>(left_out: &'a [String], reply: &Reply) -> &'a [String] {
     if matches!(reply, Ok(Response::Started(_))) {
@@ -1002,7 +1005,7 @@ mod tests {
     #[test]
     fn the_seed_names_where_it_came_from_only_by_address() {
         // A quest's id is a cell to tie to, but not an address, so the
-        // first words tie it and the seed leaves it out.
+        // seed leaves it out, and a harness reading the seed ties none.
         for not in ["QEST-20261116-42P0R4", &"A".repeat(33)] {
             assert_eq!(
                 seed_read(&words("make tea"), Some(not)),
@@ -1013,7 +1016,7 @@ mod tests {
                 seeded(&words("make tea"), Some(not), ID).left_out,
                 [format!(
                     "its seed leaves out the cell it came from: {not:?} isn't an address, so \
-                     its first words alone tie the quest to it"
+                     a harness making the quest from the seed leaves it untied to that cell"
                 )],
                 "the node's log says so"
             );
@@ -1099,13 +1102,34 @@ mod tests {
                 let kept = data.map(|data| {
                     serde_json::from_str::<serde_json::Value>(&data).expect("it's JSON")
                 });
-                let kept_all = kept.as_ref().is_some_and(|kept| {
-                    kept["id"] == ID && from.is_none_or(|from| kept["from"] == from)
-                });
+                let (key, said) = seed.said();
+                let mut whole = serde_json::Map::new();
+                whole.insert("v".to_owned(), 1.into());
+                whole.insert(key.to_owned(), said.into());
+                if let Some(from) = from {
+                    whole.insert("from".to_owned(), from.into());
+                }
+                whole.insert("id".to_owned(), ID.into());
+                let kept_all = kept == Some(serde_json::Value::Object(whole));
                 assert_eq!(
                     left_out.is_empty(),
                     kept_all,
                     "{from:?} {kept:?} {left_out:?}"
+                );
+                let long_said = left_out
+                    .iter()
+                    .any(|line| line.starts_with("its seed is left out"));
+                let from_said = left_out
+                    .iter()
+                    .any(|line| line.starts_with("its seed leaves out the cell"));
+                assert_eq!(
+                    (long_said, from_said),
+                    (
+                        too_long(said),
+                        !too_long(said)
+                            && from.is_some_and(|from| !crate::forage::is_address(from))
+                    ),
+                    "each line says its own reason: {from:?} {left_out:?}"
                 );
             }
         }
