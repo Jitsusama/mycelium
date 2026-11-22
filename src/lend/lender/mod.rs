@@ -171,25 +171,31 @@ impl Lender {
     }
 
     /// A lender reading `file`, sealed by `declarers`, keeping its counts
-    /// and cuts in this machine's [`folder`] and finding an upstream
+    /// and cuts in this machine's [`folder`], whatever the node's `--state`
+    /// says, since `mycelium lend cut` asks no node and reads that folder
+    /// too; and finding an upstream
     /// within the login's runtime folder.
     #[must_use]
     pub fn from_file(file: PathBuf, declarers: Vec<u32>) -> Self {
         Self::new(file, declarers, folder(), crate::place::login_runtime())
     }
 
-    /// What may be lent, as the file says now.
+    /// What may be lent, as the file says now. Why it isn't taken goes to
+    /// this machine's log alone: a parse error quotes what it couldn't
+    /// read, which may be a key pasted in the wrong place, and the asker
+    /// is another machine's agent.
     fn written(&self) -> Result<Written, Refusal> {
         crate::declared::sealed(&self.file, &self.declarers)
             .and_then(|()| fs::read(&self.file).map_err(|error| error.to_string()))
             .and_then(|text| serde_json::from_slice(&text).map_err(|error| error.to_string()))
             .map_err(|why| {
+                eprintln!(
+                    "mycelium: this machine's lend, {}, isn't taken: {why}",
+                    self.file.display()
+                );
                 refused(
                     503,
-                    format!(
-                        "this machine's lend, {}, isn't taken: {why}",
-                        self.file.display()
-                    ),
+                    "this machine's lend isn't taken; its node's log says why".to_owned(),
                 )
             })
     }

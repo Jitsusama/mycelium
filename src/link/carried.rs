@@ -37,8 +37,11 @@ use crate::wire::{Reply, Request, Response, Start};
 const ASKED_AGAIN_AFTER: Duration = Duration::from_secs(5);
 
 /// How many pieces of a lend's answer the node holds for a reader that
-/// has stopped taking them, before it lets the lend go.
-const STALLED_AFTER: usize = 64;
+/// has stopped taking them, before it lets the lend go. A streamed answer
+/// comes in many small pieces, a few bytes each, so a reader busy for a
+/// moment must not count as one that stopped: at most 16 KiB each, these
+/// hold 16 MiB at the very most.
+const STALLED_AFTER: usize = 1024;
 
 /// Something the node asks of the other machine, as it crosses the socket.
 #[derive(Debug, Serialize, Deserialize)]
@@ -331,6 +334,21 @@ async fn carry(node: &Path, machine: &str, asks: &mpsc::UnboundedSender<Ask>) ->
         Ok(Err(why)) => return Err(io::Error::other(why)),
         _ => return Err(io::Error::other(format!("the node answered {first}"))),
     }
+    // The node's lines are read apart from this end's writing, so a write
+    // the node is slow to take never stops what the node writes being
+    // read: a lend handed over while another's pieces stream back would
+    // otherwise leave both ends writing to a full socket, for ever.
+    let (heard, mut hearing) = mpsc::unbounded_channel();
+    let mut listening = JoinSet::new();
+    listening.spawn(async move {
+        loop {
+            let line = lines.next_line().await;
+            let ended = !matches!(line, Ok(Some(_)));
+            if heard.send(line).is_err() || ended {
+                return;
+            }
+        }
+    });
     let mut answering = JoinSet::new();
     // Each lend's reading, which ends as the node hangs up.
     let mut reading = JoinSet::new();
@@ -338,8 +356,8 @@ async fn carry(node: &Path, machine: &str, asks: &mpsc::UnboundedSender<Ask>) ->
     let (lending, mut pieces) = mpsc::channel(BACKLOG);
     loop {
         tokio::select! {
-            line = lines.next_line() => {
-                let Some(line) = line? else { return Ok(()) };
+            line = hearing.recv() => {
+                let Some(Some(line)) = line.transpose()? else { return Ok(()) };
                 let said = serde_json::from_str(&line)
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
                 let Handed { ask, asked } = match said {

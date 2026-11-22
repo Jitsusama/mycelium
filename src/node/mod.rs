@@ -6313,7 +6313,9 @@ async fn hand_on_lend<S: Store>(
         tokio::select! {
             said = answers.recv() => {
                 let said = said.unwrap_or_else(|| {
-                    refused(502, format!("the lend from {lender} ended without saying how"))
+                    // The link went before the lend ended, which a retry
+                    // may get past, as one no link reaches.
+                    refused(503, format!("the link to {lender} ended before its lend did"))
                 });
                 let ends = matches!(said, Lent::Done | Lent::Refused { .. });
                 if write(&mut writing, &said).await.is_err() || ends {

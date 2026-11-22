@@ -2137,15 +2137,16 @@ link alone, and the node writes each `Lent` it answers as a line:
 then `"Done"`; or `{"Refused": {"status", "why"}}`, before the head or
 after it, which ends it. A node named no lender refuses every lend 403,
 so a lender's own node hands none on, and one whose lender no link
-reaches now refuses it 503. A client that hangs up lets the lend go.
+reaches now refuses it 503, as it ends one whose link ends first. A
+client that hangs up lets the lend go.
 
 Where the lender dialled this machine, as a maker dials its workers,
 the link runs apart from the node, and the lend crosses the `"Carry"`
 connection to it: the node hands it as `{"ask", "asked": {"Lend":
 lend}}`, and the link answers `{"ask", "reply"}` once it is asked, then
 `{"ask", "lent"}` a line a piece. The node never waits on a lend's
-reader: it holds at most 64 pieces for one that has stopped taking
-them, and past that, or once the reader hangs up, it writes
+reader: it holds at most 1024 pieces, 16 MiB at most, for one that
+has stopped taking them, and past that, or once the reader hangs up, it writes
 `{"unlend": ask}`, the link lets the lend go, and what was handed on
 ends short.
 
@@ -2168,7 +2169,8 @@ and the connection carries the next request. A refusal after it, or a
 node that stops answering, ends the connection short of the last
 chunk, so pi reads the answer as failed. A pi that hangs up hangs up on
 the node. It holds no key and asks for none, and never answers 421,
-which pi reads as a relay sending it straight to the proxy.
+which pi reads as a relay sending it straight to the proxy: an
+upstream's 421 is answered 502.
 
 The lending machine's node is started with `--lend FILE`, a file
 sealed as `declared.json` is, read again at every lend:
@@ -2181,13 +2183,15 @@ budget asked that isn't the machine's, a method but `POST` or `GET`,
 or a path not at or below one of `paths`, or holding `.`, `..` or `%`;
 400 for a header or body that can't be read, 413 for a body past
 32 MiB, and 429 once the machine has made its `requests_a_day` that
-day, by UTC, counted in `counts-DAY.json` in the node's state folder's
-`lend/`. One that passes goes to `upstream`, a socket's path, or
+day, by UTC, counted in `counts-DAY.json` in `lend/` under the
+account's state folder, whatever the node's `--state`, since `mycelium
+lend cut` asks no node. One that passes goes to `upstream`, a socket's path, or
 where relative one in the account's runtime folder, for `host`, with
 only the headers the shim hands on and `key`'s command's output in
 `auth_header`, where a key is named: the borrower's own credentials
 never leave it, and the key never crosses to it. A lend file that
-can't be read or an upstream not answering is 503, and a key that
+can't be read, which says why only in the lender's log, or an
+upstream not answering is 503, and a key that
 can't be had is 502. `mycelium lend cut MACHINE`, or `--all`, cuts a
 machine off at once, kept in `lend/cuts.json`: each lend it asks is
 refused, and each being answered ends short within a second, until

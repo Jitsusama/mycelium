@@ -434,6 +434,21 @@ async fn a_lend_file_that_cant_be_read_lends_nothing() {
     fs::write(lending.folder.path().join("lend.json"), "{\"vms\": []").expect("broken");
     let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
     assert_eq!(refusal(&mut answers).await, 503);
+    // A key pasted where the file can't be read is quoted by the parser,
+    // which the borrower never hears.
+    fs::write(
+        lending.folder.path().join("lend.json"),
+        "{\"vms\": sk-pasted-key}",
+    )
+    .expect("broken");
+    let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
+    match next(&mut answers).await {
+        Some(Lent::Refused { status: 503, why }) => {
+            assert!(!why.contains("sk-pasted"), "{why}");
+            assert!(!why.contains("lend.json"), "nor where it is: {why}");
+        }
+        other => panic!("the lend is refused, not {other:?}"),
+    }
 }
 
 #[tokio::test]

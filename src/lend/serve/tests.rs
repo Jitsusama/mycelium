@@ -234,6 +234,37 @@ async fn a_stream_arrives_in_order_as_it_comes() {
 }
 
 #[tokio::test]
+async fn an_answer_with_no_body_ends_at_its_head_and_a_421_is_never_handed_on() {
+    let folder = tempfile::tempdir().expect("a folder");
+    let mut node = Node::at(folder.path());
+    let path = shim(folder.path(), &node, None);
+    let mut pi = UnixStream::connect(&path)
+        .await
+        .expect("pi reaches the shim");
+    let mut heard = Vec::new();
+    for (status, ends) in [
+        (204, "content-length: 0\r\n\r\n"),
+        (421, "transfer-encoding: chunked\r\n\r\n0\r\n\r\n"),
+    ] {
+        pi.write_all(turn("{}").as_bytes()).await.expect("pi asks");
+        let (_, answer, _) = node.asked().await;
+        let send = |lent| answer.send(lent).expect("the fake node answers");
+        send(Lent::Head {
+            status,
+            headers: vec![],
+        });
+        send(Lent::Done);
+        until(&mut pi, &mut heard, ends).await;
+    }
+    let heard = String::from_utf8_lossy(&heard);
+    assert!(heard.starts_with("HTTP/1.1 204 "), "{heard}");
+    assert!(
+        heard.contains("content-length: 0\r\n\r\nHTTP/1.1 502 "),
+        "no chunks end a bodiless answer, and a 421 is said as 502: {heard}"
+    );
+}
+
+#[tokio::test]
 async fn a_client_that_hangs_up_hangs_up_on_the_node() {
     let folder = tempfile::tempdir().expect("a folder");
     let mut node = Node::at(folder.path());

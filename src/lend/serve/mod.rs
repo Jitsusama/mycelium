@@ -307,7 +307,8 @@ async fn chunks<R: AsyncBufRead + Unpin>(reading: &mut R) -> Result<Vec<u8>, Ref
                 }
             }
         }
-        if body.len() + size > MOST_BODY {
+        // Never past MOST_BODY, so this can't overflow as a sum might.
+        if size > MOST_BODY - body.len() {
             return Err(too_long());
         }
         let start = body.len();
@@ -334,7 +335,7 @@ async fn chunks<R: AsyncBufRead + Unpin>(reading: &mut R) -> Result<Vec<u8>, Ref
 async fn lent<R, W>(
     node: &Path,
     lend: Lend,
-    bodiless: bool,
+    mut bodiless: bool,
     reading: &mut R,
     writing: &mut W,
 ) -> bool
@@ -372,6 +373,12 @@ where
         let written = match (heard, began) {
             (Ok(Lent::Head { status, headers }), false) => {
                 began = true;
+                // These have no body, whatever the request, so no chunks
+                // end one: the head says a length of none.
+                bodiless |= matches!(status, 100..=199 | 204 | 304);
+                // Pi reads a 421 from its relay as leave to go straight
+                // to the proxy, which a borrower can't.
+                let status = if status == 421 { 502 } else { status };
                 head(writing, status, &headers, bodiless).await
             }
             (Ok(Lent::Body(_)), true) if bodiless => Ok(()),
