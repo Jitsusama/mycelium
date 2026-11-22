@@ -149,6 +149,39 @@ impl Socket {
     }
 }
 
+/// How long the node stops taking clients after one couldn't be taken
+/// for a want that passes, so a full table of files isn't asked again at
+/// once while the clients already served let theirs go.
+const ACCEPT_REST: Duration = Duration::from_millis(250);
+
+/// Whether a client that couldn't be taken leaves the socket able to take
+/// the next: the process or the system out of files, buffers or memory, or
+/// a client that left before it was taken. Each passes as clients end, so
+/// the node rests and carries on rather than ending every link it holds.
+fn accept_passes(error: &io::Error) -> bool {
+    use rustix::io::Errno;
+    matches!(
+        Errno::from_io_error(error),
+        Some(
+            Errno::MFILE
+                | Errno::NFILE
+                | Errno::NOBUFS
+                | Errno::NOMEM
+                | Errno::CONNABORTED
+                | Errno::INTR
+        )
+    )
+}
+
+/// Until a rest after a client that couldn't be taken ends; never, while
+/// the node isn't resting.
+async fn rested(rest: &mut Option<std::pin::Pin<Box<tokio::time::Sleep>>>) {
+    match rest {
+        Some(sleep) => sleep.await,
+        None => std::future::pending().await,
+    }
+}
+
 impl Drop for Socket {
     fn drop(&mut self) {
         // The socket is the node's alone, made at bind; if it's already
@@ -683,15 +716,21 @@ where
     // than with the next minute's measure.
     let mut health = shared.health.subscribe();
     tokio::pin!(stop);
+    let mut resting = None;
     let result = loop {
         tokio::select! {
             () = &mut stop => break Ok(()),
-            accepted = socket.accept() => match accepted {
+            accepted = socket.accept(), if resting.is_none() => match accepted {
                 Ok(stream) => {
                     tokio::spawn(serve(stream, shared.clone()));
                 }
+                Err(error) if accept_passes(&error) => {
+                    eprintln!("a client couldn't be taken, so the node rests before taking more: {error}");
+                    resting = Some(Box::pin(tokio::time::sleep(ACCEPT_REST)));
+                }
                 Err(error) => break Err(error),
             },
+            () = rested(&mut resting) => resting = None,
             Some(dial) = found.recv() => {
                 let dial = Arc::new(dial);
                 let carries = (sharing.clone(), shared.starting(&dial, &socket.path), refusals.clone());
@@ -718,24 +757,14 @@ where
             // nothing, so what is held is looked at each minute too.
             _ = leaving.tick() => power = shared.each_minute(&mut awake),
             () = changed(&mut quests_told) => shared.said.ended_moved(),
-            change = changes.changes.recv() => match change {
-                Some(Change::Message(id)) => shared.read_message(&id),
-                Some(Change::Presence) => {
-                    shared.read_sessions();
-                    // A session seen arriving where it was carried may
-                    // let the trees it left here go.
-                    shared.settle_moved();
-                    // A held session going idle, or busy, may let it sleep.
-                    shared.keep_awake(&mut awake, power.as_ref());
+            gathered = changes.gathered() => {
+                let Some(gathered) = gathered else {
+                    break Err(io::Error::other("the store stopped telling its changes"));
+                };
+                for change in gathered {
+                    shared.changed(change, &mut awake, power.as_ref());
                 }
-                Some(Change::Rescan) => {
-                    shared.read_store();
-                    shared.said.machines_moved();
-                }
-                Some(Change::Machine(_)) => shared.said.machines_moved(),
-                Some(Change::Carries(_)) => shared.said.sessions_moved(),
-                None => break Err(io::Error::other("the store stopped telling its changes")),
-            },
+            }
         }
     };
     // A link stopped mid-step can't say its sessions are out of reach, so
@@ -3262,6 +3291,28 @@ impl<S: Store> Shared<S> {
     /// Keeps this machine awake while what it holds is at work and it has
     /// the charge, as `power` last read, and lets it sleep once it isn't
     /// or hasn't.
+    /// Takes in one change the store told, keeping `awake` as a session
+    /// coming or going moves it.
+    fn changed(&self, change: Change, awake: &mut Awake, power: Option<&facts::Power>) {
+        match change {
+            Change::Message(id) => self.read_message(&id),
+            Change::Presence => {
+                self.read_sessions();
+                // A session seen arriving where it was carried may let the
+                // trees it left here go.
+                self.settle_moved();
+                // A held session going idle, or busy, may let it sleep.
+                self.keep_awake(awake, power);
+            }
+            Change::Rescan => {
+                self.read_store();
+                self.said.machines_moved();
+            }
+            Change::Machine(_) => self.said.machines_moved(),
+            Change::Carries(_) => self.said.sessions_moved(),
+        }
+    }
+
     fn keep_awake(&self, awake: &mut Awake, power: Option<&facts::Power>) {
         let held = hold::held(&self.held);
         let sessions = self.lock().state.sessions();
@@ -7427,6 +7478,28 @@ mod tests {
             ),
         );
         (holder, given)
+    }
+
+    /// A node out of files, buffers or memory, or left by a client before
+    /// taking it, rests and takes the next; one whose socket broke ends.
+    #[test]
+    fn only_a_broken_socket_ends_the_node() {
+        use rustix::io::Errno;
+        let error = |errno: Errno| io::Error::from_raw_os_error(errno.raw_os_error());
+        for passing in [
+            Errno::MFILE,
+            Errno::NFILE,
+            Errno::NOBUFS,
+            Errno::NOMEM,
+            Errno::CONNABORTED,
+            Errno::INTR,
+        ] {
+            assert!(accept_passes(&error(passing)), "{passing:?} passes");
+        }
+        for ending in [Errno::BADF, Errno::INVAL, Errno::NOTSOCK] {
+            assert!(!accept_passes(&error(ending)), "{ending:?} ends the node");
+        }
+        assert!(!accept_passes(&io::Error::other("not the system's")));
     }
 
     /// Holds session `0e50` on kestrel, whose store is `store`, as its

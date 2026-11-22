@@ -416,8 +416,8 @@ pub async fn run(
             Some(found) = learned.recv() => end.learned(found, &mut writing).await,
             _ = looking.tick() => end.look(&mut writing).await,
             () = own_health::moved(&mut end.health.told) => end.send_machine(&mut writing).await,
-            change = changes.changes.recv() => match change {
-                Some(change) => end.changed(change, &mut writing).await,
+            gathered = changes.gathered() => match gathered {
+                Some(gathered) => end.changed_all(gathered, &mut writing).await,
                 None => break Ok(Ending::Left),
             },
         };
@@ -957,6 +957,19 @@ impl<S: Store> End<S> {
         self.send_carries(writing).await?;
         self.send_presence(writing).await?;
         self.send_follow(writing).await
+    }
+
+    /// Tells the other end of each of what changed in the store, in turn,
+    /// until one can't be told.
+    async fn changed_all(
+        &mut self,
+        gathered: Vec<Change>,
+        writing: &mut (impl AsyncWrite + Unpin),
+    ) -> io::Result<()> {
+        for change in gathered {
+            self.changed(change, writing).await?;
+        }
+        Ok(())
     }
 
     /// Tells the other end of what changed in the store that is this
