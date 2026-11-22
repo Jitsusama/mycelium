@@ -436,7 +436,7 @@ fn starts_afresh(before: Option<char>, each: char) -> bool {
 /// Whether `each` takes no cell of its own, as a selector, a joiner or a
 /// mark doesn't, so it draws on the character before it.
 fn draws_nothing(each: char) -> bool {
-    !unicode_width::UnicodeWidthChar::width(each).is_some_and(|cells| cells > 0)
+    unicode_width::UnicodeWidthChar::width(each).is_none_or(|cells| cells == 0)
 }
 
 /// Whether a run measured apart before `each` counts at least the cells
