@@ -462,13 +462,13 @@ pub fn choose(
         .filter(|cell| !cell.asleep && cell.stays(here.name).is_none())
         .map(|cell| cell.session.id.clone())
         .collect();
-    let sleeps = short && !sleepy.is_empty();
+    let sleep_first = short && !sleepy.is_empty();
     // Until the readings SETTLE after this spell's first sleep say it is
     // still over, a session waiting sleeps first; after, one waiting
     // anew sleeps only where no carry goes.
     match history.slept_at.filter(|slept| *slept >= since) {
         Some(slept) if now.duration_since(slept) >= SETTLE => {}
-        _ if sleeps => {
+        _ if sleep_first => {
             return Choice::Sleep {
                 sessions: sleepy,
                 why: None,
@@ -484,7 +484,7 @@ pub fn choose(
         _ => {}
     }
     if !carries {
-        if sleeps {
+        if sleep_first {
             return Choice::Sleep {
                 sessions: sleepy,
                 why: None,
@@ -496,7 +496,7 @@ pub fn choose(
             here.name
         ));
     }
-    if !sleeps {
+    if !sleep_first {
         return carry(here, cells, reading, history, now);
     }
     // One waiting anew is never carried before it has slept, as no
