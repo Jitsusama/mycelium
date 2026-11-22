@@ -1025,8 +1025,8 @@ way through is told only once its presence says `"leases":
 run. After a carry it would carry none for half an hour, and it would
 carry at most six in a day. A session moved by anyone stays put for a
 day, by the carries kept here, and nothing goes to a machine a session
-came from within the hour, nor to a Mac but a session shown unfenced
-(see The Socket).
+came from within the hour, nor to a Mac whose node doesn't say
+`fences_held` but a session shown unfenced (see The Socket).
 
 Each choice to sleep or carry, and each change in why it does nothing,
 is a JSON line in the state folder's `eases`, a file each day of at
@@ -1440,6 +1440,13 @@ why, with `path` the folder as it was given and `tools` empty, so a
 node too old to read why still finds no tool there. It is absent where
 the node is given no kit or is too old to say, and absent reads as
 unknown. Both the node a machine dialled and the links it keeps say it.
+
+Its `fences_held` is `true` where its node starts an agent's held
+session through the launcher the session's fence declares there, as a
+Mac's node does, since pi lifts its own fence on a Mac. It is absent
+where the node doesn't, as on Linux, where pi fences itself, or where
+the node is too old to say, which starts one through the login shell
+alone.
 
 A kit is a whole path holding no colon, which the node refuses
 otherwise. Its tools come first for every session and run, an agent's
@@ -2211,11 +2218,19 @@ once every node that may place on it judges so. Only placement is held
 so: an agent's session already held on a Mac wakes there as before,
 outside any fence, until it ends or the Mac boots again. A Mac's
 holder starts a held session outside its fence even where the Mac
-declares `runs`, so an agent's start is refused every machine whose
-facts say `system` `macos` too, missed as `lifts-fence`, `never`, and
-its refusal says so, nor is a Mac made of an offer for one; an agent's
-run there still goes through its launcher. Only an agent shown
-unfenced is let through to a Mac, screened then as a run is: its start
+declares `runs`, unless its node says `fences_held`, so an agent's
+start is refused every machine whose facts say `system` `macos` and
+no `fences_held`, missed as `lifts-fence`, `never`, and its refusal
+says so, nor is a Mac made of an offer for one; an agent's run there
+still goes through its launcher. A Mac whose node says `fences_held`
+is judged as any machine is, and starts an agent's held session
+through the launcher of the fence it was placed in, refusing it where
+that launcher is refused. A node sending a start to another machine
+says that fence as the start's `fence`, raised to it where looser; a
+node taking a start relayed from an end it judges an agent's raises
+its judgement by that `fence`, as any declaration only raises. Only an
+agent shown unfenced is let through to a Mac whose node doesn't say
+`fences_held`, screened then as a run is: its start
 declares nothing strict, every session claiming it says it runs
 unfenced and was never seen stricter, and the kernel shows it so, from
 the asker's own process (no `no_new_privs` the node lacks, and the
@@ -2223,9 +2238,10 @@ node's own mounts) and from each of those sessions, a hosted one's
 record read only from the harness's own state. Anything that can't be
 read refuses, as on a Mac itself, and each start let through is told
 in the node's log with who asked, their quests, what it declared, its
-folder and its program. A carry to a Mac, ordered or made by a node
-easing itself, is refused before any session ends unless the session
-claims and has shown no fence and was never seen stricter, and the
+folder and its program. A carry to a Mac whose node doesn't say
+`fences_held`, ordered or made by a node easing itself, is refused
+before any session ends unless the session claims and has shown no
+fence and was never seen stricter, and the
 Mac's `none` fence is still judged as firm as here. The person's start is
 relayed as theirs, but a machine no person works at, or one where the
 link's end can't be named, judges it an agent's, so there it needs that

@@ -768,6 +768,7 @@ fn bringing_back(peers: &[Machine], kind: Option<Kind>) -> (Vec<Machine>, Vec<St
                 &machine.name,
                 machine.declared.as_ref(),
                 machine.system.as_deref(),
+                machine.fences_held,
                 kind,
             );
             match back {
@@ -838,6 +839,9 @@ pub(super) mod tests {
     /// `cpu`, declaring a session fenced.
     fn machine(name: &str, cpu: f64) -> Machine {
         let mut machine = facts::measure(name, &Sources::nowhere());
+        // Measured on whatever runs the test, so said only where a test
+        // says it.
+        machine.fences_held = false;
         machine.state = Readiness::Ready;
         machine.cpu.cores = Some(16);
         machine.cpu.busy = None;
