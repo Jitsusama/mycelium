@@ -2256,6 +2256,15 @@ impl<S: Store> Shared<S> {
             .filter_map(|presence| {
                 let mut session = session_held(presence, &self.machine, &held)?;
                 session.attach = self.attach(&session);
+                // This node's own book names the starts it was asked, on
+                // this machine or relayed to another; past it, a session
+                // elsewhere is told its starter by its own machine's book,
+                // as the link carried it.
+                let booked = session
+                    .held
+                    .as_deref()
+                    .and_then(|held| self.starts.started_by(&session.machine, held));
+                session.started_by = booked.or(session.started_by.take());
                 Some(session)
             })
             .collect();
@@ -3323,6 +3332,14 @@ impl<S: Store> Shared<S> {
             Request::Machine => Ok(Response::Machine(Box::new(self.measure()))),
             Request::Machines => Ok(Response::Machines(self.machines())),
             Request::Builders => Ok(Response::Builders(self.builders.builders())),
+            Request::StartedBy(held) => Ok(Response::StartedBy(
+                held.into_iter()
+                    .filter_map(|held| {
+                        let by = self.starts.started_by(&self.machine, &held)?;
+                        Some((held, by))
+                    })
+                    .collect(),
+            )),
             Request::Place(_) | Request::PlaceToStart(_) => {
                 Err("a placement is answered by `place_asked`".to_owned())
             }
@@ -6999,6 +7016,11 @@ mod tests {
 
     /// Session `id` once the node at `socket` lists it.
     async fn listed(socket: PathBuf, id: &'static str) -> Session {
+        listed_as(socket, id, |_| true).await
+    }
+
+    /// Session `id` once the node at `socket` lists it as `holds` says.
+    async fn listed_as(socket: PathBuf, id: &'static str, holds: fn(&Session) -> bool) -> Session {
         let listed = tokio::task::spawn_blocking(move || {
             let mut client = Client::connect(&socket).expect("the client connects");
             // Nothing tells a client when the link has carried a session,
@@ -7007,7 +7029,7 @@ mod tests {
                 let Ok(Ok(Response::Sessions(all))) = client.ask(&Request::Sessions) else {
                     panic!("the node lists its sessions");
                 };
-                if let Some(one) = all.into_iter().find(|one| one.id == id) {
+                if let Some(one) = all.into_iter().find(|one| one.id == id && holds(one)) {
                     return one;
                 }
                 std::thread::sleep(Duration::from_millis(10));
@@ -13129,6 +13151,74 @@ esac
             json!(["ended:napper"]),
             "once the quest isn't active, nobody is told its work stopped: {changed}"
         );
+    }
+
+    // KP0L6A for XUBK2E (2026-11-22): a cell's starter, as the book of the
+    // node that started it says, is told on every machine's cell records,
+    // so a map of the realm draws who started whom across machines.
+    #[tokio::test]
+    async fn a_cells_starter_by_its_machines_book_is_told_on_every_machine() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let far_socket = dir.path().join("kestrel").join("work.sock");
+        let near_socket = dir.path().join("skiff").join("work.sock");
+        // Made as the node makes it, open to nobody else, so its socket goes
+        // there.
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir.path().join("kestrel"))
+            .expect("the node's folder");
+        // Kestrel's book says OAR001 asked for the hold SAK9FZ runs in.
+        let started = json!({
+            "at": jiff::Timestamp::now().as_millisecond(), "by": {"Agent": "fence"},
+            "started_by": "OAR001", "machine": "kestrel", "held": "5e551011",
+        });
+        fs::write(
+            far_socket.with_file_name("starts.jsonl"),
+            format!("{started}\n"),
+        )
+        .expect("a book");
+        let far_store = Memory::default();
+        let held = hold_a_session(dir.path(), &far_store);
+        // Kestrel's node reads its holds where its link's end does.
+        std::os::unix::fs::symlink(&held, held_of(&far_socket)).expect("the holds are linked");
+        let _far = alone(&far_store, "kestrel", &far_socket);
+        let dial = Piped {
+            store: far_store,
+            socket: far_socket.clone(),
+            held,
+            proven: false,
+            asks_back: false,
+            shares: None,
+        };
+        let near_store = Memory::default();
+        let _near = node(&near_store, "skiff", vec![dial], None, &near_socket);
+        known_to(&near_store, "kestrel").await;
+        let carried = listed_as(near_socket.clone(), "0e50", |one| one.started_by.is_some()).await;
+        assert_eq!(
+            carried.started_by.as_deref(),
+            Some("OAR001"),
+            "the session carried says the starter kestrel's book holds"
+        );
+
+        for socket in [&far_socket, &near_socket] {
+            let (mut client, _hello) = Speaking::hello(socket).await;
+            client
+                .ask(json!({"id": 2, "ask": "watch", "kind": "cell"}))
+                .await;
+            let cell = tokio::time::timeout(
+                PATIENCE,
+                watched_until(&mut client, "cell:SAK9FZ", |one| {
+                    one["started_by_from"] == "book"
+                }),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("{} says SAK9FZ's starter in time", socket.display()));
+            assert_eq!(
+                cell["started_by"], "OAR001",
+                "each machine's cell record says its starter, from the book: {cell}"
+            );
+        }
     }
 
     #[tokio::test]

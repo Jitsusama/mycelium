@@ -231,6 +231,14 @@ pub fn session(presence: &Presence, here: &str) -> Option<Session> {
             .as_ref()
             .and_then(|_| presence.body.get(HELD_AS)?.as_str())
             .map(str::to_owned),
+        // Its own machine's starts are read from the node's book; a link
+        // writes the starter another machine's book names into its
+        // presence.
+        started_by: presence
+            .elsewhere
+            .as_ref()
+            .and_then(|_| presence.body.get(STARTED_BY_AS)?.as_str())
+            .map(str::to_owned),
         attach: None,
         host: said.hosted["host"].as_str().map(str::to_owned),
         conversation: said.hosted["conversation"].as_str().map(str::to_owned),
@@ -242,6 +250,11 @@ pub fn session(presence: &Presence, here: &str) -> Option<Session> {
 /// The field of a presence carried from another machine that a link writes
 /// the session's held id into, as that machine's holder keeps it.
 pub const HELD_AS: &str = "heldAs";
+
+/// The field of a presence carried from another machine that a link writes
+/// the session's starter into, as that machine's node's book of starts
+/// names it.
+pub const STARTED_BY_AS: &str = "startedByAs";
 
 /// What is held here that holds this machine's session: the holder whose
 /// program is the session's own process, as a session started with
@@ -701,6 +714,32 @@ mod tests {
                 .state,
             State::Unreachable,
             "a session whose machine is out of reach reads as unreachable"
+        );
+    }
+
+    #[test]
+    fn a_starter_a_link_wrote_is_read_only_for_a_session_elsewhere() {
+        let presence = |elsewhere: Option<&str>| Presence {
+            session: "01a1".to_owned(),
+            body: json!({
+                "session": "01a1", "addresses": ["4UHC5Q"], "at": "2026-11-22T06:00:00Z",
+                STARTED_BY_AS: "OAR001",
+            })
+            .into(),
+            elsewhere: elsewhere.map(str::to_owned),
+            lives: true,
+            unreachable_since: None,
+        };
+        let started_by = |elsewhere| {
+            session(&presence(elsewhere), "skiff")
+                .expect("a presence reads")
+                .started_by
+        };
+        assert_eq!(started_by(Some("kestrel")).as_deref(), Some("OAR001"));
+        assert_eq!(
+            started_by(None),
+            None,
+            "a session here says its own, which its node's book names"
         );
     }
 

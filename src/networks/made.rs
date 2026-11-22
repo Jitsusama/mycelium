@@ -235,6 +235,8 @@ fn bare(name: String, is: Is) -> Cell {
         machine: None,
         since: None,
         quest: None,
+        started_by: None,
+        started_by_from: None,
         plan: None,
         cwd: None,
         state: None,
@@ -499,6 +501,21 @@ fn events_of<'a>(session: &'a Value, cell: &'a Cell) -> impl Iterator<Item = Eve
         })
 }
 
+/// The cell that started `session`, by its address, and where that was
+/// read: the book of its machine's node, as its record says, else the
+/// orchestrator its record names, each only where it is an address.
+fn started_by(session: &Value) -> Option<(String, &'static str)> {
+    let address = |field: &str| {
+        session[field]
+            .as_str()
+            .filter(|said| crate::forage::is_address(said))
+            .map(str::to_owned)
+    };
+    address("started_by")
+        .map(|by| (by, "book"))
+        .or_else(|| address("orchestrated_by").map(|by| (by, "presence")))
+}
+
 /// A session record as a cell, or none for one that has ended.
 fn session_cell(session: &Value) -> Option<Cell> {
     let standing = Standing::of_cell(session)?;
@@ -533,6 +550,7 @@ fn session_cell(session: &Value) -> Option<Cell> {
         .map(str::to_owned)
         .collect();
     let title = swarm::title(session).to_owned();
+    let started_by = started_by(session);
     Some(Cell {
         kind: "cell",
         name: text("address")?,
@@ -550,6 +568,8 @@ fn session_cell(session: &Value) -> Option<Cell> {
         machine: text("machine"),
         since: session["id"].as_str().and_then(begun),
         quest: text("quest"),
+        started_by_from: started_by.as_ref().map(|(_, from)| *from),
+        started_by: started_by.map(|(by, _)| by),
         plan: session
             .get("doing")
             .filter(|doing| doing.is_object())

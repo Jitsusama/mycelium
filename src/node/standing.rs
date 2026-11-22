@@ -238,6 +238,7 @@ mod tests {
             events: Vec::new(),
             window: None,
             held: None,
+            started_by: None,
             attach: None,
             host: None,
             conversation: None,

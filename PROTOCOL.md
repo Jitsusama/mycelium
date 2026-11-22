@@ -127,10 +127,16 @@ same code, each line a JSON value:
    from before the machines were linked was never its to hear.
 3. `{"Message": {"id", "body"}}`: a message the other end lacks, first
    for each the Have didn't list, then each new one as it lands.
-4. `{"Presence": {"session", "body", "leases", "held"}}`: a living
-   session of the sending end's machine, again whenever it, its leases
-   or its `held` id change. `held` is the id a holder there keeps it by,
-   which the other end writes into the carried presence as `heldAs`.
+4. `{"Presence": {"session", "body", "leases", "held", "started_by"}}`:
+   a living session of the sending end's machine, again whenever it, its
+   leases, its `held` id or its starter change. `held` is the id a
+   holder there keeps it by, which the other end writes into the carried
+   presence as `heldAs`. `started_by` is the cell that machine's node's
+   book of starts says asked for that hold, which the end asks its node
+   with `{"StartedBy": [held]}` and the other end writes into the
+   presence as `startedByAs`, only where it is an address. Either field
+   a presence says of itself is dropped first, so neither is ever the
+   session's own word. An end older than `started_by` says none.
    `leases` are the mesh's `change` leases it and its hands hold on a
    repository's files, named as `core.nix:flake.nix`, so a session in
    another clone there is told it overlaps; one named by an absolute
@@ -1206,6 +1212,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `"Machine"` | `{"Machine": machine}`, this machine as measured now |
 | `"Machines"` | `{"Machines": [machine]}`, this machine first, then each other |
 | `"Builders"` | `{"Builders": [builder]}`, the builders it sends Nix builds to |
+| `{"StartedBy": [held]}` | `{"StartedBy": {held: address}}`, the starter its book names for each held id here, the rest left out |
 | `"Offers"` | `{"Offers": {"offers", "unanswered"}}`, asked of each provider now |
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
 | `{"PlaceToStart": work}` | `{"Placement": placement}`, as `"Place"` for a start, counted here as one |
@@ -1303,6 +1310,9 @@ holder keeps, as one started with `mycelium holds add -- pi` is, says
 machine. It is
 known by the holder's program being the session's own process, which
 only its own machine sees, so a link carries it with the presence. A
+held session says `started_by` where a book of starts names who asked
+for its hold: this node's, for a start asked of it here or relayed to
+another machine, else that machine's node's, as its link carried it. A
 held session of this machine's has as its `window` the latest window
 joined to its holder that is still joined, or none. A held session says
 `attach` too, the words that join it from a terminal on this machine, to
@@ -2631,7 +2641,10 @@ same records as the `network` kind, less its `kind`: its `type`
 `moving`, `quiet` or `dormant`), `doing`, `asks`, `repo`, the
 `subjects` its presence declares (the first 12 strings of at most 120
 characters a terminal draws as plain text), `usage`, the networks it
-`leads`, `machine`, `since`, `quest`, `plan`, `cwd`, the
+`leads`, `machine`, `since`, `quest`, `started_by` (the cell its
+session's record says a book of starts names, else the orchestrator it
+names, each only as an address) with `started_by_from` (`book` or
+`presence`), `plan`, `cwd`, the
 `trees` it holds, the folders it `shares`, a machine's or a
 receptor's `state`, a machine's `busy` and the sessions it `runs`, a
 receptor's `counts`, and the `networks` it joined. A session's `quest`

@@ -1155,6 +1155,52 @@ fn a_session_here_whose_process_ended_is_dormant_only_on_its_nodes_word() {
 }
 
 #[test]
+fn a_cells_starter_is_its_machines_books_else_its_orchestrators_and_only_an_address() {
+    let saying = |address: &str, n: u8, fields: Value| {
+        let mut one = session(address, n, address, "busy", &[]);
+        for (key, value) in fields.as_object().expect("fields") {
+            one[key] = value.clone();
+        }
+        one
+    };
+    let sessions = [
+        saying(
+            "BOOK01",
+            1,
+            json!({"started_by": "OAR001", "orchestrated_by": "WCJQSG"}),
+        ),
+        saying("PRES01", 2, json!({"orchestrated_by": "WCJQSG"})),
+        saying("NONE01", 3, json!({"orchestrated_by": "not an address"})),
+    ];
+    let mycelium = Mycelium::of("work", &[], &sessions, &[]);
+    let starter = |address: &str| {
+        let cell = mycelium.cell(address).expect("its cell");
+        (cell.started_by.as_deref(), cell.started_by_from)
+    };
+    assert_eq!(
+        starter("BOOK01"),
+        (Some("OAR001"), Some("book")),
+        "the book's, over its orchestrator"
+    );
+    assert_eq!(
+        starter("PRES01"),
+        (Some("WCJQSG"), Some("presence")),
+        "its orchestrator, with no book's"
+    );
+    assert_eq!(starter("NONE01"), (None, None), "no address, no starter");
+    let line = mycelium
+        .lines()
+        .into_iter()
+        .find(|line| line["name"] == "BOOK01")
+        .expect("its line");
+    assert_eq!(
+        (&line["started_by"], &line["started_by_from"]),
+        (&json!("OAR001"), &json!("book")),
+        "as its line says: {line}"
+    );
+}
+
+#[test]
 fn cells_are_the_living_and_dormant_sessions_then_the_machines() {
     let mycelium = mycelium();
     let cells: Vec<(&str, Is, Option<&str>)> = mycelium
