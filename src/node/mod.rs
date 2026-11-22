@@ -3903,7 +3903,7 @@ impl<S: Store> Shared<S> {
     /// it makes the carries it chooses where `eases.carries` says so,
     /// asks the harness to park the sessions it chooses to sleep where
     /// `eases.sleeps` names a folder, taking each back once the machine
-    /// is no longer over by its own pressure, and otherwise does none
+    /// has been clear of its memory limit for five minutes, and otherwise does none
     /// of it. It begins once the carries kept here, which say what moved
     /// lately, and its own lines of the last two days can be read, saying
     /// why while they can't.
@@ -3977,7 +3977,7 @@ impl<S: Store> Shared<S> {
                 .look_to_ease(easing, std::mem::take(&mut sampler), now)
                 .await;
             sampler = back;
-            if !easing.over()
+            if !easing.still_short()
                 && let Some(held) = parking.take_if(|held| !held.is_empty())
             {
                 let (back, woken) = Self::unpark(held).await;

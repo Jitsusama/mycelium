@@ -736,8 +736,8 @@ struct Node {
     /// Ask the harness to park the sessions `--eases` chooses to put to
     /// sleep, each by a file named for it in this folder, the harness's
     /// own, which parks one only once it is idle and its own rule holds;
-    /// each is taken back once the machine is no longer over, and all of
-    /// them as the node starts.
+    /// each is taken back once the machine has been clear of its memory
+    /// limit for five minutes, and all of them as the node starts.
     #[arg(long, requires = "eases")]
     eases_sleep: Option<PathBuf>,
 }

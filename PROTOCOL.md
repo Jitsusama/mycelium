@@ -972,18 +972,18 @@ realm's balance as `mycelium balance --follow` does and holds what
 is seen in most of the last ten readings. Once its readings have said
 for ten minutes that its machine is over its limits, whether or not
 another has room, it would put its sessions that wait to sleep where
-they are: while it is held over while another has room, in the
-latest reading too, or while it is past its memory limit in eight of
-the last ten readings, since a sleep frees memory and needs no other
-machine but eases a busy processor nothing. A lone reading saying
-otherwise, between hot ones, breaks nothing, a sleep before it or
-not, though nothing is done on that reading itself; a second in a row
-starts the ten minutes again, as does a reading five minutes or more
-after the lone one. If the readings five minutes after the sleep
-still say over, and it is held over while another has room, it would
-carry one session to a peer with room in the watch and in the latest
-reading, as it does straight away where its waiting sessions are
-asleep already; while none has room it carries nothing. It
+they are while it is past its memory limit in eight of the last ten
+readings and in the latest, since a sleep frees memory and needs no
+other machine. A machine over on its processor alone puts none to
+sleep, since a sleep eases a busy processor nothing. A lone reading
+saying otherwise, between hot ones, breaks nothing, a sleep before it
+or not, though nothing is done on that reading itself; a second in a
+row starts the ten minutes again, as does a reading five minutes or
+more after the lone one. While it is held over while another has
+room, in the latest reading too, and the readings five minutes after
+any sleep still say over, it would carry one session to a peer with
+room in the watch and in the latest reading, straight away where it
+put none to sleep; while none has room it carries nothing. It
 carries the smallest log first, placed as any work is and onto
 ground as firm. A session in a turn, on the person's screen,
 orchestrating other sessions, holding a lease or a heavy run, or whose
@@ -1065,8 +1065,9 @@ name that isn't an ask (a link, a folder, a pipe, a socket or
 another's file), nor take one back, and opens none but a plain file;
 such a session is refused for good. One there as it looks is caught,
 not one made while it writes. It takes back what it asked once its
-machine's readings have said for five minutes that it isn't over its
-limits, and as its easing task ends; and as it starts, every file in
+machine's readings have said for five minutes that it isn't past its
+memory limit, however busy its processor, and as its easing task
+ends; and as it starts, every file in
 the folder that reads as an ask or a half-written one, since what
 made an earlier node ask isn't known to hold, leaving any other file
 there and saying in its log how many it took. It takes nothing from a

@@ -471,6 +471,43 @@ mod tests {
     }
 
     #[test]
+    fn a_load_says_each_limit_it_is_past_once_and_an_older_one_parses() {
+        let past = |over: Option<Vec<Limit>>| {
+            let mut one = machine("osprey", 12, 48, 41, 86.0, 40);
+            one.room.as_mut().expect("a room").over = over;
+            let load = load(&one, &[], now());
+            assert_eq!(
+                load.over,
+                !load.past.is_empty(),
+                "over exactly when past a limit"
+            );
+            load.past
+        };
+        assert_eq!(
+            past(Some(vec![Limit::Memory, Limit::Cpu])),
+            [Limit::Memory, Limit::Cpu],
+            "the queue's limits, the processor not said twice"
+        );
+        assert_eq!(
+            past(None),
+            [Limit::Cpu],
+            "a queue too old to say leaves the processor's pressure"
+        );
+        let calm = load(&machine("kestrel", 16, 64, 21, 4.6, 20), &[], now());
+        let line = serde_json::to_value(&calm).expect("a load");
+        assert!(line.get("past").is_none(), "none past is left out");
+        let mut older =
+            serde_json::to_value(load(&machine("osprey", 12, 48, 41, 86.0, 40), &[], now()))
+                .expect("a load");
+        older.as_object_mut().expect("an object").remove("past");
+        let older: Load = serde_json::from_value(older).expect("an older line parses");
+        assert!(
+            older.over && older.past.is_empty(),
+            "kept before it was said"
+        );
+    }
+
+    #[test]
     fn a_machine_over_while_another_has_room_is_flagged() {
         // As on 15 November at 18:39: one machine stalled on its
         // processors, the other with every core to spare.

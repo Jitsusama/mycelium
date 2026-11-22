@@ -552,17 +552,17 @@ impl Easing {
     }
 
     /// Forgets `woken`, by their record's id, as asleep, their asks taken
-    /// back once the machine was no longer over, so a later spell over
-    /// may ask for them again.
+    /// back once the machine was no longer short of memory, so a later
+    /// spell short may ask for them again.
     pub fn woken(&mut self, woken: &BTreeSet<String>) {
         self.asleep.retain(|id| !woken.contains(id));
     }
 
-    /// Whether its last look still held the machine over, as
-    /// [`History::over`] says.
+    /// Whether its last look still held the machine short of memory, as
+    /// [`History::still_short`] says.
     #[must_use]
-    pub fn over(&self) -> bool {
-        self.history.over()
+    pub fn still_short(&self) -> bool {
+        self.history.still_short()
     }
 
     /// Takes `why` who orchestrates can't be told, or none once it can,
@@ -747,7 +747,7 @@ mod tests {
     use crate::balance;
     use crate::balance::Flag;
     use crate::carry::chain;
-    use crate::carry::ease::tests::{NOW, ago, cell, declaring, now, realm};
+    use crate::carry::ease::tests::{NOW, ago, cell, declaring, now, realm, short_realm};
     use crate::placement::Loads;
     use crate::room::{Limit, Pressure, Takes};
 
@@ -1599,8 +1599,8 @@ mod tests {
     }
 
     /// Each line `easing` would keep at skiff, looking each minute from 20
-    /// minutes ago, with skiff over and tern with room throughout, and no
-    /// carry of its node's kept.
+    /// minutes ago, with skiff past its memory limit and tern with room
+    /// throughout, and no carry of its node's kept.
     fn looks(easing: &mut Easing, cells: &[Cell]) -> Vec<Value> {
         looks_kept(easing, cells, &Ok(0))
     }
@@ -1612,12 +1612,21 @@ mod tests {
         cells: &[Cell],
         kept_eases: &Result<usize, String>,
     ) -> Vec<Value> {
-        let machines: Vec<Machine> = realm();
+        looks_in(&short_realm(), easing, cells, kept_eases)
+    }
+
+    /// As [`looks_kept`], in a realm of `machines` throughout.
+    fn looks_in(
+        machines: &[Machine],
+        easing: &mut Easing,
+        cells: &[Cell],
+        kept_eases: &Result<usize, String>,
+    ) -> Vec<Value> {
         let declared = declaring(&[Kind::Fence]);
         let here = Here {
             name: "skiff",
             declared: Some(&declared),
-            machines: &machines,
+            machines,
             loads: &Loads::new(),
         };
         let holds = [(
@@ -1631,7 +1640,7 @@ mod tests {
         (0..=20)
             .filter_map(|minute| {
                 let at = ago(20 - minute);
-                let reading = balance::read(&machines, &[], at);
+                let reading = balance::read(machines, &[], at);
                 easing.look(
                     &here,
                     reading,
@@ -1707,6 +1716,20 @@ mod tests {
                 &json!({"memory": 1 << 30, "cpu": 2.5})
             ),
             "once five minutes after the sleep still read over, saying what it holds"
+        );
+        let busy = looks_in(
+            &realm(),
+            &mut Easing::default(),
+            &[Cell {
+                asleep: false,
+                ..cell("s1")
+            }],
+            &Ok(0),
+        );
+        assert_eq!(
+            chosen(&busy).iter().find(|&&one| one != "nothing"),
+            Some(&"carry"),
+            "over on its processor alone, it carries with no sleep before: {busy:?}"
         );
         assert!(
             lines.iter().all(|line| line["reading"]["held"].is_array()),
