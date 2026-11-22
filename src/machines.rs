@@ -555,7 +555,7 @@ mod tests {
             [80, crate::swarm::WHOLE].map(|width| {
                 let look = look(width);
                 [
-                    table(&[osprey(), tern.clone()], &[skiff.clone()], &look),
+                    table(&[osprey(), tern.clone()], std::slice::from_ref(skiff), &look),
                     one(tern, &look),
                     one_builder(skiff, &look),
                 ]

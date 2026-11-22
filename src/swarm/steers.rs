@@ -15,9 +15,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{
-    Standing, Swarm, address, asked, either, listed, names, short_names, title, unmarked,
-};
+use super::{Standing, Swarm, address, asked, either, listed, names, short_names, title, unmarked};
 
 /// Who a steer is from: the person, as the harness's steers name them.
 const FROM: &str = "person";
