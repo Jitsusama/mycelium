@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
-use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
+use unicode_width::UnicodeWidthStr as _;
 
 use crate::forage::BRAILLE_BLANK;
 
@@ -354,26 +354,32 @@ pub(crate) fn drawn_width(text: &str) -> usize {
 
 /// The longest start of `text` that takes at most `room` cells, as
 /// [`drawn_width`] counts them, so a wide character that would straddle
-/// the edge is left for what follows.
+/// the edge is left for what follows. A colour's escape is taken whole,
+/// so a cut never opens one it doesn't close, and a joiner left at the
+/// cut goes, as it would join nothing.
 pub(crate) fn within(text: &str, room: usize) -> &str {
-    let mut taken = 0;
-    let mut end = text.len();
-    for (at, each) in text.char_indices() {
-        taken += each.width().unwrap_or_default();
-        if taken > room {
-            end = at;
-            break;
+    // Each start is measured whole rather than summed a character at a
+    // time: a selector widens the heart before it, and a joiner makes
+    // two emoji one, so a start can draw wider or narrower than its
+    // characters. What's cut is a title or a row, so measuring each
+    // start costs little.
+    let mut kept = "";
+    let mut at = 0;
+    while at < text.len() {
+        let rest = &text[at..];
+        at += rest.strip_prefix("\u{1b}[").map_or_else(
+            || rest.chars().next().map_or(1, char::len_utf8),
+            |after| {
+                2 + after
+                    .find(|each: char| ('@'..='~').contains(&each))
+                    .map_or(after.len(), |end| end + 1)
+            },
+        );
+        if drawn_width(&text[..at]) <= room {
+            kept = &text[..at];
         }
     }
-    // A character can widen the one before it, as a selector turns a
-    // heart into an emoji, so what was kept is measured whole.
-    let mut kept = &text[..end];
-    while drawn_width(kept) > room {
-        let mut chars = kept.chars();
-        chars.next_back();
-        kept = chars.as_str();
-    }
-    kept
+    kept.trim_end_matches('\u{200D}')
 }
 
 impl Look {
@@ -451,8 +457,12 @@ pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> Stri
         let mut left = word;
         while !left.is_empty() {
             let mut taken = within(left, room(lines.len()));
-            // A wide character a line of one cell can't hold still takes
-            // a line of its own, so the word ends.
+            // A wide character, or an emoji joined from several, that a
+            // line of one cell can't hold still takes a line of its own,
+            // whole, so the word ends.
+            if taken.is_empty() {
+                taken = within(left, 2);
+            }
             if taken.is_empty() {
                 taken = &left[..left.chars().next().map_or(0, char::len_utf8)];
             }

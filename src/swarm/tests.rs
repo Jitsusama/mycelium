@@ -865,6 +865,56 @@ fn a_cut_or_pad_keeps_to_cells_and_never_splits_a_wide_character() {
         "❤",
         "a selector that widens a heart past the edge is left out"
     );
+    // A joiner makes two emoji one, narrower than its characters, so a
+    // cut that counted them one at a time split it.
+    let mut split = Vec::new();
+    for (cut, kept, what) in [
+        (
+            within("👩\u{200D}💻", 2),
+            "👩\u{200D}💻",
+            "an emoji joined from two fits whole",
+        ),
+        (
+            within("👍\u{1F3FD}ab", 3),
+            "👍\u{1F3FD}a",
+            "a skin tone keeps its hand",
+        ),
+        (
+            within("\u{1b}[1mabc", 2),
+            "\u{1b}[1mab",
+            "a colour's escape is taken whole",
+        ),
+        (within("ab👩\u{200D}💻", 2), "ab", "a cut ends on no joiner"),
+    ] {
+        if cut != kept {
+            split.push(format!("{what}: {cut:?}"));
+        }
+    }
+    for (drawn, whole, what) in [
+        (
+            fit("👩\u{200D}💻 ab", 4),
+            "👩\u{200D}💻…",
+            "a cut keeps a joined emoji",
+        ),
+        (
+            wrapped("👩\u{200D}💻", "", "", 3),
+            "👩\u{200D}💻\n",
+            "a wrap keeps a joined emoji on its line",
+        ),
+        (
+            wrapped("👩\u{200D}💻", "", "", 1),
+            "👩\u{200D}💻\n",
+            "a line too narrow for it still takes it whole",
+        ),
+    ] {
+        if drawn != whole {
+            split.push(format!("{what}: {drawn:?}"));
+        }
+    }
+    assert!(
+        split.is_empty(),
+        "a joined emoji or an escape was split: {split:?}"
+    );
     assert_eq!(
         wrapped("港湾港 湾", "", "", 5),
         "港湾\n港 湾\n",
@@ -875,6 +925,31 @@ fn a_cut_or_pad_keeps_to_cells_and_never_splits_a_wide_character() {
         "港\n湾\n",
         "a line too narrow for a wide character still takes one"
     );
+}
+
+#[test]
+fn a_wide_team_keeps_its_counts_in_line_cut_or_not() {
+    // Measured by Unicode's widths directly, not by the code under test,
+    // as nothing here is coloured.
+    let cells = <str as unicode_width::UnicodeWidthStr>::width;
+    let row = |title: &str| {
+        let mut swarm = swarm();
+        swarm.teams[0]["title"] = json!(title);
+        let shown = overview(&swarm, &look());
+        let first = title.chars().next().unwrap_or('R');
+        shown
+            .lines()
+            .find(|line| line.starts_with(first) && line.trim_end().ends_with(" 1"))
+            .map(cells)
+    };
+    let plain = row("Reef");
+    for title in ["港湾港湾", &"港".repeat(40)] {
+        assert!(
+            plain.is_some() && row(title) == plain,
+            "a wide title moved its counts: {title:?} drew {:?} cells, Reef {plain:?}",
+            row(title)
+        );
+    }
 }
 
 #[test]
