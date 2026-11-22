@@ -531,6 +531,10 @@ enum Action {
         /// gives it.
         #[arg(long, requires = "login", value_parser = kit)]
         kit: Option<PathBuf>,
+        /// The launcher of the fence each start of it runs within, the
+        /// first and every one after a park, as a JSON list of its words.
+        #[arg(long, value_parser = within)]
+        within: Option<Within>,
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
@@ -1675,9 +1679,11 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
             folder,
             login,
             kit,
+            within,
             command,
         } => {
-            let through = held_through(login, &realm, kit.as_deref());
+            let within = within.map(|Within(words)| words).unwrap_or_default();
+            let through = held_through(&within, login, &realm, kit.as_deref());
             hold_here(&realm, &id, &folder, &through, &command, &socket)
         }
         Action::Watch { groups, recent } => watch(&socket, groups, recent),
@@ -1991,6 +1997,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
             // Checked below, against the declarers its runs trust.
             kit: None,
         }),
+        fences_held: mycelium::facts::FENCES_HELD,
         awake: Awake::here(),
         updater: place::updater(),
         serves,
@@ -2922,7 +2929,7 @@ fn hold(
         // A terminal's hold has the person's own path already.
         kit: None,
     };
-    let id = starter.start(realm, &folder, command, false)?;
+    let id = starter.start(realm, &folder, (&[], command), false)?;
     if detached {
         writeln!(io::stdout().lock(), "{id}")
     } else {
@@ -2958,13 +2965,30 @@ fn hold_here(
 
 /// The words a held program starts inside: a login shell, for a hold a
 /// node starts, or none for a hold from a terminal, which has the
-/// person's environment already. A node's names its realm's `kit`.
-fn held_through(login: bool, realm: &str, kit: Option<&Path>) -> Vec<String> {
+/// person's environment already. A node's names its realm's `kit`. Each
+/// runs `within` its fence's launcher first, where it names one, so the
+/// login shell's profile runs inside the fence too, as a run's does.
+fn held_through(within: &[String], login: bool, realm: &str, kit: Option<&Path>) -> Vec<String> {
+    let mut through = within.to_vec();
     if login {
-        login_shell(realm, kit)
-    } else {
-        Vec::new()
+        through.extend(login_shell(realm, kit));
     }
+    through
+}
+
+/// A fence's launcher, as the words a held program starts within.
+#[derive(Debug, Clone)]
+struct Within(Vec<String>);
+
+/// The launcher `said` names, a JSON list of its words, the first a
+/// program.
+fn within(said: &str) -> Result<Within, String> {
+    let words: Vec<String> = serde_json::from_str(said)
+        .map_err(|error| format!("{said:?} is no JSON list of words: {error}"))?;
+    if words.first().is_none_or(String::is_empty) {
+        return Err(format!("{said:?} names no launcher"));
+    }
+    Ok(Within(words))
 }
 
 /// Is the holder `hold` starts: in a session of its own, so the window it

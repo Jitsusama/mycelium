@@ -495,6 +495,11 @@ pub struct Given {
     pub sharing: Option<Places>,
     /// How it starts the sessions it is asked to, if it starts any.
     pub starter: Option<Starter>,
+    /// Whether it starts an agent's held session through the launcher
+    /// its fence declares, as a node on a Mac must ([`facts::FENCES_HELD`]).
+    /// It says this to its realm as [`facts::Machine::fences_held`], so
+    /// what it says and what it does are one value.
+    pub fences_held: bool,
     /// How it keeps the refusals of links whose way in turned it away.
     pub refusals: Refusals,
     /// This machine's sessions' steer inboxes.
@@ -1311,6 +1316,9 @@ struct Shared<S> {
     /// The socket its machine's updater takes asks on.
     updater: PathBuf,
     starter: Option<Arc<Starter>>,
+    /// Whether it starts an agent's held session through its fence's
+    /// launcher, as it says it does.
+    fences_held: bool,
     /// The links this node asks other machines' starts through.
     asks: Asks,
     inner: Arc<Mutex<Inner>>,
@@ -1974,25 +1982,25 @@ enum Whither {
     Here,
 }
 
-/// The words a held start `command` runs as here, on a Mac, a node that
-/// `fences` its held starts: one in the fence `kind` goes through the
-/// launcher that fence declares (`launch`), since pi lifts its own fence
-/// on a Mac, which has no Landlock. Elsewhere, and for the person's, its
-/// own words, as pi fences itself there.
+/// The launcher a held start runs within here, the first start and every
+/// one after a park, on a Mac, a node that `fences` its held starts: one
+/// in the fence `kind` runs within the launcher that fence declares
+/// (`launch`), since pi lifts its own fence on a Mac, which has no
+/// Landlock. Elsewhere, and for the person's, none, as pi fences itself
+/// there.
 ///
 /// # Errors
 ///
 /// When the launcher for `kind` is refused, so it starts nowhere rather
 /// than outside its fence.
-fn held_words(
+fn held_within(
     fences: bool,
     kind: Option<crate::declared::Kind>,
-    command: Vec<String>,
     launch: impl FnOnce(crate::declared::Kind) -> Result<Vec<String>, String>,
 ) -> Result<Vec<String>, String> {
     match kind.filter(|kind| fences && *kind > crate::declared::Kind::None) {
-        Some(kind) => Ok(launch(kind)?.into_iter().chain(command).collect()),
-        None => Ok(command),
+        Some(kind) => launch(kind),
+        None => Ok(Vec::new()),
     }
 }
 
@@ -2010,9 +2018,24 @@ fn starts_in(
     }
 }
 
-/// Whether this node starts an agent's held session through its fence's
-/// launcher, as it says in [`facts::Machine::fences_held`].
-const FENCES_HELD: bool = cfg!(target_os = "macos");
+/// What a start running `command` declares where it brings a session
+/// carried from `here` back on another machine: `declared`, raised to the
+/// fence `ran_in` says that session ran in here, so the machine taking it
+/// starts it no looser than it ran, whoever runs the carry, whose own
+/// fence may be looser. Any other start declares as it was asked.
+fn declaring_carried(
+    command: &[String],
+    here: &str,
+    declared: Option<DeclaredFence>,
+    ran_in: impl FnOnce(&str) -> crate::declared::Kind,
+) -> Option<DeclaredFence> {
+    match crate::carry::arrives(command) {
+        Some(arrives) if arrives.from == here => {
+            declaring_at_least(declared, Some(ran_in(arrives.session)))
+        }
+        _ => declared,
+    }
+}
 
 /// What a start sent to another machine declares: `declared`, raised to
 /// `fence` where that is stricter, so the machine taking it knows the
@@ -2201,6 +2224,7 @@ impl<S: Store> Shared<S> {
         let Given {
             sharing,
             starter,
+            fences_held,
             refusals,
             steers,
             waiting,
@@ -2292,6 +2316,7 @@ impl<S: Store> Shared<S> {
             machine: hello.machine,
             realm: hello.realm,
             starter: starter.map(Arc::new),
+            fences_held,
             asks: Asks::default(),
             said,
             flows: Arc::new(flows),
@@ -3151,6 +3176,7 @@ impl<S: Store> Shared<S> {
         self.saturation.say(here.room.as_mut());
         here.health.clone_from(&self.health.borrow());
         here.kit = self.given_kit().and_then(start::Kit::said);
+        here.fences_held = self.fences_held;
         here
     }
 
@@ -5150,9 +5176,32 @@ impl<S: Store> Shared<S> {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
+        let asked = self.carried_declaring(asked);
         let (by, _, charged) = self.judged_declaring(asked.work.fence).await?;
         self.counted((by, charged), asked, waits, Whither::Placed)
             .await
+    }
+
+    /// `asked` declaring at least the fence its session ran in here, where
+    /// it brings one carried from here back ([`declaring_carried`]): the
+    /// stricter of what the session claimed and the strictest it was seen
+    /// in, as its carry was judged, or strict where that can't be read.
+    fn carried_declaring(&self, mut asked: Start) -> Start {
+        use crate::declared::Kind;
+        asked.work.fence =
+            declaring_carried(&asked.command, &self.machine, asked.work.fence, |session| {
+                let claimed = self
+                    .lock()
+                    .state
+                    .sessions()
+                    .iter()
+                    .find(|one| easing::id(one) == session)
+                    .and_then(|one| one.presence.get("fence").cloned())
+                    .and_then(|kind| serde_json::from_value::<Kind>(kind).ok());
+                let shown = self.fences.strictest(session).unwrap_or(Kind::Strict);
+                shown.max(claimed.unwrap_or(Kind::None))
+            });
+        asked
     }
 
     /// Starts `asked`, from the asker judged `by` whose start counts
@@ -5230,7 +5279,13 @@ impl<S: Store> Shared<S> {
             }
         };
         let answered = match (whither, again) {
-            (Whither::Placed, Some(machine)) => self.start_on(machine, asked, fence_of(by)).await,
+            // Asked again where it was asked under that name, in the
+            // fence its first ask was placed in ([`Self::placed_held`]).
+            (Whither::Placed, Some(machine)) => {
+                let unfenced = self.unfenced_asking(by, asked.work.fence).await;
+                let fence = starts_in(fence_of(by), held_or_run(unfenced.is_some(), by));
+                self.start_on(machine, asked, fence).await
+            }
             (Whither::Placed, None) => self.placed_held(asked, by).await,
             // One relayed here starts here or nowhere, so a name another
             // machine hasn't answered under stays held for asking there.
@@ -5632,7 +5687,16 @@ impl<S: Store> Shared<S> {
             },
             None => None,
         };
-        let started = match self.here(asked, None).await {
+        // The person's relay is otherwise judged in no fence. A node that
+        // fences its held starts takes the one it was sent declaring,
+        // which its sender placed it in, so it starts there in that
+        // fence or not at all; elsewhere pi fences itself.
+        let fence = asked
+            .work
+            .fence
+            .filter(|_| self.fences_held)
+            .map(|declared| declared.kind.into());
+        let started = match self.here(asked, fence).await {
             Ok(Response::Started(started)) => Ok(started),
             Ok(_) => Err("it answered with no session".to_owned()),
             Err(why) => Err(why),
@@ -5729,6 +5793,7 @@ impl<S: Store> Shared<S> {
         let mut book = Vec::with_capacity(asked.starts.len());
         let mut unweighed = None;
         for one in &asked.starts {
+            let one = &self.carried_declaring(one.clone());
             let judged = match self.judged_declaring(one.work.fence).await {
                 Ok((by, _, charged)) => self
                     .booked_as((by, charged), one, asked.ordered)
@@ -6083,16 +6148,16 @@ impl<S: Store> Shared<S> {
     /// Starts `asked` on `machine`: this one by its own starter, another
     /// through the link reaching it. An agent's, placed in `fence`, is
     /// sent declaring at least that fence, so a Mac taking it starts it
-    /// through that fence's launcher, as it starts its own here
-    /// ([`held_words`]): a declaration only ever raises, so none of it
-    /// fences less.
+    /// within that fence's launcher, as it starts its own here
+    /// ([`held_within`]): a declaration only ever raises, so none of it
+    /// fences less. Here it starts in `fence` alone, so the person's and
+    /// an agent's shown unfenced start as they always have.
     async fn start_on(
         &self,
         machine: String,
         mut asked: Start,
         fence: Option<crate::declared::Kind>,
     ) -> Reply {
-        let fence = fence.max(asked.work.fence.map(|declared| declared.kind.into()));
         if machine != self.machine {
             asked.work.fence = declaring_at_least(asked.work.fence, fence);
             let there = asked.once.clone();
@@ -6109,6 +6174,13 @@ impl<S: Store> Shared<S> {
                     Err(unsent.why)
                 });
         }
+        // Its launcher first, so a fence whose launcher is refused starts
+        // nothing, whatever else this node lacks. The holder runs each
+        // start within it, the first and every one after a park.
+        let within = held_within(self.fences_held, fence, |kind| {
+            crate::declared::launcher(&self.declared, kind, &self.runs.declarers)
+                .map_err(|why| format!("{machine} can't start this held session {kind}: {why}"))
+        })?;
         let Some(starter) = self.starter.clone() else {
             return Err(format!("{machine}'s node starts no sessions"));
         };
@@ -6118,19 +6190,16 @@ impl<S: Store> Shared<S> {
         let folder =
             start::begins_strictly(asked.folder.as_deref(), asked.strict, &home, &machine)?;
         let realm = self.realm.clone();
-        let command = held_words(FENCES_HELD, fence, asked.command, |kind| {
-            crate::declared::launcher(&self.declared, kind, &self.runs.declarers).map_err(|why| {
-                format!("{machine} starts an agent's held session only in its {kind} fence: {why}")
-            })
-        })?;
         let begins = folder.clone();
+        let command = asked.command;
         // Through the login shell, each start of it: the holder has only
         // the node's environment, where a woken `pi` wouldn't be found.
-        let held =
-            tokio::task::spawn_blocking(move || starter.start(&realm, &begins, &command, true))
-                .await
-                .map_err(|error| format!("its start stopped: {error}"))?
-                .map_err(|error| format!("it didn't start: {error}"))?;
+        let held = tokio::task::spawn_blocking(move || {
+            starter.start(&realm, &begins, (&within, &command), true)
+        })
+        .await
+        .map_err(|error| format!("its start stopped: {error}"))?
+        .map_err(|error| format!("it didn't start: {error}"))?;
         Ok(Response::Started(Started {
             folder,
             attach: start::attach_here(&self.realm, &held),
@@ -6849,7 +6918,7 @@ fn told_unfenced_held(above: &[(String, serde_json::Value)], asked: &Start) -> S
 /// on a Mac, since a Mac declaring its fence's `runs` would pass, so a
 /// held start judged an agent's is refused every Mac by its system too
 /// ([`ground::lifts_fence`]), unless its node says it starts one through
-/// that launcher ([`held_words`]) or the agent is shown unfenced
+/// that launcher ([`held_within`]) or the agent is shown unfenced
 /// ([`Shared::placed_held`]).
 fn held_screen(fence: Option<crate::declared::Kind>) -> Screen {
     if fence.is_some() {
@@ -7244,6 +7313,9 @@ mod tests {
         Given {
             sharing: None,
             starter,
+            // Measured on whatever runs the test, so it says it only
+            // where a test sets it.
+            fences_held: false,
             refusals: Refusals::default(),
             steers,
             waiting: "/nowhere/waiting".into(),
@@ -7386,6 +7458,7 @@ mod tests {
         Given {
             sharing,
             starter,
+            fences_held: false,
             refusals: Refusals::default(),
             steers,
             waiting: "/nowhere/waiting".into(),
@@ -14866,7 +14939,8 @@ esac
     }
 
     // Joel, 15:2x Sun 22 Nov: "WE NEED TO FOCUS ON SPREADING LOAD NOW!".
-    // Most of optimus's sessions run strict, and no Mac took one held.
+    // Most of the busiest machine's sessions run strict, and no Mac took
+    // one held.
     #[tokio::test]
     async fn a_mac_whose_node_fences_held_starts_takes_an_agents_held_start() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -18521,32 +18595,30 @@ esac
     #[test]
     fn a_held_start_goes_through_its_fence_only_where_the_node_fences_it() {
         use crate::declared::Kind;
-        let pi = vec!["pi".to_owned()];
         let launch = |kind: Kind| Ok(vec!["fence".to_owned(), format!("{kind}"), "--".to_owned()]);
         assert_eq!(
-            held_words(true, Some(Kind::Strict), pi.clone(), launch),
+            held_within(true, Some(Kind::Strict), launch),
             Ok(vec![
                 "fence".to_owned(),
                 format!("{}", Kind::Strict),
                 "--".to_owned(),
-                "pi".to_owned()
             ]),
-            "on a Mac, through the launcher of the fence it was placed in"
+            "on a Mac, within the launcher of the fence it was placed in"
         );
         assert_eq!(
-            held_words(false, Some(Kind::Strict), pi.clone(), launch),
-            Ok(pi.clone()),
+            held_within(false, Some(Kind::Strict), launch),
+            Ok(Vec::new()),
             "elsewhere, pi fences itself"
         );
         for unfenced in [None, Some(Kind::None)] {
             assert_eq!(
-                held_words(true, unfenced, pi.clone(), launch),
-                Ok(pi.clone()),
+                held_within(true, unfenced, launch),
+                Ok(Vec::new()),
                 "the person's, or one unfenced, as asked"
             );
         }
         assert_eq!(
-            held_words(true, Some(Kind::Fence), pi, |_| Err("refused".to_owned())),
+            held_within(true, Some(Kind::Fence), |_| Err("refused".to_owned())),
             Err("refused".to_owned()),
             "a launcher refused starts nothing, rather than outside its fence"
         );
@@ -18559,6 +18631,100 @@ esac
             starts_in(Some(Kind::Strict), Screen::Held),
             Some(Kind::Strict),
             "any other in the fence it was placed in"
+        );
+    }
+
+    #[test]
+    fn a_carry_from_here_brings_its_session_back_declaring_the_fence_it_ran_in() {
+        use crate::declared::Kind;
+        let one = crate::carry::Done {
+            session: "s-harbour".to_owned(),
+            started_before: None,
+        };
+        let arriving =
+            crate::carry::arriving("QEST-20261107-HARBOR", "skiff", "tern", &one, None).command;
+        let strict = |session: &str| {
+            assert_eq!(
+                session, "s-harbour",
+                "the session carried is the one weighed"
+            );
+            Kind::Strict
+        };
+        assert_eq!(
+            declaring_carried(&arriving, "skiff", None, strict),
+            Some(DeclaredFence {
+                kind: FenceKind::Strict,
+                from: FenceFrom::Default,
+            }),
+            "a strict session carried by an asker in the agent fence arrives strict"
+        );
+        assert_eq!(
+            declaring_carried(&arriving, "skiff", None, |_| Kind::None),
+            None,
+            "an unfenced one arrives as asked"
+        );
+        assert_eq!(
+            declaring_carried(&arriving, "kestrel", None, strict),
+            None,
+            "one carried from another machine is that machine's to weigh"
+        );
+        assert_eq!(
+            declaring_carried(&["pi".to_owned()], "skiff", None, strict),
+            None,
+            "any other start declares as it was asked"
+        );
+    }
+
+    // Joel, 15:2x Sun 22 Nov: "WE NEED TO FOCUS ON SPREADING LOAD NOW!".
+    // A start relayed to a node that fences its held starts goes through
+    // the launcher of the fence it was sent declaring, and elsewhere as
+    // it was asked, since pi fences itself there.
+    #[tokio::test]
+    async fn a_node_that_fences_held_starts_starts_a_relayed_one_in_its_fence() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let mut link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        runs_commands(&mut link, dir.path());
+        // The node's own process relays, as a linked node's does.
+        link.client = i32::try_from(std::process::id()).ok();
+        let strict = Start {
+            work: Work {
+                fence: Some(DeclaredFence {
+                    kind: FenceKind::Strict,
+                    from: FenceFrom::Default,
+                }),
+                ..work(vec![Need::Machine("skiff".to_owned())])
+            },
+            folder: None,
+            strict: false,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let given = dir.path().join("given");
+        let launched = |words: &str| {
+            let lines: Vec<&str> = words.lines().collect();
+            let launcher = lines.iter().position(|one| one.contains("FENCED=strict"));
+            let pi = lines.iter().rposition(|one| *one == "pi");
+            launcher.zip(pi).is_some_and(|(launcher, pi)| launcher < pi)
+        };
+        link.relayed("tern", strict.clone())
+            .await
+            .expect("it starts here");
+        let words = fs::read_to_string(&given).expect("the holder was given its words");
+        assert!(
+            !launched(&words),
+            "where pi fences itself, as asked: {words}"
+        );
+        link.fences_held = true;
+        link.relayed("tern", strict)
+            .await
+            .expect("it starts here, in its fence");
+        let words = fs::read_to_string(&given).expect("the holder was given its words");
+        assert!(
+            launched(&words),
+            "through its strict fence's launcher: {words}"
         );
     }
 

@@ -1933,10 +1933,11 @@ pub(super) mod tests {
         );
     }
 
-    // No fenced session goes to a Mac while a start bringing it back would
-    // run there held, outside any fence. Lifting this must still keep
-    // strict sessions off a Mac, whose strict fence reads the rest of its
-    // home, until that fence is narrowed.
+    // No fenced session goes to a Mac whose node doesn't say
+    // `fences_held`, where a start bringing it back would run held,
+    // outside any fence. One whose node says it is judged by its declared
+    // fence, as any machine is; how far a Mac's strict fence reaches is
+    // that fence's to narrow, not placement's.
     #[test]
     fn a_mac_with_room_is_passed_over_for_the_next_machine() {
         let mut realm = realm();

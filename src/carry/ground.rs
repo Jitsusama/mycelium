@@ -224,7 +224,8 @@ pub fn runs_nothing_offered(kind: Kind, to: &str, there: Option<&Declared>) -> O
 /// node doesn't say it `fences_held` starts, unless the session runs in
 /// `kind` [`Kind::None`]: one already unfenced here runs no looser
 /// unfenced there, and [`firm`] still holds its doors to this machine's.
-/// A session whose fence can't be told is refused.
+/// A session whose fence can't be told is refused every Mac, since its
+/// node would start it within no launcher.
 #[must_use]
 pub fn brought_back(
     to: &str,
@@ -233,6 +234,12 @@ pub fn brought_back(
     fences_held: bool,
     kind: Option<Kind>,
 ) -> Option<String> {
+    if system == Some(MAC) && kind.is_none() {
+        return Some(format!(
+            "{to} is a Mac, where a session whose fence can't be told would be brought back \
+             held outside any fence"
+        ));
+    }
     if system == Some(MAC) && !fences_held && kind != Some(Kind::None) {
         return Some(format!(
             "{to} is a Mac, where a fenced session brought back held would run outside any \
@@ -832,9 +839,9 @@ mod tests {
             refused,
             "as is a strict session"
         );
-        assert_eq!(
-            brought_back("osprey", Some(&declared), Some(MAC), false, None),
-            refused,
+        assert!(
+            brought_back("osprey", Some(&declared), Some(MAC), false, None)
+                .is_some_and(|why| why.contains("can't be told")),
             "and one whose fence can't be told"
         );
         assert_eq!(
@@ -875,6 +882,11 @@ mod tests {
             ),
             None,
             "a Mac whose node starts it through its strict fence takes it"
+        );
+        assert!(
+            brought_back("osprey", Some(&declared), Some(MAC), true, None)
+                .is_some_and(|why| why.contains("can't be told")),
+            "though not one whose fence can't be told, which no launcher would hold"
         );
         let shut = declaring(Some(BTreeMap::from([
             (Kind::Fence, running(&[FENCE, "--"])),

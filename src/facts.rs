@@ -373,8 +373,10 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
 /// Whether this build's node starts an agent's held session through the
 /// launcher its fence declares: on a Mac, where pi lifts its own fence for
 /// want of Landlock, so a held start needs the launcher round it. A Linux
-/// node leaves it to pi's own fence, as it always has.
-const FENCES_HELD: bool = cfg!(target_os = "macos");
+/// node leaves it to pi's own fence, as it always has. A node is given it
+/// to do and says what it was given, so what it says and what it does are
+/// one value.
+pub const FENCES_HELD: bool = cfg!(target_os = "macos");
 
 /// What this machine runs on now, read alone and as [`measure`] reads it:
 /// a machine within another has its host's power while its host's word

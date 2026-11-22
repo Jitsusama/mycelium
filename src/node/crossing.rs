@@ -342,6 +342,7 @@ mod tests {
         let given = Given {
             sharing: None,
             starter: None,
+            fences_held: false,
             refusals: Refusals::default(),
             steers: dir.join(realm).join("steer"),
             waiting: "/nowhere/waiting".into(),

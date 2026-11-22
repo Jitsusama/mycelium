@@ -1650,8 +1650,11 @@ whatever declared it: the node can't tell the harness's start from one
 an agent asks itself, so a session started below a strict one runs
 strict. It moves only a start's judgement: a `Place` that starts
 nothing and a `Run` are judged without it, and a start relayed from
-another machine is judged by its link's end, its declaration neither
-weighed nor kept there. The person's work is judged as before, and
+another machine is judged by its link's end, its declaration raising
+that judgement but not kept there, though a Mac whose node says
+`fences_held` starts one relayed as the person's within the launcher of
+the fence it declares (see The Socket). The person's work is judged as
+before, and
 each start keeps what it declared in its line in the book, as
 `declared`. A node older than the field ignores it, judging as before.
 A machine carries the taints its configuration
@@ -2223,12 +2226,19 @@ start is refused every machine whose facts say `system` `macos` and
 no `fences_held`, missed as `lifts-fence`, `never`, and its refusal
 says so, nor is a Mac made of an offer for one; an agent's run there
 still goes through its launcher. A Mac whose node says `fences_held`
-is judged as any machine is, and starts an agent's held session
-through the launcher of the fence it was placed in, refusing it where
-that launcher is refused. A node sending a start to another machine
-says that fence as the start's `fence`, raised to it where looser; a
-node taking a start relayed from an end it judges an agent's raises
-its judgement by that `fence`, as any declaration only raises. Only an
+is judged as any machine is, and starts an agent's held session, its
+first start and each after a park, within the launcher of the fence it
+was placed in, outside the login shell, so the profile runs fenced too,
+as a run does; it refuses the start where that launcher is refused. A
+node sending a start to another machine says that fence as the start's
+`fence`, raised to it where looser. A node taking a start relayed from
+an end it judges an agent's raises its judgement by that `fence`, as
+any declaration only raises, and a Mac's node taking one relayed as the
+person's starts it within that `fence`'s launcher. A start bringing a
+session carried from this machine back declares at least the fence
+that session ran in here, the stricter of what it claimed and the
+strictest it was seen in, so a carry run by an asker in a looser fence
+never starts it looser. Only an
 agent shown unfenced is let through to a Mac whose node doesn't say
 `fences_held`, screened then as a run is: its start
 declares nothing strict, every session claiming it says it runs

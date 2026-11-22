@@ -135,7 +135,10 @@ impl Starter {
     /// once a terminal can join it. With `login`, each start of it, the
     /// first and every one after a park, runs through the person's login
     /// shell ([`login_shell`]), as a node's must, since the holder has only
-    /// the node's environment.
+    /// the node's environment. Each runs `within` a fence's launcher too,
+    /// where one is named, outside the login shell, as a run is, so a
+    /// command the program names for its next start, or its profile,
+    /// runs inside the fence as well.
     ///
     /// # Errors
     ///
@@ -145,12 +148,17 @@ impl Starter {
         &self,
         realm: &str,
         folder: &Path,
-        command: &[String],
+        (within, command): (&[String], &[String]),
         login: bool,
     ) -> io::Result<String> {
         let id = super::new_id();
         let mut holder = self.scope.command(&self.program, &id);
         self.name(&mut holder, realm, &id, folder, login);
+        if !within.is_empty() {
+            // One word, so none of the launcher's is read as the holder's.
+            let words = serde_json::to_string(within).map_err(io::Error::other)?;
+            holder.arg("--within").arg(words);
+        }
         let mut holder = holder
             .arg("--")
             .args(command)
