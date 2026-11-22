@@ -748,16 +748,16 @@ mod tests {
             80,
             false,
         );
-        let long: Vec<&str> = shown
-            .lines()
-            .filter(|line| drawn_width(line) > 80)
-            .collect();
+        // Measured by Unicode's widths directly, not by the code under test,
+        // as nothing here is coloured.
+        let cells = unicode_width::UnicodeWidthStr::width;
+        let long: Vec<&str> = shown.lines().filter(|line| cells(*line) > 80).collect();
         assert!(long.is_empty(), "lines past 80 cells: {long:?}\n{shown}");
         let stands = |name: &str| {
             shown
                 .lines()
                 .find(|line| line.starts_with(&format!("  {name}")))
-                .and_then(|line| line.find("no room").map(|at| drawn_width(&line[..at])))
+                .and_then(|line| line.find("no room").map(|at| cells(&line[..at])))
         };
         assert!(
             stands(wide).is_some() && stands(wide) == stands("osprey"),
