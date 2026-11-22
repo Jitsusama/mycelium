@@ -71,6 +71,33 @@ pub struct Changes {
     pub keep: Box<dyn Send>,
 }
 
+/// How many changes already waiting are taken with the next at most, so a
+/// store changing without pause still lets its reader do its other work.
+const GATHERED_AT_MOST: usize = 1024;
+
+impl Changes {
+    /// The next change and every other already waiting behind it, each
+    /// once, in the order each was first seen; `None` once the store stops
+    /// telling them. Whoever acts on a change reads the store as it stands
+    /// then, so one telling of a change covers the same change told again
+    /// behind it: a node whose thread a slow disk held finds hundreds of
+    /// presence changes waiting, and reads its sessions once rather than
+    /// once for each. It is cancel safe, as `select!` needs: nothing is
+    /// taken but in the wait for the first.
+    pub async fn gathered(&mut self) -> Option<Vec<Change>> {
+        let mut gathered = vec![self.changes.recv().await?];
+        for _ in 1..GATHERED_AT_MOST {
+            let Ok(change) = self.changes.try_recv() else {
+                break;
+            };
+            if !gathered.contains(&change) {
+                gathered.push(change);
+            }
+        }
+        Some(gathered)
+    }
+}
+
 /// The right to carry one machine's sessions into this store, held by one
 /// link at a time and given up when dropped.
 pub type Claim = Box<dyn Send>;
@@ -254,4 +281,64 @@ pub fn out_of_reach_of_unclaimed(store: &impl Store) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Changes waiting behind the next are taken with it, each once and
+    /// in the order first seen, and the next waits for what comes after.
+    #[tokio::test]
+    async fn waiting_changes_are_told_once_each() {
+        let (telling, told) = mpsc::unbounded_channel();
+        let mut changes = Changes {
+            changes: told,
+            keep: Box::new(()),
+        };
+        for change in [
+            Change::Presence,
+            Change::Message("m1".to_owned()),
+            Change::Presence,
+            Change::Carries("wren".to_owned()),
+            Change::Message("m1".to_owned()),
+            Change::Presence,
+        ] {
+            telling.send(change).expect("the change is told");
+        }
+        assert_eq!(
+            changes.gathered().await,
+            Some(vec![
+                Change::Presence,
+                Change::Message("m1".to_owned()),
+                Change::Carries("wren".to_owned()),
+            ])
+        );
+        telling.send(Change::Presence).expect("the change is told");
+        assert_eq!(changes.gathered().await, Some(vec![Change::Presence]));
+        drop(telling);
+        assert_eq!(changes.gathered().await, None);
+    }
+
+    /// No more than [`GATHERED_AT_MOST`] are taken at once, so the rest
+    /// wait for the next.
+    #[tokio::test]
+    async fn a_flood_of_changes_is_taken_in_parts() {
+        let (telling, told) = mpsc::unbounded_channel();
+        let mut changes = Changes {
+            changes: told,
+            keep: Box::new(()),
+        };
+        for id in 0..=GATHERED_AT_MOST {
+            telling
+                .send(Change::Message(id.to_string()))
+                .expect("the change is told");
+        }
+        let first = changes.gathered().await.expect("changes are told");
+        assert_eq!(first.len(), GATHERED_AT_MOST);
+        assert_eq!(
+            changes.gathered().await,
+            Some(vec![Change::Message(GATHERED_AT_MOST.to_string())])
+        );
+    }
 }
