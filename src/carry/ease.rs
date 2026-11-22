@@ -433,8 +433,8 @@ pub fn choose(
     // memory held short, and short in the reading that chooses, puts a
     // session to sleep; a machine over on its processor alone goes
     // straight to a carry, or does nothing.
-    let sleeps = history.held_short() && short_of_memory(here.name, reading);
-    if !carries && !sleeps {
+    let short = history.held_short() && short_of_memory(here.name, reading);
+    if !carries && !short {
         return nothing(format!(
             "{} isn't held past its memory limit, which a sleep would ease, nor over while \
              another machine has room",
@@ -446,7 +446,7 @@ pub fn choose(
         .filter(|cell| !cell.asleep && cell.stays(here.name).is_none())
         .map(|cell| cell.session.id.clone())
         .collect();
-    if sleeps && !sleepy.is_empty() {
+    if short && !sleepy.is_empty() {
         return Choice::Sleep { sessions: sleepy };
     }
     if !carries {
