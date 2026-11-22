@@ -270,6 +270,40 @@ async fn an_answer_of_a_length_is_streamed_whole_as_it_comes() {
 }
 
 #[tokio::test]
+async fn an_interim_head_is_passed_over_and_a_304_has_no_body() {
+    let mut lending = Lending::new();
+    let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
+    let asked = lending.relay.asked().await;
+    asked
+        .answer
+        .send(
+            b"HTTP/1.1 103 Early Hints\r\nlink: </a>\r\n\r\n\
+              HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhi"
+                .to_vec(),
+        )
+        .expect("the relay answers");
+    let (lent, body) = whole(&mut answers).await;
+    assert!(
+        matches!(lent.first(), Some(Lent::Head { status: 200, .. })),
+        "the final head is the answer's: {lent:?}"
+    );
+    assert_eq!(body, b"hi", "and the interim head is no part of its body");
+    let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
+    let asked = lending.relay.asked().await;
+    // Held open, so only the head can end the answer.
+    asked
+        .answer
+        .send(b"HTTP/1.1 304 Not Modified\r\ncontent-length: 5\r\n\r\n".to_vec())
+        .expect("the relay answers");
+    let (lent, body) = whole(&mut answers).await;
+    assert_eq!(
+        (lent.last(), body.len()),
+        (Some(&Lent::Done), 0),
+        "a 304 ends at its head, whatever its length says: {lent:?}"
+    );
+}
+
+#[tokio::test]
 async fn an_answer_the_relay_ends_short_is_refused_partway() {
     let mut lending = Lending::new();
     let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
@@ -319,6 +353,10 @@ async fn a_path_or_a_budget_or_a_method_not_lent_is_refused() {
         "/v1/models",
         "/v1/messages/../../admin",
         "/v1/messages/%2e%2e/admin",
+        "/v1/messages#/../../admin",
+        "/v1/messages/..\\..\\v1/files",
+        "/v1/messages?to=%2e%2e",
+        "/v1/messages?to=/admin",
         "/v1/messages HTTP/1.1\r\nhost: elsewhere.example",
         "http://elsewhere.example/v1/messages",
     ] {
@@ -373,7 +411,23 @@ async fn a_machine_cut_off_is_refused_by_name_or_with_every_other_until_let_back
     cut(&state, &Cut::All).expect("cut every one");
     let mut answers = answer(&lending.lender, "agents-2", lend("/v1/messages"));
     assert_eq!(refusal(&mut answers).await, 403);
-    uncut(&state, &Cut::All).expect("let every one back");
+    let refused = uncut(&state, &Cut::Machine("agents-2".to_owned()))
+        .expect_err("one machine isn't let back while every one is cut");
+    assert!(
+        refused.to_string().contains("let every machine back first"),
+        "{refused}"
+    );
+    assert!(
+        uncut(&state, &Cut::All)
+            .expect("let every one back")
+            .is_empty()
+    );
+    cut(&state, &Cut::Machine("agents-2".to_owned())).expect("cut");
+    assert_eq!(
+        uncut(&state, &Cut::Machine("agents-2".to_owned())).expect("let back"),
+        Vec::<String>::new(),
+        "one machine cut by name is let back by name"
+    );
     assert!(!lending.relay.was_asked(), "nothing cut reaches the relay");
     let _answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
     lending.relay.asked().await;
@@ -424,8 +478,33 @@ async fn a_borrower_that_stops_reading_lets_its_lend_go() {
 async fn a_lend_with_no_relay_answering_is_refused_as_unavailable() {
     let lending = Lending::new();
     fs::remove_file(lending.folder.path().join("relay/agents.sock")).expect("the relay goes");
-    let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
-    assert_eq!(refusal(&mut answers).await, 503);
+    for _ in 0..4 {
+        let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
+        assert_eq!(refusal(&mut answers).await, 503);
+    }
+    // Four refused for the relay's outage spend none of the day's three.
+    let mut relay = Relay::at(&lending.folder.path().join("relay/agents.sock"));
+    let _answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
+    relay.asked().await;
+}
+
+#[tokio::test]
+async fn cuts_that_cant_be_read_cut_every_machine_until_every_one_is_let_back() {
+    let mut lending = Lending::new();
+    let state = lending.state();
+    fs::create_dir_all(&state).expect("the state folder");
+    fs::write(state.join("cuts.json"), "[\"agents-1\",").expect("broken");
+    let mut answers = answer(&lending.lender, "agents-2", lend("/v1/messages"));
+    match next(&mut answers).await {
+        Some(Lent::Refused { status: 403, why }) => {
+            assert!(why.contains("cuts can't be read"), "{why}");
+        }
+        other => panic!("the lend is refused, not {other:?}"),
+    }
+    uncut(&state, &Cut::All).expect("every one let back, over what can't be read");
+    assert!(!lending.relay.was_asked(), "nothing cut reaches the relay");
+    let _answers = answer(&lending.lender, "agents-2", lend("/v1/messages"));
+    lending.relay.asked().await;
 }
 
 #[tokio::test]
@@ -434,13 +513,20 @@ async fn a_lend_file_that_cant_be_read_lends_nothing() {
     fs::write(lending.folder.path().join("lend.json"), "{\"vms\": []").expect("broken");
     let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
     assert_eq!(refusal(&mut answers).await, 503);
-    // A key pasted where the file can't be read is quoted by the parser,
-    // which the borrower never hears.
+    // A key pasted where a list belongs is quoted by the parser, which
+    // the borrower never hears.
     fs::write(
         lending.folder.path().join("lend.json"),
-        "{\"vms\": sk-pasted-key}",
+        "{\"vms\": \"sk-pasted-key\", \"budgets\": {}}",
     )
     .expect("broken");
+    assert!(
+        serde_json::from_str::<Written>("{\"vms\": \"sk-pasted-key\", \"budgets\": {}}")
+            .expect_err("not a lend")
+            .to_string()
+            .contains("sk-pasted"),
+        "the parser quotes it, so the test can fail"
+    );
     let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
     match next(&mut answers).await {
         Some(Lent::Refused { status: 503, why }) => {

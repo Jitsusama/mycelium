@@ -173,11 +173,18 @@ impl Lender {
     /// A lender reading `file`, sealed by `declarers`, keeping its counts
     /// and cuts in this machine's [`folder`], whatever the node's `--state`
     /// says, since `mycelium lend cut` asks no node and reads that folder
-    /// too; and finding an upstream
-    /// within the login's runtime folder.
+    /// too, which it says in the node's log, beside what `lend cut`
+    /// says it wrote; and finding an upstream within the login's runtime
+    /// folder.
     #[must_use]
     pub fn from_file(file: PathBuf, declarers: Vec<u32>) -> Self {
-        Self::new(file, declarers, folder(), crate::place::login_runtime())
+        let folder = folder();
+        eprintln!(
+            "mycelium: this machine lends as {} says, its cuts in {}",
+            file.display(),
+            folder.join("cuts.json").display()
+        );
+        Self::new(file, declarers, folder, crate::place::login_runtime())
     }
 
     /// What may be lent, as the file says now. Why it isn't taken goes to
@@ -204,14 +211,65 @@ impl Lender {
     /// be read cut every machine off, since a lend can't be told apart
     /// from one meant to have ended.
     fn cut_off(&self, machine: &str) -> bool {
-        cuts(&self.folder).map_or(true, |cuts| {
-            cuts.iter().any(|cut| cut == machine || cut == EVERY)
-        })
+        self.cut_off_why(machine).is_some()
+    }
+
+    /// Why `machine` is cut off, as the cuts say now, where it is: cuts
+    /// that can't be read say so, and why goes to this machine's log.
+    fn cut_off_why(&self, machine: &str) -> Option<String> {
+        match cuts(&self.folder) {
+            Ok(cuts) => cuts
+                .iter()
+                .any(|cut| cut == machine || cut == EVERY)
+                .then(|| format!("{machine} is cut off from this machine's lend")),
+            Err(error) => {
+                eprintln!(
+                    "mycelium: this machine's lend cuts, in {}, can't be read, so it lends \
+                     nothing: {error}",
+                    self.folder.display()
+                );
+                Some("this machine's lend cuts can't be read, so it lends nothing".to_owned())
+            }
+        }
     }
 
     /// Counts a request of `machine`'s against its `most` a day, refusing
-    /// it once the day's are spent.
+    /// it once the day's are spent. Only one node on a machine may lend,
+    /// since the count is kept whole within one node alone.
     fn count(&self, machine: &str, most: u64) -> Result<(), Refusal> {
+        self.counted(machine, |made| {
+            if *made >= most {
+                return Err(refused(
+                    429,
+                    format!("{machine} has made its {most} requests today"),
+                ));
+            }
+            *made += 1;
+            Ok(())
+        })
+    }
+
+    /// Gives back a request of `machine`'s counted today, which the
+    /// lender couldn't carry for a fault of its own.
+    fn uncount(&self, machine: &str) {
+        if let Err(refusal) = self.counted(machine, |made| {
+            *made = made.saturating_sub(1);
+            Ok(())
+        }) {
+            eprintln!(
+                "mycelium: a request of {machine}'s can't be given back: {}",
+                refusal.why
+            );
+        }
+    }
+
+    /// Changes `machine`'s count of the day's requests as `changing`
+    /// says, keeping it whole.
+    fn counted(
+        &self,
+        machine: &str,
+        changing: impl FnOnce(&mut u64) -> Result<(), Refusal>,
+    ) -> Result<(), Refusal> {
         let _held = self
             .counting
             .lock()
@@ -230,14 +288,7 @@ impl Lender {
                 ));
             }
         };
-        let made = counts.entry(machine.to_owned()).or_default();
-        if *made >= most {
-            return Err(refused(
-                429,
-                format!("{machine} has made its {most} requests today"),
-            ));
-        }
-        *made += 1;
+        changing(counts.entry(machine.to_owned()).or_default())?;
         write_whole(&self.folder, &file, &counts)
             .map_err(|error| refused(503, format!("the day's count can't be kept: {error}")))
     }
@@ -261,13 +312,18 @@ fn cuts(folder: &Path) -> io::Result<Vec<String>> {
 
 /// Cuts `cut` off from the lend kept in `folder`, at once: each lend it
 /// asks from now is refused, and each it is answered ends within a
-/// second.
+/// second. Cutting every machine off overwrites cuts that can't be read.
+/// Answers the machines cut off now.
 ///
 /// # Errors
 ///
-/// When the cuts can't be read or written.
-pub fn cut(folder: &Path, cut: &Cut) -> io::Result<()> {
-    let mut cuts = cuts(folder)?;
+/// When the cuts can't be read, but for cutting every machine, or can't
+/// be written.
+pub fn cut(folder: &Path, cut: &Cut) -> io::Result<Vec<String>> {
+    let mut cuts = match (cuts(folder), cut) {
+        (Err(_), Cut::All) => Vec::new(),
+        (cuts, _) => cuts?,
+    };
     let name = match cut {
         Cut::Machine(machine) => machine.as_str(),
         Cut::All => EVERY,
@@ -275,22 +331,38 @@ pub fn cut(folder: &Path, cut: &Cut) -> io::Result<()> {
     if !cuts.iter().any(|one| one == name) {
         cuts.push(name.to_owned());
     }
-    write_whole(folder, &folder.join("cuts.json"), &cuts)
+    write_whole(folder, &folder.join("cuts.json"), &cuts)?;
+    Ok(cuts)
 }
 
 /// Lets `cut` borrow again from the lend kept in `folder`; [`Cut::All`]
-/// lets every machine, each cut by name too.
+/// lets every machine, each cut by name too, and overwrites cuts that
+/// can't be read. Answers the machines still cut off.
 ///
 /// # Errors
 ///
-/// When the cuts can't be read or written.
-pub fn uncut(folder: &Path, cut: &Cut) -> io::Result<()> {
-    let mut cuts = cuts(folder)?;
+/// When the cuts can't be read, but for letting every machine back, or
+/// can't be written; and when one machine is let back while every
+/// machine is cut off, which would leave it cut off.
+pub fn uncut(folder: &Path, cut: &Cut) -> io::Result<Vec<String>> {
+    let mut cuts = match (cuts(folder), cut) {
+        (Err(_), Cut::All) => Vec::new(),
+        (cuts, _) => cuts?,
+    };
     match cut {
-        Cut::Machine(machine) => cuts.retain(|one| one != machine),
+        Cut::Machine(machine) => {
+            if cuts.iter().any(|one| one == EVERY) {
+                return Err(io::Error::other(format!(
+                    "every machine is cut off, so {machine} stays cut off; let every machine \
+                     back first"
+                )));
+            }
+            cuts.retain(|one| one != machine);
+        }
         Cut::All => cuts.clear(),
     }
-    write_whole(folder, &folder.join("cuts.json"), &cuts)
+    write_whole(folder, &folder.join("cuts.json"), &cuts)?;
+    Ok(cuts)
 }
 
 /// Writes `value` to `file` in `folder` whole, by a rename, so nothing
@@ -377,11 +449,23 @@ async fn lent(
     sending: &mpsc::Sender<Lent>,
     used: &mut Used,
 ) -> Ended {
-    let (asking, budget) = match allowed(lender, machine, &lend, used) {
+    let (asking, budget, most) = match allowed(lender, machine, &lend, used) {
         Ok(allowed) => allowed,
         Err(refusal) => return Ended::Refused(refusal),
     };
-    let reading = match asked(lender, &asking, &budget).await {
+    if let Err(refusal) = lender.count(machine, most) {
+        return Ended::Refused(refusal);
+    }
+    // Given back where its key can't be had or its relay doesn't answer,
+    // so a lender's own outage spends nobody's day.
+    let (stream, key) = match reached(lender, &budget).await {
+        Ok(reached) => reached,
+        Err(refusal) => {
+            lender.uncount(machine);
+            return Ended::Refused(refusal);
+        }
+    };
+    let reading = match asked(stream, key, &asking, &budget).await {
         Ok(reading) => reading,
         Err(refusal) => return Ended::Refused(refusal),
     };
@@ -399,11 +483,8 @@ async fn watched(lender: &Lender, machine: &str, sending: &mpsc::Sender<Lent>) -
         tokio::select! {
             () = sending.closed() => return Ended::Gone,
             () = tokio::time::sleep(CUTS_LOOKED_AT) => {
-                if lender.cut_off(machine) {
-                    return Ended::Refused(refused(
-                        403,
-                        format!("{machine} was cut off from this machine's lend"),
-                    ));
+                if let Some(why) = lender.cut_off_why(machine) {
+                    return Ended::Refused(refused(403, why));
                 }
             }
         }
@@ -436,20 +517,17 @@ struct Asking {
     body: Vec<u8>,
 }
 
-/// Whether `machine` may ask `lend`, counting it if so: what is carried
-/// on, and through which budget.
+/// Whether `machine` may ask `lend`: what is carried on, through which
+/// budget, and how many requests a day it may make.
 fn allowed(
     lender: &Lender,
     machine: &str,
     lend: &Lend,
     used: &mut Used,
-) -> Result<(Asking, Budget), Refusal> {
+) -> Result<(Asking, Budget, u64), Refusal> {
     let mut written = lender.written()?;
-    if lender.cut_off(machine) {
-        return Err(refused(
-            403,
-            format!("{machine} is cut off from this machine's lend"),
-        ));
+    if let Some(why) = lender.cut_off_why(machine) {
+        return Err(refused(403, why));
     }
     let mut matching = written
         .vms
@@ -521,7 +599,6 @@ fn allowed(
     used.model = serde_json::from_slice::<Modelled>(&body)
         .ok()
         .and_then(|modelled| modelled.model);
-    lender.count(machine, most)?;
     Ok((
         Asking {
             method: lend.method.clone(),
@@ -530,6 +607,7 @@ fn allowed(
             body,
         },
         budget,
+        most,
     ))
 }
 
@@ -548,26 +626,30 @@ fn spoken(said: &str) -> bool {
         && !said.ends_with(' ')
 }
 
-/// Whether `path` is `allowed` or below it, and climbs out of nowhere.
+/// Whether `path` is `allowed` or below it, and climbs out of nowhere:
+/// its path only letters, digits, `/`, `_`, `-` and `.`, its query only
+/// those but `/` and with `=` and `&`, and nothing else, so no relay can
+/// read it as climbing by a separator or an escape of its own.
 fn within(path: &str, allowed: &str) -> bool {
-    let bare = path.split(['?', '#']).next().unwrap_or_default();
+    let (bare, query) = path.split_once('?').unwrap_or((path, ""));
+    let plain = |byte: u8| byte.is_ascii_alphanumeric() || b"_-.".contains(&byte);
     let below = bare
         .strip_prefix(allowed)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/') || allowed.ends_with('/'));
     below
-        && path.starts_with('/')
-        && !path.contains(' ')
+        && bare.starts_with('/')
+        && bare.bytes().all(|byte| plain(byte) || byte == b'/')
+        && query
+            .bytes()
+            .all(|byte| plain(byte) || byte == b'=' || byte == b'&')
         && !bare.split('/').any(|part| part == ".." || part == ".")
-        && !bare.contains('%')
 }
 
-/// Asks `asking` of `budget`'s upstream, with its key added: the
-/// upstream's answer, to be read.
-async fn asked(
+/// `budget`'s key, had, and its upstream, reached; else why not.
+async fn reached(
     lender: &Lender,
-    asking: &Asking,
     budget: &Budget,
-) -> Result<BufReader<UnixStream>, Refusal> {
+) -> Result<(UnixStream, Option<String>), Refusal> {
     let key = match &budget.key {
         Some(command) => Some(key(command).await?),
         None => None,
@@ -586,12 +668,23 @@ async fn asked(
             })?
             .join(&budget.upstream)
     };
-    let mut stream = UnixStream::connect(&upstream).await.map_err(|error| {
+    let stream = UnixStream::connect(&upstream).await.map_err(|error| {
         refused(
             503,
             format!("this machine's model relay isn't answering: {error}"),
         )
     })?;
+    Ok((stream, key))
+}
+
+/// Asks `asking` of `budget`'s upstream over `stream`, with its `key`
+/// added: the upstream's answer, to be read.
+async fn asked(
+    mut stream: UnixStream,
+    key: Option<String>,
+    asking: &Asking,
+    budget: &Budget,
+) -> Result<BufReader<UnixStream>, Refusal> {
     let mut said = format!(
         "{} {} HTTP/1.1\r\nhost: {}\r\n",
         asking.method, asking.path, budget.host
@@ -658,12 +751,29 @@ enum Framing {
 }
 
 /// An answer's status and headers, read whole, and how its body is
-/// framed; else why it isn't one.
+/// framed; else why it isn't one. An interim head, 1xx but 101, is
+/// passed over for the one that follows it, and a 204 or 304 has no
+/// body whatever its headers say.
 async fn head<R: AsyncBufRead + Unpin>(
     reading: &mut R,
 ) -> Result<(u16, Vec<(String, String)>, Framing), &'static str> {
     let mut spent = 0;
-    let status_line = line(reading, &mut spent).await?;
+    loop {
+        let (status, headers, framing) = one_head(reading, &mut spent).await?;
+        match status {
+            100 | 102..=199 => {}
+            204 | 304 => return Ok((status, headers, Framing::Length(0))),
+            _ => return Ok((status, headers, framing)),
+        }
+    }
+}
+
+/// One head of an answer, counting what it took in `spent`.
+async fn one_head<R: AsyncBufRead + Unpin>(
+    reading: &mut R,
+    spent: &mut usize,
+) -> Result<(u16, Vec<(String, String)>, Framing), &'static str> {
+    let status_line = line(reading, spent).await?;
     let mut words = status_line.splitn(3, ' ');
     let status = match (words.next(), words.next()) {
         (Some(version), Some(status)) if version.starts_with("HTTP/1.") => status
@@ -676,7 +786,7 @@ async fn head<R: AsyncBufRead + Unpin>(
     let mut headers = Vec::new();
     let mut framing = Framing::Closed;
     loop {
-        let said = line(reading, &mut spent).await?;
+        let said = line(reading, spent).await?;
         if said.is_empty() {
             return Ok((status, headers, framing));
         }

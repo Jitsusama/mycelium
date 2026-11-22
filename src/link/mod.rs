@@ -814,9 +814,16 @@ impl Runs {
 
     /// Lets the run or lend asked as `ask` of this machine send one more
     /// piece.
+    /// Widens `ask`'s window by a piece the other end took; a lend's never
+    /// past [`BACKLOG`], so a worker saying it took what it was never sent
+    /// holds back no more of the lender's answer.
     fn taken(&self, ask: u64) {
-        if let Some(running) = self.here.get(&ask).or_else(|| self.lending.get(&ask)) {
+        if let Some(running) = self.here.get(&ask) {
             running.window.add_permits(1);
+        } else if let Some(lending) = self.lending.get(&ask)
+            && lending.window.available_permits() < BACKLOG
+        {
+            lending.window.add_permits(1);
         }
     }
 }

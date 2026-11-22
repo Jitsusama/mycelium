@@ -2180,26 +2180,40 @@ answers each lend the other machine asks by it, and a node started
 without one refuses every lend 403. A lend is refused 403 for a
 machine cut off, one no `prefix` starts or more than one does, a
 budget asked that isn't the machine's, a method but `POST` or `GET`,
-or a path not at or below one of `paths`, or holding `.`, `..` or `%`;
-400 for a header or body that can't be read, 413 for a body past
-32 MiB, and 429 once the machine has made its `requests_a_day` that
-day, by UTC, counted in `counts-DAY.json` in `lend/` under the
-account's state folder, whatever the node's `--state`, since `mycelium
-lend cut` asks no node. One that passes goes to `upstream`, a socket's path, or
+or a path not at or below one of `paths`, or holding a `.` or `..`
+segment or anything but letters, digits, `/`, `_`, `-` and `.`, with
+a query of those but `/`, `=` and `&`; 400 for a header or body that
+can't be read, 413 for a body past 32 MiB, and 429 once the machine
+has made its `requests_a_day` that day, by UTC. A budget bounds how
+many requests and to which paths, not what each costs. The count is
+kept in `counts-DAY.json` in `lend/` under the account's state folder,
+whatever the node's `--state`, since `mycelium lend cut` asks no node;
+only one node on a machine may lend, since its count is whole within
+one node. A lend whose key can't be had or whose upstream doesn't
+answer is given back, so a lender's outage spends no machine's day. One that
+passes goes to `upstream`, a socket's path, or
 where relative one in the account's runtime folder, for `host`, with
 only the headers the shim hands on and `key`'s command's output in
 `auth_header`, where a key is named: the borrower's own credentials
 never leave it, and the key never crosses to it. A lend file that
 can't be read, which says why only in the lender's log, or an
 upstream not answering is 503, and a key that
-can't be had is 502. `mycelium lend cut MACHINE`, or `--all`, cuts a
-machine off at once, kept in `lend/cuts.json`: each lend it asks is
-refused, and each being answered ends short within a second, until
-`mycelium lend uncut` lets it back. Each lend, refused or not, is
-written to the node's log as one line, `mycelium-lend:`, a space and
-JSON of its `time`, `lender`, `vm`, `service`, `budget`, `model`,
-`upstream` host, `request_bytes`, `response_bytes`, `status`,
-`duration_ms` and `outcome`, and never its body, headers or key.
+can't be had is 502. An interim head the upstream sends, 1xx but 101,
+is passed over for the one after it, and a 204 or 304 has no body.
+`mycelium lend cut MACHINE`, or `--all`, cuts a machine off at once,
+kept in `lend/cuts.json`: each lend it asks is refused, and each being
+answered ends short within a second, until `mycelium lend uncut` lets
+it back. Each prints a line of JSON, `cuts`, the file it wrote, and
+`cut`, the machines cut off now, and the node says in its log at start
+which file it reads, so a cut made where the node doesn't look shows.
+One machine isn't let back while every machine is cut off. Cuts that
+can't be read cut every machine off, saying why in the lender's log,
+until `--all` writes them anew. Each lend that reaches a lender,
+refused or not, is written to the node's log as one line,
+`mycelium-lend:`, a space and JSON of its `time`, `lender`, `vm`,
+`service`, `budget`, `model`, `upstream` host, `request_bytes`,
+`response_bytes`, `status`, `duration_ms` and `outcome`, and never its
+body, headers or key.
 
 ### A Hosted Session's Spawner
 

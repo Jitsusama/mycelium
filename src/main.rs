@@ -1628,10 +1628,10 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         } => lend_serve(&listen, socket, budget),
         Action::Lend {
             act: LendAct::Cut(cutting),
-        } => mycelium::lend::lender::cut(&mycelium::lend::lender::folder(), &cutting.into()),
+        } => lend_cuts(mycelium::lend::lender::cut, &cutting.into()),
         Action::Lend {
             act: LendAct::Uncut(cutting),
-        } => mycelium::lend::lender::uncut(&mycelium::lend::lender::folder(), &cutting.into()),
+        } => lend_cuts(mycelium::lend::lender::uncut, &cutting.into()),
         Action::Steer { address } => steer(&socket, address),
         Action::Orchestrates {
             heads,
@@ -2800,6 +2800,22 @@ fn said_within_home(folder: Option<PathBuf>) -> io::Result<Option<PathBuf>> {
         },
         (folder, _) => folder,
     })
+}
+
+/// Changes this machine's lend cuts by `changing` them for `cut`, saying
+/// where it wrote them and what they hold now, so a cut written where
+/// the node doesn't read it shows.
+fn lend_cuts(
+    changing: fn(&Path, &mycelium::lend::lender::Cut) -> io::Result<Vec<String>>,
+    cut: &mycelium::lend::lender::Cut,
+) -> io::Result<()> {
+    let folder = mycelium::lend::lender::folder();
+    let cuts = changing(&folder, cut)?;
+    println!(
+        "{}",
+        serde_json::json!({"cuts": folder.join("cuts.json"), "cut": cuts})
+    );
+    Ok(())
 }
 
 /// Serves pi's model requests on `listen`, each lent through the node at
