@@ -25,8 +25,8 @@ pub mod steers;
 pub(crate) use asks::{ASKS_FIT, together};
 pub(crate) use asks::{asked, asking};
 pub use asks::{read, records};
-pub(crate) use names::says_again;
 pub use names::short_names;
+pub(crate) use names::{says_again, shell_word};
 pub use shapes::Shapes;
 
 /// The swarm as the node holds it.
@@ -785,7 +785,12 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
             let named = told_apart(
                 &many
                     .iter()
-                    .map(|team| (unmarked(names::typed(team, &shorts)), address(team)))
+                    .map(|team| {
+                        (
+                            unmarked(names::typed(team, &shorts)),
+                            Some(address(team)).filter(|address| typeable(address)),
+                        )
+                    })
                     .collect::<Vec<_>>(),
             );
             Err(format!(
@@ -817,11 +822,13 @@ pub(crate) enum Picked<'a, T> {
     Several(Vec<&'a T>),
 }
 
-/// The one of `things` that `asked` names: by its address or its short
-/// name whole, in either case, and else by a part of its title, as
-/// `naming` says each; or none, or each of several. A short name and a
-/// title are matched as they are drawn, cleaned on both sides, so what a
-/// page or hint shows finds what it names.
+/// The one of `things` that `asked` names: by its address whole, then by
+/// its short name whole, in either case, and else by a part of its
+/// title, as `naming` says each; or none, or each of several. An address
+/// comes first because a peer picks its short name, which could clean to
+/// another's address and hide it. A short name and a title are matched
+/// as they are drawn, cleaned on both sides, so what a page or hint
+/// shows finds what it names.
 pub(crate) fn picked<'a: 'n, 'n, T>(
     things: &'a [T],
     asked: &str,
@@ -829,16 +836,22 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
 ) -> Picked<'a, T> {
     // A short name's words may be typed apart, as `part deux`.
     let joined = unmarked(&asked.split_whitespace().collect::<Vec<_>>().join("-"));
-    let whole: Vec<&T> = things
+    let by_address: Vec<&T> = things
         .iter()
-        .filter(|thing| {
-            let named = naming(thing);
-            named.address.eq_ignore_ascii_case(asked)
-                || named
+        .filter(|thing| naming(thing).address.eq_ignore_ascii_case(asked))
+        .collect();
+    let whole: Vec<&T> = if by_address.is_empty() {
+        things
+            .iter()
+            .filter(|thing| {
+                naming(thing)
                     .short
                     .is_some_and(|short| unmarked(short).eq_ignore_ascii_case(&joined))
-        })
-        .collect();
+            })
+            .collect()
+    } else {
+        by_address
+    };
     let lower = unmarked(asked).to_lowercase();
     let found = if whole.is_empty() {
         things
@@ -1044,9 +1057,10 @@ pub(crate) fn listed(names: &[&str]) -> String {
 /// Each of several choices by the name it's drawn with, and by its
 /// address too where another draws alike, so a refusal offering both
 /// still names something to type for each. An address is a peer's text
-/// too, so it is named only when it is one, letters and digits as a
-/// cell's is, and typing it reaches the team.
-pub(crate) fn told_apart(named: &[(String, &str)]) -> Vec<String> {
+/// too, so each is given only where typing it, where the refusal is
+/// answered, reaches the one it names, as its caller judges, and is
+/// `None` where it doesn't.
+pub(crate) fn told_apart(named: &[(String, Option<&str>)]) -> Vec<String> {
     let alike = |name: &str| {
         named
             .iter()
@@ -1056,23 +1070,17 @@ pub(crate) fn told_apart(named: &[(String, &str)]) -> Vec<String> {
     };
     named
         .iter()
-        .map(|(name, address)| {
-            if alike(name) {
-                if typeable(address) {
-                    format!("{name} ({address})")
-                } else {
-                    format!("{name} (no address to type)")
-                }
-            } else {
-                name.clone()
-            }
+        .map(|(name, address)| match address {
+            _ if !alike(name) => name.clone(),
+            Some(address) => format!("{name} ({address})"),
+            None => format!("{name} (no address to type)"),
         })
         .collect()
 }
 
-/// Whether a peer's `address` can be typed after `swarm` to reach what
-/// it names: letters and digits, as a cell's is, and one word `swarm`
-/// reads as a name, not `PAUSE` or `TEAM`.
+/// Whether a peer's `address` can be typed alone after `swarm` to reach
+/// what it names: letters and digits, as a cell's is, and one word
+/// `swarm` reads as a name, not `PAUSE` or `TEAM`.
 fn typeable(address: &str) -> bool {
     crate::forage::is_address(address) && names::one_word(address)
 }

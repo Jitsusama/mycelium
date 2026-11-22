@@ -22,7 +22,7 @@ use std::fmt::Write as _;
 use super::{Cell, Is, MACHINES, Mycelium, Network, Shape, Share};
 use crate::swarm::{
     BOLD, DOING_AT, FAINT, GAP, Label, Look, NARROWEST, Standing, fit, header, padded, row,
-    says_again, unmarked, without_marks,
+    says_again, shell_word, unmarked, without_marks,
 };
 
 impl Shape {
@@ -549,11 +549,15 @@ pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool, all: bool) -
     }
     lines.push(String::new());
     // A short name comes from a peer's subject, so it is held to one line
-    // and of marks, as on its row.
+    // and of marks, as on its row; and the example is copied into a
+    // shell, so it is given only as one word a shell reads as one name, a
+    // group's `/` and a tree's `@` among its characters, and else not.
     let example = mycelium
         .networks
         .first()
-        .map_or_else(|| "<network>".to_owned(), |each| unmarked(&each.short));
+        .map(|each| unmarked(&each.short))
+        .filter(|short| shell_word(short, &['/', '@']))
+        .unwrap_or_else(|| "<network>".to_owned());
     lines.push(look.paint(
         FAINT,
         &format!(
