@@ -224,10 +224,11 @@ impl History {
     /// that is the sleep easing the machine.
     pub fn read(&mut self, here: &str, reading: &Reading) {
         let Ok(at) = reading.at.parse::<Timestamp>() else {
-            // A reading whose time can't be told can't say for how long.
+            // A reading whose time can't be told can't say for how long,
+            // nor end what was asked to park, which waits on readings
+            // saying for five minutes that it isn't over.
             self.hot_since = None;
             self.cool_since = None;
-            self.last_hot = None;
             return;
         };
         let hot = reading
@@ -272,8 +273,10 @@ impl History {
 
     /// Whether the machine still counts as over for what it asked to
     /// park: until [`COOL_FOR`] has passed from its latest reading saying
-    /// so to its latest of any, judged apart from the run, which a cool
-    /// reading after a sleep ends at once.
+    /// it is over while another machine has room to its latest timed
+    /// reading of any, judged apart from the run, which a cool reading
+    /// after a sleep ends at once. So its asks go too once no other
+    /// machine has room for that long.
     #[must_use]
     pub fn over(&self) -> bool {
         self.last_hot
@@ -895,6 +898,10 @@ pub(super) mod tests {
             history.over(),
             "a lone reading not over after a sleep doesn't end it"
         );
+        let mut untimed = reading(&calm, now());
+        untimed.at = "later".to_owned();
+        history.read("skiff", &untimed);
+        assert!(history.over(), "nor does one whose time can't be told");
         history.read(
             "skiff",
             &reading(&calm, now() + SignedDuration::from_mins(2)),

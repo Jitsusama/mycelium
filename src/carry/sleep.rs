@@ -5,7 +5,8 @@
 //! and it wakes on its next message, steer, key or window. The node only
 //! leaves a file named for each session in a folder the harness reads,
 //! asking it to park that one sooner than it would, and takes the file
-//! back once its machine is no longer over. The harness takes it back
+//! back once its machine is no longer over while another has room. The
+//! harness takes it back
 //! too, once the session wakes or closes.
 //!
 //! A session parks only where a holder or a host keeps it, since that is
@@ -91,11 +92,14 @@ fn named_safely(id: &str) -> bool {
 /// Asks the harness to park the session `id`, in `folder`, the folder and
 /// file each its owner's alone: the file says `at` and `why` for whoever
 /// reads it, and is written whole before it appears under its name, so
-/// the harness never reads half of one.
+/// the harness never reads half of one. A file of that name that isn't an
+/// ask is left as it is, since a session says its own id and could name
+/// one the harness keeps.
 ///
 /// # Errors
 ///
-/// Where the folder can't be made or the file written.
+/// Where the folder can't be made, the file written, or a file of its
+/// name that isn't an ask is there.
 pub fn ask(folder: &Path, id: &str, at: Timestamp, why: &str) -> io::Result<()> {
     if !named_safely(id) {
         return Err(io::Error::new(
@@ -104,6 +108,13 @@ pub fn ask(folder: &Path, id: &str, at: Timestamp, why: &str) -> io::Result<()> 
         ));
     }
     own_folder(folder)?;
+    let named = folder.join(id);
+    if fs::symlink_metadata(&named).is_ok() && !reads_as_ask(&named, false) {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("{id} there isn't an ask, so it isn't replaced"),
+        ));
+    }
     let writing = folder.join(format!(".{id}.{}", std::process::id()));
     let mut text = serde_json::to_string(&json!({"at": at.to_string(), "why": why}))?;
     text.push('\n');
@@ -119,7 +130,7 @@ pub fn ask(folder: &Path, id: &str, at: Timestamp, why: &str) -> io::Result<()> 
     )?);
     file.write_all(text.as_bytes())?;
     file.sync_all()?;
-    fs::rename(&writing, folder.join(id))
+    fs::rename(&writing, named)
 }
 
 /// Makes `folder`, this account's alone, where it isn't; one already
@@ -223,10 +234,15 @@ pub fn withdraw(folder: &Path, ids: &BTreeSet<String>) -> BTreeSet<String> {
         Ok(false) => return BTreeSet::new(),
         Err(_) => return ids.clone(),
     }
+    // One gone, or no longer an ask, is nothing of this node's to take.
     ids.iter()
-        .filter(|id| match fs::remove_file(folder.join(id)) {
-            Ok(()) => false,
-            Err(error) => error.kind() != io::ErrorKind::NotFound,
+        .filter(|id| {
+            let named = folder.join(id);
+            reads_as_ask(&named, false)
+                && match fs::remove_file(named) {
+                    Ok(()) => false,
+                    Err(error) => error.kind() != io::ErrorKind::NotFound,
+                }
         })
         .cloned()
         .collect()
@@ -515,6 +531,20 @@ mod tests {
             ask(&folder, "../s1", at, "over").is_err(),
             "an id that would name a file beyond the folder is refused"
         );
+        fs::write(folder.join("state"), "the harness's own\n").expect("the harness's file");
+        assert!(
+            ask(&folder, "state", at, "over").is_err(),
+            "a session naming itself after the harness's file doesn't replace it"
+        );
+        assert!(
+            withdraw(&folder, &BTreeSet::from(["state".to_owned()])).is_empty(),
+            "nor is it taken as an ask"
+        );
+        assert_eq!(
+            fs::read_to_string(folder.join("state")).expect("still there"),
+            "the harness's own\n"
+        );
+        fs::remove_file(folder.join("state")).expect("tidied");
 
         fs::remove_file(folder.join("s2-own")).expect("its harness took it back");
         let ids = BTreeSet::from(["s1-own".to_owned(), "s2-own".to_owned()]);

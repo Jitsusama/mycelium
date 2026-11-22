@@ -1056,15 +1056,18 @@ presence names no id of its own or one another session it knows of
 names too (a session it doesn't know of can't be told apart),
 none whose id names more than letters, digits, dashes and
 underscores, and none that neither a holder nor a host keeps, since
-that is what would wake it. It takes back what it asked once its
-machine's readings have said it isn't over for five minutes, though a
-sleep ends the run at the first reading that says so, and as its
-easing task ends; and as it starts, every file in the folder that
+that is what would wake it. Nor does it replace a file of a session's
+name that isn't an ask, nor take one back. It takes back what it asked
+once its machine's readings have said for five minutes that it isn't
+over while another machine has room, so too once none has room,
+though a sleep ends the run at the first reading that says so, and as
+its easing task ends; and as it starts, every file in the folder that
 reads as an ask or a half-written one, since what made an earlier
 node ask isn't known to hold, leaving any other file there and saying
 in its log how many it took. It takes nothing from a folder that
 links elsewhere, isn't this account's, or another can write in. What
-it can't take back it tries again at the next look. Only sessions it
+it can't take back it tries again at the next look, but for a start
+sweep refused whole, which its log says. Only sessions it
 asked count as put to sleep, so the next sleep waits its settling only
 after one; a session whose ask couldn't be written may be chosen again
 by three looks, then is passed over, like one refused for good, until
