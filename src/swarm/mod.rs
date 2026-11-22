@@ -205,10 +205,15 @@ const MARKS: [char; 2] = ['\u{fdd0}', '\u{fdd1}'];
 
 /// `text` from a peer as a marked row draws it: on one line, as
 /// [`one_line`](crate::forage::one_line) says, so a break in a title can't
-/// split the block its counts line up in, and with no mark [`aligned`]
-/// reads, so a title can't move a column.
+/// split the block its counts line up in, with no mark [`aligned`]
+/// reads, so a title can't move a column, and with no space of its own
+/// at either end, so a title's leading spaces can't pass for a row's
+/// indent once it runs on and set a figure under a header.
 pub(crate) fn unmarked(text: &str) -> String {
-    crate::forage::one_line(text).replace(MARKS, "")
+    crate::forage::one_line(text)
+        .replace(MARKS, "")
+        .trim_matches(|each: char| each.is_whitespace() || each == BRAILLE_BLANK)
+        .to_owned()
 }
 
 /// `text` with no mark left in it, for a page that lines nothing up.
@@ -306,15 +311,19 @@ pub(crate) fn aligned(text: &str) -> String {
         .join("\n")
 }
 
+/// A braille blank, which draws as a space though no text calls it one,
+/// so a name may hold it to look empty.
+const BRAILLE_BLANK: char = '\u{2800}';
+
 /// `lead` as a line that runs on draws it: its indent kept, and each run
-/// of spaces after it drawn as one, with none at its end. A braille
-/// blank, which draws as a space though no text calls it one, counts
-/// as one, since a name may hold it to look empty.
+/// of spaces after it drawn as one, with none at its end. A
+/// [`BRAILLE_BLANK`] counts as a space. The indent is the row's own, as
+/// [`unmarked`] leaves a peer's text no space at its start.
 fn single_spaced(lead: &str) -> String {
     let body = lead.trim_start();
     let indent = &lead[..lead.len() - body.len()];
     let words: Vec<&str> = body
-        .split(|each: char| each.is_whitespace() || each == '\u{2800}')
+        .split(|each: char| each.is_whitespace() || each == BRAILLE_BLANK)
         .filter(|word| !word.is_empty())
         .collect();
     format!("{indent}{}", words.join(" "))

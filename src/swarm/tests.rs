@@ -542,6 +542,27 @@ fn a_row_that_runs_on_leaves_no_gap_and_spaces_out_no_figure() {
 }
 
 #[test]
+fn a_title_s_own_leading_spaces_set_no_figure_under_a_header() {
+    // Two teams of one title share its short name, so neither shows one,
+    // and the title alone leads each row.
+    for space in [" ", "\u{3000}", "\u{2800}"] {
+        let title = format!("{}1{}{}", space.repeat(36), " ".repeat(20), "x".repeat(30));
+        let mut swarm = swarm();
+        swarm.teams[0]["title"] = json!(title);
+        swarm.teams[2]["title"] = json!(title);
+        let shown = overview(&swarm, &whole());
+        let rows: Vec<&str> = shown.lines().filter(|line| line.contains("1 xx")).collect();
+        assert_eq!(rows.len(), 2, "both titles' rows are drawn, each once:\n{shown}");
+        for row in rows {
+            assert!(
+                row.starts_with("1 x") || row.starts_with("  1 x"),
+                "a title's own leading {space:?} passed for its row's indent:\n{shown}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_colour_s_escape_takes_no_column_where_marks_line_up() {
     assert_eq!(
         aligned("\u{1b}[1mab\u{1b}[0m\u{fdd0}  1\nabcd\u{fdd0}  2"),
