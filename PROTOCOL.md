@@ -970,10 +970,17 @@ do to ease itself, judging only by what it reads, and does none of it
 but where `--eases-carry` says to make its carries. It reads the
 realm's balance as `mycelium balance --follow` does and holds what
 is seen in most of the last ten readings. Once its machine
-has been held over for ten minutes while another has room, it would
-put its sessions that wait to sleep where they are. If the readings
-five minutes on still say over, it would carry one session to a peer
-with room: the smallest log first, placed as any work is and onto
+is held over while another has room, and its readings have said so
+for ten minutes, it would put its sessions that wait to sleep where
+they are. A lone reading saying otherwise, between hot ones, breaks
+nothing, though nothing is done on that reading itself; a second in a
+row starts the ten minutes again, as does a reading five minutes or
+more after the lone one. If the readings five minutes after the sleep
+still say over, it would carry one session to a peer with room; a
+reading saying otherwise since the sleep starts the ten minutes again,
+and once they have passed it carries with no new sleep, as it does
+straight away where its waiting sessions are asleep already. It
+carries the smallest log first, placed as any work is and onto
 ground as firm. A session in a turn, on the person's screen,
 orchestrating other sessions, holding a lease or a heavy run, or whose
 quest runs elsewhere too stays. So does one it can't tell any of these
