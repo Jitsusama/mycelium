@@ -27,7 +27,9 @@ use super::journal::{Ended, How, Journal};
 use super::modes::Modes;
 use super::steering::{Heard, Steers, Watching};
 use super::title::Title;
-use super::{GONE_SAID, Held, Said, Size, again, gone, next, socket, steers, turn, wake};
+use super::{
+    GONE_SAID, Held, PARKED_SAID, Said, Size, again, gone, next, parked, socket, steers, turn, wake,
+};
 use crate::node;
 use crate::record::Window;
 
@@ -337,6 +339,8 @@ struct Files {
     steering: PathBuf,
     /// Where it says, as it exits [`GONE`], that its pi host is away.
     gone: PathBuf,
+    /// Where it says, just before it quits to park, that it parks.
+    parked: PathBuf,
 }
 
 impl Files {
@@ -349,6 +353,7 @@ impl Files {
             chosen: next(dir, id),
             steering: steers(dir, id),
             gone: gone(dir, id),
+            parked: parked(dir, id),
         };
         files.take_away();
         files
@@ -364,6 +369,7 @@ impl Files {
             &self.chosen,
             &self.steering,
             &self.gone,
+            &self.parked,
         ] {
             let _ = fs::remove_file(left);
         }
@@ -402,7 +408,8 @@ fn starting(
         .env("MYCELIUM_WAKE", &files.waking)
         .env("MYCELIUM_AGAIN", &files.naming)
         .env("MYCELIUM_STEERS", &files.steering)
-        .env(GONE_SAID, &files.gone);
+        .env(GONE_SAID, &files.gone)
+        .env(PARKED_SAID, &files.parked);
     for variable in WINDOW_VARIABLES {
         command = command.env_remove(variable);
     }
@@ -424,10 +431,12 @@ fn starting(
 /// as it parks in `MYCELIUM_AGAIN`, and the file it may say where its
 /// steers land in as it parks in `MYCELIUM_STEERS`, which wakes it too as
 /// one lands that would give it a turn, and the file it writes as its pi
-/// host is away in `MYCELIUM_GONE`. On Linux it is told to sign over
+/// host is away in `MYCELIUM_GONE`, and the file it writes just before it
+/// quits to park in `MYCELIUM_PARKED`. On Linux it is told to sign over
 /// ssh only through the agents' proxy in the runtime folder, never the
 /// person's own agent, a login shell's profile notwithstanding
-/// ([`agents`]). A program exiting with [`PARKED`] is
+/// ([`agents`]). A program exiting with [`PARKED`], or ending any way
+/// at all having written its parked file, is
 /// started again on the same terminal when woken, with the command named
 /// for it from outside if any was (see [`super::name_next`]), else with
 /// the one it named itself; one that wrote its wake file before it went is restarting,
@@ -540,8 +549,12 @@ pub async fn hold(
             // program exiting so with none written ends, as any other.
             let said_gone = fs::remove_file(&files.gone).is_ok();
             let gone = said_gone && status.code() == Some(i32::from(GONE));
+            // A quit to park that hung is ended by a signal, which says no
+            // code, so the program's word that it parked keeps it so.
+            let said_parked = fs::remove_file(&files.parked).is_ok();
+            let parking = said_parked || status.code() == Some(PARKED);
             // Told to end, a program that parked as it saved stays down.
-            if telling || (!gone && status.code() != Some(PARKED)) {
+            if telling || (!gone && !parking) {
                 break status;
             }
             gone_runs = gone_runs_after(gone_runs, gone, began.elapsed());
@@ -2089,6 +2102,47 @@ mod tests {
                 "a gone file before exit {code} ends the holder all the same"
             );
         }
+    }
+
+    // A2VLJN and KP0L6A (2026-11-21): a Mac's pi quitting to park hung on
+    // a name lookup until a signal ended it, so its holder ended its window.
+    #[tokio::test]
+    async fn a_program_that_said_it_parks_stays_parked_however_its_quit_ends() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, _holder) = holding_sh(root.path()).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        // A shell takes no TERM, so its end by a signal is a KILL's.
+        window
+            .types("echo first $((40 + 2)); : > \"$MYCELIUM_PARKED\"; kill -KILL $$\r")
+            .await;
+        window.sees("first 42").await;
+        window.sees("Parked").await;
+        let parked = listed_parked(&dir, &mut changes, true).await;
+        assert_eq!(parked.pid, 0, "it is parked, with no process");
+        assert!(
+            !super::super::parked(&dir, &held.id).exists(),
+            "its word is taken, so a later run's end is judged on its own"
+        );
+        window.types("x").await;
+        let again = listed_parked(&dir, &mut changes, false).await;
+        assert!(
+            again.pid != 0 && again.pid != held.pid,
+            "a key starts it again as a new process"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_program_ended_by_a_signal_having_said_nothing_ends_its_holder() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, holder) = holding_sh(root.path()).await;
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        window.types("kill -KILL $$\r").await;
+        assert_eq!(
+            exited(holder).await,
+            None,
+            "a signal's end with no word of parking ends it, as before"
+        );
     }
 
     #[tokio::test]

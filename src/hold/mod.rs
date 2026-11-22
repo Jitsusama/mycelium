@@ -225,6 +225,18 @@ pub fn say_gone() {
 /// What a held program is told the path of [`gone`] in.
 pub const GONE_SAID: &str = "MYCELIUM_GONE";
 
+/// The file a program held as `id` in `dir` writes just before it
+/// quits to park, so its holder keeps it parked however that quit ends:
+/// pi's own end may hang, as one did on a name lookup on 2026-11-21,
+/// until a signal ends it, which says no [`holder::PARKED`].
+#[must_use]
+pub fn parked(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.parked"))
+}
+
+/// What a held program is told the path of [`parked`] in.
+pub const PARKED_SAID: &str = "MYCELIUM_PARKED";
+
 /// The file a program held as `id` in `dir` may write, as it parks, with
 /// the command that takes it up again where it left off.
 #[must_use]

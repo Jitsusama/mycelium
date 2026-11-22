@@ -152,7 +152,10 @@ same code, each line a JSON value:
    as it is sent, as a node answers `"Machine"`: after the Have, before
    its sessions, and again each minute. The other end keeps it only if
    it names the sending machine, as ready while the link stands and as
-   unreachable, with what it last said, once the link drops. Between
+   unreachable, with what it last said, once the link drops. An end
+   fallen behind what it hears keeps, of the `Machine` frames waiting,
+   only the newest, and takes every other frame in the order it came,
+   since each says the machine whole. Between
    two ends that both say `facts`, an end that has heard nothing at all
    for three minutes by the wall clock ends the link, so one left from
    before its machine slept gives way to its dialler's new one.
@@ -319,18 +322,22 @@ Three seams shape a link:
   it ends when it can't. Its error output is passed on, and a line
   saying the other end "turned this machine away" is taken as a refused
   SSH key is. A machine reached so is a worker: it is asked and asks
-  nothing back. Its end's starts, steers and updates are refused, its
-  follows are ignored, and a presence of its naming another machine
-  isn't kept, nor a reply to an ask it wasn't sent, nor what it tells
-  of carries. It is said and
-  served only the quests it was given, each by a `mycelium share --to`
-  naming it, which gives that quest alone and none above it, and takes
-  back only those and
-  the quests it began, which this machine holds none of; it can end
-  no other. A message of its isn't kept when it names as its sender a
-  session another machine holds, or when this machine already holds
-  one by that id, while its own sessions' messages and presence cross
-  as any machine's do. The name it first says hello as is the one it
+  nothing back. Its end's starts, steers, updates, carries, ends and
+  runs are refused, its follows are ignored, and a presence of its
+  naming another machine isn't kept, nor a reply to an ask it wasn't
+  sent, nor what it tells of carries. It is said and served only the
+  quests it was given, each by a `mycelium share --to` naming it,
+  which gives that quest alone and none above it, and nothing it says
+  of any quest is taken: what it writes to one it was given stays on
+  it, as does a quest it began. A message of its is kept only when it
+  names as its sender a session it holds a presence for now, and this
+  machine holds none by that id. One kept opens its `text` with
+  `[said on <worker>, a worker machine]` and a space, and gains
+  `"worker"`, the
+  machine's name, both from the link's own name for it, never from
+  what the worker says, so each session reads it as the worker's word.
+  Its sessions' presence crosses as any machine's does. The name it
+  first says hello as is the one it
   is held to: a redial of the same place saying another is refused.
   Either way, the far `mycelium link` looks each minute at
   the `mycelium` its search path names, and once that is another build
@@ -503,7 +510,16 @@ in order and says each step:
 
 1. `find`: the quest's sessions on this machine that can carry their own
    work, those running and those parked this boot. A machine not in reach,
-   or this one, is refused.
+   or this one, is refused. So is a carry whose sessions' starts the
+   machine wouldn't take: the node is asked `"Takes"` once, with each
+   session's arrival and the quest's own, and its refusal is said, as
+   `HARBOR's sessions can't start on osprey now: this asks as a fenced
+   agent, so it starts nothing held on a Mac: ...`, before any session
+   is told to carry and end. Some starts are known only after the ask:
+   a session that had ended before the carry, found as `pi-carry`
+   carries what no running session held, and one an earlier carry left
+   unstarted. The ask doesn't weigh those, and the hour's limits may
+   still refuse them, so they start last (step 4).
 2. `push`: before any is told, the node takes away each
    `<session>.cell.json` in the quest's scratch, under
    `handover/<this machine's short hostname>/` (up to its first dot),
@@ -613,8 +629,11 @@ in order and says each step:
    that cell.
 3. `share`: the quest is shared with `handover`, as `mycelium share
    --scratch handover` does.
-4. `start`: each carried session starts again on the machine, held, as
-   `mycelium start` starts one, running `pi-carry arrive QEST-... --from
+4. `start`: each carried session starts again on the machine, held:
+   those told to carry first, then the quest's own, then those the find
+   couldn't ask of, so a refusal the ask couldn't foresee meets no
+   session this carry ended. Each starts as `mycelium start` starts one,
+   running `pi-carry arrive QEST-... --from
    <this machine> --session <id>`, which waits for the handover, fetches
    or clones each tree at its path and places the session's file, and
    then `pi --session <id>` in the folder `pi-carry where QEST-... --from
@@ -1125,6 +1144,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
 | `{"PlaceToStart": work}` | `{"Placement": placement}`, as `"Place"` for a start, counted here as one |
 | `{"Start": {"work", "folder", "strict", "command", "may_cost", "once"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
+| `{"Takes": {"starts", "ordered"}}` | `{"Placement": placement}`, the last start's, placed as `"Start"` would, or a refusal; starts nothing |
 | `{"Sprout": {"words", "folder", "from", "on", "cwd"}}` | `{"Started": {"machine", "held", "folder", "attach"}}`, as for `"Start"` |
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by"}}`, where it was put, and who ordered a carry |
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
@@ -1155,6 +1175,18 @@ sent across carries `fromRealm`, and one left waiting for a link to
 carry it `forRealm`. A `Send` naming its own realm is a plain send.
 A message answering a hold (`re`) on the person's word that it is over
 carries `endsHold`, kept as its sender's file says it, and nowhere else.
+A message carries the `pid` that wrote its file, `hosted` when its
+sender is a conversation in a shared host, and the group it `invite`s
+those it names to, each as its file says it and none where the file
+says none or something it can't read, so a session reading the mesh
+through a watch knows its own messages come back and joins what it is
+invited to, as one reading the folder does. The `pid` is a process on
+the machine whose file it is: a node's own `Send`, and a message taken
+from another realm, carry the node's, and say neither `hosted` nor
+`invite`; one a link carried from another machine carries a process
+there. So a session knows its own by `pid` only beside its `from`, and
+only for what it wrote itself. `invite` is the mesh target as written
+(`#harness`), not a group's name (`harness`).
 
 A `Present` connection counts the process at its other end, as the
 kernel names it, present until the connection closes; then every session
@@ -1488,8 +1520,27 @@ it probes while its probe last answered, and lacks one whose probe
 didn't; it has a tool its `kit` lists, lacks one its kit doesn't, and
 hasn't said one where it says no kit, nor has a machine not yet made); the
 keys of the taints it `tolerates`; whether it `may_wait` for a machine
-out of reach; and how long it `lasts`, as an ISO 8601 duration such as
-`PT2H` (`2h` reads too). A machine carries the taints its configuration
+out of reach; how long it `lasts`, as an ISO 8601 duration such as
+`PT2H` (`2h` reads too); and, where its asker says, the `fence` a
+session started for it runs in, `{"kind", "from"}`. Its `kind` is
+`fence` or `strict`, never `none`. Its `from` is `spawn` (the spawn
+that asked), `quest` (the quest's README) or `default` (the harness's
+own choice, said for the record). A declaration naming any other kind
+is passed over, as an older node passes over the field, rather than
+refusing the ask; one naming any other source, or none, keeps its
+kind. The
+`from` is the asker's own word, which the node doesn't check, and it
+moves nothing. A declared fence raises an agent's fence when it is
+stricter than the node's judgement of the asker, and never lowers it,
+whatever declared it: the node can't tell the harness's start from one
+an agent asks itself, so a session started below a strict one runs
+strict. It moves only a start's judgement: a `Place` that starts
+nothing and a `Run` are judged without it, and a start relayed from
+another machine is judged by its link's end, its declaration neither
+weighed nor kept there. The person's work is judged as before, and
+each start keeps what it declared in its line in the book, as
+`declared`. A node older than the field ignores it, judging as before.
+A machine carries the taints its configuration
 declares, and while they last, `on-battery`, `memory-pressure` (past
 its queue's memory limit), `cpu-pressure` (past its queue's processor
 limit), `cpu-saturated` (its `room` `saturated`, or at processor
@@ -1595,6 +1646,28 @@ first written, the files of days more than 14 before it are let go, so
 the log holds about two weeks.
 A processor reading that isn't a number counts as none, so every
 `headroom` is a number.
+
+`"Takes"` judges each of `starts`, one after another, as `"Start"`
+would: by the asker as its own declared fence makes it, then the book
+of starts, then placement. It answers the last one's placement, or the
+refusal the first refused would answer. It starts, counts and books
+nothing; each placement is logged, as a placement and not a start. The
+book weighs the starts together: the person's stop on agents' starts, a
+session coming back already, and the hour's limits, past which a start
+would wait longer than a minute from when the one before it would have
+gone. With `ordered`, an agent's start that is word for word a carry's
+arrival is weighed uncounted, as the carry line its order keeps would
+free it; that line is kept only after the ask, and the start itself is
+still held to it. At most 128 starts are weighed in one ask. It weighs
+the realm's machines alone, never a machine made from an offer. It
+holds no room either: the carry's starts follow it by as long as its
+sessions take to end, up to 15 minutes, and other starts in that time
+may use the hour's room it found. It is this node's judgement alone,
+too: a machine a start is relayed to judges it again, and may still
+refuse it once the carry's sessions have ended. A carry asks it before
+any session is told (Carrying a Quest). A node from before it refuses
+it as a request it doesn't know, which refuses the carry too, saying
+this machine's node is too old.
 
 `"Start"` places `work` as `"PlaceToStart"` does (as `"Place"`,
 an agent's start held to `runs` too) and starts `command` held
@@ -2064,8 +2137,8 @@ it is told the work would go is where the work may run. An agent's
 start placed (`"PlaceToStart"`, `"Start"`) is held to `runs` too,
 missed as `runs-nothing`, so it starts only where that fence runs a
 command: its session doesn't run through that launcher yet, but a
-machine declaring none, as a Mac does, would run it looser than its
-asker. Since a Mac declares none, an agent's session that ran on a Mac
+machine declaring none would run it looser than its asker. Since a
+Mac is refused too, as below, an agent's session that ran on a Mac
 isn't brought back there after a restart, as its start is pinned to
 that machine, and an agent's start on a Mac that names no machine goes
 to one that runs its fence. There it begins in its home where its
@@ -2074,9 +2147,21 @@ made for it would cost. The node placing a start judges it, as a relay
 carries no asker's fence, so a machine stops taking these starts only
 once every node that may place on it judges so. Only placement is held
 so: an agent's session already held on a Mac wakes there as before,
-outside any fence, until it ends or the Mac boots again. What is
-judged is what a machine declares, never its system, so a Mac
-declaring `runs` would take such a start unfenced. The person's start is
+outside any fence, until it ends or the Mac boots again. A Mac's
+holder starts a held session outside its fence even where the Mac
+declares `runs`, so an agent's start is refused every machine whose
+facts say `system` `macos` too, missed as `lifts-fence`, `never`, and
+its refusal says so, nor is a Mac made of an offer for one; an agent's
+run there still goes through its launcher. Only an agent shown
+unfenced is let through to a Mac, screened then as a run is: its start
+declares nothing strict, every session claiming it says it runs
+unfenced and was never seen stricter, and the kernel shows it so, from
+the asker's own process (no `no_new_privs` the node lacks, and the
+node's own mounts) and from each of those sessions, a hosted one's
+record read only from the harness's own state. Anything that can't be
+read refuses, as on a Mac itself, and each start let through is told
+in the node's log with who asked, their quests, what it declared, its
+folder and its program. The person's start is
 relayed as theirs, but a machine no person works at, or one where the
 link's end can't be named, judges it an agent's, so there it needs that
 machine's launcher too, and a refusal of any start judged so says it
@@ -3159,6 +3244,15 @@ closing. A window on another machine's session, through SSH or
 Before 19 November 2026 a holder ended on 69. It still ends on any
 code but 75 and such a 69, such as 3, an attach whose host let the
 conversation go back to plain pi, even with `<id>.gone` written.
+
+A program may also write `<id>.parked`, empty, just before it quits to
+park, told its path in `MYCELIUM_PARKED`. Its run is then kept parked
+however it ends, a signal's end included, as though it exited 75: a pi
+whose quit hangs, as one on a Mac did on a name lookup, is ended by a
+signal, which says no code, and its holder would otherwise end its
+window. The file is taken away after each run, so a later run's end is
+judged on its own word. A run ended by a signal with no such file
+written ends its holder, as before 21 November 2026.
 
 A joined terminal sends frames of a tag byte, a two-byte big-endian
 length and what it carries: tag 0 is bytes typed, and tag 1 is its size,

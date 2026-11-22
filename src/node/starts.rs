@@ -163,6 +163,17 @@ pub struct Kept {
     /// already, so this one doesn't.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub again: bool,
+    /// The fence it declared its session runs in, and what declared it,
+    /// where it declared one: kept whether or not it moved who asked, so
+    /// the book says what each start claimed. A start relayed from
+    /// another machine keeps none, since that machine weighed it. One
+    /// this build can't read is none, costing the line only that.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::placement::declared_or_none"
+    )]
+    pub declared: Option<crate::placement::DeclaredFence>,
 }
 
 /// Whether no ask joined a start, so its line says nothing of it.
@@ -187,9 +198,17 @@ impl Kept {
             && self.carried.is_none()
     }
 
-    /// Whether it was asked under the name `once`, by `by` for `cell`.
+    /// Whether it was asked under the name `once`, by an asker like `by`
+    /// for `cell`.
     fn under(&self, by: By, cell: Option<&str>, once: &str) -> bool {
-        self.once.as_deref() == Some(once) && self.by == by && self.started_by.as_deref() == cell
+        // The person apart from an agent, but not one fence from
+        // another, since the asker's fence may come out otherwise when it
+        // asks again; the cell and the name tell one agent's asks apart.
+        let alike = matches!(
+            (self.by, by),
+            (By::Person, By::Person) | (By::Agent(_), By::Agent(_))
+        );
+        self.once.as_deref() == Some(once) && alike && self.started_by.as_deref() == cell
     }
 }
 
@@ -314,7 +333,7 @@ pub struct Starts {
     book: Mutex<Book>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Book {
     kept: VecDeque<Kept>,
     going: Vec<(u64, Kept)>,
@@ -460,7 +479,7 @@ impl Starts {
             let mut book = self.lock();
             let refused = Self::coming_back(&book, &asked).or_else(|| {
                 Self::once_an_hour(&book, &mut asked);
-                self.refusal(&book, &asked).map(|(why, _)| why)
+                self.refusal(&book, &asked, asked.at).map(|(why, _)| why)
             });
             if refused.is_none() {
                 let id = book.next;
@@ -473,6 +492,41 @@ impl Starts {
         asked.refused.clone_from(&refused);
         self.keep_line(&mut self.lock(), asked);
         Err(refused.unwrap_or_default())
+    }
+
+    /// Which of `asked` would be refused first as [`Self::admit`] judges
+    /// each, admitted one after another, where waiting `waits`
+    /// milliseconds for the limits to let it wouldn't do, and why: each
+    /// asked no sooner than the one before it would have gone, as a caller
+    /// waiting on each does, and gone when there is room. A refusal's room
+    /// is said from when it was asked, not from when it would have gone.
+    /// It keeps, counts and holds nothing as going, so a carry can ask for
+    /// all its starts before it tells any session to end.
+    pub fn would_refuse(&self, asked: &[Kept], waits: i64) -> Option<(usize, String)> {
+        let mut book = Book::clone(&self.lock());
+        let mut gone = i64::MIN;
+        for (index, one) in asked.iter().enumerate() {
+            let mut one = bounded(one.clone());
+            let said_at = one.at;
+            one.at = one.at.max(gone);
+            let refused = Self::coming_back(&book, &one).or_else(|| {
+                Self::once_an_hour(&book, &mut one);
+                match self.refusal(&book, &one, said_at)? {
+                    (_, Some(room)) if room <= one.at + waits => {
+                        one.at = room;
+                        None
+                    }
+                    (why, _) => Some(why),
+                }
+            });
+            if let Some(why) = refused {
+                return Some((index, why));
+            }
+            gone = one.at;
+            book.going.push((book.next, one));
+            book.next += 1;
+        }
+        None
     }
 
     /// Keeps `asked` as refused for `why`, a reason the node found
@@ -532,7 +586,8 @@ impl Starts {
         let book = self.lock();
         let mut asked = asked.clone();
         Self::once_an_hour(&book, &mut asked);
-        self.refusal(&book, &asked).and_then(|(_, room)| room)
+        self.refusal(&book, &asked, asked.at)
+            .and_then(|(_, room)| room)
     }
 
     /// Counts `asked` after all where it brings back a session the book
@@ -578,9 +633,10 @@ impl Starts {
         }
     }
 
-    /// Why `asked` is refused, if it is, and when the limits that refuse
-    /// it would let it, where it is they that do.
-    fn refusal(&self, book: &Book, asked: &Kept) -> Option<(String, Option<i64>)> {
+    /// Why `asked` is refused, if it is, with its room said from `said_at`,
+    /// and when the limits that refuse it would let it, where it is they
+    /// that do.
+    fn refusal(&self, book: &Book, asked: &Kept, said_at: i64) -> Option<(String, Option<i64>)> {
         if !matches!(asked.by, By::Agent(_)) {
             return None;
         }
@@ -610,7 +666,7 @@ impl Starts {
             return None;
         }
         let (why, room) = Self::past_limits(book, asked)?;
-        Some((paced(&why, room, asked.at), Some(room)))
+        Some((paced(&why, room, said_at), Some(room)))
     }
 
     /// Which limit `asked` would pass, said, and when it would no longer.
@@ -990,6 +1046,7 @@ mod tests {
             once: None,
             joined: 0,
             again: false,
+            declared: None,
         }
     }
 
@@ -1041,6 +1098,107 @@ mod tests {
             next.asked.carried, None,
             "past the ceiling, one more counts"
         );
+    }
+
+    // A2VLJN (2026-11-21): a carry asks for all its starts before it
+    // tells any session to end, so the ask weighs them together as admit
+    // would let them go one after another, and holds none as going.
+    #[test]
+    fn a_carrys_starts_are_weighed_together_as_admit_would_let_them_go() {
+        let (_dir, starts) = book();
+        for one in 0..CELL_AN_HOUR - 2 {
+            let at = NOW + i64::try_from(one).expect("few");
+            started(&starts, agent("OSPREY", at), "h");
+        }
+        let two = [agent("OSPREY", NOW + 100), agent("OSPREY", NOW + 101)];
+        assert_eq!(refused(&starts, &two, 0), None, "two fit its number");
+        let three = [
+            agent("OSPREY", NOW + 100),
+            agent("OSPREY", NOW + 101),
+            agent("OSPREY", NOW + 102),
+        ];
+        let (third, why) = starts.would_refuse(&three, 0).expect("the third doesn't");
+        assert_eq!(third, 2, "the third is the one refused");
+        assert!(why.contains("OSPREY started 8"), "{why}");
+        started(&starts, agent("OSPREY", NOW + 200), "h");
+        started(&starts, agent("OSPREY", NOW + 201), "h");
+        let late = agent("OSPREY", NOW + 300);
+        assert_eq!(
+            refused(&starts, std::slice::from_ref(&late), 0),
+            starts.admit(late).err(),
+            "the ask held none as going, and refuses as admit does"
+        );
+        let soon = NOW + HOUR - 30_000;
+        assert_eq!(
+            refused(&starts, &[agent("OSPREY", soon)], 60_000),
+            None,
+            "room within the wait lets it"
+        );
+        assert!(
+            refused(&starts, &[agent("OSPREY", soon)], 10_000).is_some(),
+            "room past it doesn't"
+        );
+        let carried = [
+            carrying("OSPREY", "s-a", NOW + 400),
+            carrying("OSPREY", "s-b", NOW + 401),
+        ];
+        assert_eq!(
+            refused(&starts, &carried, 0),
+            None,
+            "an ordered carry's arrivals start uncounted"
+        );
+        let twice = [
+            carrying("OSPREY", "s-a", NOW + 400),
+            carrying("OSPREY", "s-a", NOW + 401),
+        ];
+        assert!(
+            refused(&starts, &twice, 0).is_some(),
+            "but one carried twice in the hour counts"
+        );
+        let back = |at| reopening(By::Agent(Kind::Fence), Some("SKIFFS"), "s-c", at);
+        let coming = refused(&starts, &[back(NOW + 500), back(NOW + 501)], 0)
+            .expect("one session brought back twice");
+        assert!(coming.contains("coming back already"), "{coming}");
+    }
+
+    #[test]
+    fn each_start_asked_waits_its_minute_from_when_the_one_before_it_went() {
+        let (_dir, starts) = book();
+        // The cell's eight: the oldest leaves the hour 30 s after the ask,
+        // the next 70 s after it, which is 40 s after the first asked goes,
+        // and the rest twenty minutes on.
+        started(&starts, agent("OSPREY", NOW), "h");
+        started(&starts, agent("OSPREY", NOW + 40_000), "h");
+        for one in 0..CELL_AN_HOUR - 2 {
+            let at = NOW + 1_200_000 + i64::try_from(one).expect("few");
+            started(&starts, agent("OSPREY", at), "h");
+        }
+        let ask = NOW + HOUR - 30_000;
+        let two = [agent("OSPREY", ask), agent("OSPREY", ask)];
+        assert_eq!(
+            refused(&starts, &two, START_WAITS_MOST),
+            None,
+            "the second waits from when the first went, not from the ask"
+        );
+        let three = [
+            agent("OSPREY", ask),
+            agent("OSPREY", ask),
+            agent("OSPREY", ask),
+        ];
+        let third = refused(&starts, &three, START_WAITS_MOST)
+            .expect("a third, with no room for minutes after, doesn't");
+        // Its room comes 1,230 s after the ask, when the oldest of the
+        // rest leaves the hour, said from the ask rather than from 70 s on,
+        // when the second would have gone.
+        assert!(third.contains("room again in 21 minutes"), "{third}");
+    }
+
+    /// The longest the node lets an agent's start wait, as its ask weighs.
+    const START_WAITS_MOST: i64 = super::super::START_WAITS_MOST;
+
+    /// Why the first of `asked` [`Starts::would_refuse`] refuses would be.
+    fn refused(starts: &Starts, asked: &[Kept], waits: i64) -> Option<String> {
+        starts.would_refuse(asked, waits).map(|(_, why)| why)
     }
 
     fn resuming(cell: &str, session: &str, at: i64) -> Kept {
@@ -1562,6 +1720,11 @@ mod tests {
             again.landed(by, Some("OSPREY"), "01J", NOW + 1),
             Some(("kestrel".to_owned(), "h-1".to_owned()))
         );
+        assert_eq!(
+            again.landed(By::Agent(Kind::Strict), Some("OSPREY"), "01J", NOW + 1),
+            Some(("kestrel".to_owned(), "h-1".to_owned())),
+            "an ask again whose fence came out otherwise is the same asker's"
+        );
         assert_eq!(again.landed(by, Some("OSPREY"), "01K", NOW + 1), None);
         assert_eq!(again.landed(by, Some("KESTRL"), "01J", NOW + 1), None);
         assert_eq!(again.landed(By::Person, None, "01J", NOW + 1), None);
@@ -1569,6 +1732,17 @@ mod tests {
             again.landed(by, Some("OSPREY"), "01J", NOW + HOUR + 1),
             None
         );
+    }
+
+    // A newer node may declare a fence this build doesn't know: the line
+    // still reads, so its start still counts toward the hour's limits.
+    #[test]
+    fn a_declared_fence_this_build_cant_read_costs_its_line_only_that() {
+        let mut line = serde_json::to_value(named("OSPREY", NOW, "01J")).expect("a line");
+        line["declared"] = serde_json::json!({"kind": "sealed", "from": "spawn"});
+        let kept: Kept = serde_json::from_value(line).expect("the line still reads");
+        assert_eq!(kept.declared, None);
+        assert_eq!(kept.started_by.as_deref(), Some("OSPREY"));
     }
 
     #[test]

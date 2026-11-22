@@ -33,6 +33,9 @@ fn said(id: &str, from: &str, ago: i64, groups: &[&str], intent: Option<Intent>)
         from_realm: None,
         for_realm: None,
         ends_hold: false,
+        pid: None,
+        hosted: false,
+        invite: None,
     }
 }
 

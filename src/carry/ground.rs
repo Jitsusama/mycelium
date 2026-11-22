@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 use crate::declared::{Declared, Doors, Effect, Kind, Taint, Unrunnable};
 use crate::facts::{Machine, Readiness};
-use crate::placement::{Because, LOOSER_GROUND, Miss, RUNS_NOTHING};
+use crate::placement::{Because, LIFTS_FENCE, LOOSER_GROUND, Miss, RUNS_NOTHING};
 
 /// The fence the session `address` is judged to run in: the one its
 /// presence `claimed`, refused where its process `shown` it stricter,
@@ -148,6 +148,49 @@ pub fn runs_nothing(
     here.into_iter().chain(there).collect()
 }
 
+/// Each of `machines` an agent's held start in the fence `kind` may not
+/// be placed on, this one among them, refused saying why: every Mac,
+/// whatever it declares. A held start runs through the login shell with
+/// no launcher round it, and pi lifts its own fence on a Mac, which has
+/// no Landlock, so the session would run there outside any fence. A Mac
+/// declaring its fence's `runs` passes [`runs_nothing`], so this judges
+/// its system instead, until held starts go through the launcher.
+#[must_use]
+pub fn lifts_fence(kind: Kind, machines: &[Machine]) -> Vec<Miss> {
+    machines
+        .iter()
+        .filter(|machine| machine.system.as_deref() == Some(MAC))
+        .map(|machine| Miss {
+            machine: machine.name.clone(),
+            because: vec![Because::Refuses(Taint {
+                key: LIFTS_FENCE.to_owned(),
+                effect: Effect::Never,
+                why: format!(
+                    "{} is a Mac, where a {kind} session started held would run outside any \
+                     fence",
+                    machine.name
+                ),
+            })],
+        })
+        .collect()
+}
+
+/// Why a machine made of the offer `to`, a `system` machine, would take
+/// no agent's held start in the fence `kind`, if it wouldn't: a Mac, as
+/// [`lifts_fence`] judges one of the realm, so none is made, and paid
+/// for, only to be refused once it links.
+#[must_use]
+pub fn lifts_fence_offered(kind: Kind, to: &str, system: Option<&str>) -> Option<String> {
+    (system == Some(MAC)).then(|| {
+        format!(
+            "{to} would be a Mac, where a {kind} session started held would run outside any fence"
+        )
+    })
+}
+
+/// The system a Mac says it is, as Rust names macOS.
+const MAC: &str = "macos";
+
 /// Why a machine made of the offer `to`, declaring itself as `there`
 /// says it would, runs no command an agent asks in the fence `kind`, as
 /// [`runs_nothing`] judges a machine of the realm by its words alone, so
@@ -174,9 +217,15 @@ pub fn runs_nothing_offered(kind: Kind, to: &str, there: Option<&Declared>) -> O
 /// start is an agent's, the orchestrator's or the node's own, judged in
 /// whichever of fence and strict its asker runs, and each kind declares
 /// its own `runs`, so a carry is refused when either declared runs
-/// nothing.
+/// nothing. It is held too, so a carry to a Mac, a `system` machine as
+/// [`lifts_fence`] judges one, is refused whatever it declares.
 #[must_use]
-pub fn brought_back(to: &str, declared: Option<&Declared>) -> Option<String> {
+pub fn brought_back(to: &str, declared: Option<&Declared>, system: Option<&str>) -> Option<String> {
+    if system == Some(MAC) {
+        return Some(format!(
+            "{to} is a Mac, where a session brought back held would run outside any fence"
+        ));
+    }
     [Kind::Fence, Kind::Strict]
         .into_iter()
         .find_map(|kind| runs_nothing_there(kind, to, declared))
@@ -665,6 +714,32 @@ mod tests {
                 .count(),
             1,
             "and only so"
+        );
+    }
+
+    // Our council on #359 (2026-11-21): a carry to a Mac passed its
+    // checks, then the held start bringing the session back was refused,
+    // so the session ended and stayed down.
+    #[test]
+    fn a_carry_to_a_mac_is_refused_before_anything_ends() {
+        const FENCE: &str = "/nix/store/0000-fence/bin/fence";
+        let runs = BTreeMap::from([
+            (Kind::Fence, running(&[FENCE, "--"])),
+            (Kind::Strict, running(&[FENCE, "--"])),
+        ]);
+        let declared = declaring(Some(runs));
+        assert_eq!(
+            brought_back("osprey", Some(&declared), Some("linux")),
+            None,
+            "a machine whose fences run a command takes the carry"
+        );
+        assert_eq!(
+            brought_back("osprey", Some(&declared), Some(MAC)),
+            Some(
+                "osprey is a Mac, where a session brought back held would run outside any fence"
+                    .to_owned()
+            ),
+            "but a Mac declaring the same is refused by its system"
         );
     }
 }

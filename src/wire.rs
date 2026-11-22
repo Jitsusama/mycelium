@@ -43,6 +43,12 @@ pub enum Request {
     PlaceToStart(Work),
     /// Start a program held where placement chooses.
     Start(Start),
+    /// Where [`Request::Start`] would place each of a carry's starts,
+    /// starting and counting nothing, or the refusal one would answer:
+    /// asked before a carry tells any session to end here. A variant of
+    /// its own, since a node too old to know it refuses it, where one
+    /// would start a start whose field it didn't know.
+    Takes(Taking),
     /// Start a program here that the node of the linked machine `from`
     /// was asked to start, has judged, counted and booked, and placed
     /// here, so it starts here alone, where this machine's facts as they
@@ -233,6 +239,20 @@ pub struct Start {
     /// passes over it and starts each ask.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub once: Option<String>,
+}
+
+/// The starts a carry would ask, for [`Request::Takes`]: each session's
+/// arrival and its quest's own, as it would ask them were nobody to
+/// order it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Taking {
+    /// Each arrival, in the order the carry would start them.
+    pub starts: Vec<Start>,
+    /// Whether an orchestrator orders the carry, so an agent's arrival is
+    /// weighed as starting uncounted, as the carry line its order keeps
+    /// would free it. Only words: the start itself is held to that line.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ordered: bool,
 }
 
 /// New work to start a session on: the session's first words come from
@@ -447,8 +467,9 @@ pub enum Response {
     },
     /// The messages asked for.
     Messages(Vec<Message>),
-    /// The message as sent.
-    Sent(Message),
+    /// The message as sent, boxed since a message is far larger than any
+    /// other answer.
+    Sent(Box<Message>),
     /// The realms this realm's messages may go to.
     Flows {
         /// Each realm, by name.
@@ -532,8 +553,9 @@ pub enum Event {
     },
     /// A message went to a group the watch hears.
     Message {
-        /// The message.
-        message: Message,
+        /// The message, boxed so each event a watcher's backlog holds is
+        /// no larger than a session's.
+        message: Box<Message>,
     },
 }
 

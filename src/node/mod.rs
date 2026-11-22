@@ -41,7 +41,7 @@ use crate::murmur::{self, Murmurs};
 use crate::offer::{self, Offer};
 use crate::own_health;
 use crate::place;
-use crate::placement::{self, Miss, Need, Placement, Work};
+use crate::placement::{self, DeclaredFence, Miss, Need, Placement, Work};
 use crate::placements;
 use crate::receptor;
 use crate::record::{Intent, Message, Session, State as SessionState};
@@ -55,6 +55,7 @@ use crate::steer::{self, Steer};
 use crate::store::{self, Change, Store};
 use crate::wire::{
     Answer, By, Draft, Event, Offers, Ran, Reply, Request, Response, Run, Sprout, Start, Started,
+    Taking,
 };
 use crate::within;
 use crate::{unanswered, words};
@@ -97,6 +98,10 @@ const STARTS_LISTED: usize = 100;
 /// The longest an agent's start waits for room under its limits, in
 /// milliseconds, before it is refused and told when to ask again.
 const START_WAITS_MOST: i64 = 60_000;
+
+/// The most starts one `Takes` weighs, so one line can't ask the node to
+/// place, and log, without end: past all a cell's resumes in an hour.
+const TAKES_MOST: usize = starts::RESUMED_AN_HOUR;
 
 /// How long a link waits before dialling again after it dropped, at first
 /// and at most; each failure in a row doubles the wait.
@@ -3345,9 +3350,10 @@ impl<S: Store> Shared<S> {
     /// one, once the lock is let go. Work an agent asks, running in the fence `fence`, is refused
     /// every machine whose ground is looser than here, so nothing is carried
     /// to a machine that would refuse to run it once it got there; and an
-    /// agent's run or held start, where `runs` says it is one, every machine whose fence
+    /// agent's run or held start, where `screen` says it is one, every machine whose fence
     /// runs no command, this one's as its launcher judges it and another's
-    /// as it last said its fence, which refuses that run there. Those
+    /// as it last said its fence, which refuses that run there; and a held
+    /// start, every Mac ([`ground::lifts_fence`]). Those
     /// machines still count for what the realm reaches, and the record
     /// keeps why each was refused, so a replay refuses them too. A machine
     /// booked for one asker ([`Inner::booked`]) is weighed only where
@@ -3357,7 +3363,7 @@ impl<S: Store> Shared<S> {
         work: &Work,
         counts: Counts,
         fence: Option<crate::declared::Kind>,
-        runs: bool,
+        screen: Screen,
         admits: &Admits,
     ) -> Placement {
         // Measured before the lock is taken, since measuring reads this
@@ -3372,7 +3378,7 @@ impl<S: Store> Shared<S> {
             .map(|kind| {
                 let here = crate::declared::read(&self.declared);
                 let mut refused = ground::looser(kind, here.as_ref(), &self.machine, &machines);
-                if runs {
+                if screen != Screen::Ground {
                     // Told in the log, since a broken launcher sends an
                     // agent's runs and held starts elsewhere that would
                     // have gone here.
@@ -3391,6 +3397,9 @@ impl<S: Store> Shared<S> {
                         launches,
                         &machines,
                     ));
+                }
+                if screen == Screen::Held {
+                    refused.extend(ground::lifts_fence(kind, &machines));
                 }
                 refused
             })
@@ -3446,7 +3455,7 @@ impl<S: Store> Shared<S> {
             Request::Messages { groups, limit } => {
                 Ok(Response::Messages(self.lock().state.recent(&groups, limit)))
             }
-            Request::Send(draft) => self.send(&draft).map(Response::Sent),
+            Request::Send(draft) => self.send(&draft).map(|sent| Response::Sent(Box::new(sent))),
             Request::Flows => Ok(Response::Flows {
                 to: self.flows.to.iter().cloned().collect(),
             }),
@@ -3454,6 +3463,9 @@ impl<S: Store> Shared<S> {
             Request::Watch { .. } => Err("a watch is answered by `watch`".to_owned()),
             Request::Present => Err("being present is answered by `be_present`".to_owned()),
             Request::Start(_) => Err("a start is answered by `start`".to_owned()),
+            Request::Takes(_) => {
+                Err("whether a start is taken is answered by `would_take`".to_owned())
+            }
             Request::Relayed { .. } => Err("a relayed start is answered by `relayed`".to_owned()),
             Request::Sprout(_) => Err("a sprout is answered by `sprout`".to_owned()),
             Request::Run(_) => Err("a run is answered by `run`".to_owned()),
@@ -4682,7 +4694,8 @@ impl<S: Store> Shared<S> {
         // refused unless its fence runs a command there. Refused here
         // first, before any session is told to carry and ends.
         let declared = there.as_ref().and_then(|machine| machine.declared.as_ref());
-        if let Some(why) = ground::brought_back(to, declared) {
+        let system = there.as_ref().and_then(|machine| machine.system.as_deref());
+        if let Some(why) = ground::brought_back(to, declared, system) {
             return Err(format!(
                 "{address} isn't carried to {to}, as the start that brings it back there would \
                  be refused: {why}"
@@ -5004,7 +5017,7 @@ impl<S: Store> Shared<S> {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
-        let (by, _, charged) = self.judged_charging().await?;
+        let (by, _, charged) = self.judged_declaring(asked.work.fence).await?;
         self.counted((by, charged), asked, waits, Whither::Placed)
             .await
     }
@@ -5012,7 +5025,10 @@ impl<S: Store> Shared<S> {
     /// Starts `asked`, from the asker judged `by` whose start counts
     /// toward `charged`'s cell, as [`Self::started`] does, where
     /// `whither` says: counted, limited and booked, and waiting for room
-    /// up to `waits` milliseconds.
+    /// up to `waits` milliseconds. A name tells only the person from an
+    /// agent, so an ask again whose declared fence, or whose reading of
+    /// the claims above, came out otherwise still joins the first rather
+    /// than starting twice.
     async fn counted(
         &self,
         (by, charged): (By, Option<String>),
@@ -5022,10 +5038,7 @@ impl<S: Store> Shared<S> {
     ) -> Reply {
         asked.carries = marks_a_carry(by, &asked.command);
         let reopening = reopening(by, &asked);
-        let within = match &reopening {
-            Some((machine, session)) => Some(self.reopened_within(machine, session).await),
-            None => None,
-        };
+        let within = self.reopened_within(reopening.as_ref()).await;
         let Judged {
             started_by,
             reopened,
@@ -5070,6 +5083,7 @@ impl<S: Store> Shared<S> {
             once,
             joined: 0,
             again: again.is_some(),
+            declared: asked.work.fence,
         };
         // After the join, so an ask again under its name is answered the
         // first's start rather than refused for it; and kept, as every
@@ -5092,7 +5106,7 @@ impl<S: Store> Shared<S> {
                 self.asked_again(machine, reopened, dropped, reopening.as_ref(), asked)
                     .await
             }
-            (Whither::Placed, None) => self.placed(asked, fence, dropped).await,
+            (Whither::Placed, None) => self.placed_held(asked, by, dropped).await,
             // One relayed here starts here or nowhere, so a name another
             // machine hasn't answered under stays held for asking there.
             (Whither::Here, Some((machine, reopens))) if machine != self.machine => {
@@ -5149,23 +5163,30 @@ impl<S: Store> Shared<S> {
         }
     }
 
-    /// Whether the agent asking may reopen `session`, which ran on
-    /// `machine`, with its fence left behind, as [`reopens_within`] says:
-    /// asking as the session proved alone, never the nearest claim. One
-    /// that machine's node said has ended is judged as it was last told.
-    async fn reopened_within(&self, machine: &str, session: &str) -> Result<(), String> {
+    /// Whether the agent asking may make its `reopening` of a session,
+    /// which ran on the machine it names, with its fence left behind, as
+    /// [`reopens_within`] says: asking as the session proved alone, never
+    /// the nearest claim. One that machine's node said has ended is judged
+    /// as it was last told. None where it reopens nothing.
+    async fn reopened_within(
+        &self,
+        reopening: Option<&(String, String)>,
+    ) -> Option<Result<(), String>> {
+        let (machine, session) = reopening?;
         let proved = self.session_alone().await;
         let all = self.lock().state.sessions();
         let gone = || {
             self.store
                 .gone()
                 .iter()
-                .filter(|one| one.session == session && one.elsewhere.as_deref() == Some(machine))
+                .filter(|one| {
+                    one.session == *session && one.elsewhere.as_deref() == Some(machine.as_str())
+                })
                 .find_map(|one| mesh::session(one, &self.machine))
         };
         let reopened = all
             .iter()
-            .find(|one| one.id == session && one.machine == machine)
+            .find(|one| one.id == *session && one.machine == *machine)
             .cloned()
             .or_else(gone);
         let reopened = reopened.as_ref();
@@ -5176,7 +5197,7 @@ impl<S: Store> Shared<S> {
                 .ok_or("its presence isn't held here"),
             Err(why) => Err(why.as_str()),
         };
-        reopens_within(who_asks, reopened, &self.starts)
+        Some(reopens_within(who_asks, reopened, &self.starts))
     }
 
     /// Whether `machine`'s ground, as it last said it, is looser than
@@ -5555,9 +5576,16 @@ impl<S: Store> Shared<S> {
             };
             // Quoted, since an agent may have put anything in `from`.
             eprintln!("a start relayed from {from:?} is taken as an agent's: {why}");
+            // A fence declared on another machine was weighed there, by
+            // the asker it judged; here the asker is the link's end, so
+            // the declaration is neither weighed nor kept.
             let pinned = Start {
                 carries: false,
                 may_cost: false,
+                work: Work {
+                    fence: None,
+                    ..asked.work
+                },
                 ..asked
             };
             let started = self.counted((by, charged), pinned, 0, Whither::Here).await;
@@ -5621,8 +5649,13 @@ impl<S: Store> Shared<S> {
     /// asking no provider for a machine to make.
     async fn here(&self, asked: Start, fence: Option<crate::declared::Kind>) -> Reply {
         let admits = self.admits().await;
-        let runs = held_in_launcher(fence);
-        match self.place(&asked.work, Counts::Always, fence, runs, &admits) {
+        match self.place(
+            &asked.work,
+            Counts::Always,
+            fence,
+            held_screen(fence),
+            &admits,
+        ) {
             Placement::Placed { machine, .. } if machine == self.machine => {
                 self.start_on(machine, asked).await
             }
@@ -5637,14 +5670,174 @@ impl<S: Store> Shared<S> {
         }
     }
 
+    /// Starts a held program `by` asks, placed as [`Self::placed`] places
+    /// it: off every Mac for an agent, but where the agent is shown
+    /// unfenced ([`Self::unfenced_asking`]), where a Mac may take it, as
+    /// it did before agents' fences were weighed there. Each start let so
+    /// is told in the log, so the fence's next step on a Mac knows which
+    /// to move. A reopening let through unfenced (`reopens`) is placed
+    /// as a start with no fence is, as [`Self::here`] places one, and
+    /// only on the machine it names ([`Self::placed`]).
+    async fn placed_held(&self, asked: Start, by: By, reopens: bool) -> Reply {
+        if reopens {
+            return self.placed(asked, None, held_screen(None), true).await;
+        }
+        let unfenced = self.unfenced_asking(by, asked.work.fence).await;
+        if let Some(above) = &unfenced {
+            eprintln!("{}", told_unfenced_held(above, &asked));
+        }
+        let screen = held_or_run(unfenced.is_some(), by);
+        self.placed(asked, fence_of(by), screen, false).await
+    }
+
+    /// Where each of `asked`'s starts would be placed as
+    /// [`Self::started`] places it, one after another, starting and
+    /// counting nothing: the last one's machine, or the refusal the first
+    /// refused would answer. Each is judged as its start is, by its own
+    /// declared fence, then by the book of starts, waiting for room up to
+    /// [`START_WAITS_MOST`] from when the one before it would have gone,
+    /// then by placement. An agent's arrival in a carry said to be
+    /// ordered is weighed as the carry line kept as the order is taken
+    /// would free it, since that line is kept only after the ask. It
+    /// judges the realm's machines alone, so work none of them takes is
+    /// refused here even where a start of it would make a machine from an
+    /// offer; and this node alone, so a machine it relays a start to may
+    /// still refuse it. At most [`TAKES_MOST`] starts are asked at once.
+    async fn would_take(&self, asked: &Taking) -> Reply {
+        if asked.starts.is_empty() {
+            return Err("nothing to start: name a start".to_owned());
+        }
+        if asked.starts.len() > TAKES_MOST {
+            return Err(format!(
+                "{} starts asked at once, past the {TAKES_MOST} an ask weighs",
+                asked.starts.len()
+            ));
+        }
+        if asked.starts.iter().any(|one| one.command.is_empty()) {
+            return Err("nothing to start: name a program".to_owned());
+        }
+        // Each start's fence and line in the book first, up to the first
+        // either refuses, then the book weighed once over all of them, so
+        // an ask costs one pass however many it holds; then each placed
+        // up to the first refused, which answers the same refusal as
+        // starting them one after another would.
+        let mut weighed = Vec::with_capacity(asked.starts.len());
+        let mut book = Vec::with_capacity(asked.starts.len());
+        let mut unweighed = None;
+        for one in &asked.starts {
+            let judged = match self.judged_declaring(one.work.fence).await {
+                Ok((by, _, charged)) => self
+                    .booked_as((by, charged), one, asked.ordered)
+                    .map(|(one, kept)| (by, one, kept)),
+                Err(why) => Err(why),
+            };
+            match judged {
+                Ok((by, one, kept)) => {
+                    weighed.push((by, one));
+                    book.push(kept);
+                }
+                Err(why) => {
+                    unweighed = Some(why);
+                    break;
+                }
+            }
+        }
+        let unbooked = self.starts.would_refuse(&book, START_WAITS_MOST);
+        let booked = unbooked.as_ref().map_or(weighed.len(), |(first, _)| *first);
+        let admits = self.admits().await;
+        let mut answer = Err("nothing to start: name a start".to_owned());
+        for (by, one) in &weighed[..booked] {
+            let fence = fence_of(*by);
+            let unfenced = self.unfenced_asking(*by, one.work.fence).await;
+            let screen = held_or_run(unfenced.is_some(), *by);
+            answer = match self.place(&one.work, Counts::Never, fence, screen, &admits) {
+                placed @ Placement::Placed { .. } => Ok(Response::Placement(placed)),
+                Placement::Pending { misses } => return Err(nowhere_now(&misses)),
+                Placement::Refused { misses } => {
+                    return Err(fenced_out(&one.work, &misses, fence)
+                        .unwrap_or_else(|| format!("nowhere: {}", placement::said(&misses))));
+                }
+            };
+        }
+        match (unbooked, unweighed) {
+            (Some((_, why)), _) | (None, Some(why)) => Err(why),
+            (None, None) => answer,
+        }
+    }
+
+    /// `asked`, as [`Self::would_take`] weighs one of its starts, from
+    /// the asker judged `by` whose starts count toward `charged`'s cell:
+    /// pinned as it would start, as [`Self::counted`] pins a session it
+    /// brings back, with the line the book would keep of it; or why it
+    /// is left to its holder. Nothing is kept, counted or held as going.
+    fn booked_as(
+        &self,
+        (by, charged): (By, Option<String>),
+        asked: &Start,
+        ordered: bool,
+    ) -> Result<(Start, starts::Kept), String> {
+        let mut asked = asked.clone();
+        asked.carries = marks_a_carry(by, &asked.command);
+        let Judged {
+            started_by,
+            reopened,
+            reopens,
+            on,
+            parked,
+            turning,
+        } = self.weighed((by, charged), &asked, Whither::Placed);
+        if let Some(why) = left_to_its_holder(parked, turning) {
+            return Err(why);
+        }
+        let started_by = started_by.filter(|_| by != By::Person);
+        let resumes = Self::brought_there(reopened, on, &mut asked, Whither::Placed);
+        // An arrival of an ordered carry from here to the one machine it
+        // names, as Start frees it, but for the carry line, which is kept
+        // only after the ask, and the orchestrator who ordered it, which
+        // is proved only then.
+        let carried = match crate::carry::unordered_arrival(&asked.command) {
+            Some(arrives)
+                if ordered
+                    && matches!(by, By::Agent(_))
+                    && arrives.from == self.machine
+                    && matches!(asked.work.needs.as_slice(), [Need::Machine(_)]) =>
+            {
+                Some(arrives.session.to_owned())
+            }
+            _ => self.carried_by_order(by, started_by.as_deref(), &asked, Whither::Placed),
+        };
+        let kept = starts::Kept {
+            at: jiff::Timestamp::now().as_millisecond(),
+            by,
+            started_by,
+            folder: asked.folder.clone(),
+            program: asked.command.first().cloned(),
+            resumes,
+            reopens,
+            carried,
+            machine: None,
+            held: None,
+            failed: None,
+            refused: None,
+            once: None,
+            joined: 0,
+            again: false,
+            declared: asked.work.fence,
+        };
+        Ok((asked, kept))
+    }
+
     /// Starts a program held on the machine placement chooses, answering
     /// where and how to join it, or why it didn't start. Where none of the
     /// realm's machines takes it, on a machine made for it: one that costs
     /// nothing for any start, and one that costs only for a start that
-    /// says it may. An agent's, asked in `fence`, is held to its own
-    /// ground, as a run of its is, so a session it starts never lands
-    /// looser than the one asking, nor where that fence runs no command
-    /// ([`held_in_launcher`]).
+    /// says it may. An agent's, asked in `fence`, is held to that ground,
+    /// as a run of its is: the asker as judged with the fence its start
+    /// declared, which only ever raises it ([`asker::declaring`]), so a
+    /// session it starts never lands looser than the one asking, nor
+    /// where that fence runs no command, nor on a Mac ([`held_screen`]),
+    /// unless `screen` lets a Mac take it, for an agent shown unfenced
+    /// ([`Self::placed_held`]).
     ///
     /// A reopening let through unfenced (`reopens`) is asked only of a
     /// node that judges it, since one older takes it as any start, and
@@ -5653,47 +5846,28 @@ impl<S: Store> Shared<S> {
         &self,
         asked: Start,
         fence: Option<crate::declared::Kind>,
+        screen: Screen,
         reopens: bool,
     ) -> Reply {
         let admits = self.admits().await;
-        let runs = held_in_launcher(fence);
-        let (misses, nowhere) = match self.place(&asked.work, Counts::Always, fence, runs, &admits)
-        {
-            Placement::Placed { machine, .. } if reopens && machine != self.machine => {
-                return self.asked_there(&machine, asked, true).await;
-            }
-            Placement::Placed { machine, .. } => return self.start_on(machine, asked).await,
-            Placement::Pending { misses } => {
-                let nowhere = format!(
-                    "nowhere now, though a machine out of reach would do: {}",
-                    placement::said(&misses)
-                );
-                (misses, nowhere)
-            }
-            Placement::Refused { misses } => {
-                if let (Some(kind), Some(why)) = (
-                    fence,
-                    refused_named(&asked.work, &misses, placement::LOOSER_GROUND),
-                ) {
-                    return Err(format!(
-                        "this asks as {}, {LOOSER_REFUSED}: {why}",
-                        By::Agent(kind)
-                    ));
+        let (misses, nowhere) =
+            match self.place(&asked.work, Counts::Always, fence, screen, &admits) {
+                Placement::Placed { machine, .. } if reopens && machine != self.machine => {
+                    return self.asked_there(&machine, asked, true).await;
                 }
-                if let (Some(kind), Some(why)) = (
-                    fence,
-                    refused_named(&asked.work, &misses, placement::RUNS_NOTHING),
-                ) {
-                    return Err(format!(
-                        "this asks as {}, so it starts only where that fence runs a command: \
-                         {why}",
-                        By::Agent(kind)
-                    ));
+                Placement::Placed { machine, .. } => return self.start_on(machine, asked).await,
+                Placement::Pending { misses } => {
+                    let nowhere = nowhere_now(&misses);
+                    (misses, nowhere)
                 }
-                let nowhere = format!("nowhere: {}", placement::said(&misses));
-                (misses, nowhere)
-            }
-        };
+                Placement::Refused { misses } => {
+                    if let Some(why) = fenced_out(&asked.work, &misses, fence) {
+                        return Err(why);
+                    }
+                    let nowhere = format!("nowhere: {}", placement::said(&misses));
+                    (misses, nowhere)
+                }
+            };
         if reopens {
             return Err(nowhere);
         }
@@ -5728,7 +5902,7 @@ impl<S: Store> Shared<S> {
     /// The `offers` a machine may be made of for a start asked in the
     /// fence `fence`: every one for the person's, and for an agent's only
     /// those whose machine would declare ground as firm as here, and a
-    /// fence that runs a command ([`held_in_launcher`]), judged by what
+    /// fence that runs a command ([`held_screen`]), judged by what
     /// each says it would declare, so no machine is made, and paid for,
     /// only to be refused once it links.
     ///
@@ -5750,7 +5924,10 @@ impl<S: Store> Shared<S> {
         for offer in offers {
             let said = offer.facts.declared.as_ref();
             let refused = ground::looser_offered(kind, here.as_ref(), &offer.shape, said)
-                .or_else(|| ground::runs_nothing_offered(kind, &offer.shape, said));
+                .or_else(|| ground::runs_nothing_offered(kind, &offer.shape, said))
+                .or_else(|| {
+                    ground::lifts_fence_offered(kind, &offer.shape, offer.facts.system.as_deref())
+                });
             match refused {
                 None => firm.push(offer),
                 Some(looser) => why.push(looser),
@@ -5884,8 +6061,13 @@ impl<S: Store> Shared<S> {
         let mut there = asked.work.clone();
         there.needs.push(Need::Machine(made.machine.clone()));
         // Pinned to the machine made for it, which is booked for its asker.
-        let runs = held_in_launcher(fence);
-        match self.place(&there, Counts::Always, fence, runs, &Admits::All) {
+        match self.place(
+            &there,
+            Counts::Always,
+            fence,
+            held_screen(fence),
+            &Admits::All,
+        ) {
             Placement::Placed { machine, .. } => self.start_on(machine, asked).await,
             Placement::Pending { misses } | Placement::Refused { misses } => {
                 let its: Vec<Miss> = misses
@@ -6157,14 +6339,9 @@ impl<S: Store> Shared<S> {
         // only on ground as firm as here, where it stands in the fence its
         // launcher sets.
         let admits = self.admits().await;
-        let machine = match self.place(&asked.work, Counts::Never, fence, true, &admits) {
+        let machine = match self.place(&asked.work, Counts::Never, fence, Screen::Run, &admits) {
             Placement::Placed { machine, .. } => machine,
-            Placement::Pending { misses } => {
-                return Err(format!(
-                    "nowhere now, though a machine out of reach would do: {}",
-                    placement::said(&misses)
-                ));
-            }
+            Placement::Pending { misses } => return Err(nowhere_now(&misses)),
             Placement::Refused { misses } => return Err(self.run_refused(&asked, by, &misses)),
         };
         let from = asked.from.clone().unwrap_or_else(|| self.machine.clone());
@@ -6332,22 +6509,27 @@ impl<S: Store> Shared<S> {
     /// what it is told would take the work is where the work can run. Work
     /// placed to start (`counts` other than [`Counts::Never`]) is held to
     /// where its fence runs a command as a held start is
-    /// ([`held_in_launcher`]).
+    /// ([`held_screen`]). A declared fence moves only work placed to
+    /// start, since it says the fence a session started for it runs in;
+    /// a run is judged without it, so neither is its placement.
     async fn place_asked(&self, work: &Work, counts: Counts) -> Reply {
-        let fence = self.fence_asked().await?;
+        let (declaring, judged, _) = self.judged_declaring(work.fence).await?;
+        let by = if counts == Counts::Never {
+            judged
+        } else {
+            declaring
+        };
+        let fence = fence_of(by);
         // Held to the machines booked for whoever asks, as its run is.
         let admits = self.admits().await;
-        let runs = counts == Counts::Never || held_in_launcher(fence);
+        let screen = if counts == Counts::Never {
+            Screen::Run
+        } else {
+            held_screen(fence)
+        };
         Ok(Response::Placement(
-            self.place(work, counts, fence, runs, &admits),
+            self.place(work, counts, fence, screen, &admits),
         ))
-    }
-
-    /// The fence whoever asks runs in, as [`Self::judged`] tells it and
-    /// [`fence_of`] holds it.
-    async fn fence_asked(&self) -> Result<Option<crate::declared::Kind>, String> {
-        let (judged, _) = self.judged().await?;
-        Ok(fence_of(judged))
     }
 
     /// Who asks a run, as [`asker::judge`] tells it, and the sessions
@@ -6362,22 +6544,7 @@ impl<S: Store> Shared<S> {
     /// tells them, and the session a start it asks counts toward, as
     /// [`asker::charged`] tells it, all from one reading.
     async fn judged_charging(&self) -> Result<(By, Vec<String>, Option<String>), String> {
-        let standing = self.standing();
-        let claims: Vec<asker::Claim> = standing
-            .iter()
-            .filter_map(|presence| asker::Claim::of(&presence.session, &presence.body))
-            .collect();
-        // A fence this node doesn't know is none it can read.
-        let fences: HashMap<String, Option<crate::declared::Kind>> = standing
-            .into_iter()
-            .map(|presence| {
-                let fence = presence
-                    .body
-                    .get("fence")
-                    .and_then(|said| serde_json::from_value(said.clone()).ok());
-                (presence.session, fence)
-            })
-            .collect();
+        let (claims, fences) = self.claims_saying_fences();
         let (client, processes) = (self.client, self.processes.clone());
         tokio::task::spawn_blocking(move || {
             let above = asker::claimed_above(client, &processes, &claims);
@@ -6390,6 +6557,119 @@ impl<S: Store> Shared<S> {
         })
         .await
         .map_err(|error| format!("who asks couldn't be told: {error}"))
+    }
+
+    /// What the presences standing here claim of who owns each session,
+    /// and the fence each says it runs in, none where it names one this
+    /// node doesn't know, since that is none it can read.
+    fn claims_saying_fences(
+        &self,
+    ) -> (
+        Vec<asker::Claim>,
+        HashMap<String, Option<crate::declared::Kind>>,
+    ) {
+        let standing = self.standing();
+        let claims = standing
+            .iter()
+            .filter_map(|presence| asker::Claim::of(&presence.session, &presence.body))
+            .collect();
+        let fences = standing
+            .into_iter()
+            .map(|presence| {
+                let fence = presence
+                    .body
+                    .get("fence")
+                    .and_then(|said| serde_json::from_value(said.clone()).ok());
+                (presence.session, fence)
+            })
+            .collect();
+        (claims, fences)
+    }
+
+    /// The sessions claiming the agent that asks `by` for a held start
+    /// declaring `declared`, each with the quest its presence names, where
+    /// a Mac may take that start by ISXEG8's terms of 21 November: the
+    /// start isn't strict, by what it declares or who asks; every session
+    /// claiming the asker says it runs unfenced and was never seen
+    /// stricter; the kernel shows it unfenced too, from the asker's own
+    /// process and each of those sessions' ([`asker::shows_unfenced`]);
+    /// and the hosts' records it reads lie in the harness's own state.
+    /// None where any of it fails or can't be told, so the start is held
+    /// off every Mac as [`held_screen`] says.
+    async fn unfenced_asking(
+        &self,
+        by: By,
+        declared: Option<DeclaredFence>,
+    ) -> Option<Vec<(String, serde_json::Value)>> {
+        use crate::declared::Kind;
+        let By::Agent(kind) = by else {
+            return None;
+        };
+        if kind == Kind::Strict
+            || declared.is_some_and(|declared| Kind::from(declared.kind) == Kind::Strict)
+        {
+            return None;
+        }
+        let home = PathBuf::from(std::env::var_os("HOME")?);
+        if !asker::hosts_are_the_harnesses(&self.hosts, &home) {
+            return None;
+        }
+        let quests: HashMap<String, serde_json::Value> = self
+            .standing()
+            .into_iter()
+            .map(|presence| {
+                let quest = presence
+                    .body
+                    .get("quest")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                (presence.session, quest)
+            })
+            .collect();
+        let (claims, said) = self.claims_saying_fences();
+        let (client, processes, hosts, logs, seen) = (
+            self.client,
+            self.processes.clone(),
+            self.hosts.clone(),
+            self.logs.clone(),
+            self.fences.clone(),
+        );
+        tokio::task::spawn_blocking(move || {
+            let above = asker::claimed_above(client, &processes, &claims);
+            let loose = above.iter().all(|session| {
+                said.get(session).copied().flatten() == Some(Kind::None)
+                    && seen.strictest(session) == Ok(Kind::None)
+            });
+            (loose && asker::shows_unfenced(client, &processes, &claims, &hosts, &logs)).then(
+                || {
+                    above
+                        .into_iter()
+                        .map(|session| {
+                            let quest = quests
+                                .get(&session)
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null);
+                            (session, quest)
+                        })
+                        .collect()
+                },
+            )
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// Who asks a start that declares `declared`, as [`asker::declaring`]
+    /// lets the declaration raise [`Self::judged_charging`]'s judgement;
+    /// that judgement before it was raised; and the session the start
+    /// counts toward.
+    async fn judged_declaring(
+        &self,
+        declared: Option<DeclaredFence>,
+    ) -> Result<(By, By, Option<String>), String> {
+        let (by, _, charged) = self.judged_charging().await?;
+        Ok((asker::declaring(by, declared), by, charged))
     }
 
     /// Starts a watch: its first events are the whole state, taken under
@@ -6428,7 +6708,9 @@ impl<S: Store> Shared<S> {
 impl Inner {
     fn send_message(&mut self, message: Message) {
         let heard = self.routes.listeners(&message.groups);
-        let event = Event::Message { message };
+        let event = Event::Message {
+            message: Box::new(message),
+        };
         for id in heard {
             self.send(id, &event);
         }
@@ -6505,6 +6787,7 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
         }
         let reply: Answer = match request {
             Ok(Request::Start(asked)) => shared.start(asked).await.into(),
+            Ok(Request::Takes(asked)) => shared.would_take(&asked).await.into(),
             Ok(Request::Relayed { from, start }) => shared.relayed(&from, start).await.into(),
             Ok(Request::Sprout(asked)) => shared.sprout(asked).await.into(),
             Ok(Request::Steer { address, steer }) => shared.steer(&address, &steer).await.into(),
@@ -6559,8 +6842,22 @@ fn refused(why: &str) {
     eprintln!("a run is refused: {}", why.escape_debug());
 }
 
-/// Whether a session started held in the fence `fence` is placed only
-/// where that fence declares how a command runs, as an agent's runs are:
+/// The log's line for `asked`, a held start an agent shown unfenced asks,
+/// claimed by the sessions `above`, each with its quest: who asks, the
+/// quests, the fence it declares and what it starts.
+fn told_unfenced_held(above: &[(String, serde_json::Value)], asked: &Start) -> String {
+    let line = serde_json::json!({
+        "asker": above.iter().map(|(session, _)| session).collect::<Vec<_>>(),
+        "quests": above.iter().map(|(_, quest)| quest).collect::<Vec<_>>(),
+        "declared": asked.work.fence.map(|declared| declared.kind),
+        "folder": asked.folder,
+        "program": asked.command.first(),
+    });
+    format!("an unfenced agent's held start, which a Mac may take: {line}")
+}
+
+/// How a session started held in the fence `fence` is screened: placed
+/// only where that fence declares how a command runs, as an agent's runs are:
 /// any start judged an agent's, which [`fence_of`] floors at the agent
 /// fence. The person's start is spared by having no fence, not by this,
 /// so where a relay's end is judged an agent's, as where no person works,
@@ -6571,12 +6868,30 @@ fn refused(why: &str) {
 /// session would run looser than its asker. It stands in for that until
 /// held starts go through the launcher, so a Linux machine whose launcher
 /// is refused, or whose node is too old to say its `runs`, takes no
-/// agent's held start either. It reads what a machine declares, never
-/// its system, so a Mac that did declare a launcher would still take one
-/// unfenced: none does, since a Mac's fence is declared with no `runs`
-/// until its held starts go through it.
-fn held_in_launcher(fence: Option<crate::declared::Kind>) -> bool {
-    fence.is_some()
+/// agent's held start either. What a machine declares can't stand in
+/// on a Mac, since a Mac declaring its fence's `runs` would pass, so a
+/// held start judged an agent's is refused every Mac by its system too
+/// ([`ground::lifts_fence`]), unless the agent is shown unfenced
+/// ([`Shared::placed_held`]).
+fn held_screen(fence: Option<crate::declared::Kind>) -> Screen {
+    if fence.is_some() {
+        Screen::Held
+    } else {
+        Screen::Ground
+    }
+}
+
+/// What placement holds an agent's work to, beside ground as firm as
+/// where it asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Screen {
+    /// Firm ground alone.
+    Ground,
+    /// An agent's run: only where its fence runs a command.
+    Run,
+    /// An agent's held start: where its fence runs a command, and on no
+    /// Mac, whose holder would start it outside any fence.
+    Held,
 }
 
 /// Why `machine` refused the work with the refusal `key`, where it did.
@@ -6589,6 +6904,47 @@ fn refused_on(misses: &[Miss], machine: &str, key: &str) -> Option<String> {
             placement::Because::Refuses(taint) if taint.key == key => Some(taint.why.clone()),
             _ => None,
         })
+}
+
+/// The screen a held start asked `by` is placed through: a run's, where
+/// the agent asking is shown `unfenced`, else a held one's.
+fn held_or_run(unfenced: bool, by: By) -> Screen {
+    if unfenced {
+        Screen::Run
+    } else {
+        held_screen(fence_of(by))
+    }
+}
+
+/// Why work that `misses` say only a machine out of reach would take
+/// starts nowhere now.
+fn nowhere_now(misses: &[Miss]) -> String {
+    format!(
+        "nowhere now, though a machine out of reach would do: {}",
+        placement::said(misses)
+    )
+}
+
+/// Why an agent's `work`, asked in `fence`, starts nowhere, where the
+/// machine it names refused it for that fence: looser ground, a fence
+/// that runs no command there, or a Mac that lifts it. None where the
+/// person asks, or no such refusal was the named machine's.
+fn fenced_out(
+    work: &Work,
+    misses: &[Miss],
+    fence: Option<crate::declared::Kind>,
+) -> Option<String> {
+    let asks = By::Agent(fence?);
+    if let Some(why) = refused_named(work, misses, placement::LOOSER_GROUND) {
+        return Some(format!("this asks as {asks}, {LOOSER_REFUSED}: {why}"));
+    }
+    if let Some(why) = refused_named(work, misses, placement::RUNS_NOTHING) {
+        return Some(format!(
+            "this asks as {asks}, so it starts only where that fence runs a command: {why}"
+        ));
+    }
+    refused_named(work, misses, placement::LIFTS_FENCE)
+        .map(|why| format!("this asks as {asks}, so it starts nothing held on a Mac: {why}"))
 }
 
 /// Why the machine `work` names refused it with the refusal `key` (its
@@ -6897,6 +7253,7 @@ mod tests {
             tolerates: Vec::new(),
             may_wait: false,
             lasts: None,
+            fence: None,
         }
     }
 
@@ -13402,9 +13759,17 @@ esac
     /// each a process that ends as it's told to, answering their pids.
     fn holds_for_real(folder: &Path, id: &str) -> (u32, u32) {
         use std::os::unix::process::CommandExt;
+        // Neither holds the output the build reads from, so one a test
+        // leaves running, failed or not, never keeps the build waiting
+        // on it for as long as it sleeps, as two did on a Mac (EWUL44, 21
+        // November).
         let sleeps = || {
             let mut sleep = std::process::Command::new("sleep");
-            sleep.arg("1000");
+            sleep
+                .arg("1000")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
             sleep
         };
         let holder = reaped(sleeps().spawn().expect("the holder starts"));
@@ -13684,6 +14049,7 @@ esac
                 tolerates: Vec::new(),
                 may_wait: false,
                 lasts: None,
+                fence: None,
             },
             // A full path, since a build's home is no folder at all.
             folder: Some(std::env::temp_dir()),
@@ -14143,6 +14509,250 @@ esac
             ask(socket, Request::Start(held)).await,
             Err("no link reaches tern now".to_owned()),
             "nor does the person's start, which is held to no fence's launcher"
+        );
+    }
+
+    // ISXEG8 (2026-11-21): a Mac's holder starts a held session outside
+    // any fence, so no held start judged an agent's lands on one, though
+    // the Mac declares its fence's runs and its room is fresh.
+    #[tokio::test]
+    async fn an_agents_held_start_lands_on_no_mac() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        let osprey = facts::Machine {
+            system: Some("macos".to_owned()),
+            ..fenced("osprey", &["remote"])
+        };
+        store.put_machine(&osprey).expect("what it said is kept");
+        declares_runs(&socket, true);
+        asks_below(&socket, 7001);
+
+        let on_osprey = work(vec![Need::Machine("osprey".to_owned())]);
+        let answer =
+            placement_through(socket.clone(), Request::PlaceToStart(on_osprey.clone())).await;
+        let Placement::Refused { misses } = answer else {
+            panic!("osprey doesn't take an agent's start: {answer:?}");
+        };
+        assert!(
+            refused_on(&misses, "osprey", placement::LIFTS_FENCE).is_some(),
+            "a session started there would run unfenced: {}",
+            placement::said(&misses)
+        );
+        let toward_osprey = Work {
+            prefers: vec![Need::Machine("osprey".to_owned())],
+            ..work(Vec::new())
+        };
+        let placed = |request: Request| {
+            let socket = socket.clone();
+            async move {
+                match placement_through(socket, request).await {
+                    Placement::Placed { machine, .. } => machine,
+                    other => panic!("placed: {other:?}"),
+                }
+            }
+        };
+        assert_ne!(
+            placed(Request::PlaceToStart(toward_osprey.clone())).await,
+            "osprey",
+            "an agent's start that would rather the Mac goes elsewhere"
+        );
+        assert_eq!(
+            placed(Request::Place(toward_osprey)).await,
+            "osprey",
+            "an agent's run still goes there, through the Mac's launcher"
+        );
+        let held = Start {
+            work: on_osprey,
+            folder: None,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+            strict: false,
+        };
+        assert_eq!(
+            ask(socket.clone(), Request::Start(held.clone())).await,
+            Err(
+                "this asks as a strictly fenced agent, so it starts nothing held on a Mac: \
+                 osprey is a Mac, where a strictly fenced session started held would run \
+                 outside any fence"
+                    .to_owned()
+            ),
+            "an agent's start naming the Mac is told why not"
+        );
+        asks_as_person(&socket);
+        assert_eq!(
+            ask(socket, Request::Start(held)).await,
+            Err("no link reaches osprey now".to_owned()),
+            "the person's start is no agent's, so it goes as far as the link"
+        );
+    }
+
+    // A2VLJN (2026-11-21): a carry asks whether its sessions' starts are
+    // taken before it tells any to end, so the ask gives the refusal a
+    // start would, and starts nothing where it would be taken.
+    #[tokio::test]
+    async fn whether_a_start_is_taken_is_judged_as_its_start_and_starts_nothing() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        let osprey = facts::Machine {
+            system: Some("macos".to_owned()),
+            ..fenced("osprey", &["remote"])
+        };
+        store.put_machine(&osprey).expect("what it said is kept");
+        declares_runs(&socket, true);
+        asks_below(&socket, 7001);
+        let held = Start {
+            work: work(vec![Need::Machine("osprey".to_owned())]),
+            folder: None,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+            strict: false,
+        };
+        let asking = || {
+            Request::Takes(Taking {
+                starts: vec![held.clone()],
+                ordered: false,
+            })
+        };
+        let book = socket.with_file_name("starts.jsonl");
+        let kept = || fs::read_to_string(&book).map_or(0, |kept| kept.lines().count());
+        let before = kept();
+        let taken = ask(socket.clone(), asking()).await;
+        assert_eq!(kept(), before, "the ask keeps nothing in the book");
+        assert!(
+            matches!(&taken, Err(why) if why.contains("starts nothing held on a Mac")),
+            "an agent's is refused for the Mac it names: {taken:?}"
+        );
+        assert_eq!(
+            taken,
+            ask(socket.clone(), Request::Start(held.clone())).await,
+            "as its start is"
+        );
+        assert!(kept() > before, "which the start keeps");
+        let stop = socket.with_file_name("starts.stopped");
+        fs::write(&stop, "").expect("the person's stop");
+        let stopped = ask(socket.clone(), asking()).await;
+        assert!(
+            matches!(&stopped, Err(why) if why.starts_with("the person stopped agents")),
+            "the person's stop on agents' starts is weighed first: {stopped:?}"
+        );
+        fs::remove_file(&stop).expect("resumed");
+        asks_as_person(&socket);
+        let Ok(Response::Placement(Placement::Placed { machine, .. })) =
+            ask(socket.clone(), asking()).await
+        else {
+            panic!("the person's start is taken");
+        };
+        assert_eq!(machine, "osprey", "by the machine it names");
+        assert_eq!(
+            ask(socket, Request::Start(held)).await,
+            Err("no link reaches osprey now".to_owned()),
+            "which a start of it would reach for, as the ask didn't"
+        );
+    }
+
+    // An orchestrator past its eight starts an hour still carries, since
+    // its ordered arrivals start uncounted, and the ask weighs a carry's
+    // starts together, so one past the limit is refused before any
+    // session ends.
+    #[tokio::test]
+    async fn an_ordered_carrys_arrivals_are_weighed_uncounted_and_together() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        asks_below(&socket, 7001);
+        let new_work = || Start {
+            work: work(vec![Need::Machine("skiff".to_owned())]),
+            folder: None,
+            strict: false,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let unstarted = Err("skiff's node starts no sessions".to_owned());
+        for _ in 0..starts::CELL_AN_HOUR - 1 {
+            assert_eq!(
+                ask(socket.clone(), Request::Start(new_work())).await,
+                unstarted
+            );
+        }
+        let arrival = |session: &str| {
+            let one = crate::carry::Done {
+                session: session.to_owned(),
+                started_before: None,
+            };
+            // From this machine, as an ordered carry's are; to it as
+            // well, so placement here measures nothing of a link.
+            crate::carry::arriving("QEST-20261107-HARBOR", "skiff", "skiff", &one, None)
+        };
+        let takes = |starts, ordered| {
+            let socket = socket.clone();
+            async move { ask(socket, Request::Takes(Taking { starts, ordered })).await }
+        };
+        let book = socket.with_file_name("starts.jsonl");
+        let kept = || fs::read_to_string(&book).map_or(0, |kept| kept.lines().count());
+        let before = kept();
+        let one = takes(vec![arrival("s-a")], false).await;
+        assert!(
+            matches!(&one, Ok(Response::Placement(Placement::Placed { machine, .. })) if machine == "skiff"),
+            "one more start fits the cell's eight: {one:?}"
+        );
+        let two = takes(vec![arrival("s-a"), arrival("s-b")], false).await;
+        assert!(
+            matches!(&two, Err(why) if why.contains("a cell starts at most 8 an hour")),
+            "two don't, weighed together: {two:?}"
+        );
+        assert_eq!(kept(), before, "neither ask kept anything in the book");
+        assert_eq!(
+            ask(socket.clone(), Request::Start(new_work())).await,
+            unstarted
+        );
+        let before = kept();
+        let full = takes(vec![arrival("s-a")], false).await;
+        assert!(
+            matches!(&full, Err(why) if why.contains("a cell starts at most 8 an hour")),
+            "the cell's eight leave no room: {full:?}"
+        );
+        let ordered = takes(vec![arrival("s-a"), arrival("s-b"), arrival("s-c")], true).await;
+        assert!(
+            matches!(&ordered, Ok(Response::Placement(Placement::Placed { .. }))),
+            "an ordered carry's arrivals go uncounted: {ordered:?}"
+        );
+        let elsewhere = |session: &str| {
+            let one = crate::carry::Done {
+                session: session.to_owned(),
+                started_before: None,
+            };
+            crate::carry::arriving("QEST-20261107-HARBOR", "kestrel", "skiff", &one, None)
+        };
+        let not_from_here = takes(vec![elsewhere("s-a")], true).await;
+        assert!(
+            matches!(&not_from_here, Err(why) if why.contains("a cell starts at most 8 an hour")),
+            "an arrival from another machine is no carry from here: {not_from_here:?}"
+        );
+        let fooled = takes(vec![new_work(), new_work()], true).await;
+        assert!(
+            matches!(&fooled, Err(why) if why.contains("a cell starts at most 8 an hour")),
+            "but ordered frees only a carry's arrival, word for word: {fooled:?}"
+        );
+        assert_eq!(kept(), before, "no ask keeps anything in the book");
+        let many = takes(vec![arrival("s-a"); TAKES_MOST + 1], true).await;
+        assert!(
+            matches!(&many, Err(why) if why.contains("past the 128 an ask weighs")),
+            "an ask is bounded: {many:?}"
         );
     }
 
@@ -14628,6 +15238,234 @@ esac
             ask(socket, reopen).await,
             Err("no link reaches osprey now".to_owned()),
             "a reopening on ground no looser than its asker's keeps its fence"
+        );
+    }
+
+    // ISXEG8 (2026-11-21, 949595a4): under a strict claim a start's own
+    // declaration may keep or tighten its fence, never lower it, whatever
+    // declared it, since the node can't tell the harness's start from one
+    // injected text asks for; but each is kept with its start, for the
+    // census.
+    #[tokio::test]
+    async fn a_declared_fence_is_kept_with_its_start_and_lowers_nothing_under_strict() {
+        use crate::declared::Kind;
+        use crate::placement::{FenceFrom, FenceKind};
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        let declared = |from| DeclaredFence {
+            kind: FenceKind::Fence,
+            from,
+        };
+        // Each start is pinned here, since what this machine measures in a
+        // build's sandbox may send an unpinned one to tern.
+        let start = |from| {
+            Request::Start(Start {
+                work: Work {
+                    fence: Some(declared(from)),
+                    ..work(vec![Need::Machine("skiff".to_owned())])
+                },
+                folder: None,
+                command: vec!["pi".to_owned()],
+                may_cost: false,
+                carries: false,
+                once: None,
+                strict: false,
+            })
+        };
+        // Every claim above the asker says the strict fence, and each reads.
+        asks_below(&socket, 7001);
+        let froms = [FenceFrom::Spawn, FenceFrom::Quest, FenceFrom::Default];
+        for from in froms {
+            assert_eq!(
+                ask(socket.clone(), start(from)).await,
+                Err("skiff's node starts no sessions".to_owned()),
+                "each start stays here, on the ground it asks from"
+            );
+        }
+        let book = fs::read_to_string(socket.with_file_name("starts.jsonl"))
+            .expect("every start is written down");
+        let kept: Vec<(By, Option<DeclaredFence>)> = book
+            .lines()
+            .map(|line| {
+                let kept: starts::Kept = serde_json::from_str(line).expect("a kept start");
+                (kept.by, kept.declared)
+            })
+            .collect();
+        assert_eq!(
+            kept,
+            froms.map(|from| (By::Agent(Kind::Strict), Some(declared(from)))),
+            "each start runs strict, as the claim above it says, and keeps what it declared: \
+             {book}"
+        );
+    }
+
+    // A declared fence says where a session started for the work runs, so
+    // work placed to start is judged with it, and a run's placement, like
+    // the run, without it. Under a strict claim it lowers nothing (ISXEG8,
+    // 949595a4); under a claim of the agent fence it keeps that, and a
+    // strict one raises it.
+    #[tokio::test]
+    async fn a_declared_fence_raises_where_a_start_goes_but_never_lowers_it() {
+        use crate::placement::{FenceFrom, FenceKind};
+        let toward_tern = |kind| Work {
+            fence: Some(DeclaredFence {
+                kind,
+                from: FenceFrom::Spawn,
+            }),
+            ..work(vec![Need::Machine("tern".to_owned())])
+        };
+        let placed = |socket: &Path, asked| {
+            let socket = socket.to_owned();
+            async move { format!("{:?}", placement_through(socket, asked).await) }
+        };
+        // Tern runs only strict sessions, opening more than here's, so a
+        // start judged strict is refused for its builders, and one judged
+        // in the agent fence because tern runs none.
+        let strictly = "opens builders cloud";
+        let fenced_only = "tern runs no";
+        for (fence, asker) in [("strict", 7001), ("fence", 7003)] {
+            let dir = tempfile::tempdir().expect("a temporary folder");
+            let socket = dir.path().join("skiff").join("work.sock");
+            let store = Memory::default();
+            let (_stop, _node, _client) =
+                harbour_claiming(&store, &socket, &orchestrations(), &[], (fence, STRICT)).await;
+            declares_runs(&socket, true);
+            store
+                .put_machine(&fenced("tern", &["remote", "cloud"]))
+                .expect("what it said is kept");
+            asks_below(&socket, asker);
+            let run = placed(&socket, Request::Place(toward_tern(FenceKind::Fence))).await;
+            let start = placed(
+                &socket,
+                Request::PlaceToStart(toward_tern(FenceKind::Fence)),
+            )
+            .await;
+            let raised = placed(
+                &socket,
+                Request::PlaceToStart(toward_tern(FenceKind::Strict)),
+            )
+            .await;
+            assert!(
+                raised.contains(strictly),
+                "a strict declaration raises a start under {fence}: {raised}"
+            );
+            if fence == "strict" {
+                assert!(
+                    run.contains(strictly),
+                    "a run's placement judges the asker strict, as the run would: {run}"
+                );
+                assert!(
+                    start.contains(strictly) && !start.contains(fenced_only),
+                    "and a start's under a strict claim, whatever its spawn declared: {start}"
+                );
+            } else {
+                assert!(
+                    start.contains(fenced_only) && !start.contains(strictly),
+                    "a start's under a fence claim keeps the agent fence: {start}"
+                );
+                let run = placed(&socket, Request::Place(toward_tern(FenceKind::Strict))).await;
+                assert!(
+                    run.contains(fenced_only) && !run.contains(strictly),
+                    "a run's placement isn't raised by what its work declares: {run}"
+                );
+                // The start itself, pinned here, is judged and booked
+                // raised, not only placed so.
+                let pinned = Start {
+                    work: Work {
+                        needs: vec![Need::Machine("skiff".to_owned())],
+                        ..toward_tern(FenceKind::Strict)
+                    },
+                    folder: None,
+                    command: vec!["pi".to_owned()],
+                    may_cost: false,
+                    carries: false,
+                    once: None,
+                    strict: false,
+                };
+                assert_eq!(
+                    ask(socket.clone(), Request::Start(pinned)).await,
+                    Err("skiff's node starts no sessions".to_owned()),
+                    "it stays here, on the ground it asks from"
+                );
+                let book = fs::read_to_string(socket.with_file_name("starts.jsonl"))
+                    .expect("every start is written down");
+                let kept: starts::Kept =
+                    serde_json::from_str(book.lines().next().expect("one")).expect("a kept start");
+                assert_eq!(
+                    kept.by,
+                    By::Agent(crate::declared::Kind::Strict),
+                    "a strict declaration raises the start under a fence claim: {book}"
+                );
+            }
+        }
+    }
+
+    // ISXEG8 (2026-11-21, 949595a4): a start that may cost, under a strict
+    // claim, is never made a machine whose strict ground is looser than
+    // here's, whatever fence its spawn declared.
+    #[tokio::test]
+    async fn a_start_that_may_cost_under_strict_is_never_made_a_looser_machine() {
+        use crate::placement::{FenceFrom, FenceKind};
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let made = dir.path().join("made");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        // The offer's strict fence opens builders here's doesn't, and its
+        // agent fence is shut and runs a command: a start lowered from
+        // strict would be made it, so only judging it strict refuses it.
+        let runs = json!(["/nix/store/0000-fence/bin/fence", "--"]);
+        let shut = json!({"builders": [], "forges": [], "secrets": [], "runs": runs});
+        let fence = json!({
+            "none": shut, "fence": shut,
+            "strict": {
+                "builders": ["remote", "cloud"], "forges": [], "secrets": [], "runs": runs,
+            },
+        });
+        crate::stand_in::program(
+            &socket.with_file_name("provider"),
+            &r#"#!/bin/sh
+case "$1" in
+offers) echo '{"shape": "cell", "costs": {"hourly": "1", "currency": "USD"}, "lasts": 600, "facts": {"declared": {"reach": ["basin"], "outlives": [], "costs_money": true, "taints": [], "fence": FENCE}}}' ;;
+make) : > 'MADE'; exit 1 ;;
+esac
+"#
+            .replace("FENCE", &fence.to_string())
+            .replace("MADE", &made.display().to_string()),
+        );
+        asks_below(&socket, 7001);
+        let start = Start {
+            work: Work {
+                fence: Some(DeclaredFence {
+                    kind: FenceKind::Fence,
+                    from: FenceFrom::Spawn,
+                }),
+                ..work(vec![Need::Reach("basin".to_owned())])
+            },
+            folder: None,
+            command: vec!["pi".to_owned()],
+            may_cost: true,
+            carries: false,
+            once: None,
+            strict: false,
+        };
+        let refused = ask(socket.clone(), Request::Start(start))
+            .await
+            .expect_err("no machine is made for it");
+        assert!(
+            refused.contains("where it would land looser")
+                && refused.contains("opens builders cloud"),
+            "it asks as strict, and the offer's strict ground is looser: {refused}"
+        );
+        assert!(
+            !made.exists(),
+            "and its provider is never asked to make one"
         );
     }
 
@@ -15702,7 +16540,11 @@ esac
         let firm = offered("firm", Some(&["remote"]));
         let loose = offered("loose", Some(&["remote", "cloud"]));
         let bare_shape = offered("bare", None);
-        let all = vec![firm.clone(), loose.clone(), bare_shape.clone()];
+        // Our council on #359 (2026-11-21): a Mac would be made, and paid
+        // for, then refused the agent's held start as lifts-fence.
+        let mut mac = offered("mac", Some(&["remote"]));
+        mac.facts.system = Some("macos".to_owned());
+        let all = vec![firm.clone(), loose.clone(), bare_shape.clone(), mac.clone()];
         let strict = Some(crate::declared::Kind::Strict);
         assert_eq!(
             shared.offered_on_ground(all.clone(), None),
@@ -15752,6 +16594,16 @@ esac
                     .to_owned()
             ),
             "nor is one made of an offer whose fence would run no command"
+        );
+        assert_eq!(
+            shared.offered_on_ground(vec![mac], strict),
+            Err(
+                "this asks as a strictly fenced agent, so no machine is made for it where it \
+                 would land looser or run nothing: mac would be a Mac, where a strictly fenced \
+                 session started held would run outside any fence"
+                    .to_owned()
+            ),
+            "nor is a Mac made for it"
         );
     }
 
@@ -17752,7 +18604,7 @@ esac
             &basin,
             Counts::Always,
             None,
-            false,
+            Screen::Ground,
             &Admits::Asker(told.to_owned()),
         ) {
             Placement::Placed { machine, .. } => Some(machine),
@@ -17794,7 +18646,7 @@ esac
                 &anywhere,
                 Counts::Always,
                 None,
-                false,
+                Screen::Ground,
                 &Admits::Asker("P9R1KI".to_owned()),
             ) {
                 Placement::Placed { machine, .. } => Some(machine),

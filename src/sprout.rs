@@ -424,6 +424,7 @@ pub fn start(machine: &str, folder: Option<PathBuf>, seed: &Seed, from: Option<&
             tolerates: Vec::new(),
             may_wait: false,
             lasts: None,
+            fence: None,
         },
         folder,
         strict: true,

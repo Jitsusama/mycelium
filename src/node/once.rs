@@ -37,8 +37,11 @@ const HELD_MOST: usize = 4096;
 /// The hex digits of a name's hash that a name sent on keeps.
 const HASHED: usize = 16;
 
-/// A start's name as the node knows it: the asker's, who it was judged,
-/// and the cell it counts toward.
+/// A start's name as the node knows it: the asker's, whether the person
+/// or an agent asked it, and the cell it counts toward. Not the agent's
+/// fence, which may come out otherwise when it asks again, as a claim
+/// above reads or not, so an ask again joins the first as the book finds
+/// it; the cell and the name tell one agent's asks apart.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Name {
     by: String,
@@ -59,8 +62,15 @@ impl Name {
                 name.len()
             ));
         }
+        // Every agent is spelled as a strict one was before, the fence
+        // most agents are judged in, so the name `there` sends for most
+        // of their asks stays what an older build sent.
+        let by = match by {
+            By::Person => by.to_string(),
+            By::Agent(_) => By::Agent(crate::declared::Kind::Strict).to_string(),
+        };
         Ok(Self {
-            by: by.to_string(),
+            by,
             cell: cell.map(str::to_owned),
             said: name.to_owned(),
         })
@@ -72,7 +82,9 @@ impl Name {
     /// kept whole and a long machine name cut short, so no two askers'
     /// names meet however long `here` is; the hash is blake3's, the same
     /// from every build, so a node updated between an ask and its retry
-    /// sends the same name.
+    /// sends the same name. The one exception is an agent judged in a
+    /// fence other than strict, named by a build before every agent was
+    /// spelled alike, whose name changes once, across that update.
     #[must_use]
     pub fn there(&self, here: &str) -> String {
         let mut hasher = blake3::Hasher::new();
@@ -517,6 +529,32 @@ mod tests {
             ours.there(long),
             agent("KESTRL", "01J").there(long),
             "a long machine name cuts no asker's hash"
+        );
+    }
+
+    // Round 2 of the judge's half: an agent's fence may come out otherwise
+    // when it asks again, as a claim above reads or not or its declaration
+    // moves it, and the book finds the first start whatever the fence, so
+    // the name must too, or the ask again starts a second session.
+    #[test]
+    fn an_agents_name_is_the_same_whatever_fence_it_was_judged() {
+        let judged = |by: By| Name::of(by, Some("OSPREY"), "01J").expect("a name");
+        for kind in [Kind::None, Kind::Fence] {
+            assert_eq!(
+                judged(By::Agent(kind)),
+                agent("OSPREY", "01J"),
+                "{kind:?} and strict are one asker's name"
+            );
+            assert_eq!(
+                judged(By::Agent(kind)).there("skiff"),
+                agent("OSPREY", "01J").there("skiff"),
+                "and go elsewhere as one: {kind:?}"
+            );
+        }
+        assert_ne!(
+            judged(By::Person),
+            agent("OSPREY", "01J"),
+            "but the person's is never an agent's"
         );
     }
 }
