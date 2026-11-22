@@ -210,44 +210,34 @@ mod tests {
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
     use std::os::unix::process::CommandExt;
-    use std::process::{Child, Command, Stdio};
+    use std::process::{Command, Stdio};
 
     use super::*;
     use crate::hold::Held;
-
-    /// A process that is waited on as it ends, as a holder's parent waits
-    /// on it, so it never lingers as a zombie that still seems to run.
-    fn reaped(mut child: Child) -> u32 {
-        let pid = child.id();
-        std::thread::spawn(move || child.wait());
-        pid
-    }
+    use crate::stand_in::Process;
 
     /// `program` run through `sh` in a process group of its own, as a
     /// holder starts its program on a terminal, once it says it's ready.
-    fn program(program: &str) -> u32 {
+    fn program(program: &str) -> Process {
         let mut child = Command::new("sh")
             .args(["-c", program])
             .stdout(Stdio::piped())
             .process_group(0)
             .spawn()
             .expect("the program starts");
+        let output = child.stdout.take().expect("its output");
+        let running = Process::of(child);
         let mut said = String::new();
-        BufReader::new(child.stdout.take().expect("its output"))
+        BufReader::new(output)
             .read_line(&mut said)
             .expect("it says it's ready");
         assert_eq!(said.trim(), "ready");
-        reaped(child)
+        running
     }
 
     /// A holder that ends as it's told to.
-    fn holder() -> u32 {
-        reaped(
-            Command::new("sleep")
-                .arg("1000")
-                .spawn()
-                .expect("the holder starts"),
-        )
+    fn holder() -> Process {
+        Process::start(Command::new("sleep").arg("1000"))
     }
 
     /// Writes the record and socket of a hold `id` in `dir`, held by
@@ -295,7 +285,8 @@ mod tests {
             "trap 'echo TERM > {}; exit 0' TERM; echo ready; while :; do sleep 0.05; done",
             told.display()
         ));
-        let holder = holder();
+        let holding = holder();
+        let (holder, program) = (holding.pid(), program.pid());
         let _answers = holds(dir.path(), "ending1", holder, program);
 
         assert_eq!(
@@ -324,9 +315,10 @@ mod tests {
     #[test]
     fn a_program_that_wont_end_is_killed_past_its_grace() {
         let dir = tempfile::tempdir().expect("a folder");
-        let program = program("trap '' TERM; echo ready; while :; do sleep 1; done");
-        let holder = holder();
-        let _answers = holds(dir.path(), "stubborn", holder, program);
+        let running = program("trap '' TERM; echo ready; while :; do sleep 1; done");
+        let holding = holder();
+        let program = running.pid();
+        let _answers = holds(dir.path(), "stubborn", holding.pid(), program);
 
         assert_eq!(
             end(dir.path(), "stubborn", Duration::from_millis(200)).expect("it ends"),
@@ -342,7 +334,8 @@ mod tests {
     #[test]
     fn a_stale_record_and_every_file_it_spoke_through_go_signalling_nothing() {
         let dir = tempfile::tempdir().expect("a folder");
-        let (holder, program) = (holder(), program("echo ready; sleep 1000 & wait"));
+        let (holding, running) = (holder(), program("echo ready; sleep 1000 & wait"));
+        let (holder, program) = (holding.pid(), running.pid());
         drop(holds(dir.path(), "stale", holder, program));
         unanswered(&socket(dir.path(), "stale"));
         // A holder that no longer answers leaves what its program said
@@ -372,11 +365,6 @@ mod tests {
             said.iter().all(|file| !file.exists()),
             "and every file it spoke through, so none is found as though it were held"
         );
-        for pid in [holder, program] {
-            let _ =
-                rustix::process::kill_process_group(self::pid(pid).expect("a pid"), Signal::KILL);
-            let _ = rustix::process::kill_process(self::pid(pid).expect("a pid"), Signal::KILL);
-        }
     }
 
     #[test]
@@ -416,7 +404,8 @@ mod tests {
     #[test]
     fn a_parked_hold_ended_leaves_what_its_program_said_nowhere() {
         let dir = tempfile::tempdir().expect("a folder");
-        let holder = holder();
+        let holding = holder();
+        let holder = holding.pid();
         let _answers = holds(dir.path(), "parked1", holder, 0);
         let record = dir.path().join("parked1.json");
         let mut parked: Held =
