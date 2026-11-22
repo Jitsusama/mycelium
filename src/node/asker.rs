@@ -3190,7 +3190,10 @@ mod tests {
             )
         };
         let loose = fenced_pi("HOME=/home/jsama\0", &[(70, "mycelium", 58)]);
-        assert!(shows(&loose), "an unfenced pi's command, nothing of a fence on it");
+        assert!(
+            shows(&loose),
+            "an unfenced pi's command, nothing of a fence on it"
+        );
         let fenced = fenced_pi("PI_SANDBOX=fence\0", &[(70, "mycelium", 58)]);
         assert!(!shows(&fenced), "a fenced pi's command");
         let barred = fenced_pi("HOME=/home/jsama\0", &[(70, "mycelium", 58)]);
@@ -3198,7 +3201,10 @@ mod tests {
         let mut text = fs::read_to_string(&status).expect("its status");
         text.push_str("NoNewPrivs:\t1\n");
         fs::write(&status, text).expect("it gains less");
-        assert!(!shows(&barred), "a command that gains less, as a fence sets, under an unfenced pi");
+        assert!(
+            !shows(&barred),
+            "a command that gains less, as a fence sets, under an unfenced pi"
+        );
         assert!(
             !shows_unfenced(
                 Some(70),
