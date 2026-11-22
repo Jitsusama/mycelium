@@ -3903,7 +3903,7 @@ impl<S: Store> Shared<S> {
     /// it makes the carries it chooses where `eases.carries` says so,
     /// asks the harness to park the sessions it chooses to sleep where
     /// `eases.sleeps` names a folder, taking each back once the machine
-    /// is no longer over while another has room, and otherwise does none
+    /// is no longer over by its own pressure, and otherwise does none
     /// of it. It begins once the carries kept here, which say what moved
     /// lately, and its own lines of the last two days can be read, saying
     /// why while they can't.
@@ -4012,10 +4012,7 @@ impl<S: Store> Shared<S> {
             return;
         };
         let sessions = self.lock().state.sessions();
-        let why = format!(
-            "{} is over its room while another machine has some",
-            self.machine
-        );
+        let why = format!("{} is over its limits", self.machine);
         let asks = sleep::asks(&self.machine, &sessions, &chosen);
         let folder = parking.folder().to_owned();
         let unasked = chosen.clone();

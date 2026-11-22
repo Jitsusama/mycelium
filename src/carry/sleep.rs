@@ -5,7 +5,7 @@
 //! and it wakes on its next message, steer, key or window. The node only
 //! leaves a file named for each session in a folder the harness reads,
 //! asking it to park that one sooner than it would, and takes the file
-//! back once its machine is no longer over while another has room. The
+//! back once its machine is no longer over by its own pressure. The
 //! harness takes it back too, once the session wakes or closes.
 //!
 //! A session parks only where a holder or a host keeps it, since that is

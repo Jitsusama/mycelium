@@ -969,17 +969,17 @@ A node run with `--eases` looks each minute at what its machine would
 do to ease itself, judging only by what it reads, and does none of it
 but where `--eases-carry` says to make its carries. It reads the
 realm's balance as `mycelium balance --follow` does and holds what
-is seen in most of the last ten readings. Once its machine
-is held over while another has room, and its readings have said so
-for ten minutes, it would put its sessions that wait to sleep where
+is seen in most of the last ten readings. Once its readings have said
+for ten minutes that its machine is over its limits, whether or not
+another has room, it would put its sessions that wait to sleep where
 they are. A lone reading saying otherwise, between hot ones, breaks
-nothing, though nothing is done on that reading itself; a second in a
-row starts the ten minutes again, as does a reading five minutes or
-more after the lone one. If the readings five minutes after the sleep
-still say over, it would carry one session to a peer with room; a
-reading saying otherwise since the sleep starts the ten minutes again,
-and once they have passed it carries with no new sleep, as it does
-straight away where its waiting sessions are asleep already. It
+nothing, a sleep before it or not, though nothing is done on that
+reading itself; a second in a row starts the ten minutes again, as
+does a reading five minutes or more after the lone one. If the
+readings five minutes after the sleep still say over, and it is held
+over while another has room, it would carry one session to a peer
+with room, as it does straight away where its waiting sessions are
+asleep already; while none has room it carries nothing. It
 carries the smallest log first, placed as any work is and onto
 ground as firm. A session in a turn, on the person's screen,
 orchestrating other sessions, holding a lease or a heavy run, or whose
@@ -1061,22 +1061,20 @@ name that isn't an ask (a link, a folder, a pipe, a socket or
 another's file), nor take one back, and opens none but a plain file;
 such a session is refused for good. One there as it looks is caught,
 not one made while it writes. It takes back what it asked once its
-machine's readings have said for five minutes that it isn't over
-while another machine has room, so too once none has room,
-though a sleep ends the run at the first reading that says so, and as
-its easing task ends; and as it starts, every file in the folder that
-reads as an ask or a half-written one, since what made an earlier
-node ask isn't known to hold, leaving any other file there and saying
-in its log how many it took. It takes nothing from a folder that
-links elsewhere, isn't this account's, or another can write in. What
-it can't take back or can't read it tries again at the next look,
-but for a start sweep refused whole, which its log says. A reading
-whose time can't be told counts toward no five minutes. Only sessions it
-asked count as put to sleep, so the next sleep waits its settling only
-after one; a session whose ask couldn't be written may be chosen again
-by three looks, then is passed over, like one refused for good, until
-it is next seen in a turn. A
-session whose ask was taken back may be asked again in a later spell
+machine's readings have said for five minutes that it isn't over its
+limits, and as its easing task ends; and as it starts, every file in
+the folder that reads as an ask or a half-written one, since what
+made an earlier node ask isn't known to hold, leaving any other file
+there and saying in its log how many it took. It takes nothing from a
+folder that links elsewhere, isn't this account's, or another can
+write in. What it can't take back or can't read it tries again at the
+next look, but for a start sweep refused whole, which its log says. A
+reading whose time can't be told counts toward no five minutes. Only
+sessions it asked count as put to sleep, so the next sleep waits its
+settling only after one; a session whose ask couldn't be written may
+be chosen again by three looks, then is passed over, like one refused
+for good, until it is next seen in a turn. A session whose ask was
+taken back may be asked again in a later spell
 over. The sleep's line then says `would: false`, `asked` by each
 session's record id to its own, and why each other was `refused`.
 A node no longer run with `--eases-sleep` takes nothing back, so empty
