@@ -104,7 +104,11 @@ impl Dial for Ssh {
 
     fn there(&self, words: &[String]) -> Vec<String> {
         let mut there = vec!["ssh".to_owned(), "-t".to_owned()];
-        for option in self.options.iter().filter(|option| !names_the_links_own(option)) {
+        for option in self
+            .options
+            .iter()
+            .filter(|option| !names_the_links_own(option))
+        {
             there.extend(["-o".to_owned(), option.clone()]);
         }
         there.extend(["--".to_owned(), self.destination.clone()]);
@@ -390,7 +394,11 @@ mod tests {
             command: "mycelium".to_owned(),
         };
         assert_eq!(
-            ssh.there(&["mycelium".to_owned(), "attach".to_owned(), "5e55".to_owned()]),
+            ssh.there(&[
+                "mycelium".to_owned(),
+                "attach".to_owned(),
+                "5e55".to_owned()
+            ]),
             [
                 "ssh",
                 "-t",
