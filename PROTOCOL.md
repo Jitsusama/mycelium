@@ -3527,9 +3527,11 @@ as `quest:<id>`, so its short name is never a group's, as no group's
 name holds a colon; it is read in lower case, so keys differing only
 in case are one folder. `for` and `folder` are drawn on one line: each
 control character and line or paragraph separator in them is read as
-a space and each mark turning text's direction is dropped, and then
-`for` is trimmed, cut to its first 120 characters and trimmed again,
-and `folder` is 1 to 1024 bytes. A `for` said as null or as anything
+a space and each mark turning text's direction is dropped. `for` also
+drops each character that draws nothing and each noncharacter,
+keeping a joiner only between two characters past ASCII and one
+selector only after one, and then is trimmed, cut to its first 120
+characters and trimmed again, and `folder` is 1 to 1024 bytes. A `for` said as null or as anything
 but text is unsaid, and one unsaid, empty or cleaned to nothing is
 left out of the cell record. A cell's first 16 shares are read, those
 past these bounds are passed over, and a key said twice is its first;
