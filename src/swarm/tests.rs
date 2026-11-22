@@ -553,7 +553,11 @@ fn a_title_s_own_leading_spaces_set_no_figure_under_a_header() {
         swarm.teams[2]["title"] = json!(title);
         let shown = overview(&swarm, &whole());
         let rows: Vec<&str> = shown.lines().filter(|line| line.contains("1 xx")).collect();
-        assert_eq!(rows.len(), 2, "both titles' rows are drawn, each once:\n{shown}");
+        assert_eq!(
+            rows.len(),
+            2,
+            "both titles' rows are drawn, each once:\n{shown}"
+        );
         for row in rows {
             assert!(
                 row.starts_with("1 x") || row.starts_with("  1 x"),
