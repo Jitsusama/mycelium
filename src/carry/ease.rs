@@ -184,6 +184,10 @@ pub struct Moved {
 pub struct History {
     hot_since: Option<Timestamp>,
     cool_since: Option<Timestamp>,
+    /// When the latest reading saying over came.
+    last_hot: Option<Timestamp>,
+    /// When the latest reading of any came.
+    last_at: Option<Timestamp>,
     slept_at: Option<Timestamp>,
     sleeps: usize,
     moved: Vec<Moved>,
@@ -195,6 +199,8 @@ impl Default for History {
         Self {
             hot_since: None,
             cool_since: None,
+            last_hot: None,
+            last_at: None,
             slept_at: None,
             sleeps: 0,
             moved: Vec::new(),
@@ -221,12 +227,17 @@ impl History {
             // A reading whose time can't be told can't say for how long.
             self.hot_since = None;
             self.cool_since = None;
+            self.last_hot = None;
             return;
         };
         let hot = reading
             .flags
             .iter()
             .any(|flag| matches!(flag, Flag::HotWhileCool { hot, .. } if hot == here));
+        self.last_at = Some(at);
+        if hot {
+            self.last_hot = Some(at);
+        }
         let cooled = self
             .cool_since
             .is_some_and(|cool| at.duration_since(cool) >= COOL_FOR);
@@ -259,11 +270,15 @@ impl History {
         self.sleeps
     }
 
-    /// Whether the readings still hold the machine over, however briefly,
-    /// as [`History::read`] keeps it.
+    /// Whether the machine still counts as over for what it asked to
+    /// park: until [`COOL_FOR`] has passed from its latest reading saying
+    /// so to its latest of any, judged apart from the run, which a cool
+    /// reading after a sleep ends at once.
     #[must_use]
     pub fn over(&self) -> bool {
-        self.hot_since.is_some()
+        self.last_hot
+            .zip(self.last_at)
+            .is_some_and(|(hot, at)| at.duration_since(hot) < COOL_FOR)
     }
 
     /// Notes a session moved from or to this machine, by anyone.
@@ -868,13 +883,27 @@ pub(super) mod tests {
         let calm = [machine("skiff", 4.6), machine("tern", 4.6)];
         let mut history = hot_for(&realm, 11);
         assert!(history.over(), "over while its readings say so");
-        history.read("skiff", &reading(&calm, now()));
-        assert!(history.over(), "a lone reading not over doesn't end it");
+        // A sleep makes the next cool reading end the run, but what it
+        // asked to park stands until the readings say otherwise for five
+        // minutes.
+        history.slept(1, now());
+        history.read(
+            "skiff",
+            &reading(&calm, now() + SignedDuration::from_mins(1)),
+        );
+        assert!(
+            history.over(),
+            "a lone reading not over after a sleep doesn't end it"
+        );
+        history.read(
+            "skiff",
+            &reading(&calm, now() + SignedDuration::from_mins(2)),
+        );
         let later = now() + COOL_FOR - SignedDuration::from_secs(1);
         history.read("skiff", &reading(&calm, later));
         assert!(
             history.over(),
-            "nor do readings not over for under five minutes"
+            "nor do readings not over in a row for under five minutes"
         );
         history.read("skiff", &reading(&calm, now() + COOL_FOR));
         assert!(!history.over(), "five minutes of them do");

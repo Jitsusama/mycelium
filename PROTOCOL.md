@@ -1052,18 +1052,23 @@ session once it is idle and its own park rule holds, so one with
 anything running, queued or waiting on the person stays awake, and it
 takes the file back once the session wakes or closes. The node asks
 for no session in a turn, none of another machine, none whose
-presence names no id of its own or one another session's names too,
+presence names no id of its own or one another session it knows of
+names too (a session it doesn't know of can't be told apart),
 none whose id names more than letters, digits, dashes and
 underscores, and none that neither a holder nor a host keeps, since
 that is what would wake it. It takes back what it asked once its
-machine is no longer over, as it is while the readings hold it hot,
-and as its easing task ends; and as it starts, every ask and
-half-written ask in the folder, since what made an earlier node ask
-isn't known to hold, leaving any other file there. What it can't take
-back it tries again at the next look. Only sessions it asked count as
-put to sleep, so the next sleep waits its settling only after one; a
-session whose ask couldn't be written may be chosen again, while one
-refused for good is passed over until it is next seen in a turn. A
+machine's readings have said it isn't over for five minutes, though a
+sleep ends the run at the first reading that says so, and as its
+easing task ends; and as it starts, every file in the folder that
+reads as an ask or a half-written one, since what made an earlier
+node ask isn't known to hold, leaving any other file there and saying
+in its log how many it took. It takes nothing from a folder that
+links elsewhere, isn't this account's, or another can write in. What
+it can't take back it tries again at the next look. Only sessions it
+asked count as put to sleep, so the next sleep waits its settling only
+after one; a session whose ask couldn't be written may be chosen again
+by three looks, then is passed over, like one refused for good, until
+it is next seen in a turn. A
 session whose ask was taken back may be asked again in a later spell
 over. The sleep's line then says `would: false`, `asked` by each
 session's record id to its own, and why each other was `refused`.

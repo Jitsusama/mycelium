@@ -13,7 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, DirBuilder};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
@@ -124,24 +124,79 @@ pub fn ask(folder: &Path, id: &str, at: Timestamp, why: &str) -> io::Result<()> 
 
 /// Makes `folder`, this account's alone, where it isn't; one already
 /// there is left as it is, so long as it is a folder of this account's
-/// that no other can write in.
+/// that no other can write in. One it made is looked at again, since
+/// another account could have put a link at the path first.
 fn own_folder(folder: &Path) -> io::Result<()> {
     match fs::symlink_metadata(folder) {
-        Ok(found) => {
-            let own = rustix::process::geteuid().as_raw();
-            if !found.is_dir() || found.uid() != own || found.mode() & 0o022 != 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "the folder isn't one this account alone writes in",
-                ));
-            }
-            Ok(())
-        }
+        Ok(found) => alone(&found),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            DirBuilder::new().recursive(true).mode(0o700).create(folder)
+            DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(folder)?;
+            alone(&fs::symlink_metadata(folder)?)
         }
         Err(error) => Err(error),
     }
+}
+
+/// Whether what was `found` at a folder's path, never followed if a
+/// link, is a folder of this account's that no other can write in.
+fn alone(found: &fs::Metadata) -> io::Result<()> {
+    let own = rustix::process::geteuid().as_raw();
+    if !found.is_dir() || found.uid() != own || found.mode() & 0o022 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the folder isn't one this account alone writes in",
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `folder` is there, and if so that it is this account's alone,
+/// so nothing is taken from one another can write in or that links
+/// elsewhere.
+fn standing(folder: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(folder) {
+        Ok(found) => alone(&found).map(|()| true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// The most an ask can hold: a time and a reason.
+const ASK_AT_MOST: u64 = 4096;
+
+/// Whether the file at `path`, never followed if a link, reads as an ask
+/// this node writes, a line saying `at` and `why` and nothing else, or,
+/// `writing` one, nothing yet.
+fn reads_as_ask(path: &Path, writing: bool) -> bool {
+    let Ok(file) = rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) else {
+        return false;
+    };
+    let mut text = String::new();
+    if fs::File::from(file)
+        .take(ASK_AT_MOST)
+        .read_to_string(&mut text)
+        .is_err()
+    {
+        return false;
+    }
+    if text.is_empty() {
+        return writing;
+    }
+    serde_json::from_str::<Value>(&text)
+        .ok()
+        .and_then(|said| said.as_object().cloned())
+        .is_some_and(|said| {
+            said.len() == 2
+                && said.get("at").is_some_and(Value::is_string)
+                && said.get("why").is_some_and(Value::is_string)
+        })
 }
 
 /// Whether `name`, in the folder, is one this node writes: an ask, or
@@ -159,8 +214,15 @@ fn written_here(name: &str) -> bool {
 
 /// Takes back each ask in `folder` named in `ids`, answering those still
 /// asked for, which couldn't be taken back. One the harness already took
-/// back, as its session woke, is gone already.
+/// back, as its session woke, is gone already; and none is taken from a
+/// folder no longer this account's alone, since one there now isn't
+/// known to be the node's.
 pub fn withdraw(folder: &Path, ids: &BTreeSet<String>) -> BTreeSet<String> {
+    match standing(folder) {
+        Ok(true) => {}
+        Ok(false) => return BTreeSet::new(),
+        Err(_) => return ids.clone(),
+    }
     ids.iter()
         .filter(|id| match fs::remove_file(folder.join(id)) {
             Ok(()) => false,
@@ -172,26 +234,28 @@ pub fn withdraw(folder: &Path, ids: &BTreeSet<String>) -> BTreeSet<String> {
 
 /// Takes back every ask in `folder`, as a node starting does, since
 /// nothing an earlier node asked is known to hold now: only the files
-/// a node writes there, asks and those being written, never another
-/// the harness or anyone keeps. Answers how many it took back, and
-/// the asks it couldn't, to take back later.
+/// that read as a node writes them, asks and those being written, never
+/// another the harness or anyone keeps, and nothing in a folder another
+/// can write in or that links elsewhere. Answers how many it took back,
+/// and the asks it couldn't, to take back later.
 ///
 /// # Errors
 ///
-/// Where the folder is there but can't be read.
+/// Where the folder is there but can't be read, or isn't this account's
+/// alone.
 pub fn withdraw_all(folder: &Path) -> io::Result<(usize, BTreeSet<String>)> {
-    let entries = match fs::read_dir(folder) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok((0, BTreeSet::new()));
-        }
-        Err(error) => return Err(error),
-    };
+    if !standing(folder)? {
+        return Ok((0, BTreeSet::new()));
+    }
+    let entries = fs::read_dir(folder)?;
     let mut taken = 0;
     let mut left = BTreeSet::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !written_here(&name) || !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+        if !written_here(&name)
+            || !entry.file_type().is_ok_and(|kind| kind.is_file())
+            || !reads_as_ask(&entry.path(), name.starts_with('.'))
+        {
             continue;
         }
         match fs::remove_file(entry.path()) {
@@ -241,9 +305,14 @@ impl Parking {
         self.asked.is_empty() && self.left.is_empty()
     }
 
-    /// Notes the session `record`, its own id `own`, asked to park.
+    /// Notes the session `record`, its own id `own`, asked to park; an
+    /// ask it made under another own id is still taken back.
     pub fn asked(&mut self, record: String, own: String) {
-        self.asked.insert(record, own);
+        if let Some(before) = self.asked.insert(record, own.clone())
+            && before != own
+        {
+            self.left.insert(before);
+        }
     }
 
     /// Takes back every ask it holds, keeping those that couldn't be, to
@@ -457,14 +526,20 @@ mod tests {
 
         ask(&folder, "s3-own", at, "over").expect("asked");
         fs::write(folder.join(".s4-own.12"), "").expect("one left half written");
-        for theirs in ["README.md", ".keep", "s5.json"] {
-            fs::write(folder.join(theirs), "").expect("one of another's");
+        let theirs = ["README.md", ".keep", "s5.json", "Makefile", "config"];
+        for theirs in theirs {
+            fs::write(folder.join(theirs), "all: build\n").expect("one of another's");
         }
+        fs::write(
+            folder.join("s6"),
+            "{\"at\": \"now\", \"why\": \"over\", \"also\": 1}\n",
+        )
+        .expect("one saying more than an ask");
         assert_eq!(
             withdraw_all(&folder).expect("taken back"),
             (2, BTreeSet::new())
         );
-        for theirs in ["README.md", ".keep", "s5.json"] {
+        for theirs in theirs.into_iter().chain(["s6"]) {
             assert!(
                 folder.join(theirs).exists(),
                 "{theirs}, no name a node writes, is left"
@@ -474,6 +549,33 @@ mod tests {
             withdraw_all(&dir.path().join("none")).expect("no folder"),
             (0, BTreeSet::new()),
             "no folder holds no ask"
+        );
+    }
+
+    #[test]
+    fn nothing_is_taken_from_a_folder_another_can_write_in_or_that_links_elsewhere() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let at: Timestamp = "2026-11-22T07:00:00Z".parse().expect("a time");
+        let real = dir.path().join("real");
+        ask(&real, "s1-own", at, "over").expect("asked");
+        let linked = dir.path().join("linked");
+        std::os::unix::fs::symlink(&real, &linked).expect("a link");
+        assert!(withdraw_all(&linked).is_err(), "a linked folder is refused");
+        let ids = BTreeSet::from(["s1-own".to_owned()]);
+        assert_eq!(withdraw(&linked, &ids), ids, "and kept to take back");
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o777)).expect("its mode");
+        assert!(withdraw_all(&real).is_err(), "as is one any can write in");
+        assert_eq!(withdraw(&real, &ids), ids);
+        assert!(real.join("s1-own").exists(), "its ask is left where it is");
+
+        let mut parking = Parking::new(dir.path().join("ease"), BTreeSet::new());
+        ask(parking.folder(), "old-own", at, "over").expect("asked");
+        parking.asked("s1".to_owned(), "old-own".to_owned());
+        parking.asked("s1".to_owned(), "new-own".to_owned());
+        drop(parking);
+        assert!(
+            !dir.path().join("ease/old-own").exists(),
+            "an ask made under an own id since changed is taken back too"
         );
     }
 

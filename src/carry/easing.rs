@@ -40,6 +40,10 @@ pub const DAY_HOLDS: u64 = 8 << 20;
 /// How long a process's use of the processor is said over.
 pub const CPU_OVER: SignedDuration = SignedDuration::from_mins(10);
 
+/// How many looks may choose to sleep a session whose ask can't be
+/// written, before it is passed over until next seen in a turn.
+pub const WRITES_TRIED: usize = 3;
+
 /// How many clock ticks a second a process's times are counted in: Linux
 /// says them to programs in hundredths, whatever its own clock.
 const TICKS_A_SECOND: f64 = 100.0;
@@ -456,6 +460,9 @@ pub struct Easing {
     /// Each session put to sleep, or chosen to be, until it is next seen
     /// in a turn or its ask is taken back.
     asleep: BTreeSet<String>,
+    /// How many times each session's ask couldn't be written since it
+    /// was last seen in a turn.
+    unwritten: BTreeMap<String, usize>,
     /// Whether the node asks the harness to park what it chooses to
     /// sleep, so that only those it asked count as put to sleep.
     acts_on_sleep: bool,
@@ -520,12 +527,18 @@ impl Easing {
     /// Notes `asked` sessions put to sleep `at`, where any were, so the
     /// next sleep waits its settling only after one; and passes over
     /// no more those in `retry`, by their record's id, whose ask
-    /// couldn't be written, so a later look may choose them again. One
-    /// refused for good, such as one kept by no holder, stays passed
-    /// over until it is seen in a turn, so looks move on past it.
+    /// couldn't be written, so a later look may choose them again, but
+    /// only [`WRITES_TRIED`] times, so a folder that always refuses
+    /// stops no carry. One refused for good, such as one kept by no
+    /// holder, stays passed over until it is seen in a turn, so looks
+    /// move on past it.
     pub fn slept(&mut self, asked: usize, retry: &[String], at: Timestamp) {
         for id in retry {
-            self.asleep.remove(id);
+            let tried = self.unwritten.entry(id.clone()).or_default();
+            *tried += 1;
+            if *tried < WRITES_TRIED {
+                self.asleep.remove(id);
+            }
         }
         if asked > 0 {
             self.history.slept(asked, at);
@@ -583,6 +596,7 @@ impl Easing {
         for cell in &cells {
             if cell.session.state == State::Busy {
                 self.asleep.remove(&cell.session.id);
+                self.unwritten.remove(&cell.session.id);
             }
         }
         // One chosen to carry is passed over while its carry pins it, and
@@ -1822,5 +1836,22 @@ mod tests {
                    "refused": "tern would land looser there"}),
             "and one refused says why"
         );
+    }
+
+    #[test]
+    fn a_session_whose_ask_cant_be_written_is_chosen_again_only_so_often() {
+        let mut easing = Easing::default();
+        let at = now();
+        let retry = ["s1".to_owned()];
+        for tried in 1..=WRITES_TRIED {
+            easing.asleep.insert("s1".to_owned());
+            easing.slept(0, &retry, at);
+            assert_eq!(
+                easing.asleep.contains("s1"),
+                tried == WRITES_TRIED,
+                "passed over only once tried {WRITES_TRIED} times, at {tried}"
+            );
+        }
+        assert_eq!(easing.sleeps(), 0, "none asked counts none");
     }
 }

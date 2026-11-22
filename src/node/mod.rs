@@ -3921,11 +3921,19 @@ impl<S: Store> Shared<S> {
                 .await
                 .map_err(|error| io::Error::other(error.to_string()))
                 .and_then(|taken| taken);
-            let left = taken.unwrap_or_else(|error| {
+            let (taken, left) = taken.unwrap_or_else(|error| {
                 eprintln!("the asks to park an earlier node left can't be taken back: {error}");
                 (0, std::collections::BTreeSet::new())
             });
-            parking = Some(sleep::Parking::new(folder, left.1));
+            if taken > 0 || !left.is_empty() {
+                eprintln!(
+                    "took back {taken} asks to park an earlier node left in {}, {} left to \
+                     take back",
+                    folder.display(),
+                    left.len()
+                );
+            }
+            parking = Some(sleep::Parking::new(folder, left));
         }
         let mut every = tokio::time::interval(eases.every);
         every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -3990,7 +3998,9 @@ impl<S: Store> Shared<S> {
     /// sleep `line` chose, saying on it which were asked and why each
     /// other wasn't, noting those asked in `parking`, and telling
     /// `easing` how many were asked and which to choose again, whose
-    /// asks couldn't be written.
+    /// asks couldn't be written. Each is noted as its file is written,
+    /// with `parking` lent to the writing, so an ask the node stops
+    /// beside is still taken back as `parking` drops.
     async fn sleep_to_ease(
         &self,
         line: &mut serde_json::Value,
@@ -4009,36 +4019,52 @@ impl<S: Store> Shared<S> {
         let asks = sleep::asks(&self.machine, &sessions, &chosen);
         let folder = parking.folder().to_owned();
         let unasked = chosen.clone();
+        let mut lent = std::mem::replace(
+            parking,
+            sleep::Parking::new(folder.clone(), std::collections::BTreeSet::new()),
+        );
         // Each ask written, by its record's id to its own, or why not and,
         // where only writing it failed, whose it was, to choose again.
         let tried = tokio::task::spawn_blocking(move || {
-            asks.into_iter()
+            let tried = asks
+                .into_iter()
                 .map(|ask| {
                     let (record, own) = ask.map_err(|why| (None, why))?;
                     match sleep::ask(&folder, &own, now, &why) {
-                        Ok(()) => Ok((record, own)),
+                        Ok(()) => {
+                            lent.asked(record.clone(), own.clone());
+                            Ok((record, own))
+                        }
                         Err(error) => {
                             let why = format!("{own} can't be asked to park ({error})");
                             Err((Some(record), why))
                         }
                     }
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            (lent, tried)
         })
-        .await
-        .unwrap_or_else(|error| {
-            let why = format!("none could be asked to park ({error})");
-            unasked
-                .into_iter()
-                .map(|id| Err((Some(id), why.clone())))
-                .collect()
-        });
+        .await;
+        let tried = match tried {
+            Ok((back, tried)) => {
+                *parking = back;
+                tried
+            }
+            // Only a panic ends it so, and dropping what was lent took
+            // back what it had asked.
+            Err(error) => {
+                let why = format!("none could be asked to park ({error})");
+                unasked
+                    .into_iter()
+                    .map(|id| Err((Some(id), why.clone())))
+                    .collect()
+            }
+        };
         let mut asked = BTreeMap::new();
         let (mut refused, mut retry) = (Vec::new(), Vec::new());
         for one in tried {
             match one {
                 Ok((record, own)) => {
-                    parking.asked(record.clone(), own.clone());
                     asked.insert(record, own);
                 }
                 Err((again, why)) => {
