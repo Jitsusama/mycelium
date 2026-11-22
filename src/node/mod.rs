@@ -4664,11 +4664,12 @@ impl<S: Store> Shared<S> {
             there.as_ref(),
         )?;
         // The start that brings it back there is an agent's, so it is
-        // refused unless its fence runs a command there. Refused here
-        // first, before any session is told to carry and ends.
+        // refused unless its fence runs a command there, and on a Mac
+        // unless the session is shown unfenced. Refused here first,
+        // before any session is told to carry and ends.
         let declared = there.as_ref().and_then(|machine| machine.declared.as_ref());
         let system = there.as_ref().and_then(|machine| machine.system.as_deref());
-        if let Some(why) = ground::brought_back(to, declared, system) {
+        if let Some(why) = ground::brought_back(to, declared, system, kind) {
             return Err(format!(
                 "{address} isn't carried to {to}, as the start that brings it back there would \
                  be refused: {why}"
@@ -8979,6 +8980,7 @@ esac
                 "/nix/store/0000-fence/bin/fence".to_owned(),
                 "--".to_owned(),
             ],
+            accepts: BTreeMap::new(),
         };
         facts::Machine {
             declared: Some(crate::declared::Declared {

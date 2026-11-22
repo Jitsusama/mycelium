@@ -742,7 +742,8 @@ session says of itself:
   in the fence the carried session's presence names as its `fence`
   (`none`, `fence` or `strict`), and this machine's own declaration
   runs that fence too, with no door of it there wider than here: each
-  of its `builders`, `forges` and `secrets` is one here's opens. A
+  of its `builders`, `forges` and `secrets` is one here's opens, or
+  one here's fence `accepts` for `to` by name. A
   session that names no fence, or a machine that declares none for it,
   is refused, since where it lands can't be told. A refusal names the
   doors that are wider, as `tern's strictly fenced session opens
@@ -995,7 +996,8 @@ way through is told only once its presence says `"leases":
 run. After a carry it would carry none for half an hour, and it would
 carry at most six in a day. A session moved by anyone stays put for a
 day, by the carries kept here, and nothing goes to a machine a session
-came from within the hour.
+came from within the hour, nor to a Mac but a session shown unfenced
+(see The Socket).
 
 Each choice to sleep or carry, and each change in why it does nothing,
 is a JSON line in the state folder's `eases`, a file each day of at
@@ -1492,7 +1494,12 @@ kind (`none`, `fence` or `strict`), each with the doors it opens:
 `{"strict": {"builders": [...], "forges": [...], "secrets": [...]}}`,
 each door by the name the machine's configuration gives it, and with
 `runs`, the words that start a command as that fence runs its
-sessions, such as its launcher and the fence's rules. A node says a
+sessions, such as its launcher and the fence's rules. With
+`accepts`, `{"<machine>": {"secrets": [...]}}`, it names the doors
+another machine may open beyond these for a session carried from
+here in that fence, each allowed by the person; the machine there
+still declares every door it opens, so a gain is said, never hidden.
+A node says a
 fence's `runs` in its `Machine` only where its own launcher takes them
 (below), and none where it refuses them, so another machine judges it
 as a run there is judged. A fence
@@ -2179,7 +2186,10 @@ node's own mounts) and from each of those sessions, a hosted one's
 record read only from the harness's own state. Anything that can't be
 read refuses, as on a Mac itself, and each start let through is told
 in the node's log with who asked, their quests, what it declared, its
-folder and its program. The person's start is
+folder and its program. A carry to a Mac, ordered or made by a node
+easing itself, is refused before any session ends unless the session
+claims and has shown no fence and was never seen stricter, and the
+Mac's `none` fence is still judged as firm as here. The person's start is
 relayed as theirs, but a machine no person works at, or one where the
 link's end can't be named, judges it an agent's, so there it needs that
 machine's launcher too, and a refusal of any start judged so says it
