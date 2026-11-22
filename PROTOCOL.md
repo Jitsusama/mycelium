@@ -2199,17 +2199,22 @@ from one account lose no count; a lend waiting more than a moment for
 another node's hold on it is refused 503. A lend is counted before it
 is carried and given back, to the day it was counted in, where its key
 can't be had, its upstream can't be reached or asked, or the machine
-is cut off before it is asked, so a lender's outage spends no
-machine's day; never once it was asked whole, since an answer that
-fails may still have been made. An upstream that hasn't begun its
-answer within ten minutes is answered 504. One that passes goes to
+is cut off or its borrower lets go before it is asked whole, so a
+lender's outage spends no machine's day; never once it was asked
+whole, since an answer that fails may still have been made. A cut or
+a borrower letting go ends a lend while it is sent as well as while
+it is answered. An upstream that hasn't taken the whole request
+within two minutes, or begun its answer within ten, or that goes five
+minutes without a byte once it has, is answered 504. One that passes
+goes to
 `upstream`, a
 socket's path, or
 where relative one in the account's runtime folder, for `host`, with
 only the headers the shim hands on and `key`'s command's output in
 `auth_header`, where a key is named: the borrower's own credentials
 never leave it, and the key never crosses to it. A lend file that
-can't be read, which says why only in the lender's log, or an
+can't be read, which says why only in the lender's log, and there
+only what kind of fault and where, never the words found, or an
 upstream not answering is 503, and a key that
 can't be had is 502. An interim head the upstream sends, 1xx but 101,
 is passed over for the one after it, and a 204 or 304 has no body.

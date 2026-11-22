@@ -51,6 +51,17 @@ const KEY_WITHIN: Duration = Duration::from_secs(30);
 /// a lend and never answers ends the turn rather than hanging it.
 const HEAD_WITHIN: Duration = Duration::from_secs(10 * 60);
 
+/// How long the relay has to take a request whole, so one wedged with
+/// its socket still bound, whose backlog lets a lend connect and whose
+/// full buffer then stops the write, ends the turn rather than hanging
+/// it.
+const SENT_WITHIN: Duration = Duration::from_secs(2 * 60);
+
+/// How long an answer begun may go without a byte, far past the pings a
+/// model's stream sends a few seconds apart, so one that goes quiet
+/// partway ends the turn rather than hanging it.
+const QUIET_WITHIN: Duration = Duration::from_secs(5 * 60);
+
 /// How long a lend waits for another node's hold on the day's counts,
 /// a moment at a time, before refusing, so a node stopped holding them
 /// never stops this one.
@@ -198,13 +209,12 @@ impl Lender {
     }
 
     /// What may be lent, as the file says now. Why it isn't taken goes to
-    /// this machine's log alone: a parse error quotes what it couldn't
-    /// read, which may be a key pasted in the wrong place, and the asker
-    /// is another machine's agent.
+    /// this machine's log alone, since the asker is another machine's
+    /// agent, and says where it doesn't parse but never what it found.
     fn written(&self) -> Result<Written, Refusal> {
         crate::declared::sealed(&self.file, &self.declarers)
             .and_then(|()| fs::read(&self.file).map_err(|error| error.to_string()))
-            .and_then(|text| serde_json::from_slice(&text).map_err(|error| error.to_string()))
+            .and_then(|text| serde_json::from_slice(&text).map_err(|error| unparsed(&error)))
             .map_err(|why| {
                 eprintln!(
                     "mycelium: this machine's lend, {}, isn't taken: {why}",
@@ -462,12 +472,17 @@ pub fn answer(lender: &Arc<Lender>, machine: &str, lend: Lend) -> mpsc::Receiver
             Ended::Refused(refusal) => format!("refused: {}", refusal.why),
             Ended::Gone => "let go: its borrower stopped reading".to_owned(),
         };
+        if let Ended::Refused(Refusal { status, .. }) = &ended {
+            used.status.get_or_insert(*status);
+        }
+        // Said before the refusal is sent, which waits on a borrower that
+        // may have stopped taking what it is sent, so a cut lend is in the
+        // log however its borrower behaves.
+        say(&machine, &used, began.elapsed(), &outcome);
         if let Ended::Refused(Refusal { status, why }) = ended {
-            used.status.get_or_insert(status);
             // A borrower gone meanwhile has nothing to be told.
             let _ = sending.send(Lent::Refused { status, why }).await;
         }
-        say(&machine, &used, began.elapsed(), &outcome);
     });
     answers
 }
@@ -516,9 +531,9 @@ async fn lent(
     };
     // Given back where its key can't be had or its relay can't be
     // reached or asked, so a lender's own outage spends nobody's day,
-    // and where it was cut off meanwhile: each before the whole ask went
-    // upstream. Never after, since an answer that fails may still have
-    // been made.
+    // and where it was cut off or let go meanwhile: each before the whole
+    // ask went upstream. Never after, since an answer that fails may
+    // still have been made.
     let (stream, key) = match reached(lender, &budget).await {
         Ok(reached) => reached,
         Err(refusal) => {
@@ -530,11 +545,34 @@ async fn lent(
         lender.uncount(machine, &day);
         return Ended::Refused(refused(403, why));
     }
-    let reading = match asked(stream, key, &asking, &budget).await {
-        Ok(reading) => reading,
-        Err(refusal) => {
+    if sending.is_closed() {
+        lender.uncount(machine, &day);
+        return Ended::Gone;
+    }
+    // Watched while it is sent too, so a relay that stops taking it
+    // can't hold the lend past a cut or its borrower letting go.
+    let sent = tokio::select! {
+        sent = tokio::time::timeout(SENT_WITHIN, asked(stream, key, &asking, &budget)) => sent,
+        ended = watched(lender, machine, sending) => {
+            lender.uncount(machine, &day);
+            return ended;
+        }
+    };
+    let reading = match sent {
+        Ok(Ok(reading)) => reading,
+        Ok(Err(refusal)) => {
             lender.uncount(machine, &day);
             return Ended::Refused(refusal);
+        }
+        Err(_) => {
+            lender.uncount(machine, &day);
+            return Ended::Refused(refused(
+                504,
+                format!(
+                    "the model relay didn't take the request within {} minutes",
+                    SENT_WITHIN.as_secs() / 60
+                ),
+            ));
         }
     };
     tokio::select! {
@@ -931,12 +969,16 @@ async fn streamed(
         if chunked && left.is_none_or(|left| left == 0) {
             if left == Some(0) {
                 // The line end after the chunk just read.
-                if !matches!(line(reading, &mut 0).await, Ok(end) if end.is_empty()) {
-                    return short();
+                match unquiet(line(reading, &mut 0)).await {
+                    Ok(Ok(end)) if end.is_empty() => {}
+                    Ok(_) => return short(),
+                    Err(ended) => return ended,
                 }
             }
-            let Ok(size) = line(reading, &mut 0).await else {
-                return short();
+            let size = match unquiet(line(reading, &mut 0)).await {
+                Ok(Ok(size)) => size,
+                Ok(Err(_)) => return short(),
+                Err(ended) => return ended,
             };
             let size = size.split(';').next().unwrap_or_default().trim();
             let Ok(size) = usize::from_str_radix(size, 16) else {
@@ -951,10 +993,11 @@ async fn streamed(
         if room == 0 {
             break;
         }
-        let read = match reading.read(&mut piece[..room]).await {
-            Ok(0) if left.is_none() => break,
-            Ok(0) | Err(_) => return short(),
-            Ok(read) => read,
+        let read = match unquiet(reading.read(&mut piece[..room])).await {
+            Err(ended) => return ended,
+            Ok(Ok(0)) if left.is_none() => break,
+            Ok(Ok(0) | Err(_)) => return short(),
+            Ok(Ok(read)) => read,
         };
         left = left.map(|left| left - read);
         used.response_bytes += read;
@@ -972,4 +1015,37 @@ async fn streamed(
 /// An answer the relay ended before its last byte.
 fn short() -> Ended {
     Ended::Refused(refused(502, "the model's answer ended short"))
+}
+
+/// What `reading` gives within [`QUIET_WITHIN`]; else the lend ends, as
+/// an answer gone quiet.
+async fn unquiet<T>(reading: impl Future<Output = T>) -> Result<T, Ended> {
+    tokio::time::timeout(QUIET_WITHIN, reading)
+        .await
+        .map_err(|_| {
+            Ended::Refused(refused(
+                504,
+                format!(
+                    "the model's answer went quiet for {} minutes",
+                    QUIET_WITHIN.as_secs() / 60
+                ),
+            ))
+        })
+}
+
+/// Why a lend file doesn't parse, as the log may keep it: what kind of
+/// fault and where, never the words found there, which may be a key
+/// pasted in the wrong place.
+fn unparsed(error: &serde_json::Error) -> String {
+    let kind = match error.classify() {
+        serde_json::error::Category::Io => "couldn't be read",
+        serde_json::error::Category::Syntax => "isn't JSON",
+        serde_json::error::Category::Data => "isn't a lend",
+        serde_json::error::Category::Eof => "ends early",
+    };
+    format!(
+        "it {kind} at line {}, column {}",
+        error.line(),
+        error.column()
+    )
 }

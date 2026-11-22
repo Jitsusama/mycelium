@@ -357,7 +357,6 @@ async fn a_path_or_a_budget_or_a_method_not_lent_is_refused() {
         "/v1/messages/../../admin",
         "/v1/messages/%2e%2e/admin",
         "/v1/messages#/../../admin",
-        // Past the prefix, so only the characters refuse these.
         "/v1/messages/x#y",
         "/v1/messages?a=1#/../../admin",
         "/v1/messages/..\\..\\v1/files",
@@ -561,11 +560,28 @@ async fn a_path_ending_in_a_star_lends_only_what_is_below_it() {
             "key": ["/bin/sh", "-c", "printf 'Bearer lent-key\\n'"],
         }},
     }));
-    for path in ["/v1", "/v1/", "/v1x/messages", "/v2/messages"] {
+    for path in [
+        "/v1",
+        "/v1/",
+        "/v1x/messages",
+        "/v2/messages",
+        // Below /v1 by their start, so only the segments and the
+        // characters refuse these.
+        "/v1/../admin",
+        "/v1/./messages",
+        "/v1/messages/..",
+        "/v1/%2e%2e/admin",
+        "/v1/..\\admin",
+        "/v1/x#/../y",
+        "/v1/x?to=/admin",
+    ] {
         let mut answers = answer(&lending.lender, "agents-1", lend(path));
         assert_eq!(refusal(&mut answers).await, 403, "{path}");
     }
-    assert!(!lending.relay.was_asked(), "none of those is below /v1");
+    assert!(
+        !lending.relay.was_asked(),
+        "none of those is below /v1 as it reads"
+    );
     let _answers = answer(&lending.lender, "agents-1", lend("/v1/messages/batches"));
     let asked = lending.relay.asked().await;
     let head = asked.head.to_ascii_lowercase();
@@ -642,6 +658,64 @@ async fn a_lend_file_that_cant_be_read_lends_nothing() {
         }
         other => panic!("the lend is refused, not {other:?}"),
     }
+    let logged = unparsed(
+        &serde_json::from_str::<Written>("{\"vms\": \"sk-pasted-key\", \"budgets\": {}}")
+            .expect_err("not a lend"),
+    );
+    assert!(
+        logged.starts_with("it isn't a lend at line 1") && !logged.contains("sk-pasted"),
+        "the lender's own log says where, never what: {logged}"
+    );
+}
+
+#[tokio::test]
+async fn a_relay_that_stops_taking_a_request_still_lets_a_cut_end_its_lend() {
+    let lending = Lending::with(&json!({
+        "vms": [{"prefix": "agents-", "budget": "models", "requests_a_day": 3}],
+        "budgets": {"models": {
+            "upstream": "relay/wedged.sock",
+            "host": "models.example",
+            "paths": ["/v1/messages"],
+            "auth_header": "authorization",
+            "key": ["/bin/sh", "-c", "printf 'Bearer lent-key\\n'"],
+        }},
+    }));
+    let wedged = UnixListener::bind(lending.folder.path().join("relay/wedged.sock"))
+        .expect("the wedged relay binds");
+    let request = 4 << 20;
+    let mut answers = answer(
+        &lending.lender,
+        "agents-1",
+        Lend {
+            body: STANDARD.encode(vec![b'x'; request]),
+            ..lend("/v1/messages")
+        },
+    );
+    let (stream, _) = tokio::time::timeout(PATIENCE, wedged.accept())
+        .await
+        .expect("the lender connects in time")
+        .expect("the lender connects");
+    let mut stream = BufReader::new(stream);
+    let mut first = String::new();
+    stream
+        .read_line(&mut first)
+        .await
+        .expect("the lender begins asking");
+    assert!(first.starts_with("POST /v1/messages "), "{first}");
+    // Read no further, the relay leaves the lender's write stopped on a
+    // full socket with most of the request unsent.
+    cut(&lending.state(), &Cut::Machine("agents-1".to_owned())).expect("cut");
+    assert_eq!(
+        refusal(&mut answers).await,
+        403,
+        "the cut ends a lend stopped sending"
+    );
+    let mut rest = Vec::new();
+    tokio::time::timeout(PATIENCE, stream.read_to_end(&mut rest))
+        .await
+        .expect("the relay is hung up on in time")
+        .expect("what was sent is read");
+    assert!(rest.len() < request, "the request never went up whole");
 }
 
 #[tokio::test]
