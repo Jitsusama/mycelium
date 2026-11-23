@@ -2064,6 +2064,7 @@ fn waits(quest: &str, ledger: &Ledger) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    use super::super::settle::beside;
     use super::super::watch::HEARD_WITHIN;
 
     const QUEST: &str = "QEST-20261013-4UHC5Q";
