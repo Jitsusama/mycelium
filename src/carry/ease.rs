@@ -132,7 +132,7 @@ pub struct Cell {
     pub orchestrates: Option<bool>,
     /// The session that says it answers to it, and where that session
     /// stands if it doesn't run, where only that session's word says it
-    /// orchestrates.
+    /// orchestrates, or may where how that session stands can't be told.
     pub lane: Option<String>,
     /// What it is part way through.
     pub busy: Option<Vec<Busy>>,
@@ -185,9 +185,10 @@ impl Cell {
                 });
             }
             None => {
-                return Some(format!(
-                    "whether {who} orchestrates other sessions can't be told"
-                ));
+                return Some(match &self.lane {
+                    Some(lane) => format!("whether {who} still orchestrates {lane} can't be told"),
+                    None => format!("whether {who} orchestrates other sessions can't be told"),
+                });
             }
         }
         match self.busy.as_deref() {
@@ -820,36 +821,31 @@ fn bringing_back(peers: &[Machine], kind: Option<Kind>) -> (Vec<Machine>, Vec<St
     (taken, left_out)
 }
 
-/// Those of `peers` a session in the fence `kind` may be carried to with
-/// nobody asking, and why each other is left out: a strict session goes
-/// only to a machine of `here`'s own system. Each system's strict fence
-/// reads and writes its own way, a Mac's the home folder but what pi's
-/// fence hides, so a session carried across lands looser though both say
-/// strict. A person or an orchestrator may still order such a carry;
-/// easing alone never chooses one, and where either system can't be told
-/// it's taken as another.
+/// Those of `peers` a session in the fence `kind` may be carried to by
+/// [`ground::alike`], within `here`'s own system where it runs strict, and
+/// why each other is left out, each reason once, so a machine that can't
+/// say its own system says so once rather than of every peer. The carry
+/// judges it again as it is made.
 fn alike(here: &Here, peers: &[Machine], kind: Option<Kind>) -> (Vec<Machine>, Vec<String>) {
-    if kind != Some(Kind::Strict) {
-        return (peers.to_vec(), Vec::new());
-    }
     let ours = here
         .machines
         .iter()
         .find(|machine| machine.name == here.name)
         .and_then(|machine| machine.system.as_deref());
-    let mut left_out = Vec::new();
+    let mut left_out: Vec<String> = Vec::new();
     let taken = peers
         .iter()
         .filter(|machine| {
-            let same = ours.is_some() && machine.system.as_deref() == ours;
-            if !same {
-                left_out.push(format!(
-                    "{}'s strict fence is another system's, or it can't say which, so a strict \
-                     session isn't carried there unasked",
-                    machine.name
-                ));
+            let there = (machine.name.as_str(), machine.system.as_deref());
+            match ground::alike(kind, (here.name, ours), there) {
+                Some(why) => {
+                    if !left_out.contains(&why) {
+                        left_out.push(why);
+                    }
+                    false
+                }
+                None => true,
             }
-            same
         })
         .cloned()
         .collect();
@@ -2113,15 +2109,31 @@ pub(super) mod tests {
             Some(("s2", "tern")),
             "a fenced session still goes to the Mac that holds its fence"
         );
-        let apart = "S1: tern's strict fence is another system's, or it can't say which, so a \
-                     strict session isn't carried there unasked";
         realm.pop();
-        assert_eq!(why_not(&chosen(&realm, &strict)), apart);
-        realm[1].system = Some("linux".to_owned());
+        assert_eq!(
+            why_not(&chosen(&realm, &strict)),
+            "S1: tern runs macos, whose strict fence reads and writes other than linux's, so \
+             only the person carries a strict session there"
+        );
+        // A node too old to say its system, holding the fence all the
+        // same, is taken as another system's.
+        realm[1].system = None;
+        assert_eq!(
+            why_not(&chosen(&realm, &strict)),
+            "S1: tern doesn't say its system, so only the person carries a strict session there"
+        );
+        let unsaid = "S1: skiff can't say its own system, so only the person carries a strict \
+                      session from it";
         realm[0].system = None;
         assert_eq!(
             why_not(&chosen(&realm, &strict)),
-            apart,
+            unsaid,
+            "where neither can say, neither is the other's"
+        );
+        realm[1].system = Some("linux".to_owned());
+        assert_eq!(
+            why_not(&chosen(&realm, &strict)),
+            unsaid,
             "where this machine can't say its system, none is its own"
         );
     }

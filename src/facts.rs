@@ -171,14 +171,14 @@ pub fn kit(folder: &Path) -> Option<Kit> {
 
 /// The system a machine measured here says it is, as Rust names it.
 #[cfg(not(test))]
-const SYSTEM: &str = std::env::consts::OS;
+pub(crate) const SYSTEM: &str = std::env::consts::OS;
 
 /// The system every machine measured in a test says it is, whatever
 /// builds the tests: a Mac takes no agent's held start, so a test node
 /// and its stand-ins measured on one would refuse every such start the
 /// tests make. A test's Mac says its system itself.
 #[cfg(test)]
-const SYSTEM: &str = "linux";
+pub(crate) const SYSTEM: &str = "linux";
 
 /// Where a machine's facts are read from, beyond the machine itself.
 #[derive(Debug, Clone)]
