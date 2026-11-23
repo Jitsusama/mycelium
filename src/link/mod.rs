@@ -2691,7 +2691,7 @@ mod tests {
             reading: Box::new(reading),
             writing: Box::new(writing),
             keep: Box::new(()),
-            refused: None,
+            said: None,
             releases: false,
             worker: false,
             hello_within: Some(dial::HELLO_WITHIN),

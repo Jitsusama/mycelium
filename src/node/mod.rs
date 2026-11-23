@@ -33,7 +33,7 @@ use crate::hold::{self, start, start::Starter};
 use crate::hosted_attach;
 use crate::lend::{Lend, Lent};
 use crate::link::dial::{Dial, Program};
-use crate::link::refused::Refusals;
+use crate::link::refused::{Refusals, Said};
 use crate::link::starts::{Asking, Asks, START_ANSWERED_WITHIN, Starting, Unsent};
 use crate::link::{self, discovery::Discovery, membership::Hello, membership::Membership};
 use crate::made::{self, Book, Made};
@@ -880,12 +880,16 @@ where
             Some(dial) = found.recv() => {
                 let dial = Arc::new(dial);
                 let carries = (sharing.clone(), shared.starting(&dial, &socket.path), refusals.clone());
-                links.spawn(keep_linked(dial, store.clone(), membership.clone(), carries));
+                let linked = keep_linked(dial, store.clone(), membership.clone(), carries, false);
+                links.spawn(async move {
+                    linked.await;
+                });
             }
             Some((made, unwanted)) = made.recv() => {
                 let dial = shared.book_for(&made);
                 let carries = (sharing.clone(), shared.starting(&dial, &socket.path), refusals.clone());
-                let linked = keep_linked(dial.clone(), store.clone(), membership.clone(), carries);
+                let linked =
+                    keep_linked(dial.clone(), store.clone(), membership.clone(), carries, true);
                 let keeping = shared.keeping(&made);
                 links.spawn(keep_made(dial, made, keeping, unwanted, linked));
             }
@@ -938,16 +942,30 @@ where
     result
 }
 
+/// How a kept link ended, where it did: a link is otherwise kept for as
+/// long as the node runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Linked {
+    /// The machine's work handed over, and it was released.
+    HandedOver,
+    /// The machine's provider says it no longer exists, in these words.
+    Gone(String),
+}
+
 /// Keeps a link up for as long as the node runs, dialling again after each
 /// drop, carrying the quests shared and starts. A link whose way in turned
 /// this machine away waits until its refusal is withdrawn instead, logging
-/// it once.
+/// it once. Where `ends_when_gone`, as for a machine this node made, a
+/// way in saying its machine is gone ends the link, since nothing is left
+/// to dial; elsewhere, as for a machine the node was given, it is dialled
+/// again as any link that dropped, since the node can't let it go.
 async fn keep_linked(
     dial: Arc<impl Dial>,
     store: impl Store,
     membership: impl Membership,
     (shares, starting, refusals): (Option<Places>, Starting, Refusals),
-) {
+    ends_when_gone: bool,
+) -> Linked {
     let words = dial.there(&[]);
     if refusals.stands(&words) {
         eprintln!(
@@ -960,9 +978,9 @@ async fn keep_linked(
     let mut wait = REDIAL_FIRST;
     loop {
         let started = tokio::time::Instant::now();
-        let (ended, refused) = match dial.dial(&membership.hello().realm).await {
+        let (ended, said) = match dial.dial(&membership.hello().realm).await {
             Ok(mut connection) => {
-                let refused = connection.refused.take();
+                let said = connection.said.take();
                 let starting = Some(starting.clone());
                 let ended = link::run(
                     store.clone(),
@@ -972,11 +990,11 @@ async fn keep_linked(
                     starting,
                 )
                 .await;
-                (ended, said_why(refused).await)
+                (ended, said_why(said).await)
             }
             Err(error) => (Err(error), None),
         };
-        if let Some(why) = refused {
+        if let Some(Said::TurnedAway(why)) = said {
             eprintln!(
                 "{} turned this machine away ({why}), so it isn't dialled again {}",
                 dial.describe(),
@@ -992,6 +1010,15 @@ async fn keep_linked(
         if let Err(error) = refusals.forget(&words) {
             eprintln!("a refusal of {} wasn't forgotten: {error}", dial.describe());
         }
+        if let Some(Said::Gone(why)) = said {
+            if ends_when_gone {
+                return Linked::Gone(why);
+            }
+            eprintln!(
+                "{} says its machine is gone ({why}), but the node was given it, so it is dialled again",
+                dial.describe()
+            );
+        }
         match ended {
             Ok(link::Ending::HandedOver) => match dial.release().await {
                 Some(Ok(())) => {
@@ -999,7 +1026,7 @@ async fn keep_linked(
                         "the machine over {} handed over and was released",
                         dial.describe()
                     );
-                    return;
+                    return Linked::HandedOver;
                 }
                 Some(Err(error)) => eprintln!(
                     "the machine over {} handed over, but wasn't released: {error}",
@@ -1127,7 +1154,9 @@ fn past_the_hash(path: &str) -> Option<&str> {
 
 /// Keeps a machine made from an offer `linked` until it is done with:
 /// until its work has handed over and it was released, it isn't wanted
-/// once made, or its time is up, when it is released. Keeps in the book
+/// once made, or its time is up, when it is released, or its provider says
+/// it is gone, when it is released too, so nothing it left is kept. Keeps
+/// in the book
 /// that it was let go, and why, and has it leave the realm's machines at
 /// once, so nothing lists a machine that is gone.
 async fn keep_made(
@@ -1139,21 +1168,24 @@ async fn keep_made(
         unbook,
     }: Keeping<impl Store>,
     unwanted: Arc<Notify>,
-    linked: impl Future<Output = ()>,
+    linked: impl Future<Output = Linked>,
 ) {
     let left = jiff::Timestamp::now().duration_until(made.until);
     // A link lets its machine go itself once its work has handed over.
     let release = tokio::select! {
-        () = linked => None,
-        () = unwanted.notified() => Some("nothing started on it once it was made"),
+        linked = linked => match linked {
+            Linked::HandedOver => None,
+            Linked::Gone(said) => Some(format!("its provider says it is gone ({said})")),
+        },
+        () = unwanted.notified() => Some("nothing started on it once it was made".to_owned()),
         () = tokio::time::sleep(Duration::try_from(left).unwrap_or_default()) => {
-            Some("its time was up")
+            Some("its time was up".to_owned())
         }
     };
     let why = match release {
         None => "its work handed over".to_owned(),
         Some(why) => match dial.release().await {
-            Some(Ok(())) => why.to_owned(),
+            Some(Ok(())) => why,
             Some(Err(error)) => {
                 format!("{why}, but it wasn't released, so it ends at its time: {error}")
             }
@@ -1342,14 +1374,12 @@ fn nothing_offered(
     why
 }
 
-/// Why a way in that has ended turned this machine away, if it did.
-async fn said_why(refused: Option<tokio::task::JoinHandle<Option<String>>>) -> Option<String> {
+/// What a way in that has ended said of the other machine, if anything.
+async fn said_why(said: Option<tokio::task::JoinHandle<Option<Said>>>) -> Option<Said> {
     // The link is over and its process gone, so what it said is all but
-    // read; a way in that hangs on to its output is taken as not refusing.
-    tokio::time::timeout(SAID_WITHIN, refused?)
-        .await
-        .ok()?
-        .ok()?
+    // read; a way in that hangs on to its output is taken as saying
+    // nothing.
+    tokio::time::timeout(SAID_WITHIN, said?).await.ok()?.ok()?
 }
 
 /// The group that reaches the session going by `address`.
@@ -9487,7 +9517,7 @@ mod tests {
             reading: Box::new(reading),
             writing: Box::new(writing),
             keep: Box::new(()),
-            refused: None,
+            said: None,
             releases: false,
             worker: false,
             named: None,
@@ -9512,8 +9542,10 @@ mod tests {
             // The other end hangs up before saying hello, as SSH does.
             let (near, _far) = tokio::io::duplex(64);
             let mut connection = piped(near);
-            connection.refused = Some(tokio::spawn(async {
-                Some("joel@kestrel: Permission denied (publickey).".to_owned())
+            connection.said = Some(tokio::spawn(async {
+                Some(Said::TurnedAway(
+                    "joel@kestrel: Permission denied (publickey).".to_owned(),
+                ))
             }));
             std::future::ready(Ok(connection))
         }
@@ -9523,6 +9555,74 @@ mod tests {
             there.extend_from_slice(words);
             there
         }
+    }
+
+    /// A way in whose provider says its machine is gone each time.
+    struct Gone {
+        dialled: mpsc::UnboundedSender<tokio::time::Instant>,
+    }
+
+    impl Dial for Gone {
+        fn describe(&self) -> String {
+            "a way in to a machine gone".to_owned()
+        }
+
+        fn dial(&self, _realm: &str) -> impl Future<Output = io::Result<Connection>> + Send {
+            let _ = self.dialled.send(tokio::time::Instant::now());
+            let (near, _far) = tokio::io::duplex(64);
+            let mut connection = piped(near);
+            connection.said = Some(tokio::spawn(async {
+                Some(Said::Gone(
+                    "mycelium-gone: wren no longer exists".to_owned(),
+                ))
+            }));
+            std::future::ready(Ok(connection))
+        }
+
+        fn there(&self, words: &[String]) -> Vec<String> {
+            let mut there = vec!["into-wren".to_owned()];
+            there.extend_from_slice(words);
+            there
+        }
+    }
+
+    #[tokio::test]
+    async fn a_machine_the_node_was_given_is_dialled_again_though_said_gone() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (dialled, mut dials) = mpsc::unbounded_channel();
+        let starting = Starting {
+            node: dir.path().join("work.sock"),
+            held: dir.path().join("work.held"),
+            asking: None,
+            steers: dir.path().join("steer"),
+            health: None,
+            declared: Some(dir.path().join("declared.json")),
+            kit: None,
+            saturation: None,
+            lender: None,
+        };
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let keeping = tokio::spawn(keep_linked(
+            Arc::new(Gone { dialled }),
+            Memory::default(),
+            membership,
+            (None, starting, Refusals::default()),
+            false,
+        ));
+
+        dials.recv().await.expect("the link is dialled");
+        tokio::time::timeout(PATIENCE, dials.recv())
+            .await
+            .expect("a machine the node can't let go is dialled again")
+            .expect("the link is kept");
+        assert!(
+            !keeping.is_finished(),
+            "and kept for as long as the node runs"
+        );
+        keeping.abort();
     }
 
     #[tokio::test]
@@ -9555,6 +9655,7 @@ mod tests {
             Memory::default(),
             membership,
             (None, starting, refusals.clone()),
+            false,
         ));
 
         dials.recv().await.expect("the link is dialled");
@@ -22859,6 +22960,84 @@ esac
             shared.admits().await,
             Admits::All,
             "a machine let go takes nobody's starts, so none is held to it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_made_machine_its_provider_says_is_gone_is_let_go_at_once() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let book = Book::at(dir.path().join("made.jsonl")).of_realm("work");
+        let given = Given {
+            book: book.clone(),
+            ..bare("/nowhere/steer".into(), None)
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            given,
+            to_dial,
+        );
+        let released = dir.path().join("released");
+        let provider = dir.path().join("provider");
+        crate::stand_in::program(
+            &provider,
+            &format!(
+                "#!/bin/sh\ncase \"$1\" in\n\
+                 link) echo 'mycelium-gone: wren-place no longer exists' >&2; exit 1 ;;\n\
+                 release) printf '%s\\n' \"$2\" > '{}' ;;\n\
+                 esac\n",
+                released.display()
+            ),
+        );
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let made = made_by(&provider.display().to_string(), "wren", later);
+        book.made(&made).expect("the make is booked");
+        let dial = shared.book_for(&made);
+        let starting = Starting {
+            node: dir.path().join("work.sock"),
+            held: dir.path().join("work.held"),
+            asking: None,
+            steers: dir.path().join("steer"),
+            health: None,
+            declared: Some(dir.path().join("declared.json")),
+            kit: None,
+            saturation: None,
+            lender: None,
+        };
+        let linked = keep_linked(
+            dial.clone(),
+            Memory::default(),
+            membership,
+            (None, starting, Refusals::default()),
+            true,
+        );
+        let keeping = shared.keeping(&made);
+
+        tokio::time::timeout(
+            PATIENCE,
+            keep_made(dial, made, keeping, Arc::new(Notify::new()), linked),
+        )
+        .await
+        .expect("a machine gone is let go long before its time, not redialled");
+
+        assert!(
+            book.standing().expect("the book reads").made.is_empty(),
+            "the book says it was let go, so a node started again doesn't dial it"
+        );
+        assert_eq!(
+            fs::read_to_string(&released).expect("its provider was asked to release it"),
+            "wren-place\n",
+            "what it left behind, such as a stopped machine's disk, is released too"
+        );
+        assert_eq!(
+            shared.admits().await,
+            Admits::All,
+            "nothing is held to a machine that is gone"
         );
     }
 

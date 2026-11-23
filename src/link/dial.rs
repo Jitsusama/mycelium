@@ -22,9 +22,10 @@ pub struct Connection {
     pub writing: Box<dyn AsyncWrite + Unpin + Send>,
     /// Kept until the link is over, such as the process carrying it.
     pub keep: Box<dyn Send>,
-    /// Why the way in turned this machine away, if it did, known once it
-    /// has ended; none for a way in that never refuses.
-    pub refused: Option<JoinHandle<Option<String>>>,
+    /// What the way in said of the other machine, known once it has
+    /// ended: that it turned this machine away, or that its provider says
+    /// it is gone; none for a way in that never says either.
+    pub said: Option<JoinHandle<Option<refused::Said>>>,
     /// Whether the way in can release the machine it reaches once that
     /// machine hands over ([`Dial::release`]).
     pub releases: bool,
@@ -310,7 +311,7 @@ fn carried(mut command: tokio::process::Command) -> io::Result<Connection> {
     let (Some(writing), Some(reading)) = (child.stdin.take(), child.stdout.take()) else {
         return Err(io::Error::other("the link's program gave no pipes"));
     };
-    let refused = child
+    let said = child
         .stderr
         .take()
         .map(|said| tokio::spawn(refused::turned_away(said)));
@@ -318,7 +319,7 @@ fn carried(mut command: tokio::process::Command) -> io::Result<Connection> {
         reading: Box::new(reading),
         writing: Box::new(writing),
         keep: Box::new(child),
-        refused,
+        said,
         releases: false,
         worker: false,
         named: None,
@@ -473,14 +474,16 @@ mod tests {
             heard, "hello\n",
             "the link runs over the program's own pipes"
         );
-        let refused = connection
-            .refused
+        let said = connection
+            .said
             .expect("a program's error output is read")
             .await
             .expect("the reading ends");
         assert_eq!(
-            refused.as_deref(),
-            Some("the gateway turned this machine away: no login"),
+            said,
+            Some(refused::Said::TurnedAway(
+                "the gateway turned this machine away: no login".to_owned()
+            )),
             "a program says a refusal as SSH does"
         );
         assert_eq!(
