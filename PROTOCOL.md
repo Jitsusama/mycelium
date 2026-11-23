@@ -1783,11 +1783,14 @@ A machine whose link dropped in the last two minutes may be linked
 again within seconds, since a link redials two seconds after a drop.
 So work that names such a machine, which misses it only for being out
 of reach, is answered that machine by `"PlaceToStart"`, and a
-`"Start"` naming it waits up to 60 seconds for its link before it is
-placed, judged then as any start is. The node's error output says
-that a start waited, and whether the link came back. A machine out of reach longer
-is judged at once, as before, and `"Place"`, which starts nothing,
-never waits.
+`"Start"` naming it, placed first as an ask that starts nothing,
+waits up to 25 seconds for its link where that is all it misses there,
+then is placed as any start is. With a relayed start's 90 seconds,
+that stays under the two minutes the harness waits on a start. The
+node's error output says which program's start waited and whether the
+link came back, and when `"PlaceToStart"` answered a machine its
+placement kept as missed. A machine out of reach longer is judged at
+once, as before, and `"Place"`, which starts nothing, never waits.
 
 Each placement, by `"Place"`, `"PlaceToStart"` or `"Start"`, is kept
 as a JSON line in `placements/<date>.jsonl` in mycelium's folder, a file
