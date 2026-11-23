@@ -59,6 +59,11 @@ pub struct Made {
     /// and is booked for nobody but the person.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asker: Option<String>,
+    /// How many sessions its offer promised it holds at most, for as long
+    /// as its own configuration says none, so a provider can cap the
+    /// machines it makes without changing what they run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sessions_at_most: Option<u32>,
 }
 
 /// What a program says it made.
@@ -124,6 +129,11 @@ pub async fn make(offer: &Offer, lasting: Duration, asker: &str) -> Result<Made,
         until: said.until,
         costs: offer.costs.clone(),
         asker: Some(asker.to_owned()),
+        sessions_at_most: offer
+            .facts
+            .declared
+            .as_ref()
+            .and_then(|declared| declared.sessions_at_most),
     })
 }
 
@@ -339,6 +349,7 @@ mod tests {
                 until: "2026-10-31T20:00:00Z".parse().expect("a time"),
                 costs: offer_of(String::new()).costs,
                 asker: Some("person".to_owned()),
+                sessions_at_most: None,
             },
             "what was made, where, until when, at what rate and for whom"
         );
@@ -374,6 +385,7 @@ mod tests {
             until: jiff::Timestamp::UNIX_EPOCH,
             costs: offer_of(String::new()).costs,
             asker: None,
+            sessions_at_most: None,
         };
         std::thread::scope(|scope| {
             for _ in 0..8 {
@@ -401,6 +413,7 @@ mod tests {
             until,
             costs: offer_of(String::new()).costs,
             asker: None,
+            sessions_at_most: None,
         }
     }
 

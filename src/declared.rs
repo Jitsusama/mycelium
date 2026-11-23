@@ -43,6 +43,12 @@ pub struct Declared {
     /// does; the processors it lists where it says nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cores: Option<u32>,
+    /// How many sessions it holds at most, where its room would run short
+    /// before its pressure showed it, as a small virtual machine with one
+    /// worker home: a machine holding as many takes no more starts. Any
+    /// number where it says none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sessions_at_most: Option<u32>,
     /// The command an agent session starts with there, by realm, such as
     /// `pi` in one and `pi-claude` in another, for whatever starts one.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -1059,6 +1065,7 @@ mod tests {
                 hosts: Vec::new(),
                 fence: None,
                 basin: None,
+                sessions_at_most: None,
             }),
             "it reads as declared"
         );
@@ -1079,6 +1086,7 @@ mod tests {
             hosts: Vec::new(),
             fence: None,
             basin: None,
+            sessions_at_most: None,
         };
         assert!(
             !lasting.is_worker(),

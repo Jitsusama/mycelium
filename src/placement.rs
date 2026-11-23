@@ -249,6 +249,9 @@ pub enum Because {
     LivesOnly(jiff::SignedDuration),
     /// Its room hasn't been said lately, so it earns no headroom.
     Unheard,
+    /// It holds as many sessions as it holds at most, counting the starts
+    /// placed there that it doesn't yet show.
+    Full(u32),
 }
 
 impl fmt::Display for Need {
@@ -280,6 +283,7 @@ impl fmt::Display for Because {
                 write!(f, "would live only {lives:#}, ending before the work")
             }
             Because::Unheard => write!(f, "hasn't said its room lately"),
+            Because::Full(most) => write!(f, "holds the {most} sessions it holds at most"),
         }
     }
 }
@@ -761,6 +765,40 @@ pub struct Judgement {
 #[must_use]
 pub fn place(work: &Work, machines: &[Machine], loads: &Loads) -> Placement {
     decide(work, machines, loads).placement
+}
+
+/// Each of `machines` that holds as many sessions as it holds at most,
+/// refused for it: its live sessions, as `holding` counts them by
+/// machine, and the starts `loads` says were placed there that it doesn't
+/// yet show. How many it holds at most is its own configuration's word,
+/// or, where that says none, what `promised` says the offer it was made
+/// of promised; a machine neither caps takes any number, as before.
+///
+/// Live sessions are counted rather than a load's busy ones, since an
+/// idle session holds its memory and its worker home all the same.
+#[must_use]
+pub fn full(
+    machines: &[Machine],
+    holding: &BTreeMap<String, u32>,
+    loads: &Loads,
+    promised: &BTreeMap<String, u32>,
+) -> Vec<Miss> {
+    machines
+        .iter()
+        .filter_map(|machine| {
+            let most = machine
+                .declared
+                .as_ref()
+                .and_then(|declared| declared.sessions_at_most)
+                .or_else(|| promised.get(&machine.name).copied())?;
+            let held = holding.get(&machine.name).copied().unwrap_or(0);
+            let placed = loads.get(&machine.name).map_or(0, |load| load.placed);
+            (held.saturating_add(placed) >= most).then(|| Miss {
+                machine: machine.name.clone(),
+                because: vec![Because::Full(most)],
+            })
+        })
+        .collect()
 }
 
 /// Places `work` among `machines`, each carrying its `loads`, saying how
@@ -1800,6 +1838,83 @@ pub(crate) mod tests {
             Placement::Placed { machine, .. } => Some(machine),
             _ => None,
         }
+    }
+
+    /// A small machine made from an offer, as `machine` says it, holding
+    /// `most` sessions at most by its own word where given.
+    fn capped(name: &str, most: Option<u32>) -> Machine {
+        let mut one = machine(name, "NixOS", 12, &["cloud"]);
+        if let Some(declared) = one.declared.as_mut() {
+            declared.sessions_at_most = most;
+        }
+        one
+    }
+
+    #[test]
+    fn a_machine_holding_its_most_sessions_is_refused_for_it() {
+        let machines = [capped("wren", Some(1)), capped("tern", Some(2))];
+        let holding = BTreeMap::from([("wren".to_owned(), 1), ("tern".to_owned(), 1)]);
+        assert_eq!(
+            full(&machines, &holding, &Loads::new(), &BTreeMap::new()),
+            vec![Miss {
+                machine: "wren".to_owned(),
+                because: vec![Because::Full(1)],
+            }],
+            "wren holds its one, while tern has room for a second"
+        );
+        let refused = full(&machines, &holding, &Loads::new(), &BTreeMap::new());
+        let work = needing(vec![Need::Reach("cloud".to_owned())]);
+        let decision = decide_refusing(&work, &machines, &Loads::new(), &refused);
+        assert_eq!(
+            placed(&decision.placement),
+            Some("tern"),
+            "the start goes where there is room"
+        );
+        let both = BTreeMap::from([("wren".to_owned(), 1), ("tern".to_owned(), 2)]);
+        let refused = full(&machines, &both, &Loads::new(), &BTreeMap::new());
+        assert!(
+            matches!(
+                decide_refusing(&work, &machines, &Loads::new(), &refused).placement,
+                Placement::Refused { .. }
+            ),
+            "with both full it goes nowhere, so a machine is made for it"
+        );
+    }
+
+    #[test]
+    fn a_start_placed_and_not_yet_shown_counts_toward_a_machines_most() {
+        let machines = [capped("wren", Some(1))];
+        let loads = Loads::from([(
+            "wren".to_owned(),
+            Load {
+                sessions: 0,
+                placed: 1,
+            },
+        )]);
+        assert_eq!(
+            full(&machines, &BTreeMap::new(), &loads, &BTreeMap::new()).len(),
+            1,
+            "a burst of starts doesn't all land before the first shows"
+        );
+    }
+
+    #[test]
+    fn an_offers_promised_most_caps_a_machine_saying_none_of_its_own() {
+        let machines = [capped("wren", None), capped("tern", Some(3))];
+        let holding = BTreeMap::from([("wren".to_owned(), 1), ("tern".to_owned(), 1)]);
+        let promised = BTreeMap::from([("wren".to_owned(), 1), ("tern".to_owned(), 1)]);
+        assert_eq!(
+            full(&machines, &holding, &Loads::new(), &promised),
+            vec![Miss {
+                machine: "wren".to_owned(),
+                because: vec![Because::Full(1)],
+            }],
+            "wren is capped by its offer, and tern's own word comes before its offer's"
+        );
+        assert!(
+            full(&machines, &holding, &Loads::new(), &BTreeMap::new()).is_empty(),
+            "a machine nothing caps takes any number, as before"
+        );
     }
 
     pub(crate) fn needing(needs: Vec<Need>) -> Work {

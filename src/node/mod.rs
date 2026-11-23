@@ -1898,6 +1898,10 @@ struct Inner {
     /// there. The place tells two makes of one name apart, as the book
     /// does, so letting one go never unbooks the other.
     booked: HashMap<String, (String, Option<String>)>,
+    /// How many sessions the offer each booked machine was made of
+    /// promised it holds at most, where it promised any, weighed while
+    /// the machine's own configuration says none ([`placement::full`]).
+    promised: BTreeMap<String, u32>,
     /// The sessions a relayed start is reopening here now, and since
     /// when, kept only while the node runs (see [`Reopening`]).
     reopening: Reopening,
@@ -1981,6 +1985,19 @@ fn watch(
             (None, mpsc::unbounded_channel().1)
         }
     }
+}
+
+/// How many of `sessions` each machine holds live, busy or idle, as a
+/// machine's most counts them ([`placement::full`]).
+fn holding(sessions: &[Session]) -> BTreeMap<String, u32> {
+    let mut holding = BTreeMap::new();
+    for one in sessions {
+        if matches!(one.state, SessionState::Busy | SessionState::Idle) {
+            let held: &mut u32 = holding.entry(one.machine.clone()).or_default();
+            *held = held.saturating_add(1);
+        }
+    }
+    holding
 }
 
 /// The machines of those of `sessions` that weigh on their machine beyond
@@ -3686,7 +3703,7 @@ impl<S: Store> Shared<S> {
             at += 1;
             at == 1 || self.admitted_on(&one.name, admits)
         });
-        let refused = fence
+        let mut refused = fence
             .map(|kind| {
                 let here = crate::declared::read(&self.declared);
                 let mut refused = ground::looser(kind, here.as_ref(), &self.machine, &machines);
@@ -3725,6 +3742,14 @@ impl<S: Store> Shared<S> {
             let inner = &mut *inner;
             let sessions = inner.state.sessions();
             let loads = inner.starts.loads(&machines, running(&sessions), now);
+            // Judged under the same lock as the starts it counts, so two
+            // asks at once never both take a machine's last room.
+            refused.extend(placement::full(
+                &machines,
+                &holding(&sessions),
+                &loads,
+                &inner.promised,
+            ));
             let decision = placement::decide_refusing(work, &machines, &loads, &refused);
             let counted = counts
                 .counted(&decision.placement, &self.machine)
@@ -7032,6 +7057,7 @@ impl<S: Store> Shared<S> {
             .is_some_and(|(place, _)| *place == made.place)
         {
             inner.booked.remove(&made.machine);
+            inner.promised.remove(&made.machine);
         }
     }
 
@@ -7040,10 +7066,16 @@ impl<S: Store> Shared<S> {
     /// gives the dial that links it. Booked before it is dialled, so no
     /// start finds it among the realm's machines unbooked.
     fn book_for(&self, made: &Made) -> Arc<Program> {
-        self.lock().booked.insert(
+        let mut inner = self.lock();
+        inner.booked.insert(
             made.machine.clone(),
             (made.place.clone(), made.asker.clone()),
         );
+        match made.sessions_at_most {
+            Some(most) => inner.promised.insert(made.machine.clone(), most),
+            None => inner.promised.remove(&made.machine),
+        };
+        drop(inner);
         Arc::new(Program {
             program: made.provider.clone(),
             place: made.place.clone(),
@@ -20283,6 +20315,7 @@ esac
                 currency: "USD".to_owned(),
             },
             asker: None,
+            sessions_at_most: None,
         }
     }
 
@@ -20320,6 +20353,7 @@ esac
                     hosts: Vec::new(),
                     fence: None,
                     basin: None,
+                    sessions_at_most: None,
                 }),
                 ..facts::measure("kestrel", &facts::Sources::nowhere())
             })
@@ -21122,6 +21156,45 @@ esac
             shared.admits().await,
             Admits::All,
             "and it is booked for nobody, so starts no longer ask who asks"
+        );
+    }
+
+    #[test]
+    fn a_made_machine_is_held_to_what_its_offer_promised_while_booked() {
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            bare("/nowhere/steer".into(), None),
+            to_dial,
+        );
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let mut made = made_by("/nowhere/lend", "kestrel", later);
+        made.sessions_at_most = Some(1);
+        shared.book_for(&made);
+        assert_eq!(
+            shared.lock().promised.get("kestrel"),
+            Some(&1),
+            "booked, it holds what its offer promised"
+        );
+        let mut again = made.clone();
+        "kestrel-again".clone_into(&mut again.place);
+        again.sessions_at_most = None;
+        shared.book_for(&again);
+        assert_eq!(
+            shared.lock().promised.get("kestrel"),
+            None,
+            "a later make of its name that promised nothing holds to nothing"
+        );
+        shared.book_for(&made);
+        shared.unbook(&made);
+        assert!(
+            shared.lock().promised.is_empty(),
+            "let go, it holds to nothing"
         );
     }
 
