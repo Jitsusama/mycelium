@@ -669,9 +669,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let places = kestrel(dir.path());
         let here = holds_here(&places, QUEST, "kestrel").expect("read");
-        let mut held = places.ledgers().hold(QUEST).expect("held");
-        held.ledger.read.insert("skiff".to_owned(), here);
-        held.keep().expect("kept");
+        {
+            // Let go before the wait holds the ledger itself.
+            let mut held = places.ledgers().hold(QUEST).expect("held");
+            held.ledger.read.insert("skiff".to_owned(), here);
+            held.keep().expect("kept");
+        }
         let reached = reach(
             &places,
             QUEST,
