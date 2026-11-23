@@ -59,6 +59,7 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -337,7 +338,8 @@ pub async fn run(
         ..
     } = connection;
     let mut changes = store.changes()?;
-    let (mut frames, _reader) = read_frames(reading);
+    let arrived = Arc::new(AtomicI64::new(now()));
+    let (mut frames, _reader) = read_frames(reading, Arc::clone(&arrived));
 
     let other = greet(
         &mut writing,
@@ -379,6 +381,7 @@ pub async fn run(
         // minute, so either hearing nothing for longer knows the other
         // is gone.
         hearing: Hearing::from_now(membership.hello().facts && other.facts, began),
+        arrived,
         following: inboxes.clone().map(Following::new),
         inboxes,
         held: starting.as_ref().map(|starting| starting.held.clone()),
@@ -525,15 +528,21 @@ impl Drop for Reader {
 }
 
 /// Reads the other end's frames in a task of their own, until it leaves or
-/// sends a line that isn't one.
+/// sends a line that isn't one, keeping in `arrived` when the last came:
+/// the other end is heard as its words arrive, not only once the link's
+/// own work reaches them, which may be held minutes behind a quest it
+/// shares.
 fn read_frames(
     reading: Box<dyn AsyncRead + Unpin + Send>,
+    arrived: Arc<AtomicI64>,
 ) -> (mpsc::UnboundedReceiver<io::Result<Frame>>, Reader) {
     let (sender, frames) = mpsc::unbounded_channel();
     let task = tokio::spawn(async move {
         let mut lines = BufReader::new(reading).lines();
         loop {
-            let frame = match lines.next_line().await {
+            let line = lines.next_line().await;
+            arrived.fetch_max(now(), Ordering::Relaxed);
+            let frame = match line {
                 Ok(Some(line)) => serde_json::from_str(&line)
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
                 Ok(None) => return,
@@ -809,6 +818,9 @@ struct End<S> {
     handover: Handover,
     /// When this end last heard the other, and whether it should have.
     hearing: Hearing,
+    /// When the other end's last frame arrived, as the task reading them
+    /// keeps it ([`read_frames`]).
+    arrived: Arc<AtomicI64>,
     /// This machine's sessions' steer inboxes, if this end carries steers.
     inboxes: Option<PathBuf>,
     /// The talks this end carries back to the other.
@@ -1837,6 +1849,7 @@ impl<S: Store> End<S> {
     /// what this link carried here stands, and what this end's machine is
     /// now, and whether it has handed over.
     async fn keep(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
+        self.hearing.arrived(self.arrived.load(Ordering::Relaxed));
         if self.hearing.gone(now()) {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -1937,12 +1950,23 @@ impl<S: Store> End<S> {
         let Some(mut exchange) = self.exchange.take() else {
             return Ok(());
         };
-        let (mut exchange, says) = tokio::task::spawn_blocking(move || {
+        let mut acting = tokio::task::spawn_blocking(move || {
             let says = act(&mut exchange);
             (exchange, says)
-        })
-        .await
-        .map_err(io::Error::other)?;
+        });
+        // The link says its machine each minute the act takes, as it would
+        // at each keep, so the other end doesn't take it as gone. Acts
+        // over many large ledgers took minutes on a busy machine, and on
+        // 23 November its link to a Mac dropped twice for silence while
+        // its share went on.
+        let mut keeping =
+            tokio::time::interval_at(tokio::time::Instant::now() + KEEP_EVERY, KEEP_EVERY);
+        let (mut exchange, says) = loop {
+            tokio::select! {
+                acted = &mut acting => break acted.map_err(io::Error::other)?,
+                _ = keeping.tick() => self.send_machine(writing).await?,
+            }
+        };
         // Written here, a finding reaches this machine's sessions and, as
         // any message does, the other's.
         for draft in exchange.findings() {
@@ -2134,6 +2158,12 @@ impl Hearing {
             began,
             caught_up: None,
         }
+    }
+
+    /// Takes the other end as heard at `at`, when one of its frames
+    /// arrived, if that is later than this end last took one.
+    fn arrived(&mut self, at: i64) {
+        self.heard = self.heard.max(at);
     }
 
     /// Whether the other end is gone by `now`.
@@ -4254,6 +4284,52 @@ mod tests {
         assert!(
             silent(heard, heard + 45 * minute),
             "and so is an end last heard before its machine slept"
+        );
+    }
+
+    /// An end whose frames kept arriving while this end's work was held
+    /// behind a long share isn't gone, though none of them was taken yet;
+    /// one whose last frame arrived three minutes ago is.
+    #[test]
+    fn an_end_whose_frames_arrived_while_the_link_was_busy_is_not_gone() {
+        let minute = millis(KEEP_EVERY);
+        let mut hearing = Hearing::from_now(true, None);
+        let taken = hearing.heard;
+        hearing.arrived(taken + 3 * minute);
+        assert!(
+            !hearing.gone(taken + 4 * minute),
+            "a frame arrived a minute ago"
+        );
+        hearing.arrived(taken);
+        assert_eq!(
+            hearing.heard,
+            taken + 3 * minute,
+            "an older arrival takes nothing back"
+        );
+        assert!(
+            hearing.gone(taken + 6 * minute),
+            "nothing has arrived for three minutes"
+        );
+    }
+
+    /// The task reading frames keeps when each arrived, before the link's
+    /// own work takes it.
+    #[tokio::test]
+    async fn the_reader_keeps_when_each_frame_arrived() {
+        let (far, near) = tokio::io::duplex(1024);
+        let (_, mut writing) = tokio::io::split(far);
+        let arrived = Arc::new(AtomicI64::new(0));
+        let (mut frames, _reader) = read_frames(Box::new(near), Arc::clone(&arrived));
+        let before = now();
+        writing
+            .write_all(b"{\"Ended\":{\"session\":\"s1\"}}\n")
+            .await
+            .expect("written");
+        let frame = frames.recv().await.expect("a frame");
+        assert!(frame.is_ok(), "{frame:?}");
+        assert!(
+            arrived.load(Ordering::Relaxed) >= before,
+            "its arrival is kept"
         );
     }
 
