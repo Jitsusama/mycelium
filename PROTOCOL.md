@@ -340,9 +340,12 @@ above says. And after the first frame, an end skips a frame of a kind
 it doesn't know, or a `Share` of a kind it doesn't, saying so once a
 link for each of its first eight kinds, rather than ending the link.
 A frame of a kind it knows whose body it can't read still ends the
-link, as a hello it can't read does, and a line that isn't JSON or
-holds no frame's shape: such a frame may be the answer an ask waits
-on, which only the link's drop then answers. A change that can't keep
+link, as a hello it can't read does, a line that isn't JSON or holds
+no frame's shape, and a frame naming its kind twice: such a frame may
+be the answer an ask waits on, which only the link's drop then
+answers. A link that skipped a share may have missed a file it names,
+so it never takes the other end's `HandedOver` as holding all it said.
+A change that can't keep
 to the rules, as one changing what a frame means would be, raises
 `version`, and ends of two versions are refused, saying which to
 update (Membership, below). An end older than skipping ends the link
