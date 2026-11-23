@@ -152,9 +152,7 @@ enum Action {
     /// carries only itself, arriving as carried by itself, and the
     /// quest's other sessions stay.
     #[command(
-        after_help = "Examples:\n  mycelium carry QEST-20261112-HARBOR --to tern\n  \
-                            mycelium carry QEST-20261112-HARBOR --to tern --itself \
-                            --why \"skiff is short of memory\""
+        after_help = "Example:\n  mycelium carry QEST-20261112-HARBOR --to tern --itself --why memory"
     )]
     Carry {
         #[command(flatten)]
