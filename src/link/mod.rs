@@ -357,7 +357,7 @@ pub async fn run(
     // as of now.
     let began = admitted(&store, &other.machine)?;
     let exchange = shares.map(|places| exchange_with(places, &membership.hello(), &other, worker));
-    let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine);
+    let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine).await;
     let (answering, mut answered) = mpsc::unbounded_channel();
     let (runs, mut run_said) = Runs::new();
     let (starters, mut learned) = started::Starters::new();
@@ -566,7 +566,19 @@ fn know_how_it_runs(starting: Option<&Starting>, machine: &str) {
 /// until what it answers is dropped, when the link carries the node's
 /// starts: in the node's own process for a link it keeps, and over its
 /// socket for one `machine` dialled. None otherwise.
-fn asked_of(
+///
+/// A link `machine` dialled waits, up to [`ASKS_TAKEN_WITHIN`], for its
+/// node to take the asks before the link goes on to say `machine`'s
+/// facts, since those mark it ready: a start placed there in between
+/// would otherwise find no link reaching it. A node that can't be reached
+/// ends the wait at once, and is asked again as [`carried::from_node`]
+/// says, while the link carries on.
+/// How long a link `machine` dialled waits for its node to take the asks
+/// of `machine` ([`asked_of`]): far past the moment a node at hand takes,
+/// so only a node stalled for longer has its facts go on first.
+const ASKS_TAKEN_WITHIN: Duration = Duration::from_secs(5);
+
+async fn asked_of(
     starting: Option<&Starting>,
     machine: &str,
 ) -> (Option<mpsc::UnboundedReceiver<Ask>>, Option<Box<dyn Send>>) {
@@ -579,7 +591,16 @@ fn asked_of(
             (Some(asked), Some(Box::new(reaching)))
         }
         Some(Asking::Dialled) => {
-            let (asked, carrying) = carried::from_node(starting.node.clone(), machine);
+            let (asked, carrying, taken) = carried::from_node(starting.node.clone(), machine);
+            if tokio::time::timeout(ASKS_TAKEN_WITHIN, taken)
+                .await
+                .is_err()
+            {
+                eprintln!(
+                    "mycelium: the node hasn't taken its asks of {machine} through this link \
+                     yet; its facts go on, and a start there may find no link until it does"
+                );
+            }
             (Some(asked), Some(Box::new(carrying)))
         }
         None => (None, None),
@@ -3129,6 +3150,40 @@ mod tests {
             skiff.machines()[0].declared.is_none(),
             "with no node to ask, nothing kestrel declares is said"
         );
+    }
+
+    /// A link skiff dialled says kestrel's facts only once kestrel's node
+    /// takes its asks of skiff through it, so the node never reads skiff
+    /// ready, and places a start there, with no link to ask it through.
+    #[tokio::test]
+    async fn a_dialled_end_says_its_facts_once_its_node_takes_its_asks() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("node.sock");
+        let listener = tokio::net::UnixListener::bind(&path).expect("the node binds");
+        let skiff = dialled_by_kestrel(dir.path(), path);
+        let (stream, _) = tokio::time::timeout(PATIENCE, listener.accept())
+            .await
+            .expect("the link asks its node in time")
+            .expect("the node takes the link's call");
+        // Later calls, for what the link says of its machine, find no node.
+        drop(listener);
+        let (reading, mut writing) = stream.into_split();
+        let mut node = BufReader::new(reading).lines();
+        let first = node.next_line().await.expect("it asks").expect("a line");
+        assert!(first.contains("Carry"), "the link asks to carry: {first}");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            skiff.machines().is_empty(),
+            "nothing of kestrel is said before its node takes the asks"
+        );
+        let carrying =
+            serde_json::to_string(&crate::wire::Reply::Ok(crate::wire::Response::Carrying))
+                .expect("a reply");
+        writing
+            .write_all(format!("{carrying}\n").as_bytes())
+            .await
+            .expect("the node answers");
+        until(&skiff, |store| !store.machines().is_empty()).await;
     }
 
     /// Skiff's store, hearing kestrel's end of a link skiff dialled, which

@@ -175,13 +175,16 @@ pub async fn to_link<R, W>(
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    // Reached before the link hears it is carried, so a link that waits
+    // for that before saying its machine's facts never has the node read
+    // the machine ready with no link to ask it through.
+    let (mut asked, _reaching) = asks.reach(machine, asks.way(machine));
     if write(&mut writing, &Reply::Ok(Response::Carrying))
         .await
         .is_err()
     {
         return;
     }
-    let (mut asked, _reaching) = asks.reach(machine, asks.way(machine));
     let mut unanswered = HashMap::new();
     // Where each lend's pieces go, while it answers.
     let mut lending = HashMap::new();
@@ -310,16 +313,31 @@ impl Drop for Carrying {
 /// What this machine's node at `node` asks of `machine`, for a link
 /// `machine` dialled: asked of the node over its socket for as long as
 /// what this answers is held, and asked again whenever the node can't be
-/// reached, as while it restarts.
-pub(super) fn from_node(node: PathBuf, machine: &str) -> (mpsc::UnboundedReceiver<Ask>, Carrying) {
+/// reached, as while it restarts. The last it answers hears once the node
+/// first takes the asks, or the first asking fails: a node that can't be
+/// reached places no start to miss them.
+pub(super) fn from_node(
+    node: PathBuf,
+    machine: &str,
+) -> (
+    mpsc::UnboundedReceiver<Ask>,
+    Carrying,
+    oneshot::Receiver<()>,
+) {
     let (asks, asked) = mpsc::unbounded_channel();
+    let (taken, first_taken) = oneshot::channel();
     let machine = machine.to_owned();
     let task = tokio::spawn(async move {
         let mut said = None;
+        let mut taken = Some(taken);
         loop {
             // Each new reason is said once, so a node that stays away for
             // long fills no log.
-            if let Err(error) = carry(&node, &machine, &asks).await {
+            let carried = carry(&node, &machine, &asks, &mut taken).await;
+            if let Some(taken) = taken.take() {
+                let _ = taken.send(());
+            }
+            if let Err(error) = carried {
                 let why = error.to_string();
                 if said.as_ref() != Some(&why) {
                     eprintln!(
@@ -331,12 +349,18 @@ pub(super) fn from_node(node: PathBuf, machine: &str) -> (mpsc::UnboundedReceive
             tokio::time::sleep(ASKED_AGAIN_AFTER).await;
         }
     });
-    (asked, Carrying(task))
+    (asked, Carrying(task), first_taken)
 }
 
 /// Asks the node at `node` for what it asks of `machine`, sending each to
-/// the link through `asks` and each answer back, until the node hangs up.
-async fn carry(node: &Path, machine: &str, asks: &mpsc::UnboundedSender<Ask>) -> io::Result<()> {
+/// the link through `asks` and each answer back, until the node hangs up,
+/// telling `taken`, if it is still there, once the node takes them.
+async fn carry(
+    node: &Path,
+    machine: &str,
+    asks: &mpsc::UnboundedSender<Ask>,
+    taken: &mut Option<oneshot::Sender<()>>,
+) -> io::Result<()> {
     let (reading, mut writing) = UnixStream::connect(node).await?.into_split();
     let mut lines = BufReader::new(reading).lines();
     let carry = Request::Carry {
@@ -349,7 +373,12 @@ async fn carry(node: &Path, machine: &str, asks: &mpsc::UnboundedSender<Ask>) ->
         .await?
         .ok_or_else(|| io::Error::other("the node hung up"))?;
     match serde_json::from_str::<Reply>(&first) {
-        Ok(Ok(Response::Carrying)) => {}
+        Ok(Ok(Response::Carrying)) => {
+            if let Some(taken) = taken.take() {
+                // A link that no longer waits for it has nothing to hear.
+                let _ = taken.send(());
+            }
+        }
         Ok(Err(why)) => return Err(io::Error::other(why)),
         _ => return Err(io::Error::other(format!("the node answered {first}"))),
     }
@@ -577,6 +606,10 @@ mod tests {
             };
             let first = link.heard().await;
             assert!(first.contains("Carrying"), "the node carries: {first}");
+            assert!(
+                asks.there("tern").is_some(),
+                "the node reaches tern through the link before the link hears it is carried"
+            );
             link
         }
 
@@ -713,7 +746,9 @@ mod tests {
         let path = folder.path().join("node.sock");
         let listener = tokio::net::UnixListener::bind(&path).expect("the node binds");
         let (asks, mut asked) = mpsc::unbounded_channel();
-        let linking = tokio::spawn(async move { carry(&path, "tern", &asks).await });
+        let (taken, first_taken) = oneshot::channel();
+        let linking =
+            tokio::spawn(async move { carry(&path, "tern", &asks, &mut Some(taken)).await });
         let (stream, _) = listener.accept().await.expect("the link asks its node");
         let (reading, mut writing) = stream.into_split();
         let mut node = BufReader::new(reading).lines();
@@ -722,6 +757,10 @@ mod tests {
         write(&mut writing, &Reply::Ok(Response::Carrying))
             .await
             .expect("the node answers");
+        tokio::time::timeout(PATIENCE, first_taken)
+            .await
+            .expect("the link hears in time")
+            .expect("the link hears its node takes its asks");
         let handed = ToLink::Handed(Handed {
             ask: 7,
             asked: Carried::Lend(lend()),
