@@ -92,6 +92,15 @@ impl Through {
         self
     }
 
+    /// These hands, for a carry that began at `began`, before they were
+    /// made: its session was told first, so a refusal it wrote since then
+    /// is this carry's.
+    #[must_use]
+    pub fn since(mut self, began: jiff::Timestamp) -> Self {
+        self.began = began;
+        self
+    }
+
     /// These hands, waiting no longer once `stopped` is set, as a node's
     /// are once it stops.
     #[must_use]
@@ -977,6 +986,62 @@ mod tests {
         assert!(
             refusals(handover, began).is_err(),
             "one naming another session than its file stops the carry"
+        );
+    }
+
+    // 8855BD77's council (23 November): hands made once the session was
+    // told passed over a refusal it wrote before they were made.
+    #[test]
+    fn hands_made_after_the_session_was_told_read_its_refusal_since() {
+        use super::{Hands, Places, Through};
+        let dir = tempfile::tempdir().expect("places");
+        let places = Places {
+            quests: dir.path().join("quests"),
+            scratch: dir.path().join("scratch"),
+            home: dir.path().join("home"),
+            state: dir.path().join("state"),
+        };
+        let quest = "QEST-20261115-HARBOR";
+        let host = rustix::system::uname()
+            .nodename()
+            .to_string_lossy()
+            .into_owned();
+        let at = handover(&places.scratch, quest, &host);
+        fs::create_dir_all(&at).expect("a handover");
+        // Told a minute ago, it refused a second ago, before the hands.
+        let told = jiff::Timestamp::now() - jiff::SignedDuration::from_secs(60);
+        let refused_at = jiff::Timestamp::now() - jiff::SignedDuration::from_secs(1);
+        let refusal = at.join("s-quick.refused.json");
+        fs::write(
+            &refusal,
+            format!(r#"{{"session": "s-quick", "why": "it holds a lease", "at": "{refused_at}"}}"#),
+        )
+        .expect("a refusal");
+        fs::File::options()
+            .write(true)
+            .open(&refusal)
+            .and_then(|file| file.set_modified(SystemTime::from(refused_at)))
+            .expect("dated as it was written");
+        let made = || {
+            Through::new(
+                dir.path().join("work.sock"),
+                places.clone(),
+                quest,
+                Duration::from_secs(1),
+            )
+        };
+        assert_eq!(
+            made().refused().expect("read"),
+            Vec::<Refused>::new(),
+            "hands dated as they're made pass it over"
+        );
+        assert_eq!(
+            made().since(told).refused().expect("read"),
+            [Refused {
+                session: "s-quick".to_owned(),
+                why: "it holds a lease".to_owned(),
+            }],
+            "dated from when the session was told, they read it"
         );
     }
 

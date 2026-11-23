@@ -622,6 +622,8 @@ fn start_each(
     // land there: asked again, under its name, it joins that start.
     let mut arrived = Vec::new();
     let mut failed = Vec::new();
+    // Started there, but left marked here as not yet started.
+    let mut unmarked = Vec::new();
     for one in done {
         let address = sessions
             .iter()
@@ -634,11 +636,13 @@ fn start_each(
                 continue;
             }
         };
+        // Started, it arrived whatever its mark says, and only a later
+        // carry, which would start it again, needs telling.
         if let Err(why) = hands.started(one) {
-            failed.push(format!(
-                "{address} started on {to}, but a later carry would start it again: {why}"
+            unmarked.push(format!(
+                "{address} started on {to}, but its done file here couldn't be marked \
+                 started, so move it out of the handover before carrying again: {why}"
             ));
-            continue;
         }
         if one.session != quest {
             arrived.push(Arrived {
@@ -648,18 +652,24 @@ fn start_each(
             });
         }
     }
-    if failed.is_empty() {
+    if failed.is_empty() && unmarked.is_empty() {
         return Ok(arrived);
     }
-    let mut why = failed.join("; ");
+    let mut why = failed
+        .iter()
+        .chain(&unmarked)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("; ");
     if !arrived.is_empty() {
         let went: Vec<&str> = arrived.iter().map(|one| one.address.as_str()).collect();
         // Writing to a string can't fail.
         let _ = write!(why, "; {} started there", went.join(", "));
     }
-    Err(format!(
-        "{why}; what didn't start stays in the handover, for the person's carry to start"
-    ))
+    if !failed.is_empty() {
+        why.push_str("; what didn't start stays in the handover, for the person's carry to start");
+    }
+    Err(why)
 }
 
 /// The quest's sessions on `here` that can carry their own work: those
@@ -1272,6 +1282,8 @@ mod tests {
         marks: BTreeMap<String, usize>,
         /// The session, by id, whose start there fails.
         refuses: Option<String>,
+        /// The session, by id, whose done file can't be marked started.
+        unmarkable: Option<String>,
         /// The session, by id, whose start there lands but whose answer
         /// never comes back, as a loaded node's over a link.
         unanswered: Option<String>,
@@ -1399,6 +1411,9 @@ mod tests {
                 .collect())
         }
         fn started(&mut self, one: &Done) -> Result<(), String> {
+            if self.unmarkable.as_deref() == Some(one.session.as_str()) {
+                return Err("the handover is read-only".to_owned());
+            }
             let there = self.handover.iter_mut().find(|(at, _)| at == one);
             there
                 .map(|there| there.1 = true)
@@ -3008,6 +3023,32 @@ mod tests {
         assert!(
             !steps(&lines).contains(&"close doing".to_owned()),
             "and nothing after the start runs: {lines:?}"
+        );
+    }
+
+    // 8855BD77's council (23 November): a start whose mark failed was
+    // said not to have started, sending the person to start it again.
+    #[test]
+    fn a_start_whose_mark_fails_is_said_to_have_started() {
+        let mut realm = Realm {
+            unmarkable: Some("s-busy01".to_owned()),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        assert_eq!(done, Err(Failed { step: Step::Start }));
+        let said = last_said(&lines);
+        assert!(
+            said.contains("BUSY01 started on tern, but its done file here couldn't be marked")
+                && said.contains("move it out of the handover before carrying again"),
+            "naming what to do about its mark: {said}"
+        );
+        assert!(
+            said.contains("BUSY01, NAPS02, s-gone started there"),
+            "and counting it among those that started: {said}"
+        );
+        assert!(
+            !said.contains("for the person's carry to start"),
+            "never sending the person to start it again: {said}"
         );
     }
 }

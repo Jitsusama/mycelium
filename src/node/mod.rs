@@ -308,6 +308,21 @@ fn gone(pid: u32) -> bool {
         .is_some_and(|pid| rustix::process::test_kill_process(pid) == Err(rustix::io::Errno::SRCH))
 }
 
+/// Whether a session `asker` carrying itself from `here` carries its
+/// `quest`'s own trees too: where no other of `sessions` stands here in
+/// it, and only where the quests' record holds it there (`recorded`). A
+/// quest it only says it runs is carried no further than its own trees,
+/// since that name could be another quest's.
+fn carries_whole(recorded: bool, (quest, asker, here): (&str, &str, &str), sessions: &[Session]) -> bool {
+    recorded
+        && !sessions.iter().any(|one| {
+            easing::id(one) != asker
+                && one.machine == here
+                && stands(one)
+                && one.quest.as_deref() == Some(quest)
+        })
+}
+
 /// Whether `quest` is an id a folder may be named by: letters, digits,
 /// dashes and underscores, never a path.
 fn plain_quest(quest: &str) -> bool {
@@ -5075,25 +5090,35 @@ impl<S: Store> Shared<S> {
         // it, or else, where the record holds it in none or there is no
         // record, the one it says it runs, since it asks of itself and
         // settling touches only its own trees. A record that can't be
-        // read refuses it, since it may hold it in another.
-        let quest = match self.quests_holding(&asker, &address)? {
-            Some(holding) if !holding.is_empty() => Self::the_quest(&holding, &asker, &address)?,
-            _ => target
-                .quest
-                .clone()
-                .filter(|quest| plain_quest(quest))
-                .ok_or_else(|| {
-                    format!(
-                        "no open quest holds {asker} in the quests' record, and it says none \
-                         that is a plain name, so {address} isn't carried"
-                    )
-                })?,
+        // read refuses it, since it may hold it in another. Only a quest
+        // the record holds it in is `recorded`, which alone may carry the
+        // quest's own trees with it.
+        let (quest, recorded) = match self.quests_holding(&asker, &address)? {
+            Some(holding) if !holding.is_empty() => {
+                (Self::the_quest(&holding, &asker, &address)?, true)
+            }
+            _ => (
+                target
+                    .quest
+                    .clone()
+                    .filter(|quest| plain_quest(quest))
+                    .ok_or_else(|| {
+                        format!(
+                            "no open quest holds {asker} in the quests' record, and it says \
+                             none that is a plain name, so {address} isn't carried"
+                        )
+                    })?,
+                false,
+            ),
         };
         // Judged now, while it runs: by the time the node starts it
         // there, it and the command that asked have ended.
         let (by, _, charged) = self.judged_charging().await?;
         let unfenced = self.unfenced_asking(by, None).await;
         let extra = serde_json::json!({ "asker": asker, "quest": quest, "itself": true });
+        // Before it is told, so a refusal it writes at once is read as
+        // this carry's, not passed over as an earlier one's.
+        let began = jiff::Timestamp::now();
         self.carry_from_here(target, &address, &said, &address, extra)
             .await?;
         let why = said
@@ -5101,19 +5126,14 @@ impl<S: Store> Shared<S> {
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        let whole = !sessions.iter().any(|one| {
-            easing::id(one) != asker
-                && one.machine == self.machine
-                && stands(one)
-                && one.quest.as_deref() == Some(quest.as_str())
-        });
+        let whole = carries_whole(recorded, (&quest, &asker, &self.machine), &sessions);
         let to = said
             .get("to")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .to_owned();
         self.carry_on(
-            (target.clone(), whole),
+            (target.clone(), whole, began),
             (quest, to, shares),
             crate::carry::Ordered {
                 by: address.clone(),
@@ -5137,7 +5157,7 @@ impl<S: Store> Shared<S> {
     /// Each line goes to the node's log, since no command waits for it.
     fn carry_on(
         &self,
-        (session, whole): (Session, bool),
+        (session, whole, began): (Session, bool, jiff::Timestamp),
         (quest, to, places): (String, String, Arc<Places>),
         ordered: crate::carry::Ordered,
         vouched: Vouched,
@@ -5166,7 +5186,8 @@ impl<S: Store> Shared<S> {
             let mut hands =
                 through::Through::new(socket, (*places).clone(), &quest, through::PATIENCE)
                     .asking(asking)
-                    .stopping(stopped);
+                    .stopping(stopped)
+                    .since(began);
             let carried = crate::carry::carry_told(
                 &mut hands,
                 (&quest, &here, &to),
@@ -21256,6 +21277,31 @@ esac
             "quest": quest,
         }))
         .expect("a session")
+    }
+
+    // 8855BD77's council (23 November): a quest a session only says it
+    // runs could carry another quest's trees with it.
+    #[test]
+    fn a_session_carrying_itself_takes_its_quests_trees_only_where_recorded_in_it() {
+        let quest = "QEST-20261115-HARBOR";
+        let alone = [on_quest("s-harbour", "HARBOR", "skiff", "idle", quest)];
+        let asking = (quest, "s-harbour", "skiff");
+        assert!(
+            carries_whole(true, asking, &alone),
+            "recorded in it, and alone in it here, it takes the quest's trees"
+        );
+        assert!(
+            !carries_whole(false, asking, &alone),
+            "only saying it runs it, it takes its own trees alone"
+        );
+        let beside = [
+            alone[0].clone(),
+            on_quest("s-ferry", "FERRY1", "skiff", "idle", quest),
+        ];
+        assert!(
+            !carries_whole(true, asking, &beside),
+            "and never while another of the quest stands here"
+        );
     }
 
     #[tokio::test]
