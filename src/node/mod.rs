@@ -1426,6 +1426,9 @@ struct Shared<S> {
     unreadable: Arc<through::Unreadable>,
     /// Whether the messages the store holds are being read apart.
     reads: Arc<Reads>,
+    /// Where it says what each sprout's seed left out: its stderr, where
+    /// the rest of its log goes, or what a test reads back.
+    log: Arc<Mutex<dyn io::Write + Send>>,
     /// Where it keeps each command it runs, and who may say how a fenced
     /// one runs.
     runs: Arc<run::Given>,
@@ -1646,6 +1649,7 @@ impl<S: Clone> Clone for Shared<S> {
             hostname: Arc::clone(&self.hostname),
             unreadable: Arc::clone(&self.unreadable),
             reads: Arc::clone(&self.reads),
+            log: Arc::clone(&self.log),
             runs: self.runs.clone(),
             starts: Arc::clone(&self.starts),
             rejudge: Arc::clone(&self.rejudge),
@@ -2808,6 +2812,7 @@ impl<S: Store> Shared<S> {
             hostname: rustix::system::uname().nodename().to_string_lossy().into(),
             unreadable: Arc::default(),
             reads: Arc::default(),
+            log: Arc::new(Mutex::new(io::stderr())),
             starts,
             rejudge: Arc::default(),
             onces: Arc::default(),
@@ -6030,7 +6035,14 @@ impl<S: Store> Shared<S> {
         let reply = self.start(start).await;
         // A log that can't be written takes nothing from the asker, whose
         // session started or didn't as the reply says.
-        let _ = left_out.tell(&reply, &mut io::stderr().lock());
+        // A write that panicked leaves at most part of a line behind,
+        // which takes nothing from the lines after it.
+        let mut log = self
+            .log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _ = left_out.tell(&reply, &mut *log);
+        drop(log);
         reply
     }
 
@@ -21990,6 +22002,65 @@ esac
             panic!("the name is still held for tern");
         };
         assert!(reopens, "and still held as such a reopening");
+    }
+
+    // What a sprout's seed left out goes to the node's log once its
+    // session started, a line naming the session as the start answered;
+    // a sprout whose start was refused logs nothing, since no quest is
+    // made of it.
+    #[tokio::test]
+    async fn the_node_logs_what_a_sprouts_seed_left_out_once_its_session_started() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let procs = dir.path().join("procs");
+        let me = std::process::id();
+        let terminal = procs.join(me.to_string());
+        fs::create_dir_all(&terminal).expect("its folder is made");
+        fs::write(terminal.join("status"), "Name:\tsh\nPPid:\t1\n").expect("its status");
+        fs::write(
+            terminal.join("cgroup"),
+            "0::/user.slice/user-1000.slice/user@1000.service/session.slice/kitty.scope\n",
+        )
+        .expect("its group");
+        let processes = Processes::Folder(procs);
+        let mut link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        // The person asks, from a terminal.
+        link.client = i32::try_from(me).ok();
+        let kept = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let log: Arc<Mutex<Vec<u8>>> = Arc::clone(&kept);
+        link.log = log;
+        let folder = dir.path().join("harbour");
+        fs::create_dir(&folder).expect("a folder to work in");
+        let sprout = |on: &str| Sprout {
+            words: vec!["make".to_owned(), "tea".to_owned()],
+            folder: Some(folder.clone()),
+            from: Some("QEST-1".to_owned()),
+            on: Some(on.to_owned()),
+            cwd: None,
+        };
+        let logged = || {
+            let kept = kept.lock().expect("the log");
+            String::from_utf8(kept.clone()).expect("words")
+        };
+
+        let started = link.sprout(sprout("skiff")).await;
+        let Ok(Response::Started(started)) = started else {
+            panic!("the person's sprout starts here: {started:?}");
+        };
+        let said = logged();
+        assert_eq!(said.lines().count(), 1, "one line: {said}");
+        assert!(
+            said.starts_with("sprout sprout-")
+                && said.contains(&format!(
+                    " on skiff, held as {}: its seed leaves out the cell it came from",
+                    started.held
+                )),
+            "naming the sprout, where it started and its session: {said}"
+        );
+
+        kept.lock().expect("the log").clear();
+        let refused = link.sprout(sprout("tern")).await;
+        assert!(refused.is_err(), "no link reaches tern: {refused:?}");
+        assert_eq!(logged(), "", "nothing for a start refused");
     }
 
     #[test]

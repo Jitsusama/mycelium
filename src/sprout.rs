@@ -436,7 +436,7 @@ impl LeftOut {
     /// # Errors
     ///
     /// Where `log` can't be written.
-    pub fn tell(&self, reply: &Reply, log: &mut impl Write) -> io::Result<()> {
+    pub fn tell(&self, reply: &Reply, log: &mut (impl Write + ?Sized)) -> io::Result<()> {
         for said in self.told(reply) {
             writeln!(log, "{said}")?;
         }
@@ -1204,8 +1204,8 @@ mod tests {
         );
     }
 
-    // F36/F42 (#364 round 4): a seed too long goes with its id, so only
-    // the session holding it says which sprout the line is about.
+    // A seed too long goes with its id, so only the session holding it
+    // says which sprout the line is about.
     #[test]
     fn a_seed_too_long_is_said_of_the_session_holding_it() {
         let asked = start("tern", None, &words(&"a".repeat(SEED_MOST + 1)), None, ID);
@@ -1236,8 +1236,7 @@ mod tests {
         );
     }
 
-    // F35/F38/F40 (#364 round 4): what the node writes to its log, which
-    // `Shared::sprout` hands it once its start has answered.
+    // What is written to a log given the start's answer.
     #[test]
     fn the_log_is_written_what_was_left_out_once_a_session_started() {
         let asked = start("tern", None, &words("make tea"), Some("QEST-1"), ID);
