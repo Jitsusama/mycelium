@@ -1552,7 +1552,11 @@ its Wi-Fi or a tunnel's link; `outlives`, what a session held there outlives
 `effect` (`never`, or `prefer_not` while anywhere else will do) and
 `why`; and, where given, `cores`, how many processors work there may use
 when the machine lists more than it is given, as a virtual machine held
-to a share of its host does, which its `cpu`'s `cores` then says; and
+to a share of its host does, which its `cpu`'s `cores` then says;
+`sessions_at_most`, how many sessions it holds at most, live (busy or
+idle) and placed there unshown counted alike, where its room would run
+short before its pressure showed it, as a small virtual machine with one
+worker home does; and
 `agents`, by realm, the command an agent session starts with there, such
 as `{"personal": "pi-claude"}`, of which a realm hears only its own; and
 `leaves_at`, the time it leaves the realm, as a machine lent for a while
@@ -1771,7 +1775,10 @@ only a machine out of reach would do and the work may wait, or
 `{"lacks": need}`, `{"unknown": need}`, `{"refuses": taint}`,
 `{"rather_not": taint}`, `"ranked"`, `"unreachable"`,
 `{"leaves_first": time}`, `"unheard"` (its room unknown or said too
-long ago) or, for an offer, `{"lives_only": duration}`.
+long ago), `{"full": most}` (it holds the `sessions_at_most` its own
+`declared` gives, or, where that gives none, the one the offer it was
+made of promised, judged under the same lock as the starts it counts so
+a burst can't overfill it) or, for an offer, `{"lives_only": duration}`.
 Placement only
 chooses: a machine says whether work starts there when asked, by its
 own queue and taints, so nothing fits work against its room, which only
@@ -1994,7 +2001,9 @@ starts it there. It lets the machine go, with `PROGRAM release PLACE`,
 once its work has handed over, at `until`, or at once when nothing
 started on it. Each make and release is kept as a JSON line in
 `made.jsonl` in mycelium's folder, `{"at", "made", "realm"}` with the
-machine, its place, shape, provider, `until` and hourly cost, and
+machine, its place, shape, provider, `until`, hourly cost and the
+`sessions_at_most` its offer's `declared` promised, where it promised
+any, and
 `{"at", "released", "realm"}` with why, so what was made and for how
 long can be summed. Every realm's node on the machine keeps the one
 book, so each line names the realm whose node kept it. A node started
