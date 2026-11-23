@@ -592,14 +592,16 @@ async fn asked_of(
         }
         Some(Asking::Dialled) => {
             let (asked, carrying, taken) = carried::from_node(starting.node.clone(), machine);
-            if tokio::time::timeout(ASKS_TAKEN_WITHIN, taken)
-                .await
-                .is_err()
-            {
-                eprintln!(
+            match tokio::time::timeout(ASKS_TAKEN_WITHIN, taken).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => eprintln!(
+                    "mycelium: the asking of the node for {machine} ended before the node took \
+                     its asks; its facts go on, and a start there finds no link"
+                ),
+                Err(_) => eprintln!(
                     "mycelium: the node hasn't taken its asks of {machine} through this link \
                      yet; its facts go on, and a start there may find no link until it does"
-                );
+                ),
             }
             (Some(asked), Some(Box::new(carrying)))
         }
@@ -3152,45 +3154,84 @@ mod tests {
         );
     }
 
-    /// A link skiff dialled says kestrel's facts only once kestrel's node
-    /// takes its asks of skiff through it, so the node never reads skiff
-    /// ready, and places a start there, with no link to ask it through.
+    /// A link skiff dialled takes kestrel's node's asks of skiff only once
+    /// the node says it carries them, and `run` says kestrel's facts only
+    /// after, so the node never reads skiff ready, and places a start
+    /// there, with no link to ask it through.
     #[tokio::test]
-    async fn a_dialled_end_says_its_facts_once_its_node_takes_its_asks() {
+    async fn a_dialled_link_takes_its_asks_once_its_node_carries_them() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let path = dir.path().join("node.sock");
         let listener = tokio::net::UnixListener::bind(&path).expect("the node binds");
-        let skiff = dialled_by_kestrel(dir.path(), path);
+        let starting = dialled_starting(dir.path(), path);
+        let asking = asked_of(Some(&starting), "skiff");
+        tokio::pin!(asking);
+        assert!(
+            still_waiting(&mut asking).await,
+            "the asks aren't taken before the node is called"
+        );
         let (stream, _) = tokio::time::timeout(PATIENCE, listener.accept())
             .await
             .expect("the link asks its node in time")
             .expect("the node takes the link's call");
-        // Later calls, for what the link says of its machine, find no node.
-        drop(listener);
         let (reading, mut writing) = stream.into_split();
         let mut node = BufReader::new(reading).lines();
         let first = node.next_line().await.expect("it asks").expect("a line");
         assert!(first.contains("Carry"), "the link asks to carry: {first}");
-        tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(
-            skiff.machines().is_empty(),
-            "nothing of kestrel is said before its node takes the asks"
+            still_waiting(&mut asking).await,
+            "the asks aren't taken before the node says it carries them"
         );
+        let answered = tokio::time::Instant::now();
         let carrying = serde_json::to_string(&Reply::Ok(Response::Carrying)).expect("a reply");
         writing
             .write_all(format!("{carrying}\n").as_bytes())
             .await
             .expect("the node answers");
-        until(&skiff, |store| !store.machines().is_empty()).await;
+        let (asked, carrying) = tokio::time::timeout(PATIENCE, &mut asking)
+            .await
+            .expect("the asks are taken in time");
+        assert!(
+            answered.elapsed() < ASKS_TAKEN_WITHIN,
+            "taken as the node says it carries them, not at the end of the wait"
+        );
+        assert!(
+            asked.is_some() && carrying.is_some(),
+            "the link carries the asks"
+        );
     }
 
-    /// Skiff's store, hearing kestrel's end of a link skiff dialled, which
-    /// runs apart from kestrel's node on `node`, as SSH starts it.
-    fn dialled_by_kestrel(dir: &std::path::Path, node: PathBuf) -> Memory {
-        let skiff = Memory::default();
-        let (near, far) = tokio::io::duplex(1 << 16);
-        let near_end = end(&skiff, "skiff", near);
-        let starting = Starting {
+    /// Whether `asking` is still waiting, polled once without waiting on it.
+    async fn still_waiting(asking: &mut std::pin::Pin<&mut impl Future>) -> bool {
+        let polled = tokio::time::timeout(Duration::ZERO, asking).await;
+        polled.is_err()
+    }
+
+    /// A link whose node isn't there to call goes on at once, rather than
+    /// waiting out [`ASKS_TAKEN_WITHIN`] for a node that can't take them.
+    #[tokio::test]
+    async fn a_dialled_link_whose_node_isnt_there_goes_on_at_once() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let starting = dialled_starting(dir.path(), dir.path().join("node.sock"));
+        let began = tokio::time::Instant::now();
+        let asking = asked_of(Some(&starting), "skiff");
+        let (asked, carrying) = tokio::time::timeout(PATIENCE, asking)
+            .await
+            .expect("the link goes on in time");
+        assert!(
+            began.elapsed() < ASKS_TAKEN_WITHIN,
+            "no node to call ends the wait at once"
+        );
+        assert!(
+            asked.is_some() && carrying.is_some(),
+            "the link still carries the asks, and asks its node again"
+        );
+    }
+
+    /// How kestrel's end starts on a link skiff dialled, apart from
+    /// kestrel's node on `node`, as SSH starts it.
+    fn dialled_starting(dir: &std::path::Path, node: PathBuf) -> Starting {
+        Starting {
             node,
             held: dir.join("held"),
             asking: Some(Asking::Dialled),
@@ -3200,7 +3241,16 @@ mod tests {
             kit: None,
             saturation: None,
             lender: None,
-        };
+        }
+    }
+
+    /// Skiff's store, hearing kestrel's end of a link skiff dialled, which
+    /// runs apart from kestrel's node on `node`, as SSH starts it.
+    fn dialled_by_kestrel(dir: &std::path::Path, node: PathBuf) -> Memory {
+        let skiff = Memory::default();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let near_end = end(&skiff, "skiff", near);
+        let starting = dialled_starting(dir, node);
         let (reading, writing) = tokio::io::split(far);
         tokio::spawn(async move {
             let _near_end = near_end;

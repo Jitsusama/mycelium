@@ -33,8 +33,15 @@ use crate::steer::Steer;
 use crate::wire::{Reply, Request, Response, Start};
 
 /// How long a link waits before asking its node again once it can't reach
-/// it, as while the node restarts.
-const ASKED_AGAIN_AFTER: Duration = Duration::from_secs(5);
+/// it, as while the node restarts: short, since until it asks again the
+/// node reads its machine ready with no link to ask it through, and a
+/// missing socket costs nothing to try.
+const ASKED_AGAIN_AFTER: Duration = Duration::from_millis(500);
+
+/// How long a link waits for its node to answer that it carries the
+/// link's asks, before it hangs up and asks again: a node that took the
+/// call and never answers would otherwise hold the asks for good.
+const ANSWERED_WITHIN: Duration = Duration::from_secs(5);
 
 /// How many pieces of a lend's answer the node holds for a reader that
 /// has stopped taking them, before it lets the lend go. A streamed answer
@@ -368,9 +375,9 @@ async fn carry(
         reopens: true,
     };
     write(&mut writing, &carry).await?;
-    let first = lines
-        .next_line()
-        .await?
+    let first = tokio::time::timeout(ANSWERED_WITHIN, lines.next_line())
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "the node didn't answer"))??
         .ok_or_else(|| io::Error::other("the node hung up"))?;
     match serde_json::from_str::<Reply>(&first) {
         Ok(Ok(Response::Carrying)) => {
@@ -478,9 +485,41 @@ async fn write(writing: &mut (impl AsyncWrite + Unpin), said: &impl Serialize) -
 
 #[cfg(test)]
 mod tests {
+    use std::pin::Pin;
+    use std::sync::{Arc, OnceLock};
+    use std::task::{Context, Poll};
+
     use tokio::io::{DuplexStream, ReadHalf, WriteHalf};
 
     use super::*;
+
+    /// A node's writing to a link, noting at its first write whether the
+    /// node then reached tern through the link.
+    struct Watched {
+        asks: Asks,
+        writing: WriteHalf<DuplexStream>,
+        reached: Arc<OnceLock<bool>>,
+    }
+
+    impl AsyncWrite for Watched {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            let reached = self.asks.there("tern").is_some();
+            self.reached.get_or_init(|| reached);
+            Pin::new(&mut self.writing).poll_write(cx, bytes)
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.writing).poll_flush(cx)
+        }
+
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.writing).poll_shutdown(cx)
+        }
+    }
 
     /// A bare reopening of `s-gone`, asked of no machine in particular.
     fn reopening() -> Start {
@@ -590,12 +629,18 @@ mod tests {
             let (node, link) = tokio::io::duplex(64 * 1024);
             let (reading, writing) = tokio::io::split(node);
             let node_asks = asks.clone();
+            let reached = Arc::new(OnceLock::new());
+            let watched = Watched {
+                asks: asks.clone(),
+                writing,
+                reached: Arc::clone(&reached),
+            };
             tokio::spawn(async move {
                 to_link(
                     &node_asks,
                     ("tern", true),
                     BufReader::new(reading).lines(),
-                    writing,
+                    watched,
                 )
                 .await;
             });
@@ -606,9 +651,10 @@ mod tests {
             };
             let first = link.heard().await;
             assert!(first.contains("Carrying"), "the node carries: {first}");
-            assert!(
-                asks.there("tern").is_some(),
-                "the node reaches tern through the link before the link hears it is carried"
+            assert_eq!(
+                reached.get(),
+                Some(&true),
+                "the node reaches tern through the link before it says it carries"
             );
             link
         }
@@ -820,6 +866,30 @@ mod tests {
             .await
             .expect("the lend is let go in time");
         linking.abort();
+    }
+
+    /// A node that takes the link's call and never answers is hung up on,
+    /// so the link asks again rather than holding its asks for good.
+    #[tokio::test(start_paused = true)]
+    async fn a_link_hangs_up_on_a_node_that_never_answers() {
+        let folder = tempfile::tempdir().expect("a folder");
+        let path = folder.path().join("node.sock");
+        let listener = tokio::net::UnixListener::bind(&path).expect("the node binds");
+        let (asks, _asked) = mpsc::unbounded_channel();
+        let (taken, _first_taken) = oneshot::channel();
+        let linking =
+            tokio::spawn(async move { carry(&path, "tern", &asks, &mut Some(taken)).await });
+        let (stream, _) = listener.accept().await.expect("the link asks its node");
+        // Held, so the link never reads the node as gone.
+        let (reading, _writing) = stream.into_split();
+        let mut node = BufReader::new(reading).lines();
+        let first = node.next_line().await.expect("it asks").expect("a line");
+        assert!(first.contains("Carry"), "the link asks to carry: {first}");
+        let error = linking
+            .await
+            .expect("the asking runs")
+            .expect_err("a node that never answers is hung up on");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut, "{error}");
     }
 
     #[test]
