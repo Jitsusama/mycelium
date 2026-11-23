@@ -168,6 +168,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
             node::Given {
                 sharing: None,
                 starter: None,
+                fences_held: false,
                 refusals: Refusals::default(),
                 steers,
                 waiting: "/nowhere/waiting".into(),
