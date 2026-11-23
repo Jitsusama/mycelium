@@ -355,6 +355,8 @@ pub async fn run(
     }
     let claim = claimed(&store, &other.machine)?;
     let reach = reach_start(&store, &other.machine);
+    // Read before it is admitted, which marks it linked as of now.
+    let began = store.linked_until(&other.machine);
     admitted(&store, &other.machine)?;
     let exchange = shares.map(|places| exchange_with(places, &membership.hello(), &other, worker));
     let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine);
@@ -376,7 +378,7 @@ pub async fn run(
         // Two ends that both take facts each say their machine every
         // minute, so either hearing nothing for longer knows the other
         // is gone.
-        hearing: Hearing::from_now(membership.hello().facts && other.facts),
+        hearing: Hearing::from_now(membership.hello().facts && other.facts, began),
         following: inboxes.clone().map(Following::new),
         inboxes,
         held: starting.as_ref().map(|starting| starting.held.clone()),
@@ -678,8 +680,6 @@ fn pinned(store: &impl Store, named: Option<&OnceLock<String>>, said: &str) -> i
     Err(refusal(why))
 }
 
-/// Keeps that this store is linked with `machine` as of now, and forgets
-/// why a link with it was last refused.
 /// This link's hold on `machine`, refused when another link carries it.
 fn claimed(store: &impl Store, machine: &str) -> io::Result<Claim> {
     store
@@ -687,6 +687,11 @@ fn claimed(store: &impl Store, machine: &str) -> io::Result<Claim> {
         .ok_or_else(|| refusal(format!("a link to {machine} already carries it here")))
 }
 
+/// Keeps that this store is linked with `machine` as of now, and forgets
+/// why a link with it was last refused. The link's first keep, or its end,
+/// puts the mark back where the link began until its catch-up has stood
+/// ([`Hearing::linked_until`]); only a node killed before either leaves it
+/// late.
 fn admitted(store: &impl Store, machine: &str) -> io::Result<()> {
     store.mark_linked(machine, now())?;
     if let Err(error) = store.link_admitted(machine) {
@@ -1961,6 +1966,7 @@ impl<S: Store> End<S> {
     async fn catch_up(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
         let ids = self.store.message_ids(self.reach);
         self.send_messages(ids, writing).await?;
+        self.hearing.caught_up.get_or_insert_with(now);
         self.send_presence(writing).await
     }
 
@@ -2076,8 +2082,8 @@ async fn send(writing: &mut (impl AsyncWrite + Unpin), frame: &Frame) -> io::Res
 
 /// How far back a link to `machine` reaches for messages, in milliseconds
 /// since the epoch: to when this end last heard `machine` over a link
-/// ([`Hearing::linked_until`]), a minute early for what was in flight or a
-/// mark a link killed outright left late, and never past the mesh's week.
+/// ([`Hearing::linked_until`]), a minute early for what was in flight when
+/// it was last heard, and never past the mesh's week.
 /// Messages from before two machines were ever linked never cross, since
 /// every session hearing them on the other machine would take a week of
 /// talk it was never part of as new.
@@ -2103,14 +2109,22 @@ struct Hearing {
     /// When this end last heard the other say anything, in milliseconds
     /// of the wall clock.
     heard: i64,
+    /// The mark the link began from, which its reach was read from, if
+    /// the machines were linked before.
+    began: Option<i64>,
+    /// When this end first sent the other what it lacked of its reach.
+    caught_up: Option<i64>,
 }
 
 impl Hearing {
-    /// Hearing from now, `watched` or not.
-    fn from_now(watched: bool) -> Self {
+    /// Hearing from now, `watched` or not, for a link begun from the mark
+    /// `began`.
+    fn from_now(watched: bool, began: Option<i64>) -> Self {
         Self {
             watched,
             heard: now(),
+            began,
+            caught_up: None,
         }
     }
 
@@ -2130,8 +2144,21 @@ impl Hearing {
     /// Marked at the last word heard, they are offered again; what the
     /// other end already holds it mostly names in its Have, and a message
     /// that comes twice is kept once.
+    ///
+    /// The mark moves past the one the link began from only once the
+    /// other end has been heard a keep after this end caught it up, so a
+    /// link that drops again before its catch-up could cross leaves the
+    /// next one reaching as far back as it did. Hearing the other end is
+    /// no proof that what this end wrote arrived, only that the link stood
+    /// a minute past it, which the minute's slack in the reach covers.
     fn linked_until(&self) -> i64 {
-        self.heard
+        let stood = self
+            .caught_up
+            .is_some_and(|at| self.heard >= at.saturating_add(millis(KEEP_EVERY)));
+        match self.began {
+            Some(began) if !stood => began.min(self.heard),
+            _ => self.heard,
+        }
     }
 }
 
@@ -4131,21 +4158,52 @@ mod tests {
     fn what_was_sent_into_a_silent_link_is_within_the_next_links_reach() {
         let store = Memory::default();
         let minute = millis(KEEP_EVERY);
+        let began = now() - 30 * minute;
         let hearing = Hearing {
             watched: true,
             heard: now() - 3 * minute,
+            began: Some(began),
+            caught_up: Some(began + minute),
         };
         store
             .mark_linked("kestrel", hearing.linked_until())
             .expect("a memory store marks");
-        let sent_into_silence = now() - 2 * minute;
-        assert!(
-            reach_start(&store, "kestrel") <= sent_into_silence,
-            "a message sent after the other end went quiet is offered again"
+        let reach = reach_start(&store, "kestrel");
+        assert_eq!(
+            reach,
+            hearing.heard - minute,
+            "a message sent after the other end went quiet, or the minute before, which may \
+             not have crossed, is offered again, and no earlier"
         );
-        assert!(
-            reach_start(&store, "kestrel") <= hearing.heard - minute,
-            "and so is one sent the minute before, which may not have crossed"
+
+        let dropped_again = Hearing {
+            heard: now(),
+            began: Some(hearing.linked_until()),
+            caught_up: Some(now()),
+            ..hearing
+        };
+        assert_eq!(
+            dropped_again.linked_until(),
+            hearing.heard,
+            "a link dropped before its catch-up stood a keep leaves the mark it began from"
+        );
+        let never_caught_up = Hearing {
+            caught_up: None,
+            ..dropped_again
+        };
+        assert_eq!(
+            never_caught_up.linked_until(),
+            hearing.heard,
+            "and so does one that never caught up"
+        );
+        let first = Hearing {
+            began: None,
+            ..never_caught_up
+        };
+        assert_eq!(
+            first.linked_until(),
+            first.heard,
+            "the first link two machines ever had reaches from when it was last heard"
         );
     }
 

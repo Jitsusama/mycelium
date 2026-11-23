@@ -135,7 +135,10 @@ same code, each line a JSON value:
    other, and never past the mesh's week, so a link never hands back
    what the other end has let go. A link whose other end fell silent
    stands for minutes before it ends, so what was sent into it is
-   offered again. A first link reaches back to nothing, since a
+   offered again. A link that drops again before the other end is heard
+   a minute after this end sent what it lacked leaves the reach where
+   that link began, so a quick second drop loses nothing either. A
+   first link reaches back to nothing, since a
    session takes every message that arrives as new, and a week of talk
    from before the machines were linked was never its to hear.
 3. `{"Message": {"id", "body"}}`: a message the other end lacks, first
