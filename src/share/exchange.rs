@@ -4472,13 +4472,17 @@ mod tests {
             kept <= 2,
             "the ledger is kept for the files and for what was heard, not {kept} times"
         );
+        // Each file was written within the ledger's grain of being read,
+        // so none has a size and time to stand on yet: its hash is what
+        // says it was taken in.
         let ledger = kestrel.places.ledgers().hold(QUEST).expect("held").ledger;
+        let note = content(b"the same note\n").hash;
         assert!(
             files.keys().all(|key| ledger
                 .files
                 .get(key)
-                .is_some_and(|entry| entry.seen.is_some())),
-            "and each file is kept as seen"
+                .is_some_and(|entry| entry.hash.as_deref() == Some(note.as_str()))),
+            "and each file is kept with what it holds"
         );
     }
 
