@@ -135,7 +135,10 @@ same code, each line a JSON value:
    session takes every message that arrives as new, and a week of talk
    from before the machines were linked was never its to hear.
 3. `{"Message": {"id", "body"}}`: a message the other end lacks, first
-   for each the Have didn't list, then each new one as it lands.
+   for each the Have didn't list, then each new one as it lands, and
+   each minute any since the link began that it hasn't yet sent or
+   heard, which a watch that missed a write would otherwise leave
+   behind for good.
 4. `{"Presence": {"session", "body", "leases", "held", "started_by"}}`:
    a living session of the sending end's machine, again whenever it, its
    leases, its `held` id or its starter change. `held` is the id a
@@ -695,7 +698,9 @@ in order and says each step:
 Each step prints `{"step", "state", "said"}` on a line as it begins
 (`doing`) and ends (`done`, `skipped` or `failed`), and the last line is
 `{"step": "carried", "state": "done", "machine", "sessions"}`, each
-session `{"address", "held", "attach"}`. A step that fails says why, the
+session `{"address", "held", "attach"}`, with `skipped`, the addresses
+of the parked sessions an ordered carry passed over, where it passed
+over any. A step that fails says why, the
 command exits non-zero, and nothing after it runs; what was done stays
 done, since each step can be taken again. It waits 15 minutes in all for
 the sessions to carry and then to end.
@@ -845,9 +850,15 @@ orchestrator's own session, takes the steps above with the steer
 the carry is refused if `by` is missing, since a session it started
 couldn't arrive as anyone's, or if it differs between sessions, rather
 than stamping the last. A blank reason is refused, by the command and
-by the node. With no session of the quest here, it is refused too:
-only a session's steer proves who orchestrates it, so only the person
-carries what the quest left. A session that won't go, as one holding a
+by the node. A parked session no quest's record holds is passed over,
+never told, since the node would refuse its steer and so stop the
+carry over a session asleep: it stays here, and `find` and the last
+line name it. One running is told, and its refusal stops the carry.
+The quests' records are read only for an ordered carry, which is
+refused when they can't be. With no session of the quest here, or only
+parked ones passed over, it is refused too: only a session's steer
+proves who orchestrates it, so only the person carries what the quest
+left. A session that won't go, as one holding a
 lease, mid-push or mid-rebase, or with background work running, writes
 `<session>.refused.json` in the handover folder, `{"session", "why",
 "at"}` and nothing more, with `at` in RFC 3339 and `session` the one

@@ -141,6 +141,10 @@ impl Hands for Through {
             .map_err(|error| error.to_string())
     }
 
+    fn quests(&mut self) -> Result<Vec<Value>, String> {
+        crate::swarm::records(&self.socket, "quest", TIES_WITHIN).map_err(|error| error.to_string())
+    }
+
     fn bring(&mut self, brought: &Brought) -> Result<(), String> {
         put_brought(&self.handover, brought)
     }

@@ -109,6 +109,11 @@ pub struct Carried {
     pub machine: String,
     /// Each session started there.
     pub sessions: Vec<Arrived>,
+    /// The addresses of the parked sessions an ordered carry passed
+    /// over, since no quest's record holds them, so who orchestrates
+    /// them can't be told; each stays here as it was.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<String>,
 }
 
 /// A carry that went no further than `step`, which said why as it failed.
@@ -231,6 +236,14 @@ pub trait Hands {
     ///
     /// When the node can't say.
     fn formed(&mut self) -> Result<Vec<Value>, String>;
+    /// Every quest's record the node holds, each whole as the quest kind
+    /// lists it, so an ordered carry passes over a parked session none
+    /// holds rather than ask the node to tell it, which it would refuse.
+    ///
+    /// # Errors
+    ///
+    /// When the node can't say.
+    fn quests(&mut self) -> Result<Vec<Value>, String>;
     /// Puts what a carried session's cell brings beside its done file,
     /// whole, for the node it arrives on to keep.
     ///
@@ -313,17 +326,18 @@ pub fn carry(
         Stood::Doing,
         format!("finding {quest}'s sessions here"),
     );
-    let sessions = said.or_failed(Step::Find, find(hands, quest, here, to, why))?;
+    let Found { sessions, skipped } =
+        said.or_failed(Step::Find, find(hands, quest, here, to, why))?;
     let names: Vec<&str> = sessions.iter().map(|one| one.address.as_str()).collect();
-    said.line(
-        Step::Find,
-        Stood::Done,
-        if names.is_empty() {
-            format!("no session runs {quest} here; what it left goes as it is")
-        } else {
-            format!("{} for {quest}, going to {to}", names.join(", "))
-        },
-    );
+    let mut found = if names.is_empty() {
+        format!("no session runs {quest} here; what it left goes as it is")
+    } else {
+        format!("{} for {quest}, going to {to}", names.join(", "))
+    };
+    if !skipped.is_empty() {
+        found.push_str(&format!("; {}", passed_over(&skipped)));
+    }
+    said.line(Step::Find, Stood::Done, found);
 
     said.line(
         Step::Push,
@@ -391,7 +405,31 @@ pub fn carry(
         state: Stood::Done,
         machine: to.to_owned(),
         sessions: arrived,
+        skipped,
     })
+}
+
+/// What a carry's sessions were, once found: those it carries, and the
+/// addresses of the parked ones it passed over.
+struct Found {
+    sessions: Vec<Session>,
+    skipped: Vec<String>,
+}
+
+/// The parked sessions `skipped` passed over, and why, as said.
+fn passed_over(skipped: &[String]) -> String {
+    format!(
+        "{} parked with no quest's record holding {}, so who orchestrates {} can't be told, \
+         and {} here",
+        skipped.join(", "),
+        if skipped.len() == 1 { "it" } else { "them" },
+        if skipped.len() == 1 { "it" } else { "them" },
+        if skipped.len() == 1 {
+            "it stays"
+        } else {
+            "they stay"
+        },
+    )
 }
 
 /// Where a carry says its lines.
@@ -472,14 +510,17 @@ fn start_each(
 /// running, and those parked this boot, which wake for it; or why the
 /// carry can't go to `to`. A carry ordered for `why` needs one at least,
 /// since only the node's taking a session's steer proves who may order
-/// it, and a reason that says something.
+/// it, and a reason that says something. It passes over a parked
+/// session no quest's record holds, naming it, since the node would
+/// refuse to tell it and so stop the carry over a session asleep: one
+/// running stays, so its refusal is said.
 fn find(
     hands: &mut impl Hands,
     quest: &str,
     here: &str,
     to: &str,
     why: Option<&str>,
-) -> Result<Vec<Session>, String> {
+) -> Result<Found, String> {
     let ordered = why.is_some();
     if why.is_some_and(|why| why.trim().is_empty()) {
         return Err("an ordered carry says why, and a blank reason says nothing".to_owned());
@@ -506,11 +547,26 @@ fn find(
         .filter(|session| session.machine == here && session.quest.as_deref() == Some(quest))
         .filter(|session| runs(session) || parked(session, boot.as_deref()))
         .collect();
+    let (sessions, skipped): (Vec<Session>, Vec<Session>) = if ordered && !sessions.is_empty() {
+        let quests = hands.quests().map_err(|why| {
+            format!("which quest's record holds each of {quest}'s sessions can't be told: {why}")
+        })?;
+        sessions
+            .into_iter()
+            .partition(|session| runs(session) || ordered::holds(easing::id(session), &quests))
+    } else {
+        (sessions, Vec::new())
+    };
+    let skipped: Vec<String> = skipped.into_iter().map(|one| one.address).collect();
     if ordered && sessions.is_empty() {
-        return Err(format!(
+        let mut why = format!(
             "no session runs {quest} here, so the node can't prove who orchestrates it: \
              only the person carries what it left"
-        ));
+        );
+        if !skipped.is_empty() {
+            why.push_str(&format!(" ({})", passed_over(&skipped)));
+        }
+        return Err(why);
     }
     // Each session's arrival and the quest's own trees', as the carry
     // would start them; an ordered carry's order is proved only as it
@@ -534,7 +590,7 @@ fn find(
                  would start its sessions: {why}"
             ),
         })?;
-    Ok(sessions)
+    Ok(Found { sessions, skipped })
 }
 
 /// Tells each session to carry its work to `to`, as the person or, given
@@ -997,7 +1053,7 @@ mod tests {
     use super::cell::Brought;
     use super::{
         Carried, Done, Failed, Hands, Ordered, PI_CARRY, Refused, Step, Untaken, carry, runs_on,
-        unordered_arrival,
+        session_id, unordered_arrival,
     };
     use crate::placement::Need;
     use crate::record::{Session, State};
@@ -1034,6 +1090,11 @@ mod tests {
         by: Option<String>,
         /// Who it proves ordered one session's instead, by its address.
         by_each: BTreeMap<String, String>,
+        /// The sessions, by id, no quest's record holds; the record of
+        /// the quest holds every other.
+        unheld: BTreeSet<String>,
+        /// Why the node can't say its quests' records, where it can't.
+        unsaid_quests: Option<String>,
         /// The sessions that refuse their carry once told, and why.
         refusing: Vec<Refused>,
         /// What each session told refused.
@@ -1155,6 +1216,20 @@ mod tests {
         }
         fn cells(&mut self) -> Result<Vec<Value>, String> {
             Ok(self.cell_records.clone())
+        }
+        fn quests(&mut self) -> Result<Vec<Value>, String> {
+            if let Some(why) = &self.unsaid_quests {
+                return Err(why.clone());
+            }
+            let held: Vec<&str> = self
+                .sessions
+                .iter()
+                .filter_map(session_id)
+                .filter(|id| !self.unheld.contains(*id))
+                .collect();
+            Ok(vec![
+                json!({"id": QUEST, "orchestrator": "WCJQSG", "sessions": held}),
+            ])
         }
         fn formed(&mut self) -> Result<Vec<Value>, String> {
             self.formed_asked += 1;
@@ -2362,6 +2437,90 @@ mod tests {
         assert!(
             realm.rest.is_none() && realm.shared.is_empty(),
             "nothing moved"
+        );
+    }
+
+    #[test]
+    fn an_ordered_carry_passes_over_a_parked_session_no_quest_holds_and_names_it() {
+        let mut realm = Realm {
+            by: Some("WCJQSG".to_owned()),
+            unheld: ["s-busy01", "s-naps02"].map(str::to_owned).into(),
+            ..realm()
+        };
+        let (done, lines) = ordered(&mut realm);
+        let carried = done.expect("carried");
+        let steered: Vec<&str> = realm.steered.iter().map(|(at, _)| at.as_str()).collect();
+        assert_eq!(
+            steered,
+            ["BUSY01"],
+            "the parked one isn't told, and one running is, so a refusal of it is said: \
+             {lines:?}"
+        );
+        assert_eq!(carried.skipped, ["NAPS02"], "the carry's output names it");
+        let found = lines
+            .iter()
+            .find(|line| line["step"] == "find" && line["state"] == "done")
+            .and_then(|line| line["said"].as_str())
+            .unwrap_or_default();
+        assert_eq!(
+            found,
+            "BUSY01 for QEST-20261107-HARBOR, going to tern; NAPS02 parked with no quest's \
+             record holding it, so who orchestrates it can't be told, and it stays here",
+            "and so does its find"
+        );
+
+        let mut alone = Realm {
+            by: Some("WCJQSG".to_owned()),
+            unheld: ["s-naps02"].map(str::to_owned).into(),
+            ..realm()
+        };
+        alone
+            .sessions
+            .retain(|one| one.machine != "skiff" || one.address == "NAPS02");
+        let (done, lines) = ordered(&mut alone);
+        assert_eq!(
+            done,
+            Err(Failed { step: Step::Find }),
+            "none proved is refused"
+        );
+        assert_eq!(
+            last_said(&lines),
+            "no session runs QEST-20261107-HARBOR here, so the node can't prove who \
+             orchestrates it: only the person carries what it left (NAPS02 parked with no \
+             quest's record holding it, so who orchestrates it can't be told, and it stays \
+             here)",
+            "naming the one passed over"
+        );
+        assert!(alone.steered.is_empty(), "and nobody told");
+    }
+
+    #[test]
+    fn a_carry_by_the_person_never_asks_which_quest_holds_a_session() {
+        let mut realm = Realm {
+            unheld: ["s-naps02"].map(str::to_owned).into(),
+            unsaid_quests: Some("the node serves no quests' record".to_owned()),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        let carried = done.expect("carried");
+        let steered: Vec<&str> = realm.steered.iter().map(|(at, _)| at.as_str()).collect();
+        assert_eq!(steered, ["BUSY01", "NAPS02"], "each told: {lines:?}");
+        assert!(carried.skipped.is_empty(), "none passed over");
+
+        let mut unsaid = Realm {
+            by: Some("WCJQSG".to_owned()),
+            unsaid_quests: Some("the node serves no quests' record".to_owned()),
+            ..realm()
+        };
+        let (done, lines) = ordered(&mut unsaid);
+        assert_eq!(
+            (done, last_said(&lines).as_str()),
+            (
+                Err(Failed { step: Step::Find }),
+                "which quest's record holds each of QEST-20261107-HARBOR's sessions can't be \
+                 told: the node serves no quests' record"
+            ),
+            "an ordered carry that can't tell is refused before telling any"
         );
     }
 
