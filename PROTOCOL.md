@@ -903,8 +903,13 @@ orchestrator's own session, takes the steps above with the steer
 `{"Steered": {"machine", "by"}}`, `by` the orchestrator it proved, and
 the carry is refused if `by` is missing, since a session it started
 couldn't arrive as anyone's, or if it differs between sessions, rather
-than stamping the last. A blank reason is refused, by the command and
-by the node. A parked session its quest's record doesn't hold alone,
+than stamping the last. Where the session told is its quest's only one
+standing here, the node answers `"carries_on": true` as well and
+carries the rest on itself once the session has carried and ended,
+waiting up to an hour for it: the command then ends at step `handed`,
+so its own lifetime can't leave the quest half carried. A node too old
+to say leaves the rest to the command. A blank reason is refused, by
+the command and by the node. A parked session its quest's record doesn't hold alone,
 as one no record holds, two hold, or another quest's does, is passed
 over, never told, since the node would refuse its steer and so stop the
 carry over a session asleep: it stays here, and `find` and the last
@@ -1391,7 +1396,7 @@ reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Start": {"work", "folder", "strict", "command", "may_cost", "once"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
 | `{"Takes": {"starts", "ordered"}}` | `{"Placement": placement}`, the last start's, placed as `"Start"` would, or a refusal; starts nothing |
 | `{"Sprout": {"words", "folder", "from", "on", "cwd"}}` | `{"Started": {"machine", "held", "folder", "attach"}}`, as for `"Start"` |
-| `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by"}}`, where it was put, and who ordered a carry |
+| `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by", "carries_on"}}`, where it was put, who ordered a carry, and whether the node carries it on |
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
 | `{"Free": {"quest"}}` | `"Orchestrated"`, freed, from the person's own login |
 | `{"Starts": {"act"}}` | `{"Starts": {"stopped", "newest"}}`, `stop`, `resume` or `list` from the person's own login |

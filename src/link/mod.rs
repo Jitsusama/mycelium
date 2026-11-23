@@ -1856,6 +1856,7 @@ impl<S: Store> End<S> {
                     .map(|()| Response::Steered {
                         machine: here,
                         by: None,
+                        carries_on: false,
                     })
             }
             None => Err(format!("{here} carries no steers over this link")),

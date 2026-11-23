@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::cell::{self, Brought};
-use super::{Done, Hands, PI_CARRY, Refused, Untaken};
+use super::{Done, Hands, PI_CARRY, Refused, Told, Untaken};
 use crate::client::Client;
 use crate::placement::Placement;
 use crate::record::Session;
@@ -144,13 +144,13 @@ impl Hands for Through {
             .map(|boot| boot.trim().to_owned())
     }
 
-    fn steer(&mut self, address: &str, steer: Value) -> Result<Option<String>, String> {
+    fn steer(&mut self, address: &str, steer: Value) -> Result<Told, String> {
         let asked = Request::Steer {
             address: address.to_owned(),
             steer,
         };
         match self.ask(&asked)? {
-            Response::Steered { by, .. } => Ok(by),
+            Response::Steered { by, carries_on, .. } => Ok(Told { by, carries_on }),
             other => Err(format!("the node answered {other:?} for a steer")),
         }
     }
@@ -255,7 +255,7 @@ impl Hands for Through {
 }
 
 /// What a done file's name ends with, after its session's id.
-const DONE: &str = ".done.json";
+pub const DONE: &str = ".done.json";
 
 /// What the mark that a done file's session started ends with.
 const STARTED: &str = ".started";

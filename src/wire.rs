@@ -467,6 +467,12 @@ pub enum Response {
         /// carried by.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         by: Option<String>,
+        /// Whether the node carries the rest of this `ordered-carry` on
+        /// itself, once the session has carried and ended, so the command
+        /// that asked may end without leaving it half done. A node too
+        /// old to say leaves the rest to the command, as before.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        carries_on: bool,
     },
     /// The held session asked for, ended on `machine`.
     Ended {
