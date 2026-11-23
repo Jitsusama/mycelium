@@ -31,6 +31,12 @@ use serde_json::Value;
 /// The steer act an orchestrator orders a carry with.
 pub const ACT: &str = "ordered-carry";
 
+/// The steer act a session asks its own carry with. The node takes it
+/// only from the session it carries, and puts it in that session's inbox
+/// as an [`ACT`] stamped with the session's own address, so it arrives
+/// as carried by itself, never by the person or an orchestrator.
+pub const ITSELF: &str = "self-carry";
+
 /// A session, as the node's record and the kernel tell it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Known<'a> {
