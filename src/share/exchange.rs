@@ -1119,13 +1119,15 @@ impl Exchange {
                 Ok(Vec::new())
             }
             // A file this end asked for before the hold came down is kept
-            // as the other end holding it, so it is asked again as it lifts.
+            // as the other end holding it, so it is asked again as it lifts:
+            // its answer has come, so its ask is no longer on its way.
             Say::Piece {
                 quest, file, state, ..
             }
             | Say::File {
                 quest, file, state, ..
             } if self.withholds_quest(&quest)? => {
+                self.wanted.remove(&(quest.clone(), file.clone()));
                 self.keep_back(quest, BTreeMap::from([(file, state)]));
                 Ok(Vec::new())
             }
