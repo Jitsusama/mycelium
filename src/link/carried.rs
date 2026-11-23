@@ -898,7 +898,7 @@ mod tests {
         let words = ["mycelium".to_owned(), "attach".to_owned()];
         asks.know(
             "tern",
-            std::sync::Arc::new(|_: &str, words: &[String]| {
+            Arc::new(|_: &str, words: &[String]| {
                 let mut there = vec!["into-tern".to_owned()];
                 there.extend_from_slice(words);
                 there
