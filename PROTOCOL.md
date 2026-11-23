@@ -331,6 +331,19 @@ same code, each line a JSON value:
     go; a link that drops lets go every lend it carried, and the
     asker hears it refused 503.
 
+Two ends of one `version` link whichever of them is newer, for as
+long as each change keeps to three rules. A new field is optional, so
+an end older than it reads the frame without it, and an end newer
+reads a frame that lacks it. A new frame, or a new kind within one, is
+sent only to an end whose hello says it knows of it, as each flag
+above says. And an end skips a frame after the hello that it can't
+read, saying so once a link for each kind, rather than ending the
+link, so a frame sent past those rules costs only itself. A line that
+isn't JSON, and a hello that can't be read, still end the link. A
+change that can't keep to the rules, as one changing what a frame
+means would be, raises `version`, and ends of two versions are
+refused, saying which to update (Membership, below).
+
 Only one link joins two machines, and whichever dialled first holds it,
 so each end carries what its own node asks of the other machine: starts,
 steers, updates, carries, ends and lends, and runs from the dialling end

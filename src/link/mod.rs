@@ -527,7 +527,8 @@ impl Drop for Reader {
 /// sends a line that isn't one, keeping in `arrived` when the last came:
 /// the other end is heard as its words arrive, not only once the link's
 /// own work reaches them, which may be held minutes behind a quest it
-/// shares.
+/// shares. A frame after the hello that this end can't read is skipped
+/// ([`unread`]).
 fn read_frames(
     reading: Box<dyn AsyncRead + Unpin + Send>,
     arrived: Arc<AtomicI64>,
@@ -535,15 +536,31 @@ fn read_frames(
     let (sender, frames) = mpsc::unbounded_channel();
     let task = tokio::spawn(async move {
         let mut lines = BufReader::new(reading).lines();
+        let mut greeted = false;
+        let mut skipped = HashSet::new();
         loop {
             let line = lines.next_line().await;
             arrived.fetch_max(now(), Ordering::Relaxed);
             let frame = match line {
-                Ok(Some(line)) => serde_json::from_str(&line)
-                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
+                Ok(Some(line)) => match serde_json::from_str(&line) {
+                    Ok(frame) => Ok(frame),
+                    Err(error) => match unread(&line, greeted) {
+                        Some(kind) => {
+                            if skipped.insert(kind.clone()) {
+                                eprintln!(
+                                    "the other end sent a {kind} this node can't read ({error}), \
+                                     so it skips each it sends; update this node to read them"
+                                );
+                            }
+                            continue;
+                        }
+                        None => Err(io::Error::new(io::ErrorKind::InvalidData, error)),
+                    },
+                },
                 Ok(None) => return,
                 Err(error) => Err(error),
             };
+            greeted = true;
             let failed = frame.is_err();
             if sender.send(frame).is_err() || failed {
                 return;
@@ -551,6 +568,23 @@ fn read_frames(
         }
     });
     (frames, Reader(task))
+}
+
+/// The kind of frame `line` is, where it is one this end can't read but
+/// the link can carry on past: a frame after the hello, from an end newer
+/// than this one, of a kind or with a kind within it that this end
+/// doesn't know (PROTOCOL.md, A Link). None for a line that isn't a frame
+/// at all, which ends the link, as does any line before the hello is
+/// read.
+fn unread(line: &str, greeted: bool) -> Option<String> {
+    if !greeted {
+        return None;
+    }
+    match serde_json::from_str::<Value>(line).ok()? {
+        Value::Object(frame) if frame.len() == 1 => frame.keys().next().cloned(),
+        Value::String(kind) => Some(kind),
+        _ => None,
+    }
 }
 
 /// Tells the node's asks how a command runs on `machine`, as this dial
@@ -4339,6 +4373,61 @@ mod tests {
         assert!(
             arrived.load(Ordering::Relaxed) >= before,
             "its arrival is kept"
+        );
+    }
+
+    /// After the hello, a frame of a kind this end doesn't know, or with a
+    /// kind within it that it doesn't, is skipped and the frames after it
+    /// are read, as an end newer than this one may send them; a line that
+    /// isn't a frame still ends the reading, as does any unread first line.
+    #[tokio::test]
+    async fn the_reader_skips_a_frame_it_cant_read_after_the_hello() {
+        let (far, near) = tokio::io::duplex(4096);
+        let (_, mut writing) = tokio::io::split(far);
+        let (mut frames, _reader) = read_frames(Box::new(near), Arc::new(AtomicI64::new(0)));
+        let lines = [
+            "{\"Ended\":{\"session\":\"s1\"}}",
+            "{\"Gossip\":{\"about\":\"what is next\"}}",
+            "\"Wave\"",
+            "{\"Steer\":{\"ask\":1,\"address\":\"a\",\"steer\":{\"Hum\":{}}}}",
+            "{\"Ended\":{\"session\":\"s2\"}}",
+            "not a frame",
+            "{\"Ended\":{\"session\":\"s3\"}}",
+        ];
+        writing
+            .write_all(format!("{}\n", lines.join("\n")).as_bytes())
+            .await
+            .expect("written");
+        let mut heard = Vec::new();
+        while let Some(frame) = frames.recv().await {
+            heard.push(frame.map_err(|error| error.kind()));
+        }
+        let ended = |session: &str| {
+            Ok(Frame::Ended {
+                session: session.to_owned(),
+            })
+        };
+        assert_eq!(
+            heard,
+            [ended("s1"), ended("s2"), Err(io::ErrorKind::InvalidData)],
+            "the three it can't read are skipped, and reading ends at the line that isn't one"
+        );
+
+        let (far, near) = tokio::io::duplex(1024);
+        let (_, mut writing) = tokio::io::split(far);
+        let (mut frames, _reader) = read_frames(Box::new(near), Arc::new(AtomicI64::new(0)));
+        writing
+            .write_all(b"{\"Gossip\":{}}\n{\"Ended\":{\"session\":\"s1\"}}\n")
+            .await
+            .expect("written");
+        let first = frames.recv().await.expect("a line");
+        assert!(
+            first.is_err(),
+            "a first line it can't read ends it: {first:?}"
+        );
+        assert!(
+            frames.recv().await.is_none(),
+            "and nothing after it is read"
         );
     }
 
