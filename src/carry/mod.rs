@@ -335,7 +335,7 @@ pub fn carry(
         format!("{} for {quest}, going to {to}", names.join(", "))
     };
     if !skipped.is_empty() {
-        found.push_str(&format!("; {}", passed_over(&skipped)));
+        found = format!("{found}; {}", passed_over(&skipped));
     }
     said.line(Step::Find, Stood::Done, found);
 
@@ -564,7 +564,7 @@ fn find(
              only the person carries what it left"
         );
         if !skipped.is_empty() {
-            why.push_str(&format!(" ({})", passed_over(&skipped)));
+            why = format!("{why} ({})", passed_over(&skipped));
         }
         return Err(why);
     }
@@ -2442,14 +2442,14 @@ mod tests {
 
     #[test]
     fn an_ordered_carry_passes_over_a_parked_session_no_quest_holds_and_names_it() {
-        let mut realm = Realm {
+        let mut mixed = Realm {
             by: Some("WCJQSG".to_owned()),
             unheld: ["s-busy01", "s-naps02"].map(str::to_owned).into(),
             ..realm()
         };
-        let (done, lines) = ordered(&mut realm);
+        let (done, lines) = ordered(&mut mixed);
         let carried = done.expect("carried");
-        let steered: Vec<&str> = realm.steered.iter().map(|(at, _)| at.as_str()).collect();
+        let steered: Vec<&str> = mixed.steered.iter().map(|(at, _)| at.as_str()).collect();
         assert_eq!(
             steered,
             ["BUSY01"],
@@ -2496,14 +2496,14 @@ mod tests {
 
     #[test]
     fn a_carry_by_the_person_never_asks_which_quest_holds_a_session() {
-        let mut realm = Realm {
+        let mut person = Realm {
             unheld: ["s-naps02"].map(str::to_owned).into(),
             unsaid_quests: Some("the node serves no quests' record".to_owned()),
             ..realm()
         };
-        let (done, lines) = carried(&mut realm, "tern");
+        let (done, lines) = carried(&mut person, "tern");
         let carried = done.expect("carried");
-        let steered: Vec<&str> = realm.steered.iter().map(|(at, _)| at.as_str()).collect();
+        let steered: Vec<&str> = person.steered.iter().map(|(at, _)| at.as_str()).collect();
         assert_eq!(steered, ["BUSY01", "NAPS02"], "each told: {lines:?}");
         assert!(carried.skipped.is_empty(), "none passed over");
 
