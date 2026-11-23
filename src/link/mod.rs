@@ -375,11 +375,7 @@ pub async fn run(
         proven: membership.proves(),
         worker,
         shows: membership.hello().shows && other.shows && !releases && !other.releases && !worker,
-        handover: Handover {
-            releases: other.releases,
-            skipped_shares,
-            ..Handover::default()
-        },
+        handover: Handover::new(other.releases, skipped_shares),
         // Two ends that both take facts each say their machine every
         // minute, so either hearing nothing for longer knows the other
         // is gone.
@@ -1172,6 +1168,18 @@ struct Handover {
     /// Whether this end skipped a share of a kind it doesn't know, which
     /// may have named a file it then never heard of.
     skipped_shares: Arc<AtomicBool>,
+}
+
+impl Handover {
+    /// A handover not begun, at an end whose other end can release it
+    /// where `releases` says, and whose reading marks `skipped_shares`.
+    fn new(releases: bool, skipped_shares: Arc<AtomicBool>) -> Self {
+        Self {
+            releases,
+            skipped_shares,
+            ..Self::default()
+        }
+    }
 }
 
 impl<S: Store> End<S> {
@@ -4586,10 +4594,10 @@ mod tests {
         (heard, skipped_shares.load(Ordering::Relaxed))
     }
 
-    fn ended(session: &str) -> Result<Frame, io::ErrorKind> {
-        Ok(Frame::Ended {
+    fn ended(session: &str) -> Frame {
+        Frame::Ended {
             session: session.to_owned(),
-        })
+        }
     }
 
     /// A frame of a kind this end knows whose body it can't read ends the
@@ -4620,7 +4628,7 @@ mod tests {
             ];
             assert_eq!(
                 read_lines(&ended_by).await,
-                [ended("s1"), Err(io::ErrorKind::InvalidData)],
+                [Ok(ended("s1")), Err(io::ErrorKind::InvalidData)],
                 "{bad} ends the reading, and nothing after it is read"
             );
         }
@@ -4702,7 +4710,7 @@ mod tests {
         assert!(matches!(heard[0], Ok(Frame::Hello(_))), "{heard:?}");
         assert_eq!(
             heard[1..],
-            [ended("s2"), Err(io::ErrorKind::InvalidData)],
+            [Ok(ended("s2")), Err(io::ErrorKind::InvalidData)],
             "the three it can't read are skipped, and reading ends at the line that isn't one"
         );
         assert!(!skipped_shares, "none of them was a share");
@@ -4714,7 +4722,7 @@ mod tests {
         ];
         assert_eq!(
             read_lines_skipping(&shares).await,
-            (vec![ended("s1"), ended("s2")], true),
+            (vec![Ok(ended("s1")), Ok(ended("s2"))], true),
             "shares of kinds it doesn't know are skipped, and kept as skipped"
         );
         assert_eq!(
