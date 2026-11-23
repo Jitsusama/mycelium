@@ -62,7 +62,7 @@ fn raised(now: &Rlimit, ceiling: Option<u64>) -> Option<Rlimit> {
         (Some(_), None) => true,
         (Some(current), Some(most)) => most > current,
     };
-    higher.then(|| Rlimit {
+    higher.then_some(Rlimit {
         current: most,
         maximum: now.maximum,
     })
