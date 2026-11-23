@@ -562,6 +562,15 @@ enum Action {
         #[command(subcommand)]
         act: LendAct,
     },
+    /// Signs and pushes git work for the machines this one made.
+    ///
+    /// The machine lending serves it, holding the only key and token;
+    /// a machine borrowing signs and pushes through it, over its lend.
+    #[command(after_help = "Example:\n  mycelium forge push --repo mycelium --branch joel-gerber/fix")]
+    Forge {
+        #[command(subcommand)]
+        act: ForgeAct,
+    },
     /// Prints the node's events as they come.
     ///
     /// Each is a JSON line, the latest messages first.
@@ -609,6 +618,85 @@ enum LendAct {
     /// Lets a machine cut off borrow again; `--all` lets every one.
     #[command(after_help = "Example:\n  mycelium lend uncut agents-1")]
     Uncut(Cutting),
+}
+
+/// What `mycelium forge` is asked to do.
+#[derive(Subcommand)]
+enum ForgeAct {
+    /// Serves the forge to the lender, which carries it each request of
+    /// a budget of kind `forge` from a machine it made.
+    ///
+    /// It signs with the key `--key` names, whose private half only the
+    /// agent at `--agent` holds, and pushes to the `origin` of each
+    /// `--repo`, only to branches starting with a `--branch`, never
+    /// forced. Each sign and push is a `mycelium-forge:` line on stderr.
+    #[command(after_help = "Example:\n  mycelium forge serve --listen forge.sock --key signing.pub \
+                          --agent agent.sock --repo mycelium=src/mycelium --branch joel-gerber/ \
+                          --folder forge")]
+    Serve {
+        /// The socket the lender asks, in a folder only this account may
+        /// write, made so where it isn't there.
+        #[arg(long)]
+        listen: PathBuf,
+        /// The public half of the key it signs with.
+        #[arg(long)]
+        key: PathBuf,
+        /// The agent holding the key's private half.
+        #[arg(long)]
+        agent: PathBuf,
+        /// A repository it pushes, as `NAME=PATH`, once for each.
+        #[arg(long = "repo", value_name = "NAME=PATH", required = true)]
+        repos: Vec<String>,
+        /// The start of a branch a push may name, once for each.
+        #[arg(long = "branch", value_name = "PREFIX", required = true)]
+        branches: Vec<String>,
+        /// Where each bundle waits while it is fetched.
+        #[arg(long)]
+        folder: PathBuf,
+    },
+    /// Signs as git's `gpg.ssh.program` does, through the forge.
+    ///
+    /// Given `-Y sign` and a file, it writes the forge's signature to
+    /// `FILE.sig`; given anything else, it runs `ssh-keygen` with the
+    /// same words, so git verifies as it always does.
+    #[command(after_help = "Example:\n  mycelium forge sign -- -Y sign -n git -f key.pub commit")]
+    Sign {
+        /// The budget the lender counts it against.
+        #[arg(long, default_value = mycelium::lend::forge::borrow::BUDGET)]
+        budget: String,
+        /// The cell asking, as this machine says it.
+        #[arg(long, env = "PI_MESH_SESSION")]
+        cell: Option<String>,
+        /// What git asked of `ssh-keygen`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        words: Vec<String>,
+    },
+    /// Pushes what this repository's `--head` holds past `--base` to a
+    /// branch, through the forge.
+    ///
+    /// It prints each line the forge answers as it comes, a JSON line,
+    /// and ends 0 only once the branch was pushed.
+    #[command(after_help = "Example:\n  mycelium forge push --repo mycelium --branch joel-gerber/fix")]
+    Push {
+        /// The repository, by the name the forge knows it by.
+        #[arg(long)]
+        repo: String,
+        /// The branch, without `refs/heads/`.
+        #[arg(long)]
+        branch: String,
+        /// What the remote already holds, left out of the bundle.
+        #[arg(long, default_value = "origin/HEAD")]
+        base: String,
+        /// The commit pushed.
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+        /// The budget the lender counts it against.
+        #[arg(long, default_value = mycelium::lend::forge::borrow::BUDGET)]
+        budget: String,
+        /// The cell asking, as this machine says it.
+        #[arg(long, env = "PI_MESH_SESSION")]
+        cell: Option<String>,
+    },
 }
 
 /// Which machines a cut names.
@@ -1670,6 +1758,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Lend {
             act: LendAct::Cut(cutting),
         } => lend_cuts(mycelium::lend::lender::cut, &cutting.into()),
+        Action::Forge { act } => return forge(act, &socket),
         Action::Lend {
             act: LendAct::Uncut(cutting),
         } => lend_cuts(mycelium::lend::lender::uncut, &cutting.into()),
@@ -2932,6 +3021,108 @@ fn lend_cuts(
         "{}",
         serde_json::json!({"cuts": folder.join("cuts.json"), "cut": cuts})
     )
+}
+
+/// Does what `act` asks of the forge, through the node at `node` where it
+/// borrows.
+fn forge(act: ForgeAct, node: &Path) -> io::Result<ExitCode> {
+    use mycelium::lend::forge::{self, Pushed, borrow};
+    match act {
+        ForgeAct::Serve {
+            listen,
+            key,
+            agent,
+            repos,
+            branches,
+            folder,
+        } => {
+            let mut named = std::collections::BTreeMap::new();
+            for repo in repos {
+                let Some((name, path)) = repo.split_once('=') else {
+                    return Err(io::Error::other(format!("{repo} isn't NAME=PATH")));
+                };
+                named.insert(name.to_owned(), PathBuf::from(path));
+            }
+            let served = forge::Forge {
+                key,
+                agent,
+                repos: named,
+                branches,
+                ssh_keygen: on_path("ssh-keygen")?,
+                git: on_path("git")?,
+                folder,
+            };
+            runtime()?.block_on(async {
+                let bound = node::bind(&listen)?;
+                tell!("mycelium: serving the forge at {}", listen.display());
+                tokio::select! {
+                    served = forge::serve(bound, served) => served,
+                    () = stopped() => Ok(()),
+                }
+            })?;
+            Ok(ExitCode::SUCCESS)
+        }
+        ForgeAct::Sign {
+            budget,
+            cell,
+            words,
+        } => {
+            let borrow::Asked::Sign(file) = borrow::asked(&words) else {
+                use std::os::unix::process::CommandExt as _;
+                // Only exec's failure returns.
+                return Err(std::process::Command::new("ssh-keygen").args(&words).exec());
+            };
+            let asking = borrow::Asking {
+                node,
+                budget: &budget,
+                cell,
+            };
+            match runtime()?.block_on(borrow::sign_file(&asking, Path::new(file))) {
+                Ok(_) => Ok(ExitCode::SUCCESS),
+                Err(why) => {
+                    tell!("mycelium: the forge didn't sign it: {why}");
+                    Ok(ExitCode::FAILURE)
+                }
+            }
+        }
+        ForgeAct::Push {
+            repo,
+            branch,
+            base,
+            head,
+            budget,
+            cell,
+        } => {
+            let bundle = borrow::bundle(Path::new("git"), Path::new("."), &base, &head)?;
+            let asking = borrow::Asking {
+                node,
+                budget: &budget,
+                cell,
+            };
+            let pushed = runtime()?.block_on(borrow::push(&asking, &repo, &branch, &bundle, |line| {
+                let _ = writeln!(io::stdout().lock(), "{line}");
+            }));
+            match pushed {
+                Ok(Pushed::Pushed { .. }) => Ok(ExitCode::SUCCESS),
+                Ok(_) => Ok(ExitCode::FAILURE),
+                Err(why) => {
+                    tell!("mycelium: the forge didn't push it: {why}");
+                    Ok(ExitCode::FAILURE)
+                }
+            }
+        }
+    }
+}
+
+/// Where `program` is on this process's `PATH`, so the forge runs it
+/// with its environment cleared.
+fn on_path(program: &str) -> io::Result<PathBuf> {
+    std::env::var_os("PATH")
+        .iter()
+        .flat_map(std::env::split_paths)
+        .map(|folder| folder.join(program))
+        .find(|path| path.is_file())
+        .ok_or_else(|| io::Error::other(format!("{program} isn't on PATH")))
 }
 
 /// Serves pi's model requests on `listen`, each lent through the node at
