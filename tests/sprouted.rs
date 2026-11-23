@@ -170,10 +170,11 @@ fn as_a_node_before_sprout() -> Answer {
     })
 }
 
-/// The lines of `said` saying what a seed left out.
+/// The lines of `said` saying what a seed left out, for any reason, as
+/// each begins by naming the sprout.
 fn left_out_lines(said: &str) -> Vec<&str> {
     said.lines()
-        .filter(|line| line.contains("its seed leaves out"))
+        .filter(|line| line.starts_with("mycelium sprout: sprout "))
         .collect()
 }
 
@@ -241,8 +242,8 @@ fn a_start_an_old_node_refuses_says_nothing_of_what_was_left_out() {
 }
 
 /// A node of now makes the seed and its own id, so what the seed left
-/// out is the node's to log (`sprout::LeftOut::tell`, tested there), and
-/// the command, whose id was never sent, says none of it.
+/// out is the node's to log (tested with the node's own sprout), and the
+/// command, whose id was never sent, says none of it.
 #[test]
 fn the_command_says_nothing_left_out_where_a_node_of_now_answers() {
     let (home, rows) = checkout_on_tern();
