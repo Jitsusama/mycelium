@@ -5138,14 +5138,14 @@ impl<S: Store> Shared<S> {
     fn carry_on(
         &self,
         (session, whole): (Session, bool),
-        (quest, to, shares): (String, String, Arc<Places>),
+        (quest, to, places): (String, String, Arc<Places>),
         ordered: crate::carry::Ordered,
         vouched: Vouched,
     ) {
-        let mut shared = self.clone();
-        shared.client = None;
-        shared.client_started = None;
-        shared.vouched = Some(Arc::new(vouched));
+        let mut node = self.clone();
+        node.client = None;
+        node.client_started = None;
+        node.vouched = Some(Arc::new(vouched));
         let (socket, here, stopped) = (
             self.node.clone(),
             self.machine.clone(),
@@ -5153,10 +5153,10 @@ impl<S: Store> Shared<S> {
         );
         let runtime = tokio::runtime::Handle::current();
         let asking: through::Asking = Box::new(move |request| {
-            if shared.stopped.load(std::sync::atomic::Ordering::Relaxed) {
+            if node.stopped.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err("this machine's node stopped".to_owned());
             }
-            match runtime.block_on(answered(&shared, Ok(request.clone()))) {
+            match runtime.block_on(answered(&node, Ok(request.clone()))) {
                 Answer::Ok(response) => Ok(response),
                 Answer::Err(why) => Err(why),
                 Answer::Refused(refused) => Err(refused.why),
@@ -5164,7 +5164,7 @@ impl<S: Store> Shared<S> {
         });
         tokio::task::spawn_blocking(move || {
             let mut hands =
-                through::Through::new(socket, (*shares).clone(), &quest, through::PATIENCE)
+                through::Through::new(socket, (*places).clone(), &quest, through::PATIENCE)
                     .asking(asking)
                     .stopping(stopped);
             let carried = crate::carry::carry_told(

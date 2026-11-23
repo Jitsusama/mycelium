@@ -2366,7 +2366,7 @@ mod tests {
         let (done, lines) = itself(&mut realm, "s-busy01");
         let carried = done.expect("handed");
         assert_eq!(carried.step, "handed", "its last line says so: {lines:?}");
-        assert!(carried.sessions.is_empty());
+        assert_eq!(carried.sessions, [], "none has arrived yet");
         assert!(
             realm.started.is_empty() && realm.shared.is_empty(),
             "nothing is shared or started below the session, which can't end while \
