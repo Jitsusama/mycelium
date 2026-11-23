@@ -838,7 +838,7 @@ pub fn safe(name: &str) -> io::Result<&str> {
 }
 
 /// When a message was sent, from the milliseconds its id starts with.
-fn sent_at(id: &str) -> Option<i64> {
+pub(crate) fn sent_at(id: &str) -> Option<i64> {
     id.split('-').next()?.parse().ok()
 }
 

@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -42,6 +42,26 @@ struct Held {
     told: Vec<mpsc::UnboundedSender<Change>>,
     /// How many times a message has been read.
     messages_read: usize,
+    /// Whether reading a message waits, as a slow disk's open does, until
+    /// the test lets it go on.
+    gate: Option<Arc<Gate>>,
+}
+
+/// Shut while a test holds a store's reads, opened when it lets them go.
+#[derive(Default)]
+struct Gate {
+    shut: Mutex<bool>,
+    opened: Condvar,
+}
+
+/// A store's reads of messages held, each waiting until this is dropped.
+pub struct ReadsHeld(Arc<Gate>);
+
+impl Drop for ReadsHeld {
+    fn drop(&mut self) {
+        *self.0.shut.lock().unwrap_or_else(PoisonError::into_inner) = false;
+        self.0.opened.notify_all();
+    }
 }
 
 /// A claim on a memory store, given up when dropped.
@@ -87,6 +107,18 @@ impl Memory {
         held.tell(&Change::Message(id.to_owned()));
     }
 
+    /// Holds every read of a message, as a disk too busy to open a file
+    /// would, until what this answers is dropped. Nothing else waits.
+    #[must_use]
+    pub fn hold_reads(&self) -> ReadsHeld {
+        let gate = Arc::new(Gate {
+            shut: Mutex::new(true),
+            opened: Condvar::new(),
+        });
+        self.held().gate = Some(Arc::clone(&gate));
+        ReadsHeld(gate)
+    }
+
     /// How many times a message has been read, as each is a file opened
     /// where the store is folders.
     pub fn messages_read(&self) -> usize {
@@ -107,9 +139,7 @@ impl Memory {
 
     fn held(&self) -> MutexGuard<'_, Held> {
         // A test that panicked holding the lock has failed already.
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -160,6 +190,16 @@ impl Store for Memory {
     }
 
     fn message(&self, id: &str) -> Option<Value> {
+        // Waited on with the store let go, so only reads wait.
+        let gate = self.held().gate.clone();
+        if let Some(gate) = gate {
+            let shut = gate.shut.lock().unwrap_or_else(PoisonError::into_inner);
+            drop(
+                gate.opened
+                    .wait_while(shut, |shut| *shut)
+                    .unwrap_or_else(PoisonError::into_inner),
+            );
+        }
         let mut held = self.held();
         held.messages_read += 1;
         held.messages.get(id).cloned()
