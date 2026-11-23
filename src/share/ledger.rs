@@ -837,17 +837,29 @@ mod tests {
             version: Version::default().changed_on("tern").changed_on("tern"),
         };
         let said = BTreeMap::from([
-            ("record/README.md".to_owned(), ours["record/README.md"].clone()),
+            (
+                "record/README.md".to_owned(),
+                ours["record/README.md"].clone(),
+            ),
             ("record/notes.md".to_owned(), theirs("another")),
             ("record/elsewhere.md".to_owned(), theirs("any")),
         ]);
-        assert!(ledger.read_by("tern", said.clone()), "what it holds is heard");
+        assert!(
+            ledger.read_by("tern", said.clone()),
+            "what it holds is heard"
+        );
         assert_eq!(
             ledger.read["tern"],
-            BTreeMap::from([("record/README.md".to_owned(), ours["record/README.md"].clone())]),
+            BTreeMap::from([(
+                "record/README.md".to_owned(),
+                ours["record/README.md"].clone()
+            )]),
             "only the file it holds as kestrel does, as kestrel holds it"
         );
-        assert!(!ledger.read_by("tern", said), "saying it again changes nothing");
+        assert!(
+            !ledger.read_by("tern", said),
+            "saying it again changes nothing"
+        );
 
         let lacking = BTreeMap::from([("record/notes.md".to_owned(), theirs("another"))]);
         assert!(
@@ -870,7 +882,10 @@ mod tests {
 
         fs::remove_file(quest.record.join("README.md")).expect("removed");
         ledger.scan(&quest, "kestrel").expect("scanned");
-        assert!(ledger.bound_theirs(), "what kestrel no longer holds drops out");
+        assert!(
+            ledger.bound_theirs(),
+            "what kestrel no longer holds drops out"
+        );
         assert_eq!(
             ledger.read.get("tern"),
             Some(&BTreeMap::new()),
