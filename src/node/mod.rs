@@ -1930,8 +1930,10 @@ impl Reopening {
 enum Admits {
     /// Every machine: a preview, or a start already pinned to its machine.
     All,
-    /// Those booked for this asker, as a make would tell it; every one for
-    /// [`made::PERSON`], and none for [`made::UNKNOWN`].
+    /// Those booked for this asker, as a make would tell it: for
+    /// [`made::PERSON`], those booked for the person or for nobody told,
+    /// never one an agent's make booked, whose worker home that agent
+    /// wrote; and none for [`made::UNKNOWN`].
     Asker(String),
 }
 
@@ -1941,7 +1943,9 @@ impl Admits {
     fn takes(&self, booked: Option<&str>) -> bool {
         match self {
             Self::All => true,
-            Self::Asker(told) if told == made::PERSON => true,
+            Self::Asker(told) if told == made::PERSON => {
+                booked.is_none() || booked == Some(made::PERSON)
+            }
             Self::Asker(told) => told != made::UNKNOWN && booked == Some(told.as_str()),
         }
     }
@@ -19424,11 +19428,16 @@ esac
     }
 
     #[test]
-    fn a_machine_booked_for_one_asker_takes_only_its_and_the_persons_starts() {
+    fn a_machine_booked_for_one_asker_takes_only_its_starts() {
         let asker = |told: &str| Admits::Asker(told.to_owned());
         assert!(
-            asker(made::PERSON).takes(Some("P9R1KI")),
-            "the person's starts go anywhere"
+            !asker(made::PERSON).takes(Some("P9R1KI")),
+            "the person's starts never go where an agent's make booked, since that agent \
+             wrote its worker home"
+        );
+        assert!(
+            asker(made::PERSON).takes(Some(made::PERSON)),
+            "they go where the person's make booked"
         );
         assert!(
             asker("P9R1KI").takes(Some("P9R1KI")),
@@ -19499,15 +19508,15 @@ esac
             "its asker's start is"
         );
         assert_eq!(
-            placed(made::PERSON).as_deref(),
-            Some("osprey"),
-            "and the person's"
+            placed(made::PERSON),
+            None,
+            "but not the person's, which would read the worker home the agent wrote"
         );
         made.asker = None;
         shared.book_for(&made);
         assert_eq!(
-            placed("P9R1KI"),
-            None,
+            (placed("P9R1KI"), placed(made::PERSON).as_deref()),
+            (None, Some("osprey")),
             "a machine whose make told no asker takes only the person's starts"
         );
         assert!(
