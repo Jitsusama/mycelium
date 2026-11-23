@@ -363,7 +363,7 @@ pub async fn run(
     // as of now.
     let began = admitted(&store, &other.machine)?;
     let exchange = shares.map(|places| exchange_with(places, &membership.hello(), &other, worker));
-    let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine);
+    let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine).await;
     let (answering, mut answered) = mpsc::unbounded_channel();
     let (runs, mut run_said) = Runs::new();
     let (starters, mut learned) = started::Starters::new();
@@ -763,11 +763,23 @@ fn know_how_it_runs(starting: Option<&Starting>, machine: &str) {
     }
 }
 
+/// How long a link `machine` dialled waits for its node to take the asks
+/// of `machine` ([`asked_of`]): far past the moment a node at hand takes,
+/// so only a node stalled for longer has its facts go on first.
+const ASKS_TAKEN_WITHIN: Duration = Duration::from_secs(5);
+
 /// The starts this machine's node asks of `machine`, taken for this link
 /// until what it answers is dropped, when the link carries the node's
 /// starts: in the node's own process for a link it keeps, and over its
 /// socket for one `machine` dialled. None otherwise.
-fn asked_of(
+///
+/// A link `machine` dialled waits, up to [`ASKS_TAKEN_WITHIN`], for its
+/// node to take the asks before the link goes on to say `machine`'s
+/// facts, since those mark it ready: a start placed there in between
+/// would otherwise find no link reaching it. A node that can't be reached
+/// ends the wait at once, and is asked again as [`carried::from_node`]
+/// says, while the link carries on.
+async fn asked_of(
     starting: Option<&Starting>,
     machine: &str,
 ) -> (Option<mpsc::UnboundedReceiver<Ask>>, Option<Box<dyn Send>>) {
@@ -780,7 +792,18 @@ fn asked_of(
             (Some(asked), Some(Box::new(reaching)))
         }
         Some(Asking::Dialled) => {
-            let (asked, carrying) = carried::from_node(starting.node.clone(), machine);
+            let (asked, carrying, taken) = carried::from_node(starting.node.clone(), machine);
+            match tokio::time::timeout(ASKS_TAKEN_WITHIN, taken).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => eprintln!(
+                    "mycelium: the asking of the node for {machine} ended before the node took \
+                     its asks; its facts go on, and a start there finds no link"
+                ),
+                Err(_) => eprintln!(
+                    "mycelium: the node hasn't taken its asks of {machine} through this link \
+                     yet; its facts go on, and a start there may find no link until it does"
+                ),
+            }
             (Some(asked), Some(Box::new(carrying)))
         }
         None => (None, None),
@@ -3356,13 +3379,84 @@ mod tests {
         );
     }
 
-    /// Skiff's store, hearing kestrel's end of a link skiff dialled, which
-    /// runs apart from kestrel's node on `node`, as SSH starts it.
-    fn dialled_by_kestrel(dir: &std::path::Path, node: PathBuf) -> Memory {
-        let skiff = Memory::default();
-        let (near, far) = tokio::io::duplex(1 << 16);
-        let near_end = end(&skiff, "skiff", near);
-        let starting = Starting {
+    /// A link skiff dialled takes kestrel's node's asks of skiff only once
+    /// the node says it carries them, and `run` says kestrel's facts only
+    /// after, so the node never reads skiff ready, and places a start
+    /// there, with no link to ask it through.
+    #[tokio::test]
+    async fn a_dialled_link_takes_its_asks_once_its_node_carries_them() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("node.sock");
+        let listener = tokio::net::UnixListener::bind(&path).expect("the node binds");
+        let starting = dialled_starting(dir.path(), path);
+        let asking = asked_of(Some(&starting), "skiff");
+        tokio::pin!(asking);
+        assert!(
+            still_waiting(&mut asking).await,
+            "the asks aren't taken before the node is called"
+        );
+        let (stream, _) = tokio::time::timeout(PATIENCE, listener.accept())
+            .await
+            .expect("the link asks its node in time")
+            .expect("the node takes the link's call");
+        let (reading, mut writing) = stream.into_split();
+        let mut node = BufReader::new(reading).lines();
+        let first = node.next_line().await.expect("it asks").expect("a line");
+        assert!(first.contains("Carry"), "the link asks to carry: {first}");
+        assert!(
+            still_waiting(&mut asking).await,
+            "the asks aren't taken before the node says it carries them"
+        );
+        let answered = tokio::time::Instant::now();
+        let carrying = serde_json::to_string(&Reply::Ok(Response::Carrying)).expect("a reply");
+        writing
+            .write_all(format!("{carrying}\n").as_bytes())
+            .await
+            .expect("the node answers");
+        let (asked, carrying) = tokio::time::timeout(PATIENCE, &mut asking)
+            .await
+            .expect("the asks are taken in time");
+        assert!(
+            answered.elapsed() < ASKS_TAKEN_WITHIN,
+            "taken as the node says it carries them, not at the end of the wait"
+        );
+        assert!(
+            asked.is_some() && carrying.is_some(),
+            "the link carries the asks"
+        );
+    }
+
+    /// Whether `asking` is still waiting, polled once without waiting on it.
+    async fn still_waiting(asking: &mut std::pin::Pin<&mut impl Future>) -> bool {
+        let polled = tokio::time::timeout(Duration::ZERO, asking).await;
+        polled.is_err()
+    }
+
+    /// A link whose node isn't there to call goes on at once, rather than
+    /// waiting out [`ASKS_TAKEN_WITHIN`] for a node that can't take them.
+    #[tokio::test]
+    async fn a_dialled_link_whose_node_isnt_there_goes_on_at_once() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let starting = dialled_starting(dir.path(), dir.path().join("node.sock"));
+        let began = tokio::time::Instant::now();
+        let asking = asked_of(Some(&starting), "skiff");
+        let (asked, carrying) = tokio::time::timeout(PATIENCE, asking)
+            .await
+            .expect("the link goes on in time");
+        assert!(
+            began.elapsed() < ASKS_TAKEN_WITHIN,
+            "no node to call ends the wait at once"
+        );
+        assert!(
+            asked.is_some() && carrying.is_some(),
+            "the link still carries the asks, and asks its node again"
+        );
+    }
+
+    /// How kestrel's end starts on a link skiff dialled, apart from
+    /// kestrel's node on `node`, as SSH starts it.
+    fn dialled_starting(dir: &std::path::Path, node: PathBuf) -> Starting {
+        Starting {
             node,
             held: dir.join("held"),
             asking: Some(Asking::Dialled),
@@ -3372,7 +3466,16 @@ mod tests {
             kit: None,
             saturation: None,
             lender: None,
-        };
+        }
+    }
+
+    /// Skiff's store, hearing kestrel's end of a link skiff dialled, which
+    /// runs apart from kestrel's node on `node`, as SSH starts it.
+    fn dialled_by_kestrel(dir: &std::path::Path, node: PathBuf) -> Memory {
+        let skiff = Memory::default();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let near_end = end(&skiff, "skiff", near);
+        let starting = dialled_starting(dir, node);
         let (reading, writing) = tokio::io::split(far);
         tokio::spawn(async move {
             let _near_end = near_end;
