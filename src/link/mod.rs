@@ -708,7 +708,7 @@ impl<'de, B: Deserialize<'de>> serde::de::Visitor<'de> for VariantVisitor<B> {
     }
 
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-        let Some((kind, body)) = map.next_entry()? else {
+        let Some((kind, body)) = map.next_entry::<String, B>()? else {
             return Err(serde::de::Error::custom("a variant names its kind"));
         };
         if map.next_key::<IgnoredAny>()?.is_some() {
@@ -4748,9 +4748,9 @@ mod tests {
     }
 
     /// How a link that can release ends when the other machine says its
-    /// hello and what it has, then `lines`, then that it has handed over,
+    /// hello and what it has, then `before`, then that it has handed over,
     /// and leaves; and the store at this end.
-    async fn handed_over_after(lines: &[&str]) -> (io::Result<Ending>, Memory) {
+    async fn handed_over_after(before: &[&str]) -> (io::Result<Ending>, Memory) {
         let skiff = Memory::default();
         let store = skiff.clone();
         let (skiff_end, far_reading, mut far_writing) = skiff_over(
@@ -4783,7 +4783,7 @@ mod tests {
             ],
         )
         .await;
-        for line in lines {
+        for line in before {
             far_writing
                 .write_all(format!("{line}\n").as_bytes())
                 .await
