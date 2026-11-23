@@ -1744,9 +1744,8 @@ pub(super) mod tests {
         assert_eq!(
             with(&|one| {
                 one.orchestrates = None;
-                one.lane = Some(
-                    "S9, out of reach on tern, though since when can't be told".to_owned(),
-                );
+                one.lane =
+                    Some("S9, out of reach on tern, though since when can't be told".to_owned());
             }),
             "S1 may orchestrate S9, out of reach on tern, though since when can't be told",
             "a lane whose standing can't be told keeps its orchestrator, saying why once"

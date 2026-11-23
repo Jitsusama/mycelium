@@ -407,8 +407,14 @@ mod tests {
         };
         out_of_reach(&store, "kestrel", 7);
         out_of_reach(&store, "kestrel", 9);
-        assert_eq!(body(&store), Some(serde_json::json!(7)), "since the first drop");
-        store.put_presence("s1", "kestrel", &said).expect("carried again");
+        assert_eq!(
+            body(&store),
+            Some(serde_json::json!(7)),
+            "since the first drop"
+        );
+        store
+            .put_presence("s1", "kestrel", &said)
+            .expect("carried again");
         assert_eq!(
             body(&store),
             Some(serde_json::Value::Null),
