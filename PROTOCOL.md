@@ -1485,11 +1485,20 @@ session through the launcher the session's fence declares there, as a
 Mac's node does, since pi lifts its own fence on a Mac. It is absent
 where the node doesn't, as on Linux, where pi fences itself, or where
 the node is too old to say, which starts one through the login shell
-alone. There, an agent's held start in a fence that runs the realm's
-agent program named bare, after at most `env` and the variables a
-harness sets (`PI_SANDBOX` no looser than the fence, `PI_FENCE_DECLARED`,
-`PI_FENCE_STAGE`, `PI_SPAWNER`, `QUEST_WORKFLOW_AUTOLOAD_ID`, each a
-plain word), or a carried session's arrival word for word, starts with
+alone. A Mac whose `declared` says `pi_fences_itself`, as one whose pi
+lays a sandbox profile round each command it runs does, is started as
+Linux is, since pi can't reach its own state within the launcher. There,
+an agent's held start in a fence that runs the realm's agent program, or
+`pi`, named bare, after at most `env` and only these variables:
+`PI_SANDBOX=strict`, `QUEST_WORKFLOW_AUTOLOAD_ID` and
+`QUEST_WORKFLOW_FIRST_WORDS` (each a plain word), and
+`QUEST_WORKFLOW_FIRST_TEXT` (any text but one starting with `!` or
+`/`, which pi would take for a command). It runs either directly, with
+only `-c`, `--continue`, `--session` and a plain id and a prompt last
+starting with none of `-`, `@`, `!` or `/`, or through `sh -c` and a
+script that is the program alone or the program, `--session` and a
+plain id, word for word. That start, or a carried session's arrival
+word for word, starts with
 `PI_SANDBOX` set to its fence, beside the fence `PI_FENCE_DECLARED=1`,
 so pi fences its commands so. Any other command an agent holds in a
 fence starts within that fence's launcher, as its runs do, or nowhere

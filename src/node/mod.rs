@@ -2166,59 +2166,127 @@ fn held_within(
     let Some(kind) = kind.filter(|kind| *kind > crate::declared::Kind::None) else {
         return Ok(Vec::new());
     };
-    if !fences && fences_itself(command, agent, kind) {
+    if !fences && fences_itself(command, agent) {
         return Ok(fencing_itself(kind));
     }
     launch(kind)
 }
 
-/// The variables a harness hands a pi it starts, and the fence `kind`
-/// keeps a start that sets them within: each is a word alone, and
-/// `PI_SANDBOX` names a sandbox no looser than `kind`. Any other, such as
-/// one that loads code into pi before it fences anything, isn't pi
-/// fencing itself.
-fn set_by_a_harness(word: &str, kind: crate::declared::Kind) -> bool {
-    let Some((name, value)) = word.split_once('=') else {
-        return false;
-    };
-    let plain = !value.is_empty()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte));
-    let kept = match name {
-        "PI_SANDBOX" => {
-            value == "strict" || (value == "fence" && kind == crate::declared::Kind::Fence)
-        }
-        "PI_FENCE_DECLARED" | "PI_FENCE_STAGE" | "PI_SPAWNER" | "QUEST_WORKFLOW_AUTOLOAD_ID" => {
-            true
-        }
+/// The variables a harness hands a pi it starts that keep a start pi
+/// fencing itself: the quest it loads and its first word, each a plain
+/// word, and `PI_SANDBOX` naming the strict sandbox, the tightest there
+/// is. Any other, such as `PATH`, `NODE_OPTIONS` or another `PI_`
+/// variable, can load code into pi or loosen it before it fences
+/// anything, so a start setting one goes through the launcher.
+fn set_by_a_harness(word: &str) -> bool {
+    match word.split_once('=') {
+        Some(("PI_SANDBOX", value)) => value == "strict",
+        Some(("QUEST_WORKFLOW_AUTOLOAD_ID" | "QUEST_WORKFLOW_FIRST_WORDS", value)) => plain(value),
         _ => false,
-    };
-    plain && kept
+    }
+}
+
+/// The variable a harness's held spawn names a session's first words
+/// in, which are the person's or an agent's own and so any text: pi
+/// reads them as it would a prompt. `env` takes it as one word and the
+/// node runs it by its words, never through a shell, so what it holds
+/// is never run there.
+const FIRST_TEXT: &str = "QUEST_WORKFLOW_FIRST_TEXT=";
+
+/// Whether `word` sets the first words to text that reads as a prompt
+/// rather than a command: not `!`, which pi runs in a shell, nor `/`,
+/// which names one of its commands.
+fn first_text(word: &str) -> bool {
+    word.strip_prefix(FIRST_TEXT).is_some_and(prompts)
+}
+
+/// Whether `text`, given pi as its first words, reads as a prompt alone:
+/// not empty, and not a flag (`-`), a file to read in (`@`), a shell
+/// command (`!`) or one of pi's own commands (`/`).
+fn prompts(text: &str) -> bool {
+    !text.is_empty() && !text.starts_with(['-', '@', '!', '/'])
 }
 
 /// Whether `command`, held in the fence `kind` where pi fences itself,
 /// is pi fencing itself: a carried session's arrival, word for word as a
-/// carry gives it, or the realm's `agent` program named bare, after at
-/// most `env` and the variables a harness sets ([`set_by_a_harness`]).
-/// Anything else, a shell, a script or pi by a path among them, isn't.
-fn fences_itself(command: &[String], agent: &str, kind: crate::declared::Kind) -> bool {
+/// carry gives it, or the realm's `agent` program named bare with only
+/// the arguments [`runs_pi`] lets through, after at most `env`, the
+/// variables a harness sets ([`set_by_a_harness`]) and its first words
+/// ([`first_text`]). That program may be run as a harness's held spawn
+/// runs it, through `sh -c` and a script that is the program alone or
+/// the program resuming a session by a plain id, word for word. Anything
+/// else, a shell, a script, pi by a path, or pi told to load code or
+/// approve its own asks, isn't.
+fn fences_itself(command: &[String], agent: &str) -> bool {
     if crate::carry::ordered_arrival(command).is_some()
         || crate::carry::unordered_arrival(command).is_some()
     {
         return true;
     }
-    let program = match command {
+    let run = match command {
         [env, rest @ ..] if env == "env" => {
             let set = rest
                 .iter()
-                .take_while(|word| set_by_a_harness(word, kind))
+                .take_while(|word| set_by_a_harness(word) || first_text(word))
                 .count();
-            rest.get(set)
+            &rest[set..]
         }
-        _ => command.first(),
+        _ => command,
     };
-    program.is_some_and(|program| program == agent || program == "pi")
+    match run {
+        [sh, c, script] if sh == "sh" && c == "-c" => resumes(script, agent),
+        _ => runs_pi(run, agent),
+    }
+}
+
+/// Whether `script`, as a harness's held spawn gives `sh -c` it, is the
+/// realm's `agent` program or `pi` alone, or either resuming a session
+/// by a plain id, word for word: nothing a shell would read as more
+/// than those words.
+fn resumes(script: &str, agent: &str) -> bool {
+    let words: Vec<&str> = script.split(' ').collect();
+    match words.as_slice() {
+        [program] => *program == agent || *program == "pi",
+        [program, "--session", id] => (*program == agent || *program == "pi") && plain(id),
+        _ => false,
+    }
+}
+
+/// Whether `word` is plain: letters, digits and `._-` alone, so a shell
+/// reads it as itself.
+fn plain(word: &str) -> bool {
+    !word.is_empty()
+        && word
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+}
+
+/// Whether `words` run the realm's `agent` program, or `pi`, named bare,
+/// with only arguments that resume or continue a session (`-c`,
+/// `--continue`, `--session` and a plain id) and a prompt last that reads
+/// as one ([`prompts`]). An extension (`-e`), approving its own asks
+/// (`-a`) or a flag this doesn't know goes through the launcher, since
+/// each loads code or loosens pi before its fence holds.
+fn runs_pi(words: &[String], agent: &str) -> bool {
+    let Some((program, arguments)) = words.split_first() else {
+        return false;
+    };
+    if program != agent && program != "pi" {
+        return false;
+    }
+    let mut arguments = arguments.iter().peekable();
+    while let Some(argument) = arguments.next() {
+        let last = arguments.peek().is_none();
+        let kept = match argument.as_str() {
+            "-c" | "--continue" => true,
+            "--session" => arguments.next().is_some_and(|id| plain(id)),
+            prompt => last && prompts(prompt),
+        };
+        if !kept {
+            return false;
+        }
+    }
+    true
 }
 
 /// The words a pi started in the fence `kind` begins within, where it
@@ -6725,10 +6793,17 @@ impl<S: Store> Shared<S> {
         // Its launcher first, so a fence whose launcher is refused starts
         // nothing, whatever else this node lacks. The holder runs each
         // start within it, the first and every one after a park.
-        let agent = crate::declared::read(&self.declared)
-            .and_then(|mut declared| declared.agents.remove(&self.realm))
+        let declared = crate::declared::read(&self.declared).unwrap_or_default();
+        let agent = declared
+            .agents
+            .get(&self.realm)
+            .cloned()
             .unwrap_or_else(|| "pi".to_owned());
-        let within = held_within(self.fences_held, fence, (&asked.command, &agent), |kind| {
+        // A Mac whose pi lays its own fence round each command it runs,
+        // as its configuration says, leaves pi to fence itself as Linux
+        // does, since pi can't reach its own state within the launcher.
+        let fences = self.fences_held && !declared.pi_fences_itself;
+        let within = held_within(fences, fence, (&asked.command, &agent), |kind| {
             crate::declared::launcher(&self.declared, kind, &self.runs.declarers)
                 .map_err(|why| format!("{machine} can't start this held session {kind}: {why}"))
         })?;
@@ -19769,7 +19844,7 @@ esac
         let harnessed = words(&[
             "env",
             "PI_SANDBOX=strict",
-            "PI_SPAWNER=off",
+            "QUEST_WORKFLOW_AUTOLOAD_ID=QEST-20261107-HARBOR",
             "pi-claude",
             "-c",
         ]);
@@ -19858,6 +19933,200 @@ esac
             }),
             Err("refused".to_owned()),
             "and where its launcher is refused, starts nothing"
+        );
+    }
+
+    #[test]
+    fn pi_fences_itself_only_with_arguments_that_resume_it_or_prompt_it() {
+        use crate::declared::Kind;
+        let launch = |kind: Kind| Ok(vec!["fence".to_owned(), format!("{kind}"), "--".to_owned()]);
+        let words = |said: &[&str]| said.iter().map(|&word| word.to_owned()).collect::<Vec<_>>();
+        let itself = words(&["/usr/bin/env", "PI_SANDBOX=strict"]);
+        let spawned = |script: &str| {
+            words(&[
+                "env",
+                "QUEST_WORKFLOW_AUTOLOAD_ID=QEST-20261107-HARBOR",
+                "QUEST_WORKFLOW_FIRST_WORDS=w-harbour",
+                "QUEST_WORKFLOW_FIRST_TEXT=mend the harbour; then $(sh) -e x",
+                "PI_SANDBOX=strict",
+                "sh",
+                "-c",
+                script,
+            ])
+        };
+        for fencing in [
+            spawned("pi"),
+            spawned("pi-claude"),
+            spawned("pi --session s-harbour"),
+            spawned("pi-claude --session 01a1fa83-84a3"),
+            words(&["pi", "-c"]),
+            words(&["pi", "--continue", "mend the harbour"]),
+            words(&[
+                "env",
+                "PI_SANDBOX=strict",
+                "pi",
+                "--session",
+                "s-1",
+                "go on",
+            ]),
+        ] {
+            assert_eq!(
+                held_within(false, Some(Kind::Strict), (&fencing, "pi-claude"), launch),
+                Ok(itself.clone()),
+                "a harness's held spawn, or pi resumed or prompted, fences itself: {fencing:?}"
+            );
+        }
+        for other in [
+            words(&["pi", "-e", "x.ts"]),
+            words(&["pi", "--extension", "x.ts"]),
+            words(&["pi", "-a"]),
+            words(&["pi", "--approve"]),
+            words(&["pi", "--model", "m"]),
+            words(&["pi", "@.ssh/id_ed25519"]),
+            words(&["pi", "a prompt", "-e"]),
+            words(&["pi", "--session"]),
+            words(&["pi", "--session", "$(sh)"]),
+            spawned("pi; sh"),
+            spawned("pi --session s-1 -e x.ts"),
+            spawned("pi  -c"),
+            spawned("/tmp/pi"),
+            spawned("pi mend"),
+            [spawned("pi"), words(&["extra"])].concat(),
+        ] {
+            assert_eq!(
+                held_within(false, Some(Kind::Strict), (&other, "pi-claude"), launch),
+                Ok(words(&["fence", "strictly fenced", "--"])),
+                "pi loading code, loosened, or run by a script of more, goes through its launcher: \
+                 {other:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pi_fences_itself_only_in_the_environment_and_script_a_harness_gives_it() {
+        use crate::declared::Kind;
+        let launch = |kind: Kind| Ok(vec!["fence".to_owned(), format!("{kind}"), "--".to_owned()]);
+        let words = |said: &[&str]| said.iter().map(|&word| word.to_owned()).collect::<Vec<_>>();
+        let spawned = |set: &[&str], script: &str| {
+            [words(&["env"]), words(set), words(&["sh", "-c", script])].concat()
+        };
+        let fences = |command: &[String]| {
+            held_within(false, Some(Kind::Strict), (command, "pi-claude"), launch)
+                == Ok(words(&["/usr/bin/env", "PI_SANDBOX=strict"]))
+        };
+        let quest = "QUEST_WORKFLOW_AUTOLOAD_ID=QEST-20261107-HARBOR";
+        for set in [
+            vec![quest],
+            vec![
+                quest,
+                "QUEST_WORKFLOW_FIRST_WORDS=w-harbour",
+                "PI_SANDBOX=strict",
+            ],
+            vec![
+                "QUEST_WORKFLOW_FIRST_TEXT=mend the harbour",
+                "PI_SANDBOX=strict",
+            ],
+        ] {
+            assert!(fences(&spawned(&set, "pi")), "what a harness sets: {set:?}");
+        }
+        for other in [
+            "PI_SANDBOX=fence",
+            "PI_SANDBOX=off",
+            "PI_SANDBOX=",
+            "PI_FENCE_DECLARED=1",
+            "PI_FENCE_STAGE=lifted",
+            "PI_SPAWNER=off",
+            "PI_CODING_AGENT_DIR=x",
+            "PATH=/tmp",
+            "LD_LIBRARY_PATH=/tmp",
+            "BASH_ENV=x",
+            "ENV=x",
+            "NODE_OPTIONS=--require=x",
+            "QUEST_WORKFLOW_AUTOLOAD_ID=$(sh)",
+            "QUEST_WORKFLOW_FIRST_WORDS=a word",
+            "QUEST_WORKFLOW_FIRST_TEXT=!sh",
+            "QUEST_WORKFLOW_FIRST_TEXT=/login",
+            "QUEST_WORKFLOW_FIRST_TEXT=",
+        ] {
+            assert!(
+                !fences(&spawned(&[quest, other], "pi")),
+                "any other name, or a value past what it holds, goes through the launcher: {other}"
+            );
+        }
+        for command in [words(&["pi", "!sh"]), words(&["pi", "/login"])] {
+            assert!(
+                !fences(&command),
+                "nor is a command its prompt: {command:?}"
+            );
+        }
+        for script in [
+            "pi-claude -c",
+            "pi --continue",
+            "pi --session",
+            "pi --session s-1 go",
+            "pi --session 's-1'",
+            "pi --session $ID",
+            "'pi'",
+            "$PI",
+            "pi\n",
+            " pi",
+            "pi-claude\tpi",
+        ] {
+            assert!(
+                !fences(&spawned(&[quest], script)),
+                "a script past the program, resumed by a plain id, goes through it: {script:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_held_spawns_first_text_is_never_read_by_a_shell() {
+        // The start as the node runs it, through the script its login
+        // shell is given, but in `sh` alone, without a profile.
+        let through = crate::hold::start::login_shell("harbour", None);
+        let lic = through
+            .iter()
+            .position(|word| word == "-lic")
+            .expect("a login shell");
+        let through = [
+            vec!["sh".to_owned(), "-c".to_owned()],
+            through[lic + 1..].to_vec(),
+        ]
+        .concat();
+        let starts = |text: &str, script: &str| {
+            let folder = tempfile::tempdir().expect("a temporary folder");
+            let command: Vec<String> = ["env", &format!("{FIRST_TEXT}{text}"), "sh", "-c", script]
+                .iter()
+                .map(|&word| word.to_owned())
+                .collect();
+            let fences = fences_itself(&command, "true");
+            let ran = std::process::Command::new(&through[0])
+                .args(&through[1..])
+                .args(&command)
+                .current_dir(folder.path())
+                .status()
+                .expect("a shell");
+            assert!(ran.success(), "it runs: {text:?}");
+            (fences, folder.path().join("x").exists())
+        };
+        for text in [
+            "$(touch x)",
+            "`touch x`",
+            "mend\ntouch x",
+            "; touch x",
+            "\"; touch x; \"",
+            "$(touch x) `touch x` ; touch x",
+        ] {
+            assert_eq!(
+                starts(text, "true"),
+                (true, false),
+                "its first text is one word, never read by a shell: {text:?}"
+            );
+        }
+        assert_eq!(
+            starts("touch x", "eval \"$QUEST_WORKFLOW_FIRST_TEXT\""),
+            (false, true),
+            "where a script would read it, the file appears, and it isn't pi fencing itself"
         );
     }
 
@@ -20026,13 +20295,28 @@ esac
             "but anything else through its strict fence's launcher there too: {words}"
         );
         link.fences_held = true;
-        link.relayed("tern", strict)
+        link.relayed("tern", strict.clone())
             .await
             .expect("it starts here, in its fence");
         let words = fs::read_to_string(&given).expect("the holder was given its words");
         assert!(
             launched(&words),
             "through its strict fence's launcher: {words}"
+        );
+        let mut said = crate::declared::read(&link.declared).expect("it declares");
+        said.pi_fences_itself = true;
+        fs::write(
+            &link.declared,
+            serde_json::to_vec(&said).expect("it is JSON"),
+        )
+        .expect("this machine's declaration is written");
+        link.relayed("tern", strict)
+            .await
+            .expect("it starts here, in its fence");
+        let words = fs::read_to_string(&given).expect("the holder was given its words");
+        assert!(
+            !launched(&words) && words.contains("PI_SANDBOX=strict"),
+            "but where its configuration says pi there fences itself, pi does: {words}"
         );
     }
 
@@ -20126,6 +20410,7 @@ esac
         store
             .put_machine(&facts::Machine {
                 declared: Some(crate::declared::Declared {
+                    pi_fences_itself: false,
                     reach: Vec::new(),
                     probes: BTreeMap::new(),
                     outlives: Vec::new(),

@@ -68,6 +68,12 @@ pub struct Declared {
         deserialize_with = "fence_or_none"
     )]
     pub fence: Option<BTreeMap<Kind, Doors>>,
+    /// Whether pi there lays its own fence round each command it runs,
+    /// as a Mac's pi can once it lays a sandbox profile round each, so a
+    /// held start leaves pi to fence itself rather than starting it
+    /// within the launcher, where it can't reach its own state.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pi_fences_itself: bool,
     /// The basin it is one of, as each cell a basin makes says it, so a
     /// map can draw the basin once rather than every cell in it; none
     /// where it is no basin's, or says it in any shape but a name. It is
@@ -1043,6 +1049,7 @@ mod tests {
         assert_eq!(
             read(&file),
             Some(Declared {
+                pi_fences_itself: false,
                 reach: vec!["home".to_owned(), "internet".to_owned()],
                 probes: BTreeMap::new(),
                 outlives: vec![Outlives::WindowClose, Outlives::NodeRestart],
@@ -1067,6 +1074,7 @@ mod tests {
     #[test]
     fn a_machine_that_costs_money_leaves_or_reaches_aquifer_is_a_worker() {
         let lasting = Declared {
+            pi_fences_itself: false,
             reach: vec!["home".to_owned(), "internet".to_owned()],
             probes: BTreeMap::new(),
             outlives: Vec::new(),
