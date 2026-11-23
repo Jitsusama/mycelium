@@ -2024,7 +2024,8 @@ impl<S: Store> End<S> {
     /// say: a machine named otherwise is refused, and it is ready while
     /// this link carries it, whatever it claims. A worker is withheld the
     /// quests above those shared with it, and so is a machine that declares
-    /// nothing of itself, as a node does for a while as it restarts.
+    /// nothing of itself, as a node does for a while as it restarts, even
+    /// while what it last declared stands in for nothing.
     fn keep_machine(&mut self, mut said: Machine) {
         if said.name != self.other {
             self.kept(
@@ -2040,18 +2041,19 @@ impl<S: Store> End<S> {
         // A node restarting, or too slow to answer its end, has it say its
         // machine with nothing declared; what the machine last declared
         // stands for a while, so a carry isn't refused for ground the
-        // machine still stands on.
+        // machine still stands on. A node that answered declaring nothing
+        // is taken at its word at once.
+        let said_nothing = std::mem::take(&mut said.declares_nothing);
         said.declared = self.heard_declared.heard(
             &self.other,
-            said.declared.take(),
+            (said.declared.take(), said_nothing),
             tokio::time::Instant::now(),
         );
         if let Some(exchange) = self.exchange.as_mut() {
-            exchange.withhold_above(
-                said.declared
-                    .as_ref()
-                    .is_none_or(crate::declared::Declared::is_worker),
-            );
+            exchange.withhold_above(declared_heard::withheld_above(
+                said.declared.as_ref(),
+                self.heard_declared.standing_in(),
+            ));
         }
         self.kept(&said.name, self.store.put_machine(&said));
     }
@@ -2069,7 +2071,12 @@ impl<S: Store> End<S> {
                 (Some(file.clone()), kit.clone(), saturation.clone())
             }
             Declaring::Node(node) => match measured_by(node).await {
-                Some(machine) => return self.say_machine(machine, writing).await,
+                // The node answered, so a machine declaring nothing truly
+                // does, and the far end mustn't keep what it declared.
+                Some(mut machine) => {
+                    machine.declares_nothing = machine.declared.is_none();
+                    return self.say_machine(machine, writing).await;
+                }
                 // Nothing the account's files declare is said for it:
                 // anything running as the account could have written them.
                 None => (None, None, None),
