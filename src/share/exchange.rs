@@ -1720,16 +1720,16 @@ impl Exchange {
         self.wanted.remove(&file);
         self.unanswered.remove(&file);
         let taken = self.take_whole(id, key, theirs, body, mode);
-        let more = self.ask_more(id);
+        let next = self.ask_more(id);
         match taken {
             Ok(mut says) => {
-                says.extend(more);
+                says.extend(next);
                 Ok(says)
             }
-            Err(error) if more.is_empty() => Err(error),
+            Err(error) if next.is_empty() => Err(error),
             Err(error) => {
                 eprintln!("sharing quests with {}: {error}", self.other);
-                Ok(more)
+                Ok(next)
             }
         }
     }
