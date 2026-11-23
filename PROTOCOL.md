@@ -131,9 +131,16 @@ same code, each line a JSON value:
    the end holds within the link's reach, and its machine's living
    sessions. An end older than `living` names none, and every session of
    its machine out of reach is let go, to come again as it sends each.
-   The reach goes back to when the two machines were last linked, and
-   never past the mesh's week, so a link never hands back what
-   the other end has let go. A first link reaches back to nothing, since a
+   The reach goes back to a minute before the end last heard the
+   other, and never past the mesh's week, so a link never hands back
+   what the other end has let go. A link whose other end fell silent
+   stands for minutes before it ends, so what was sent into it is
+   offered again. A link that drops again before the other end is heard
+   a minute after this end sent what it lacked leaves the reach where
+   that link began, as does one that fails as it opens, or a node
+   stopped or killed in that minute, so a quick second drop loses
+   nothing either. A
+   first link reaches back to nothing, since a
    session takes every message that arrives as new, and a week of talk
    from before the machines were linked was never its to hear.
 3. `{"Message": {"id", "body"}}`: a message the other end lacks, first

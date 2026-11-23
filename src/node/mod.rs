@@ -2816,12 +2816,21 @@ impl<S: Store> Shared<S> {
         }
     }
 
-    /// Whether a link carried `machine` here since `since`.
+    /// Whether a link carried `machine` here since `since`, or carries it
+    /// now: a link just made keeps its mark where it began, maybe days
+    /// back, until it has stood a minute past its catch-up, and what the
+    /// machine told in that minute is still its own.
     fn linked_since(&self, machine: &str, since: jiff::Timestamp) -> bool {
-        self.store
-            .linked_until(machine)
-            .and_then(|at| jiff::Timestamp::from_millisecond(at).ok())
-            .is_some_and(|at| at >= since)
+        let linked = self
+            .others()
+            .iter()
+            .any(|one| one.name == machine && one.state != Readiness::Unreachable);
+        linked
+            || self
+                .store
+                .linked_until(machine)
+                .and_then(|at| jiff::Timestamp::from_millisecond(at).ok())
+                .is_some_and(|at| at >= since)
     }
 
     /// Keeps the carries this node ordered within the last day as its
