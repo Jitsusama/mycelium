@@ -417,7 +417,7 @@ mod tests {
             .expect("carried again");
         assert_eq!(
             body(&store),
-            Some(serde_json::Value::Null),
+            Some(Value::Null),
             "a link carrying it again says it is in reach"
         );
     }
