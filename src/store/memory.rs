@@ -44,7 +44,7 @@ struct Held {
     messages_read: usize,
     /// Whether reading a message waits, as a slow disk's open does, until
     /// the test lets it go on.
-    reads_held: Option<Arc<Gate>>,
+    held_reads: Option<Arc<Gate>>,
 }
 
 /// Shut while a test holds a store's reads, opened when it lets them go.
@@ -115,7 +115,7 @@ impl Memory {
             shut: Mutex::new(true),
             opened: Condvar::new(),
         });
-        self.held().reads_held = Some(Arc::clone(&gate));
+        self.held().held_reads = Some(Arc::clone(&gate));
         ReadsHeld(gate)
     }
 
@@ -141,7 +141,7 @@ impl Memory {
         // A test that panicked holding the lock has failed already.
         self.0
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -193,7 +193,7 @@ impl Store for Memory {
 
     fn message(&self, id: &str) -> Option<Value> {
         // Waited on with the store let go, so only reads wait.
-        let gate = self.held().reads_held.clone();
+        let gate = self.held().held_reads.clone();
         if let Some(gate) = gate {
             let shut = gate.shut.lock().unwrap_or_else(PoisonError::into_inner);
             drop(
