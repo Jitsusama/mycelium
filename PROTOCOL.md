@@ -1754,7 +1754,12 @@ node logs. The end hearing it keeps what the machine last declared
 over that link while it declares nothing, for 10 minutes at most, so
 a node restarting or slow to answer leaves its machine's ground as it
 was; past that, the machine reads as declaring nothing. A declaration
-said again replaces it at once.
+said again replaces it at once. Where the node did answer, declaring
+nothing, the end says `declares_nothing: true` (left out when false),
+and the end hearing it drops what was declared before at once, so only
+a silence is kept through. While a declaration is kept, the machine is
+still withheld the quests above those shared with it, as one declaring
+nothing is.
 
 Its `reached` says whether each probed network answered, by name. The
 node tries each probe every 30 seconds, giving each 3 to answer (a

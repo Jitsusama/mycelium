@@ -74,6 +74,14 @@ pub struct Machine {
     /// What its configuration says of it, or unknown where it says
     /// nothing.
     pub declared: Option<Declared>,
+    /// Whether its node answered that it declares nothing of itself, as
+    /// one whose declaration was taken away does, where `declared` is
+    /// unknown: a link's end says so, apart from an end whose node didn't
+    /// answer, as one restarting doesn't, so the end hearing it drops what
+    /// the machine declared before at once rather than keeping it through
+    /// a silence. Unset from an end too old to say, and never kept.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub declares_nothing: bool,
     /// Whether each network its configuration probes answered when its
     /// node last probed, by name; a network not in it is unknown.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -369,6 +377,8 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         power,
         room,
         declared,
+        // Only a link's end says it, of its node's answer.
+        declares_nothing: false,
         reached: reach::read(&sources.reached, now.as_second()),
         updated: update::last(&sources.updated),
         health: None,

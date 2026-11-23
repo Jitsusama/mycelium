@@ -397,7 +397,7 @@ const BWRAP: &str = "bwrap";
 /// says nothing of the fence the agent runs in (85PKB2, 23 November).
 /// This is the fence's contract with the node: a fence putting another
 /// program before its bubblewrap reads its sessions unfenced (ISXEG8).
-const FENCED_THROUGH: &[&str] = &["pi-spawner", "bash", "sh"];
+const FENCED_THROUGH: &[&str] = &[SPAWNER, "bash", "sh"];
 
 /// How many processes are looked through at most for those below a pi,
 /// so a machine running a great many can't hold a carry up for long.
