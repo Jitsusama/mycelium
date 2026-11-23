@@ -151,8 +151,10 @@ pub fn awaited(places: &Places, quest: &str, machine: &str) -> io::Result<BTreeM
 /// A quest's README, by its key.
 const README: &str = "record/README.md";
 
-/// What `to` last said it holds of `quest`, if it said it shares it, and of
-/// the READMEs of the quests above it, keyed as [`awaited`] keys them.
+/// What `to` last said it holds of `quest`, if it said it shares it or,
+/// a worker given it, that it holds it ([`super::ledger::Ledger::read`]),
+/// and of the READMEs of the quests above it, keyed as [`awaited`] keys
+/// them.
 fn held_there(
     places: &Places,
     quest: &str,
@@ -160,7 +162,8 @@ fn held_there(
     above: bool,
 ) -> io::Result<Option<BTreeMap<String, State>>> {
     let theirs = |id: &str| -> io::Result<Option<BTreeMap<String, State>>> {
-        Ok(places.ledgers().hold(id)?.ledger.theirs.remove(to))
+        let mut ledger = places.ledgers().hold(id)?.ledger;
+        Ok(ledger.theirs.remove(to).or_else(|| ledger.read.remove(to)))
     };
     let Some(mut files) = theirs(quest)? else {
         return Ok(None);
@@ -252,8 +255,8 @@ pub fn reach(
         }
         if theirs.is_none() && past(linked_since, SAYS_WITHIN) {
             let why = format!(
-                "{to}'s node hasn't taken {quest} up within {} s of its link, so it may run \
-                 a mycelium too old to share it",
+                "{to}'s node hasn't said it holds {quest} within {} s of its link, as a \
+                 node too old to share it wouldn't",
                 SAYS_WITHIN.min(within).as_secs()
             );
             return Ok(reached(Some(Reason::NotShared), Some(why)));
@@ -659,6 +662,27 @@ mod tests {
         assert!((reached.waited - 3.0).abs() < f64::EPSILON, "{reached:?}");
     }
 
+    // KP0L6A (2026-11-23): S99IA2's cloud worker held the quest it was
+    // given, yet each wait for it said it may run a mycelium too old.
+    #[test]
+    fn a_worker_saying_it_holds_a_quest_it_was_given_holds_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let places = kestrel(dir.path());
+        let here = holds_here(&places, QUEST, "kestrel").expect("read");
+        let mut held = places.ledgers().hold(QUEST).expect("held");
+        held.ledger.read.insert("skiff".to_owned(), here);
+        held.keep().expect("kept");
+        let reached = reach(
+            &places,
+            QUEST,
+            ("kestrel", "skiff"),
+            WITHIN,
+            &mut clock(true),
+        )
+        .expect("waited");
+        assert!(reached.held, "held on the worker's word alone: {reached:?}");
+    }
+
     #[test]
     fn a_machine_behind_past_the_bound_says_what_it_lacks() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -719,8 +743,8 @@ mod tests {
         assert_eq!(
             reached.why.as_deref(),
             Some(
-                "skiff's node hasn't taken QEST-20261115-5XF89V up within 5 s of its link, \
-                 so it may run a mycelium too old to share it"
+                "skiff's node hasn't said it holds QEST-20261115-5XF89V within 5 s of its \
+                 link, as a node too old to share it wouldn't"
             )
         );
     }

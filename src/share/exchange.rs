@@ -777,6 +777,20 @@ impl Exchange {
         false
     }
 
+    /// Keeps what this end's worker said it holds of `id`, a quest it was
+    /// given, apart from what the ledger takes ([`Ledger::read`]).
+    ///
+    /// # Errors
+    ///
+    /// When the quest's ledger can't be read or kept.
+    fn read_by_worker(&self, id: &str, files: BTreeMap<String, State>) -> io::Result<()> {
+        let mut held = self.places.ledgers().hold(id)?;
+        if held.ledger.read_by(&self.other, files) {
+            held.keep()?;
+        }
+        Ok(())
+    }
+
     /// How many files this end has asked of the other, or will ask in
     /// their turn, and not yet taken. Once the other end has said all it
     /// holds, none means this end holds all of it, as frames cross in the
@@ -1100,6 +1114,13 @@ impl Exchange {
                 });
                 self.drop_unnamed();
                 self.take_up_theirs()?;
+                Ok(Vec::new())
+            }
+            // What a worker says it holds of a quest it was given is kept
+            // apart, as word that the quest reached it, and nothing of it
+            // is taken.
+            Say::Holds { quest, files } if self.worker && self.serves(&quest) => {
+                self.read_by_worker(&quest, files)?;
                 Ok(Vec::new())
             }
             Say::Holds { quest, .. } | Say::Piece { quest, .. } | Say::File { quest, .. }
@@ -4953,6 +4974,18 @@ mod tests {
             !skiff.places.given("tern", began),
             "nor is it given to the worker by its beginning it"
         );
+        let ledger = || skiff.places.ledgers().hold(given).expect("held").ledger;
+        assert!(
+            ledger()
+                .read
+                .get("tern")
+                .is_some_and(|read| read.contains_key(README)),
+            "what the worker says it holds of the quest is heard, so a wait for it ends"
+        );
+        assert!(
+            !ledger().theirs.contains_key("tern"),
+            "though not as a machine sharing it, which would let its runs into skiff's trees"
+        );
 
         shared(&tern, given, "# Given, then rewritten on tern\n");
         shared(&tern, ungiven, "# Theirs\n");
@@ -4970,6 +5003,10 @@ mod tests {
         assert!(
             !skiff.places.given("tern", ungiven),
             "nor take it by saying it shares it"
+        );
+        assert!(
+            !ledger().theirs.contains_key("tern"),
+            "and its rewriting the quest makes it no machine sharing it"
         );
     }
 }

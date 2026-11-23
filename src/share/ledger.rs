@@ -81,6 +81,13 @@ pub struct Ledger {
     /// said it shares the quest, even holding none of it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub theirs: BTreeMap<String, BTreeMap<String, State>>,
+    /// What each worker given the quest to read last said it holds of
+    /// its files, by machine and key, only those this machine holds too.
+    /// Kept apart from `theirs`, which takes a machine's writes and lets
+    /// its runs into this one's trees: a worker's word only tells a share
+    /// waiting for it that the quest arrived ([`super::reached::reach`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub read: BTreeMap<String, BTreeMap<String, State>>,
     /// Whether the quest is shared only as one above another shared quest,
     /// so it stops once no shared quest is under it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -287,6 +294,27 @@ impl Ledger {
             .extend(files);
         self.bound_theirs();
         self.theirs.get(machine) != before.as_ref()
+    }
+
+    /// Enters what `worker`, given the quest to read, said it holds of
+    /// `files`, kept to the files this machine holds, answering whether
+    /// that changed what the ledger holds of it. A file it says is gone,
+    /// or one this machine doesn't hold, is dropped from what it holds.
+    pub fn read_by(&mut self, worker: &str, files: BTreeMap<String, State>) -> bool {
+        let before = self.read.get(worker).cloned();
+        let read = self.read.entry(worker.to_owned()).or_default();
+        for (key, state) in files {
+            let ours = self
+                .files
+                .get(&key)
+                .is_some_and(|entry| entry.hash.is_some());
+            if ours && state.hash.is_some() {
+                read.insert(key, state);
+            } else {
+                read.remove(&key);
+            }
+        }
+        self.read.get(worker) != before.as_ref()
     }
 
     /// Keeps what the other machines hold to the files this one holds,
