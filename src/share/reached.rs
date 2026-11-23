@@ -686,6 +686,33 @@ mod tests {
         assert!(reached.held, "held on the worker's word alone: {reached:?}");
     }
 
+    /// A worker still taking the quest in, holding none of its files as
+    /// kestrel does, is waited for as behind, not read as a machine that
+    /// never took the quest up once its link has stood a few seconds.
+    #[test]
+    fn a_worker_holding_none_yet_is_waited_for_as_behind() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let places = kestrel(dir.path());
+        {
+            let mut held = places.ledgers().hold(QUEST).expect("held");
+            assert!(
+                held.ledger.read_by("skiff", BTreeMap::new()),
+                "the worker is heard"
+            );
+            held.keep().expect("kept");
+        }
+        let reached = reach(
+            &places,
+            QUEST,
+            ("kestrel", "skiff"),
+            Duration::from_secs(10),
+            &mut clock(true),
+        )
+        .expect("waited");
+        assert_eq!(reached.reason, Some(Reason::Behind), "{reached:?}");
+        assert!((reached.waited - 10.0).abs() < f64::EPSILON, "{reached:?}");
+    }
+
     #[test]
     fn a_machine_behind_past_the_bound_says_what_it_lacks() {
         let dir = tempfile::tempdir().expect("a temporary folder");

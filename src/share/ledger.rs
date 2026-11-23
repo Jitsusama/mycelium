@@ -82,7 +82,10 @@ pub struct Ledger {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub theirs: BTreeMap<String, BTreeMap<String, State>>,
     /// What each worker given the quest to read last said it holds of
-    /// its files, by machine and key, only those this machine holds too.
+    /// its files, by machine and key, only those it holds as this machine
+    /// does: a worker that spoke and holds none yet is kept, holding
+    /// nothing, so a share waiting for it waits for its files rather than
+    /// reading it as a machine that never took the quest up.
     /// Kept apart from `theirs`, which takes a machine's writes and lets
     /// its runs into this one's trees: a worker's word only tells a share
     /// waiting for it that the quest arrived ([`super::reached::reach`]).
@@ -301,11 +304,12 @@ impl Ledger {
     /// it. Only a file it holds as this machine holds it, by its content's
     /// hash, is kept, and kept as this machine's own state: the worker
     /// names nothing this machine doesn't hold, and chooses nothing of
-    /// what is written. Any other file it names is dropped, and a worker
-    /// left holding none is dropped whole.
+    /// what is written. Any other file it names is dropped, so what is
+    /// kept of a worker is bounded by what this machine holds, while the
+    /// worker itself is kept holding what is left, even nothing.
     pub fn read_by(&mut self, worker: &str, files: BTreeMap<String, State>) -> bool {
         let before = self.read.get(worker).cloned();
-        let mut read = before.clone().unwrap_or_default();
+        let read = self.read.entry(worker.to_owned()).or_default();
         for (key, state) in files {
             match self.files.get(&key) {
                 Some(ours) if ours.hash.is_some() && ours.hash == state.hash => {
@@ -315,11 +319,6 @@ impl Ledger {
                     read.remove(&key);
                 }
             }
-        }
-        if read.is_empty() {
-            self.read.remove(worker);
-        } else {
-            self.read.insert(worker.to_owned(), read);
         }
         self.read.get(worker) != before.as_ref()
     }
@@ -340,9 +339,6 @@ impl Ledger {
             });
             dropped |= held.len() != before;
         }
-        // A worker that holds none of this machine's files any longer is
-        // let go, so the ledger keeps no word of every worker it was given.
-        self.read.retain(|_, held| !held.is_empty());
         dropped
     }
 
@@ -853,18 +849,32 @@ mod tests {
         );
         assert!(!ledger.read_by("tern", said), "saying it again changes nothing");
 
+        let lacking = BTreeMap::from([("record/notes.md".to_owned(), theirs("another"))]);
         assert!(
-            !ledger.read_by("wren", BTreeMap::new()),
-            "a worker saying it holds nothing changes nothing"
+            ledger.read_by("wren", lacking),
+            "a worker holding none of kestrel's files as kestrel does is heard"
         );
-        assert!(!ledger.read.contains_key("wren"), "and isn't kept");
+        assert_eq!(
+            ledger.read.get("wren"),
+            Some(&BTreeMap::new()),
+            "and kept holding nothing, so a wait for it waits for its files"
+        );
+        assert!(
+            ledger.read_by("osprey", BTreeMap::new()),
+            "a worker saying it holds nothing yet is heard"
+        );
+        assert!(
+            !ledger.read_by("osprey", BTreeMap::new()),
+            "and saying it again changes nothing"
+        );
 
         fs::remove_file(quest.record.join("README.md")).expect("removed");
         ledger.scan(&quest, "kestrel").expect("scanned");
-        ledger.bound_theirs();
-        assert!(
-            !ledger.read.contains_key("tern"),
-            "a worker is let go once it holds nothing kestrel holds"
+        assert!(ledger.bound_theirs(), "what kestrel no longer holds drops out");
+        assert_eq!(
+            ledger.read.get("tern"),
+            Some(&BTreeMap::new()),
+            "a worker keeps none of what kestrel no longer holds"
         );
     }
 }

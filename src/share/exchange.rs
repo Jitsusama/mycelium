@@ -5007,7 +5007,10 @@ mod tests {
             "and its rewriting the quest makes it no machine sharing it"
         );
         assert!(
-            !ledger().read.contains_key("tern"),
+            ledger()
+                .read
+                .get("tern")
+                .is_some_and(|read| !read.contains_key(README)),
             "nor one holding skiff's quest as skiff holds it"
         );
 
