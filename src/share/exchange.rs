@@ -27,7 +27,7 @@ use super::ledger::{
     Entry, Held, Ledger, Ledgers, Scan, Sight, clock, is_quest, lasting, shared_of,
 };
 use super::pieces::{PIECE, Pieces, Staged};
-use super::settle::{Merge, Settled, State, beside, settle};
+use super::settle::{Merge, Settled, State, settle};
 use super::tree::{Place, Quest, Shared, content, may_name};
 use super::watch::Watch;
 use super::{journey, log};
@@ -1972,11 +1972,7 @@ impl Exchange {
                 })
             }
             Settled::Beside => {
-                let theirs_at = Shared {
-                    place: shared.place,
-                    path: beside(&shared.path, &self.other),
-                };
-                quest.write(&theirs_at, body, mode)?;
+                let theirs_at = quest.write_beside(&shared, &self.other, body, mode)?;
                 self.kept_beside(id, key, &theirs_at.path);
                 let ours_entry = held.ledger.files.get(key).cloned().unwrap_or_default();
                 Some(Entry {
