@@ -153,6 +153,9 @@ impl Starter {
     ) -> io::Result<String> {
         let id = super::new_id();
         let mut holder = self.scope.command(&self.program, &id);
+        // A session and its tools are given the limit on open files the
+        // node was started with, not the node's own.
+        crate::open_files::as_started(&mut holder);
         self.name(&mut holder, realm, &id, folder, login);
         if !within.is_empty() {
             // One word, so none of the launcher's is read as the holder's.

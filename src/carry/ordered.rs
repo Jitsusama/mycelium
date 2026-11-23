@@ -208,6 +208,19 @@ pub fn holds(session: &str, quests: &[Value]) -> bool {
     quests.iter().any(|quest| attaches(quest, session))
 }
 
+/// Whether quest `quest`'s record is the one among `quests` that holds
+/// the session `session`, and no other's does: the proof a node's
+/// ordered steer asks of a parked session ([`quest_of`]), which a session
+/// two records hold, or another quest's, never gives.
+#[must_use]
+pub fn held_only_by(session: &str, quest: &str, quests: &[Value]) -> bool {
+    let holding: Vec<&Value> = quests
+        .iter()
+        .filter(|record| attaches(record, session))
+        .collect();
+    matches!(holding.as_slice(), [one] if id_of(one) == Some(quest))
+}
+
 /// The id of the one quest among `ended`, the quests that ended, whose
 /// record holds `session`, and the address of who orchestrated it, as
 /// the harness wrote it as the quest ended.

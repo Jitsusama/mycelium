@@ -128,6 +128,13 @@ pub trait Store: Clone + Send + Sync + 'static {
     /// Records that this store is linked with `machine` as of `at`.
     fn mark_linked(&self, machine: &str, at: i64) -> io::Result<()>;
 
+    /// When a link with `machine` was last let in, in milliseconds since
+    /// the epoch, if one ever was.
+    fn admitted_at(&self, machine: &str) -> Option<i64>;
+
+    /// Records that a link with `machine` was let in at `at`.
+    fn mark_admitted(&self, machine: &str, at: i64) -> io::Result<()>;
+
     /// Records that a link with `machine` ended at `at`, in milliseconds
     /// since the epoch, for counting how often it drops.
     fn mark_ended(&self, machine: &str, at: i64) -> io::Result<()>;
@@ -266,6 +273,18 @@ pub fn out_of_reach(store: &impl Store, machine: &str, since: i64) {
     }
 }
 
+/// When this store last stood linked with `machine`, if it ever did: the
+/// link's mark ([`Store::linked_until`]), or when a link was last let in
+/// where that is later. A new link keeps the mark where the last left
+/// it, maybe days back, until its catch-up has stood, so the next link
+/// reaches as far; a node stopped or killed before then would otherwise
+/// read the machine as out of reach since those days.
+pub fn last_linked(store: &impl Store, machine: &str) -> Option<i64> {
+    let until = store.linked_until(machine);
+    let admitted = store.admitted_at(machine);
+    until.max(admitted)
+}
+
 /// Marks out of reach the sessions of every machine no link carries now,
 /// as left behind by a link or node that ended without saying so, since
 /// that machine was last linked.
@@ -280,8 +299,7 @@ pub fn out_of_reach_of_unclaimed(store: &impl Store) -> io::Result<()> {
     machines.dedup();
     for machine in machines {
         if let Some(_claim) = store.claim(&machine)? {
-            let since = store
-                .linked_until(&machine)
+            let since = last_linked(store, &machine)
                 .unwrap_or_else(|| jiff::Timestamp::now().as_millisecond());
             out_of_reach(store, &machine, since);
         }
@@ -346,5 +364,29 @@ mod tests {
             changes.gathered().await,
             Some(vec![Change::Message(GATHERED_AT_MOST.to_string())])
         );
+    }
+
+    /// A machine whose last link was let in after its mark, as a new one
+    /// holding the mark back until its catch-up stands is, and that no
+    /// link carries now, as after a node killed in that link's first
+    /// minute, is out of reach since that link was let in, not since the
+    /// days-old mark.
+    #[test]
+    fn a_machine_no_link_carries_is_out_of_reach_since_it_was_last_let_in() {
+        let store = memory::Memory::default();
+        let (days_ago, let_in) = (1_793_046_604_647, 1_793_305_804_647);
+        store
+            .put_presence("s1", "kestrel", &serde_json::json!({"session": "s1"}))
+            .expect("carried");
+        store.mark_linked("kestrel", days_ago).expect("marked");
+        store.mark_admitted("kestrel", let_in).expect("let in");
+
+        out_of_reach_of_unclaimed(&store).expect("swept");
+        let since = store
+            .presences()
+            .into_iter()
+            .find(|one| one.session == "s1")
+            .and_then(|one| one.unreachable_since);
+        assert_eq!(since, Some(let_in), "out of reach since it was let in");
     }
 }
