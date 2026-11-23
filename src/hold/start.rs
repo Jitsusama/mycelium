@@ -1,7 +1,7 @@
 //! Starting a holder in a process of its own, as `mycelium hold` does and
 //! as the node does when it is asked to start a session.
 
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -130,6 +130,19 @@ impl Scope {
     }
 }
 
+/// Whether a holder started `in` a scope says what it has to say on its
+/// starter's standard error, `a_terminal` or not. Where there is no
+/// journal, as on a Mac, a holder says there how each run of its program
+/// ended ([`super::journal`]), so a node's holder must say it on the
+/// node's log: a carried session that never arrived on a Mac left no
+/// line anywhere, its holder's end gone to nothing (23 November). A
+/// holder a person's terminal started stays silent, since it outlives the
+/// command and would write over whatever runs there next; one in a scope
+/// of its own says why the scope couldn't be made.
+fn says_on_its_log(scope: Scope, a_terminal: bool) -> bool {
+    scope == Scope::Apart || !a_terminal
+}
+
 impl Starter {
     /// Starts holding `command` in `folder` for `realm`, answering its id
     /// once a terminal can join it. With `login`, each start of it, the
@@ -167,8 +180,7 @@ impl Starter {
             .args(command)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            // A scope that can't be made says why on the node's own log.
-            .stderr(if self.scope == Scope::Apart {
+            .stderr(if says_on_its_log(self.scope, io::stderr().is_terminal()) {
                 Stdio::inherit()
             } else {
                 Stdio::null()
@@ -351,6 +363,26 @@ pub fn attach_here(realm: &str, id: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn a_nodes_holder_says_how_its_runs_end_on_the_nodes_log() {
+        assert!(
+            says_on_its_log(Scope::None, false),
+            "a Mac's node logs to a file, where its holders' ends must land"
+        );
+        assert!(
+            says_on_its_log(Scope::Apart, false),
+            "a unit's holder says why its scope failed"
+        );
+        assert!(
+            !says_on_its_log(Scope::None, true),
+            "a terminal's holder writes nothing over what runs there next"
+        );
+        assert!(
+            !says_on_its_log(Scope::Beside, true),
+            "nor does one beside a terminal's slice"
+        );
+    }
 
     #[test]
     fn a_terminals_hold_has_a_scope_of_its_own_where_a_service_manager_answers() {

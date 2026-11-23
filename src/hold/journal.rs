@@ -8,7 +8,8 @@
 //! On a machine with systemd's journal, each end is an entry of its own,
 //! with the fields `systemd` itself gives a unit's end (`EXIT_CODE`,
 //! `EXIT_STATUS`) beside the hold's; elsewhere, or when the journal
-//! won't take it, it is a line on the holder's standard error.
+//! won't take it, it is a line on the holder's standard error, which a
+//! node's holder shares with the node, so it lands on the node's log.
 
 use std::io::{self, Write};
 use std::os::unix::net::UnixDatagram;
