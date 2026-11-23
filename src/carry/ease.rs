@@ -157,6 +157,18 @@ impl Cell {
                 ));
             }
         }
+        // A session the person has written in is theirs, wherever its
+        // window is: they come back to it here, and a carry or a sleep they
+        // didn't ask for would leave them looking for it.
+        if self
+            .session
+            .presence
+            .get("driven")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            return Some(format!("{who} is the person's, who has written in it"));
+        }
         match self.orchestrates {
             Some(false) => {}
             Some(true) => return Some(format!("{who} orchestrates other sessions")),
@@ -1599,6 +1611,24 @@ pub(super) mod tests {
         assert_eq!(
             with(&|one| one.busy = None),
             "what S1 is part way through can't be told"
+        );
+        assert_eq!(
+            with(&|one| {
+                one.session.presence = std::sync::Arc::new(json!({"driven": true}));
+            }),
+            "S1 is the person's, who has written in it"
+        );
+        let untouched = Cell {
+            session: Session {
+                presence: std::sync::Arc::new(json!({"driven": false})),
+                ..cell("s1").session
+            },
+            ..cell("s1")
+        };
+        assert_eq!(
+            carries(&chose(&realm, &[untouched], &history)),
+            Some(("s1", "tern")),
+            "one nobody has written in goes"
         );
         assert_eq!(
             with(&|one| one.orchestrates = Some(true)),

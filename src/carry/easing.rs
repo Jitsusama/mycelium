@@ -107,9 +107,11 @@ pub fn cells(here: &str, looked: &Looked) -> Vec<Cell> {
             alone: alone(here, looked.sessions, session),
             on_screen: on_screen(session),
             asleep: super::parked(session, looked.boot),
-            orchestrates: looked
-                .orchestrators
-                .map(|named| named.contains(id(session)) || named.contains(&session.id)),
+            orchestrates: looked.orchestrators.map(|named| {
+                named.contains(id(session))
+                    || named.contains(&session.id)
+                    || leads(looked.sessions, session)
+            }),
             busy: busy(session, looked),
             size: looked.sizes.get(id(session)).copied(),
         })
@@ -296,6 +298,30 @@ pub fn eased(kept: &[Kept], here: &str, now: Timestamp) -> usize {
 fn alone(here: &str, sessions: &[Session], session: &Session) -> Option<bool> {
     let quest = session.quest.as_deref()?;
     Some(super::runs_on(sessions, quest).is_ok_and(|on| on == here))
+}
+
+/// Whether any other of `sessions` says, in its presence, that `session`
+/// orchestrates it, by any address `session` goes by and in any case. The
+/// records of who orchestrates name only the quests an orchestrator
+/// claims, so a lane it started for a quest of the lane's own is told
+/// only by the lane. One that has ended still counts, as its orchestrator
+/// is no less one for a lane at rest.
+fn leads(sessions: &[Session], session: &Session) -> bool {
+    let goes_by = |said: &str| {
+        session.address.eq_ignore_ascii_case(said)
+            || session
+                .presence
+                .get("addresses")
+                .and_then(Value::as_array)
+                .is_some_and(|all| {
+                    all.iter()
+                        .filter_map(Value::as_str)
+                        .any(|one| one.eq_ignore_ascii_case(said))
+                })
+    };
+    sessions.iter().any(|other| {
+        other.id != session.id && other.orchestrated_by.as_deref().is_some_and(goes_by)
+    })
 }
 
 /// Whether the session is on the person's screen: not, where a host runs
@@ -977,6 +1003,53 @@ mod tests {
             orchestrating(None),
             [None, None, None],
             "where who orchestrates can't be told, of none"
+        );
+    }
+
+    // A lane started for a quest of its own is in no orchestrator's claim
+    // and no quest's record of orchestration, yet says whose it is: two
+    // orchestrators would have been put to sleep in shadow for want of it.
+    #[test]
+    fn a_cell_orchestrates_where_another_session_says_it_answers_to_it() {
+        let sessions = [
+            session("s1", "skiff", &json!({})),
+            session(
+                "s2",
+                "skiff",
+                &json!({"presence": {"session": "s2", "addresses": ["S2", "STEWARD"]}}),
+            ),
+            session("s3", "skiff", &json!({"orchestrated_by": "s1"})),
+            session(
+                "s4",
+                "tern",
+                &json!({"orchestrated_by": "steward", "state": "ended"}),
+            ),
+            session("s5", "skiff", &json!({"orchestrated_by": "S5"})),
+        ];
+        let looked = Looked {
+            sessions: &sessions,
+            fences: &BTreeMap::new(),
+            holdings: &[],
+            queued: &BTreeSet::new(),
+            sizes: &BTreeMap::new(),
+            orchestrators: Some(&BTreeSet::new()),
+            boot: None,
+            now: now(),
+        };
+        let orchestrating: Vec<_> = cells("skiff", &looked)
+            .iter()
+            .map(|cell| (cell.session.id.clone(), cell.orchestrates))
+            .collect();
+        assert_eq!(
+            orchestrating,
+            [
+                ("s1".to_owned(), Some(true)),
+                ("s2".to_owned(), Some(true)),
+                ("s3".to_owned(), Some(false)),
+                ("s5".to_owned(), Some(false)),
+            ],
+            "s1 by its address in any case, s2 by another it goes by, from a lane on \
+             another machine that has ended; s5 naming itself leads nobody"
         );
     }
 

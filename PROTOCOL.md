@@ -1057,7 +1057,8 @@ putting the carry off, and once the five minutes are past they sleep
 only where nothing is carried; while it is short of memory, one that
 has never slept is never carried. It carries the smallest log first,
 placed as any work is and onto ground as firm. A session in a turn,
-on the person's screen, orchestrating other sessions, holding a lease
+on the person's screen, written in by the person (its presence says
+`"driven": true`), orchestrating other sessions, holding a lease
 or a heavy run, or whose quest runs elsewhere too stays. So does one
 it can't tell any of these of. A session waiting on a secret's release
 or a password prompt waits inside its turn, so it stays as one in a
@@ -1178,7 +1179,10 @@ here.
 
 A session orchestrates others where this node's record of
 orchestrations holds a claim of its naming a quest, or where the
-quests' record names its quest as another quest's `orchestrator`. A
+quests' record names its quest as another quest's `orchestrator`, or
+where another session's presence says it is `orchestrated_by` an
+address the session goes by, in any case, ended or not. A session
+naming itself orchestrates nobody by it. A
 claim naming none orchestrates nobody, since any session may make one.
 An orchestrator is never put to sleep either, since asleep it steers
 nothing. While the node's record can't be read, or the node serves no
