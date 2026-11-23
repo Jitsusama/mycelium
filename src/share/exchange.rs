@@ -778,7 +778,8 @@ impl Exchange {
     }
 
     /// Keeps what this end's worker said it holds of `id`, a quest it was
-    /// given, apart from what the ledger takes ([`Ledger::read`]).
+    /// given, apart from what the ledger takes ([`Ledger::read`]), as word
+    /// that the quest reached it: nothing of it is taken.
     ///
     /// # Errors
     ///
@@ -1116,9 +1117,6 @@ impl Exchange {
                 self.take_up_theirs()?;
                 Ok(Vec::new())
             }
-            // What a worker says it holds of a quest it was given is kept
-            // apart, as word that the quest reached it, and nothing of it
-            // is taken.
             Say::Holds { quest, files } if self.worker && self.serves(&quest) => {
                 self.read_by_worker(&quest, files)?;
                 Ok(Vec::new())
