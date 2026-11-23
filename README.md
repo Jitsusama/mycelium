@@ -83,10 +83,11 @@ The harness mesh's messages and presence, carried between machines:
   it.
 - `mycelium health` prints how the realm's network stands as one JSON
   line for a daily read: each link and how often it dropped in the last
-  day, why a link was refused (such as a machine on another link version,
-  saying which to update) while none reaches it, each machine's
-  sessions, the presences written in the last day still saying they run
-  with their process gone, how long the node took to answer, and, while
+  day, for how long a link not up has been down, why a link was refused
+  (such as a machine on another link version, saying which to update)
+  while none reaches it, each machine's sessions, the presences
+  written in the last day still saying they run with their process
+  gone, how long the node took to answer, and, while
   this machine's node refuses its kit until it starts again, why.
 - `mycelium balance` says how evenly the realm's machines carry its
   work: a row for each machine's load (the largest of the memory it

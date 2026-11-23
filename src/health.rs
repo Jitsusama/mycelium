@@ -1,9 +1,9 @@
 //! How a realm's network stands, as `mycelium health` prints it for a
-//! daily read: one JSON line saying each link and how often it dropped in
-//! the last day, the sessions on each machine, the presences written in
-//! the last day that still say they run with their process gone, how
-//! long the node took to answer, and, while this machine's node refuses
-//! its kit, why.
+//! daily read: one JSON line saying each link, how often it dropped in
+//! the last day and, while it is down, for how long, the sessions on
+//! each machine, the presences written in the last day that still say
+//! they run with their process gone, how long the node took to answer,
+//! and, while this machine's node refuses its kit, why.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -29,35 +29,59 @@ pub struct Read<'a> {
     pub slowest: Duration,
 }
 
-/// The line `read` makes, with `ended` saying how many times the link with
-/// a machine dropped in the last day, and `refused` why its last was
-/// refused, if none was admitted since.
+/// What the store kept of each link, by the machine at its other end.
+pub struct Kept<Ended, Refused, Linked> {
+    /// How many times the link dropped in the last day.
+    pub ended: Ended,
+    /// Why its last was refused, if none was admitted since.
+    pub refused: Refused,
+    /// Until when it last stood, in milliseconds since the epoch, if it
+    /// ever did: the link's mark ([`crate::store::Store::linked_until`]),
+    /// which a link moves only once it has stood a minute past its
+    /// catch-up, never when it is merely let in.
+    pub linked: Linked,
+}
+
+/// The line `read` makes, with what `kept` says of each link. A link not
+/// up says for how long, in whole seconds, as `downFor`: since it last
+/// stood, or null for a machine never linked. So a link down a minute
+/// for a restart reads apart from one down all night, and one the other
+/// end keeps turning away, or that drops each time before it stands,
+/// reads as down since it last stood, not since its last try.
 #[must_use]
-pub fn line(
-    read: &Read<'_>,
-    ended: impl Fn(&str) -> usize,
-    refused: impl Fn(&str) -> Option<String>,
-) -> Value {
+pub fn line<Ended, Refused, Linked>(read: &Read<'_>, kept: &Kept<Ended, Refused, Linked>) -> Value
+where
+    Ended: Fn(&str) -> usize,
+    Refused: Fn(&str) -> Option<String>,
+    Linked: Fn(&str) -> Option<i64>,
+{
     let mut links: Vec<Value> = read
         .machines
         .iter()
         .filter(|machine| machine.name != read.here)
         .map(|machine| {
-            let ended = ended(&machine.name);
+            let ended = (kept.ended)(&machine.name);
             match machine.state {
                 Readiness::Ready => {
-                    json!({"machine": machine.name, "state": "up", "ended24h": ended})
+                    return json!({"machine": machine.name, "state": "up", "ended24h": ended});
                 }
-                // A machine refused, as for speaking another version, says
-                // why, so it isn't read as one that is only asleep.
-                Readiness::Unreachable => match refused(&machine.name) {
-                    Some(why) => json!({
-                        "machine": machine.name, "state": "refused", "why": why, "ended24h": ended,
-                    }),
-                    None => {
-                        json!({"machine": machine.name, "state": "unreachable", "ended24h": ended})
-                    }
-                },
+                Readiness::Unreachable => {}
+            }
+            // A mark ahead of the read, as a clock stepped back leaves
+            // it, reads as down no time rather than a time to come.
+            let down =
+                (kept.linked)(&machine.name).map(|at| (read.at - at.div_euclid(1000)).max(0));
+            // A machine refused, as for speaking another version, says
+            // why, so it isn't read as one that is only asleep.
+            match (kept.refused)(&machine.name) {
+                Some(why) => json!({
+                    "machine": machine.name, "state": "refused", "why": why,
+                    "ended24h": ended, "downFor": down,
+                }),
+                None => json!({
+                    "machine": machine.name, "state": "unreachable",
+                    "ended24h": ended, "downFor": down,
+                }),
             }
         })
         .collect();
@@ -169,6 +193,19 @@ mod tests {
         .expect("a session reads")
     }
 
+    /// A reader of what a store kept of a link, by its machine.
+    type Reads<T> = fn(&str) -> T;
+
+    /// What a store kept of links that never dropped, were never refused
+    /// and never stood.
+    fn nothing_kept() -> Kept<Reads<usize>, Reads<Option<String>>, Reads<Option<i64>>> {
+        Kept {
+            ended: |_: &str| 0,
+            refused: |_: &str| None,
+            linked: |_: &str| None,
+        }
+    }
+
     #[test]
     fn a_read_says_each_link_its_drops_and_each_machines_sessions() {
         let machines = [
@@ -197,8 +234,11 @@ mod tests {
         };
         let line = line(
             &read,
-            |machine| usize::from(machine == "osprey") * 1_410,
-            |_| None,
+            &Kept {
+                ended: |machine: &str| usize::from(machine == "osprey") * 1_410,
+                refused: |_: &str| None,
+                linked: |_: &str| Some((1_794_470_400 - 7 * 60) * 1000),
+            },
         );
         assert_eq!(
             line,
@@ -206,7 +246,10 @@ mod tests {
                 "realm": "personal",
                 "at": 1_794_470_400,
                 "links": [
-                    {"machine": "osprey", "state": "unreachable", "ended24h": 1_410},
+                    {
+                        "machine": "osprey", "state": "unreachable", "ended24h": 1_410,
+                        "downFor": 420,
+                    },
                     {"machine": "tern", "state": "up", "ended24h": 0},
                 ],
                 "sessions": {
@@ -237,14 +280,72 @@ mod tests {
         };
         let why = "osprey speaks link version 2 and skiff 1, so they link again once \
                    skiff's mycelium is as new as osprey's";
-        let line = line(&read, |_| 0, |_| Some(why.to_owned()));
+        let line = line(
+            &read,
+            &Kept {
+                ended: |_: &str| 0,
+                refused: |_: &str| Some(why.to_owned()),
+                linked: |_: &str| None,
+            },
+        );
         assert_eq!(
             line["links"],
             json!([
-                {"machine": "osprey", "state": "refused", "why": why, "ended24h": 0},
+                {
+                    "machine": "osprey", "state": "refused", "why": why, "ended24h": 0,
+                    "downFor": null,
+                },
                 {"machine": "tern", "state": "up", "ended24h": 0},
             ]),
             "a refusal says why while no link reaches the machine, and a link up outranks it"
+        );
+    }
+
+    #[test]
+    fn a_link_down_says_since_it_last_stood_and_one_never_linked_says_null() {
+        let machines = [
+            machine("skiff", Readiness::Ready),
+            machine("tern", Readiness::Unreachable),
+            machine("osprey", Readiness::Unreachable),
+            machine("wren", Readiness::Unreachable),
+        ];
+        let at = 1_794_470_400;
+        let read = Read {
+            realm: "personal",
+            at,
+            here: "skiff",
+            machines: &machines,
+            sessions: &[],
+            slowest: Duration::ZERO,
+        };
+        let line = line(
+            &read,
+            &Kept {
+                linked: |machine: &str| match machine {
+                    // Part of a second on, which counts no whole second.
+                    "tern" => Some((at - 9 * 60 * 60) * 1000 + 999),
+                    // As a clock stepped back leaves a mark.
+                    "wren" => Some((at + 30) * 1000),
+                    _ => None,
+                },
+                ended: |_: &str| 0,
+                refused: |_: &str| None,
+            },
+        );
+        let down: Vec<(&str, &Value)> = line["links"]
+            .as_array()
+            .expect("links")
+            .iter()
+            .map(|link| (link["machine"].as_str().expect("named"), &link["downFor"]))
+            .collect();
+        assert_eq!(
+            down,
+            [
+                ("osprey", &Value::Null),
+                ("tern", &json!(32_400)),
+                ("wren", &json!(0)),
+            ],
+            "down all night reads apart from never linked, and a mark ahead reads as no time"
         );
     }
 
@@ -270,8 +371,7 @@ mod tests {
                     sessions: &[],
                     slowest: Duration::ZERO,
                 },
-                |_| 0,
-                |_| None,
+                &nothing_kept(),
             )
         };
         assert_eq!(
@@ -315,7 +415,7 @@ mod tests {
             sessions: &sessions,
             slowest: Duration::ZERO,
         };
-        let line = line(&read, |_| 0, |_| None);
+        let line = line(&read, &nothing_kept());
         assert_eq!(
             line["deadPresences"], 3,
             "a presence last written within the day is counted, and one whose time can't be \
