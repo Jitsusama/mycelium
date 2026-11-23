@@ -486,8 +486,14 @@ pub struct Exchange {
     /// once it has said.
     theirs: Option<Theirs>,
     /// The files asked of the other end and not yet taken, by quest and
-    /// file.
-    wanted: BTreeSet<(String, String)>,
+    /// file, with when each was last asked.
+    wanted: BTreeMap<(String, String), Instant>,
+    /// The files this end lacks and hasn't asked for yet, by quest, each
+    /// asked in its turn ([`Self::ask_more`]).
+    to_want: BTreeMap<String, BTreeSet<String>>,
+    /// The files asked of the other end that went unanswered, by quest
+    /// and file, still waited on but no longer holding a turn.
+    unanswered: BTreeSet<(String, String)>,
     /// What on this machine works inside an ended quest's scratch.
     users: Box<dyn Users>,
     /// When each ended quest's scratch, found in use, is tried again.
@@ -533,6 +539,20 @@ fn may_be_machine(name: &str) -> bool {
 /// tried again: reading every process's open files once a second, for as
 /// long as a session sits in it, would wake the node for nothing.
 const SWEEP_AGAIN: Duration = Duration::from_secs(60);
+
+/// How many files of one quest this end asks of the other at once. A link
+/// carries everything in the order it was said, and each file asked for
+/// is read and kept on both ends in turn, so on 2026-11-22 a quest of
+/// 36,000 files, all asked at once, kept a carried session's files and a
+/// start's answer behind it for many minutes. Asked a few at a time, each
+/// quest's files take their turn beside every other's, and what else the
+/// link carries waits behind a few files at most.
+const ASKED_AT_ONCE: usize = 8;
+
+/// How long a file asked of the other end may go unanswered before its
+/// turn goes to the next: an end that no longer shares the quest, or
+/// lost the file, says nothing back.
+const ANSWERED_WITHIN: Duration = Duration::from_secs(120);
 
 /// How a link stands with the quests shared only for those under them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -623,7 +643,9 @@ impl Exchange {
             unsaid: BTreeMap::new(),
             cloning: Cloning::default(),
             theirs: None,
-            wanted: BTreeSet::new(),
+            wanted: BTreeMap::new(),
+            to_want: BTreeMap::new(),
+            unanswered: BTreeSet::new(),
             users: Box::new(Processes),
             sweep_again: BTreeMap::new(),
             above_again: true,
@@ -755,12 +777,14 @@ impl Exchange {
         false
     }
 
-    /// How many files this end has asked of the other and not yet taken.
-    /// Once the other end has said all it holds, none means this end holds
+    /// How many files this end has asked of the other, or will ask in
+    /// their turn, and not yet taken. Once the other end has said all it holds, none means this end holds
     /// all of it, as frames cross in the order they are said.
     #[must_use]
     pub fn waiting(&self) -> usize {
         self.wanted.len()
+            + self.unanswered.len()
+            + self.to_want.values().map(BTreeSet::len).sum::<usize>()
     }
 
     /// What the shared quests' sessions should hear since last asked, as
@@ -985,6 +1009,7 @@ impl Exchange {
             says.push(shares_said(&shares));
         }
         says.extend(holds);
+        says.extend(self.ask_in_turn());
         self.told = shares;
         self.whole = whole;
         self.passed_over = passed_over;
@@ -1005,6 +1030,9 @@ impl Exchange {
         ledgers.stop(id)?;
         self.unsaid.remove(id);
         self.held_back.remove(id);
+        self.to_want.remove(id);
+        self.wanted.retain(|(quest, _), _| quest != id);
+        self.unanswered.retain(|(quest, _)| quest != id);
         self.watch.forget(id);
         self.above_again = true;
         eprintln!("{id} {why}, so it is shared no longer");
@@ -1464,6 +1492,10 @@ impl Exchange {
             }
             // Asked again below if it still should be.
             self.wanted.remove(&(id.to_owned(), key.clone()));
+            self.unanswered.remove(&(id.to_owned(), key.clone()));
+            if let Some(queued) = self.to_want.get_mut(id) {
+                queued.remove(&key);
+            }
             let ours = held
                 .ledger
                 .files
@@ -1491,16 +1523,71 @@ impl Exchange {
                     held.keep()?;
                 }
                 _ => {
-                    self.wanted.insert((id.to_owned(), key.clone()));
-                    wants.push(Say::Want {
-                        quest: id.to_owned(),
-                        file: key,
-                        at: Some(0),
-                    });
+                    self.to_want.entry(id.to_owned()).or_default().insert(key);
                 }
             }
         }
+        wants.extend(self.ask_more(id));
         Ok(wants)
+    }
+
+    /// Asks the other end for the next of quest `id`'s files this end
+    /// lacks, as many as leave [`ASKED_AT_ONCE`] of them asked and not yet
+    /// taken.
+    fn ask_more(&mut self, id: &str) -> Vec<Say> {
+        let asked = self.wanted.keys().filter(|(quest, _)| quest == id).count();
+        let Some(queued) = self.to_want.get_mut(id) else {
+            return Vec::new();
+        };
+        let now = Instant::now();
+        let mut wants = Vec::new();
+        while asked + wants.len() < ASKED_AT_ONCE {
+            let Some(key) = queued.pop_first() else {
+                break;
+            };
+            self.wanted.insert((id.to_owned(), key.clone()), now);
+            wants.push(Say::Want {
+                quest: id.to_owned(),
+                file: key,
+                at: Some(0),
+            });
+        }
+        if queued.is_empty() {
+            self.to_want.remove(id);
+        }
+        wants
+    }
+
+    /// Gives up the turn of each file asked of the other end that went
+    /// unanswered for [`ANSWERED_WITHIN`], and asks for the next of each
+    /// quest's in its place. One given up is still waited on, and asked
+    /// again only as the other end next says it holds it, as an ask
+    /// unanswered always was.
+    fn ask_in_turn(&mut self) -> Vec<Say> {
+        let now = Instant::now();
+        let gone: Vec<(String, String)> = self
+            .wanted
+            .iter()
+            .filter(|(_, asked)| now.duration_since(**asked) >= ANSWERED_WITHIN)
+            .map(|(file, _)| file.clone())
+            .collect();
+        let lapsed = gone.len();
+        for file in gone {
+            self.wanted.remove(&file);
+            self.unanswered.insert(file);
+        }
+        if lapsed > 0 {
+            eprintln!(
+                "{lapsed} files asked of {} went unanswered for {}s, so the next are asked",
+                self.other,
+                ANSWERED_WITHIN.as_secs()
+            );
+        }
+        let quests: Vec<String> = self.to_want.keys().cloned().collect();
+        quests
+            .iter()
+            .flat_map(|quest| self.ask_more(quest))
+            .collect()
     }
 
     /// Sends a file the other end asked for, as this end holds it now.
@@ -1576,11 +1663,20 @@ impl Exchange {
             .decode(body)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         match self.pieces.stage(id, key, hash, at, len, &body)? {
-            Staged::More(next) => Ok(vec![Say::Want {
-                quest: id.to_owned(),
-                file: key.to_owned(),
-                at: Some(next),
-            }]),
+            Staged::More(next) => {
+                // The next piece is asked in the same turn as the first.
+                let file = (id.to_owned(), key.to_owned());
+                self.unanswered.remove(&file);
+                self.wanted.insert(file, Instant::now());
+                if let Some(queued) = self.to_want.get_mut(id) {
+                    queued.remove(key);
+                }
+                Ok(vec![Say::Want {
+                    quest: id.to_owned(),
+                    file: key.to_owned(),
+                    at: Some(next),
+                }])
+            }
             Staged::Whole(whole) => self.take_file(id, key, theirs, Some(&whole), mode),
             // The crossing begun again over it carries on.
             Staged::Astray => Ok(Vec::new()),
@@ -1609,7 +1705,9 @@ impl Exchange {
     }
 
     /// Takes a whole file the other end sent, or its deletion for `None`,
-    /// as [`Self::file`] does.
+    /// as [`Self::file`] does, then asks for the next of the quest's in
+    /// its turn, even where this one can't be taken, so one bad file never
+    /// stops the rest.
     fn take_file(
         &mut self,
         id: &str,
@@ -1618,7 +1716,33 @@ impl Exchange {
         body: Option<&[u8]>,
         mode: Option<u32>,
     ) -> io::Result<Vec<Say>> {
-        self.wanted.remove(&(id.to_owned(), key.to_owned()));
+        let file = (id.to_owned(), key.to_owned());
+        self.wanted.remove(&file);
+        self.unanswered.remove(&file);
+        let taken = self.take_whole(id, key, theirs, body, mode);
+        let more = self.ask_more(id);
+        match taken {
+            Ok(mut says) => {
+                says.extend(more);
+                Ok(says)
+            }
+            Err(error) if more.is_empty() => Err(error),
+            Err(error) => {
+                eprintln!("sharing quests with {}: {error}", self.other);
+                Ok(more)
+            }
+        }
+    }
+
+    /// Takes a whole file as [`Self::take_file`] does, asking for nothing.
+    fn take_whole(
+        &mut self,
+        id: &str,
+        key: &str,
+        theirs: &State,
+        body: Option<&[u8]>,
+        mode: Option<u32>,
+    ) -> io::Result<Vec<Say>> {
         if body.map(|body| content(body).hash) != theirs.hash {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -3404,6 +3528,75 @@ mod tests {
             kestrel.read("README.md").as_deref(),
             Some("# Shared\n"),
             "the README crossed"
+        );
+    }
+
+    /// What `says` asks for, as quest and file.
+    fn asked(says: &[Say]) -> Vec<(&str, &str)> {
+        says.iter()
+            .filter_map(|say| match say {
+                Say::Want { quest, file, .. } => Some((quest.as_str(), file.as_str())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_quest_of_many_files_is_asked_for_a_few_at_a_time_beside_another() {
+        const SMALL: &str = "QEST-20261122-WRENAA";
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        skiff.write("README.md", "# Many\n");
+        for n in 0..20 {
+            skiff.write(&format!("notes/{n:02}.md"), &format!("note {n}\n"));
+        }
+        let small = skiff.places.quests.join(SMALL);
+        fs::create_dir_all(&small).expect("made");
+        fs::write(small.join("README.md"), "# Small\n").expect("written");
+        share(&skiff, QUEST);
+        share(&skiff, SMALL);
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
+
+        near.watch.hear_anything();
+        let mut wants = Vec::new();
+        for say in near.look().expect("skiff looks") {
+            wants.extend(far.hear(say).expect("kestrel hears"));
+        }
+        let first = asked(&wants);
+        let many = first.iter().filter(|(quest, _)| *quest == QUEST).count();
+        assert_eq!(many, ASKED_AT_ONCE, "only a few of the many: {first:?}");
+        assert!(
+            first.contains(&(SMALL, README)),
+            "and the small quest's file in the same turn: {first:?}"
+        );
+        assert_eq!(far.waiting(), 22, "every file is waited on, asked or not");
+
+        // Unanswered, the asked go once their time is up, and the next are
+        // asked in their place.
+        let long_ago = Instant::now()
+            .checked_sub(ANSWERED_WITHIN)
+            .expect("a time before");
+        for asked in far.wanted.values_mut() {
+            *asked = long_ago;
+        }
+        let again = far.look().expect("kestrel looks");
+        let next = asked(&again);
+        assert_eq!(next.len(), ASKED_AT_ONCE, "the next few: {next:?}");
+        assert!(
+            next.iter().all(|want| !first.contains(want)),
+            "none of those asked before: {next:?}"
+        );
+
+        carry(again, &mut far, &mut near);
+        assert_eq!(
+            far.waiting(),
+            ASKED_AT_ONCE + 1,
+            "what was let go waits for the next Holds, as an unanswered ask always has"
+        );
+        assert_eq!(
+            kestrel.read("notes/19.md").as_deref(),
+            Some("note 19\n"),
+            "each one taken asked the next, to the last"
         );
     }
 
