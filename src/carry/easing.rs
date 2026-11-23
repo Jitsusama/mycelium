@@ -434,13 +434,11 @@ fn parked_this_boot(session: &Session, looked: &Looked) -> Option<bool> {
         .presence
         .pointer("/owner/bootId")
         .and_then(Value::as_str);
-    match (looked.boot, named) {
-        (Some(now), Some(began)) => Some(now == began),
-        _ => {
-            let began = looked.began?;
-            written(session).map(|at| at.as_millisecond() >= began)
-        }
+    if let (Some(now), Some(began)) = (looked.boot, named) {
+        return Some(now == began);
     }
+    let began = looked.began?;
+    written(session).map(|at| at.as_millisecond() >= began)
 }
 
 /// When the session's machine last wrote its presence, where its record
