@@ -1847,6 +1847,9 @@ impl<S: Store> End<S> {
             .told
             .as_ref()
             .and_then(|health| health.borrow().clone());
+        if let Some(held) = self.held.as_deref() {
+            machine.holds = Some(hold::running(held));
+        }
         self.handover.leaves = machine
             .declared
             .as_ref()

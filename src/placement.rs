@@ -775,7 +775,12 @@ pub fn place(work: &Work, machines: &[Machine], loads: &Loads) -> Placement {
 /// of promised; a machine neither caps takes any number, as before.
 ///
 /// Live sessions are counted rather than a load's busy ones, since an
-/// idle session holds its memory and its worker home all the same.
+/// idle session holds its memory and its worker home all the same. Where
+/// the machine's node says it holds more running than `holding` knows of
+/// ([`Machine::holds`]), that is counted instead, as a start whose pi
+/// says nothing of itself, a fenced worker's, is a session there all the
+/// same. The larger is taken rather than their sum, since a held session
+/// that says it is one is counted in both.
 #[must_use]
 pub fn full(
     machines: &[Machine],
@@ -791,7 +796,11 @@ pub fn full(
                 .as_ref()
                 .and_then(|declared| declared.sessions_at_most)
                 .or_else(|| promised.get(&machine.name).copied())?;
-            let held = holding.get(&machine.name).copied().unwrap_or(0);
+            let held = holding
+                .get(&machine.name)
+                .copied()
+                .unwrap_or(0)
+                .max(machine.holds.unwrap_or(0));
             let placed = loads.get(&machine.name).map_or(0, |load| load.placed);
             (held.saturating_add(placed) >= most).then(|| Miss {
                 machine: machine.name.clone(),
@@ -1895,6 +1904,36 @@ pub(crate) mod tests {
             full(&machines, &BTreeMap::new(), &loads, &BTreeMap::new()).len(),
             1,
             "a burst of starts doesn't all land before the first shows"
+        );
+    }
+
+    // KP0L6A (2026-11-23): S99IA2's second cloud slot was placed on a VM
+    // promised one session, eight minutes after the first, whose fenced
+    // pi said nothing of itself.
+    #[test]
+    fn a_session_its_node_holds_fills_a_machine_though_nothing_says_it_is_one() {
+        let mut wren = capped("wren", None);
+        wren.holds = Some(1);
+        let promised = BTreeMap::from([("wren".to_owned(), 1)]);
+        assert_eq!(
+            full(&[wren.clone()], &BTreeMap::new(), &Loads::new(), &promised),
+            vec![Miss {
+                machine: "wren".to_owned(),
+                because: vec![Because::Full(1)],
+            }],
+            "the one its node holds fills it, long after its start is forgotten"
+        );
+        let mut roomy = capped("wren", Some(2));
+        roomy.holds = Some(1);
+        let holding = BTreeMap::from([("wren".to_owned(), 1)]);
+        assert!(
+            full(&[roomy], &holding, &Loads::new(), &BTreeMap::new()).is_empty(),
+            "a held session that says it is one is counted once, not twice"
+        );
+        wren.holds = None;
+        assert!(
+            full(&[wren], &BTreeMap::new(), &Loads::new(), &promised).is_empty(),
+            "a node too old to say counts only the sessions known, as before"
         );
     }
 

@@ -304,6 +304,14 @@ pub fn held(dir: &Path) -> Vec<Held> {
     all
 }
 
+/// How many sessions held in `dir` run now, parked ones aside: what a
+/// machine's most counts of them ([`crate::facts::Machine::holds`]).
+#[must_use]
+pub fn running(dir: &Path) -> u32 {
+    let running = held(dir).iter().filter(|one| !one.parked).count();
+    u32::try_from(running).unwrap_or(u32::MAX)
+}
+
 /// Watches `dir`, made if it isn't there, telling `changed` each time what
 /// is held there changes: a session held or let go, or a window joined or
 /// left. The watch lasts as long as what this answers is kept.
@@ -397,6 +405,40 @@ mod tests {
         assert!(
             changes_a_record(&Err(notify::Error::generic("the queue overflowed"))),
             "a watch that failed may have missed a change"
+        );
+    }
+
+    #[test]
+    fn the_sessions_held_running_are_counted_and_a_parked_one_isnt() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        assert_eq!(running(dir.path()), 0, "nothing is held in an empty folder");
+        let hold = |id: &str, parked: bool, holder: u32| {
+            let one = Held {
+                id: id.to_owned(),
+                command: vec!["pi".to_owned()],
+                folder: dir.path().to_owned(),
+                holder,
+                pid: if parked { 0 } else { holder },
+                parked,
+                since: "2026-11-23T13:11:00Z".to_owned(),
+                windows: Vec::new(),
+            };
+            fs::write(
+                dir.path().join(format!("{id}.json")),
+                serde_json::to_vec(&one).expect("a record"),
+            )
+            .expect("the record written");
+            fs::write(socket(dir.path(), id), b"").expect("its socket stands in");
+        };
+        hold("ab12", false, std::process::id());
+        hold("cd34", false, std::process::id());
+        hold("ef56", true, std::process::id());
+        hold("gh78", false, u32::MAX);
+        assert_eq!(
+            running(dir.path()),
+            2,
+            "the two whose holder runs and aren't parked are counted, the parked one and the \
+             one whose holder has gone aren't"
         );
     }
 
