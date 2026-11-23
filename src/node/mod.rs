@@ -6030,7 +6030,7 @@ impl<S: Store> Shared<S> {
         let reply = self.start(start).await;
         // A log that can't be written takes nothing from the asker, whose
         // session started or didn't as the reply says.
-        let _ = left_out.tell(&reply, &mut std::io::stderr().lock());
+        let _ = left_out.tell(&reply, &mut io::stderr().lock());
         reply
     }
 

@@ -1172,13 +1172,13 @@ mod tests {
 
     /// What a node answers a start that started on `machine`, held as
     /// `held`.
-    fn started_as(machine: &str, held: &str) -> Reply {
-        Ok(Response::Started(crate::wire::Started {
+    fn started_as(machine: &str, held: &str) -> Response {
+        Response::Started(crate::wire::Started {
             machine: machine.to_owned(),
             held: held.to_owned(),
             folder: PathBuf::from("src"),
             attach: Vec::new(),
-        }))
+        })
     }
 
     #[test]
@@ -1190,10 +1190,12 @@ mod tests {
             Some("QEST-20261116-42P0R4"),
             ID,
         );
-        let said = asked.left_out.told(&started_as("tern", "5e55"));
+        let said = asked.left_out.told(&Ok(started_as("tern", "5e55")));
         assert_eq!(said.len(), 1);
         assert!(
-            said[0].starts_with(&format!("sprout {ID} on tern, held as 5e55: its seed leaves out")),
+            said[0].starts_with(&format!(
+                "sprout {ID} on tern, held as 5e55: its seed leaves out"
+            )),
             "{said:?}"
         );
         assert_eq!(
@@ -1208,7 +1210,7 @@ mod tests {
     fn a_seed_too_long_is_said_of_the_session_holding_it() {
         let asked = start("tern", None, &words(&"a".repeat(SEED_MOST + 1)), None, ID);
         assert_eq!(seed_given(&asked.start), None, "no seed, so no id sent");
-        let said = asked.left_out.told(&started_as("tern", "5e55"));
+        let said = asked.left_out.told(&Ok(started_as("tern", "5e55")));
         assert_eq!(said.len(), 1);
         assert!(
             said[0].contains(", held as 5e55: its seed is left out"),
@@ -1219,7 +1221,7 @@ mod tests {
     #[test]
     fn what_a_seed_left_out_is_said_only_once_its_session_started() {
         let asked = start("tern", None, &words("make tea"), Some("QEST-1"), ID);
-        assert_eq!(asked.left_out.told(&started_as("tern", "h")).len(), 1);
+        assert_eq!(asked.left_out.told(&Ok(started_as("tern", "h"))).len(), 1);
         let refused: Reply = Err("the cell's start limit is reached".to_owned());
         assert!(
             asked.left_out.told(&refused).is_empty(),
@@ -1242,7 +1244,7 @@ mod tests {
         let mut log = Vec::new();
         asked
             .left_out
-            .tell(&started_as("osprey", "5e55"), &mut log)
+            .tell(&Ok(started_as("osprey", "5e55")), &mut log)
             .expect("the log takes it");
         assert_eq!(
             String::from_utf8(log).expect("words"),
