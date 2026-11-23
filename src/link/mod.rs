@@ -1596,9 +1596,11 @@ impl<S: Store> End<S> {
         tokio::spawn(async move {
             loop {
                 let piece = tokio::select! {
-                    piece = saying.recv() => piece.unwrap_or_else(|| T::dropped(&other)),
+                    piece = saying.recv() => piece.or_else(|| T::dropped(&other)),
                     () = asker.closed() => break,
                 };
+                // Dropping `asker` tells it the link went.
+                let Some(piece) = piece else { return };
                 let ends = piece.last();
                 if asker.send(piece).await.is_err() {
                     break;
@@ -2508,8 +2510,12 @@ fn refusal(reason: String) -> io::Error {
 trait Piece: Send + 'static {
     /// Whether nothing follows it.
     fn last(&self) -> bool;
-    /// What its asker hears where the link to `other` drops first.
-    fn dropped(other: &str) -> Self;
+    /// What its asker hears where the link to `other` drops first, or
+    /// none where its asker is better left to see what it was handed end
+    /// and judge for itself what that means.
+    fn dropped(other: &str) -> Option<Self>
+    where
+        Self: Sized;
 }
 
 impl Piece for Ran {
@@ -2517,8 +2523,10 @@ impl Piece for Ran {
         self.ends()
     }
 
-    fn dropped(other: &str) -> Self {
-        Self::Failed(format!("the link to {other} dropped before the run ended"))
+    fn dropped(other: &str) -> Option<Self> {
+        Some(Self::Failed(format!(
+            "the link to {other} dropped before the run ended"
+        )))
     }
 }
 
@@ -2527,11 +2535,11 @@ impl Piece for Lent {
         self.ends()
     }
 
-    fn dropped(other: &str) -> Self {
-        Self::Refused {
-            status: 503,
-            why: format!("the link to {other} dropped before the lend ended"),
-        }
+    /// None, so the node asking sees the lend end with nothing said and
+    /// may ask it again, where the lender lets it go with its link, once
+    /// nothing of it has reached pi.
+    fn dropped(_: &str) -> Option<Self> {
+        None
     }
 }
 

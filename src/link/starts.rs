@@ -279,11 +279,14 @@ impl Asks {
 
     /// Asks `machine` to lend `lend`, through the link reaching it,
     /// answering each piece of the answer as it comes, or why it can't be
-    /// asked. Dropping what this answers lets the lend go there.
-    pub async fn lend(&self, machine: &str, lend: Lend) -> Result<mpsc::Receiver<Lent>, String> {
+    /// asked, saying whether it went to the link first, so a lend that
+    /// never left may be asked again. Dropping what this answers lets the
+    /// lend go there.
+    pub async fn lend(&self, machine: &str, lend: Lend) -> Result<mpsc::Receiver<Lent>, Unsent> {
         let (answer, said) = mpsc::channel(crate::lend::BACKLOG);
         self.send(machine, Asked::Lend(lend, answer), Some(ANSWERED_WITHIN))
-            .await??;
+            .await?
+            .map_err(|why| Unsent { why, sent: true })?;
         Ok(said)
     }
 
