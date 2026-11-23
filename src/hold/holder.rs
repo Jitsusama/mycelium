@@ -2845,6 +2845,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_program_fencing_itself_starts_again_after_a_park_told_the_same_fence() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        // The words a node starts pi fencing itself within, as `env` sets
+        // them, outside what the program names for its next start.
+        let through = [
+            "env",
+            "PI_SANDBOX=strict",
+            "sh",
+            "-c",
+            r#"read -r _; exec "$@""#,
+            "held",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let (dir, held, holder) = holding_sh_through(root.path(), through).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        window.types("\r").await;
+        window
+            .types(concat!(
+                r#"printf '%s' '["sh","-c","echo again in $PI_SANDBOX; read -r _; exit 3"]'"#,
+                " > \"$MYCELIUM_AGAIN\"; exit 75\r",
+            ))
+            .await;
+        listed_parked(&dir, &mut changes, true).await;
+        window.seen.clear();
+
+        fs::write(wake(&dir, &held.id), b"{}").expect("the wake is written");
+        listed_parked(&dir, &mut changes, false).await;
+        window.types("\r").await;
+        window.sees("again in strict").await;
+        window.types("\r").await;
+        assert_eq!(
+            exited(holder).await,
+            Some(3),
+            "the named command ran, fenced"
+        );
+    }
+
+    #[tokio::test]
     async fn a_parked_program_that_cant_start_again_stays_parked_and_says_why() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, holder) = holding_sh(root.path()).await;

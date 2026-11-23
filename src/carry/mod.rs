@@ -911,9 +911,12 @@ fn arrival_script(own: bool, ordered: bool) -> String {
     // only when told, as the shell's starts tell it, so pi is told which.
     // It starts in the fence it ran in, as its done file says it, since
     // the node's own environment names none: a move never loosens a
-    // session. One whose fence can't be told, as from a harness that
-    // can't say it, doesn't start, rather than start looser; one whose
-    // done file names none, from an older harness, starts as before.
+    // session. Where the node started it in a fence of its own, the
+    // tighter of the two holds, so a done file never loosens the fence
+    // the node placed it in. One whose fence can't be told, as from a
+    // harness that can't say it, doesn't start, rather than start
+    // looser; one whose done file names none, from an older harness,
+    // starts as the node started it.
     if own {
         arrive.to_owned()
     } else {
@@ -921,7 +924,9 @@ fn arrival_script(own: bool, ordered: bool) -> String {
             arrive,
             r#" || exit; folder=$(pi-carry where "$1" --from "$2" --session "$3") || exit; "#,
             r#"fence=$(pi-carry fence "$1" --from "$2" --session "$3") || exit; "#,
-            r#"if [ -n "$fence" ]; then export PI_SANDBOX="$fence"; fi; "#,
+            r#"case "${PI_SANDBOX-}" in strict) ;; "#,
+            r#"fence) if [ "$fence" = strict ]; then export PI_SANDBOX=strict; fi ;; "#,
+            r#"*) if [ -n "$fence" ]; then export PI_SANDBOX="$fence"; fi ;; esac; "#,
             r#"cd "$folder" && QUEST_WORKFLOW_AUTOLOAD_ID="$1" exec pi --session "$3" -- "$4""#,
         ]
         .concat()
@@ -1951,17 +1956,18 @@ mod tests {
     /// where it left, which is here too, and no tree brought; its done
     /// file, as an older harness wrote it, names no fence.
     fn arrive(home: &std::path::Path, where_: Option<&str>, arrives: bool) -> Option<String> {
-        arrive_fenced(home, where_, arrives, Some(""))
+        arrive_fenced(home, where_, arrives, (Some(""), None))
     }
 
     /// The same, with `pi-carry fence` printing `fence`, or failing where
-    /// it's none, and `pi` writing the `PI_SANDBOX` it started under, or
-    /// `unset`, to `sandbox`.
+    /// it's none, the node starting it with `PI_SANDBOX` as `node` says,
+    /// and `pi` writing the `PI_SANDBOX` it started under, or `unset`, to
+    /// `sandbox`.
     fn arrive_fenced(
         home: &std::path::Path,
         where_: Option<&str>,
         arrives: bool,
-        fence: Option<&str>,
+        (fence, node): (Option<&str>, Option<&str>),
     ) -> Option<String> {
         let bin = home.join("bin");
         std::fs::create_dir_all(&bin).expect("bin");
@@ -2000,13 +2006,19 @@ mod tests {
             bin.display(),
             std::env::var("PATH").unwrap_or_default()
         );
-        std::process::Command::new(&start.command[0])
-            .args(&start.command[1..])
-            .env("HOME", home)
-            .env("PATH", path)
-            .env_remove("PI_SANDBOX")
-            .status()
-            .expect("the shell runs");
+        let mut start = {
+            let mut command = std::process::Command::new(&start.command[0]);
+            command
+                .args(&start.command[1..])
+                .env("HOME", home)
+                .env("PATH", path)
+                .env_remove("PI_SANDBOX");
+            command
+        };
+        if let Some(node) = node {
+            start.env("PI_SANDBOX", node);
+        }
+        start.status().expect("the shell runs");
         std::fs::read_to_string(ran)
             .ok()
             .map(|said| said.trim().to_owned())
@@ -2086,18 +2098,33 @@ mod tests {
                 .unwrap_or_default()
         };
         for kind in ["strict", "fence", "off"] {
-            arrive_fenced(&home, Some(&at), true, Some(kind)).expect("pi started");
+            arrive_fenced(&home, Some(&at), true, (Some(kind), None)).expect("pi started");
             assert_eq!(sandbox(), kind, "pi starts as the done file says it ran");
         }
-        arrive_fenced(&home, Some(&at), true, Some("")).expect("pi started");
+        arrive_fenced(&home, Some(&at), true, (Some(""), None)).expect("pi started");
         assert_eq!(
             sandbox(),
             "unset",
             "a done file naming no fence leaves pi as the node starts it"
         );
+        for (node, done, starts) in [
+            ("strict", "off", "strict"),
+            ("strict", "fence", "strict"),
+            ("strict", "", "strict"),
+            ("fence", "off", "fence"),
+            ("fence", "", "fence"),
+            ("fence", "strict", "strict"),
+        ] {
+            arrive_fenced(&home, Some(&at), true, (Some(done), Some(node))).expect("pi started");
+            assert_eq!(
+                sandbox(),
+                starts,
+                "the tighter of the node's fence ({node}) and the done file's ({done:?})"
+            );
+        }
         std::fs::remove_file(home.join("ran")).expect("forgotten");
         assert_eq!(
-            arrive_fenced(&home, Some(&at), true, None),
+            arrive_fenced(&home, Some(&at), true, (None, None)),
             None,
             "and none starts where its fence can't be told, rather than start looser"
         );

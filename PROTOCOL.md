@@ -684,8 +684,11 @@ in order and says each step:
    the person's that no tree brought. That folder is entered as it
    stands, never made. Pi starts with `PI_SANDBOX` set to what
    `pi-carry fence` prints from the done file, so it arrives in the
-   fence it ran in; it doesn't start where that fails, and starts as
-   the node runs where an older done file names none. Its first prompt
+   fence it ran in. Where the node started it with a `PI_SANDBOX` of
+   its own, the tighter of the two holds (strict over fence over any
+   other), so a done file never loosens the fence it was placed in. It
+   doesn't start where that fails, and starts as the node runs where
+   an older done file names none. Its first prompt
    saying where it came from and telling it to carry on where it left
    off, so it never waits to be woken. The quest's own done
    file, `<quest>.done.json`, holds the trees no session held; it
