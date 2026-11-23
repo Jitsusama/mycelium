@@ -132,7 +132,7 @@ pub struct Cell {
     pub orchestrates: Option<bool>,
     /// The session that says it answers to it, and where that session
     /// stands if it doesn't run, where only that session's word says it
-    /// orchestrates.
+    /// orchestrates, or may where how that session stands can't be told.
     pub lane: Option<String>,
     /// What it is part way through.
     pub busy: Option<Vec<Busy>>,
@@ -185,9 +185,10 @@ impl Cell {
                 });
             }
             None => {
-                return Some(format!(
-                    "whether {who} orchestrates other sessions can't be told"
-                ));
+                return Some(match &self.lane {
+                    Some(lane) => format!("whether {who} still orchestrates {lane} can't be told"),
+                    None => format!("whether {who} orchestrates other sessions can't be told"),
+                });
             }
         }
         match self.busy.as_deref() {
@@ -746,8 +747,10 @@ fn carried(
             why_not.push(format!("{who} moved within {} hours", PIN.as_hours()));
             continue;
         }
-        let (peers, refused) = bringing_back(&peers, cell.fence);
+        let (peers, mut refused) = bringing_back(&peers, cell.fence);
+        let (peers, apart) = alike(here, &peers, cell.fence);
         if peers.is_empty() {
+            refused.extend(apart);
             why_not.push(format!("{who}: {}", refused.join("; ")));
             continue;
         }
@@ -808,6 +811,37 @@ fn bringing_back(peers: &[Machine], kind: Option<Kind>) -> (Vec<Machine>, Vec<St
             match back {
                 Some(why) => {
                     left_out.push(why);
+                    false
+                }
+                None => true,
+            }
+        })
+        .cloned()
+        .collect();
+    (taken, left_out)
+}
+
+/// Those of `peers` a session in the fence `kind` may be carried to by
+/// [`ground::alike`], within `here`'s own system where it runs strict, and
+/// why each other is left out, each reason once, so a machine that can't
+/// say its own system says so once rather than of every peer. The carry
+/// judges it again as it is made.
+fn alike(here: &Here, peers: &[Machine], kind: Option<Kind>) -> (Vec<Machine>, Vec<String>) {
+    let ours = here
+        .machines
+        .iter()
+        .find(|machine| machine.name == here.name)
+        .and_then(|machine| machine.system.as_deref());
+    let mut left_out: Vec<String> = Vec::new();
+    let taken = peers
+        .iter()
+        .filter(|machine| {
+            let there = (machine.name.as_str(), machine.system.as_deref());
+            match ground::alike(kind, (here.name, ours), there) {
+                Some(why) => {
+                    if !left_out.contains(&why) {
+                        left_out.push(why);
+                    }
                     false
                 }
                 None => true,
@@ -2028,6 +2062,79 @@ pub(super) mod tests {
             why_not(&chose(&realm, &[unsaid], &history)),
             "S1: the session doesn't say which fence it runs in, so where it lands can't be \
              judged"
+        );
+    }
+
+    // Each system's strict fence reads and writes its own way, a Mac's
+    // more of the home folder, so easing never carries a strict session
+    // across though both say strict.
+    #[test]
+    fn a_strict_session_is_carried_unasked_only_to_its_own_system() {
+        let kinds = [Kind::None, Kind::Fence, Kind::Strict];
+        let mut realm = realm();
+        realm.push(machine("osprey", 20.0));
+        for one in &mut realm {
+            one.declared = Some(declaring(&kinds));
+            one.system = Some("linux".to_owned());
+        }
+        realm[1].system = Some("macos".to_owned());
+        realm[1].fences_held = true;
+        realm[1].room.as_mut().expect("room").pressure.cpu = 0.0;
+        let mut strict = cell("s1");
+        strict.fence = Some(Kind::Strict);
+        let declared = declaring(&kinds);
+        let chosen = |machines: &[Machine], cell: &Cell| {
+            let here = Here {
+                name: "skiff",
+                declared: Some(&declared),
+                machines,
+                loads: &Loads::new(),
+            };
+            let history = hot_for(machines, 11);
+            choose(
+                &here,
+                std::slice::from_ref(cell),
+                &reading(machines, now()),
+                &history,
+                now(),
+            )
+        };
+        assert_eq!(
+            carries(&chosen(&realm, &strict)),
+            Some(("s1", "osprey")),
+            "the Mac has the most room, but the next Linux machine takes it"
+        );
+        assert_eq!(
+            carries(&chosen(&realm, &cell("s2"))),
+            Some(("s2", "tern")),
+            "a fenced session still goes to the Mac that holds its fence"
+        );
+        realm.pop();
+        assert_eq!(
+            why_not(&chosen(&realm, &strict)),
+            "S1: tern runs macos, whose strict fence reads and writes other than linux's, so \
+             only the person carries a strict session there"
+        );
+        // A node too old to say its system, holding the fence all the
+        // same, is taken as another system's.
+        realm[1].system = None;
+        assert_eq!(
+            why_not(&chosen(&realm, &strict)),
+            "S1: tern doesn't say its system, so only the person carries a strict session there"
+        );
+        let unsaid = "S1: skiff can't say its own system, so only the person carries a strict \
+                      session from it";
+        realm[0].system = None;
+        assert_eq!(
+            why_not(&chosen(&realm, &strict)),
+            unsaid,
+            "where neither can say, neither is the other's"
+        );
+        realm[1].system = Some("linux".to_owned());
+        assert_eq!(
+            why_not(&chosen(&realm, &strict)),
+            unsaid,
+            "where this machine can't say its system, none is its own"
         );
     }
 

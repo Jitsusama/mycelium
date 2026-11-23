@@ -251,6 +251,39 @@ pub fn brought_back(
         .find_map(|kind| runs_nothing_there(kind, to, declared))
 }
 
+/// Why a session in the fence `kind` may not be carried by a node from
+/// `here`, a machine of the system `ours`, to `to`, one of `theirs`, if it
+/// may not. A strict session goes only between machines of one system,
+/// since each system's strict fence reads and writes its own way, a Mac's
+/// more of the home folder than Linux's, so one carried across would land
+/// looser though both say strict. Where either system can't be told, it is
+/// taken as another. A node makes every carry an agent asks for, easing's,
+/// an orchestrator's and a session's of itself, so only the person, whose
+/// carry no node makes, takes a strict session across.
+#[must_use]
+pub fn alike(
+    kind: Option<Kind>,
+    (here, ours): (&str, Option<&str>),
+    (to, theirs): (&str, Option<&str>),
+) -> Option<String> {
+    if kind != Some(Kind::Strict) {
+        return None;
+    }
+    match (ours, theirs) {
+        (None, _) => Some(format!(
+            "{here} can't say its own system, so only the person carries a strict session from it"
+        )),
+        (Some(_), None) => Some(format!(
+            "{to} doesn't say its system, so only the person carries a strict session there"
+        )),
+        (Some(ours), Some(theirs)) if ours != theirs => Some(format!(
+            "{to} runs {theirs}, whose strict fence reads and writes other than {ours}'s, so \
+             only the person carries a strict session there"
+        )),
+        (Some(_), Some(_)) => None,
+    }
+}
+
 /// Why `name`, declaring itself as `declared` says, runs no command in its
 /// `kind` fence by that fence's words alone, if it doesn't.
 fn runs_nothing_there(kind: Kind, name: &str, declared: Option<&Declared>) -> Option<String> {
@@ -407,6 +440,42 @@ mod tests {
             Ok(None),
             "no claim is left for the ground to refuse"
         );
+    }
+
+    #[test]
+    fn a_strict_session_is_carried_by_a_node_only_within_its_system() {
+        let strict = Some(Kind::Strict);
+        let linux = Some("linux");
+        assert_eq!(alike(strict, ("skiff", linux), ("osprey", linux)), None);
+        assert_eq!(
+            alike(strict, ("skiff", linux), ("tern", Some(MAC))).as_deref(),
+            Some(
+                "tern runs macos, whose strict fence reads and writes other than linux's, so \
+                 only the person carries a strict session there"
+            )
+        );
+        assert_eq!(
+            alike(strict, ("skiff", linux), ("tern", None)).as_deref(),
+            Some("tern doesn't say its system, so only the person carries a strict session there"),
+            "a node too old to say is taken as another system"
+        );
+        for theirs in [None, linux] {
+            assert_eq!(
+                alike(strict, ("skiff", None), ("tern", theirs)).as_deref(),
+                Some(
+                    "skiff can't say its own system, so only the person carries a strict \
+                     session from it"
+                ),
+                "where this machine can't say, none is its own, whatever tern says"
+            );
+        }
+        for kind in [None, Some(Kind::None), Some(Kind::Fence)] {
+            assert_eq!(
+                alike(kind, ("skiff", linux), ("tern", Some(MAC))),
+                None,
+                "only a strict session is held to its system, so {kind:?} isn't"
+            );
+        }
     }
 
     #[test]

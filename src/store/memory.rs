@@ -350,6 +350,11 @@ impl Store for Memory {
             && presence.unreachable_since.is_none()
         {
             presence.unreachable_since = Some(since);
+            // As the folders mark it, in the presence too, where easing
+            // reads how long a lane has been out of reach.
+            if let Some(fields) = Arc::make_mut(&mut presence.body).as_object_mut() {
+                fields.insert("unreachableSince".to_owned(), Value::from(since));
+            }
             held.tell(&Change::Presence);
         }
         Ok(())

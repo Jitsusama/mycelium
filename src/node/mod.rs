@@ -5196,7 +5196,6 @@ impl<S: Store> Shared<S> {
         else {
             return (None, easing::Sampler::default());
         };
-        let boot = store::folders::boot_id();
         let looked = easing::Looked {
             sessions: &sessions,
             fences: &fences,
@@ -5204,7 +5203,8 @@ impl<S: Store> Shared<S> {
             queued: &queued,
             sizes: &sizes,
             orchestrators: orchestrators.as_ref().ok(),
-            boot: boot.as_deref(),
+            boot: self.boot.id.as_deref(),
+            began: self.boot.began,
             now,
         };
         let cells = easing::cells(&self.machine, &looked);
@@ -5790,6 +5790,14 @@ impl<S: Store> Shared<S> {
                 "{address} isn't carried to {to}, as the start that brings it back there would \
                  be refused: {why}"
             ));
+        }
+        // Every carry a node makes is one an agent asked for, easing's, an
+        // orchestrator's or a session's of itself, so a strict session goes
+        // only within this machine's system, judged again here whatever a
+        // look saw.
+        let here = (self.machine.as_str(), Some(facts::SYSTEM));
+        if let Some(why) = ground::alike(kind, here, (to, system)) {
+            return Err(format!("{address} isn't carried to {to}: {why}"));
         }
         let mut body = said.as_object().cloned().unwrap_or_default();
         body.insert("by".to_owned(), by.into());
@@ -12126,6 +12134,114 @@ esac
             held_in(&inboxes(&socket).join("HARBOR")),
             Vec::<Value>::new(),
             "nor reaches the inbox"
+        );
+    }
+
+    /// tern as a Mac whose node holds its fences, or as one whose node is
+    /// too old to say its system.
+    fn tern_says(store: &Memory, system: Option<&str>) {
+        store
+            .put_machine(&facts::Machine {
+                system: system.map(str::to_owned),
+                fences_held: true,
+                ..fenced("tern", &["remote"])
+            })
+            .expect("what it said is kept");
+    }
+
+    /// Why HARBOR, strictly fenced on skiff, isn't carried to a Mac.
+    const ACROSS: &str = "HARBOR isn't carried to tern: tern runs macos, whose strict fence reads \
+                          and writes other than linux's, so only the person carries a strict \
+                          session there";
+
+    // Our council, round 1 of #393 (2026-11-23): easing alone kept a
+    // strict session on its system, so an orchestrator could order one
+    // across, and a session carry itself there, by asking.
+    #[tokio::test]
+    async fn an_ordered_carry_takes_a_strict_session_only_within_its_system() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        steward_claims(&socket).await;
+        let order = || {
+            asks_below(&socket, 7001);
+            ask(
+                socket.clone(),
+                Request::Steer {
+                    address: "harbor".to_owned(),
+                    steer: json!({"act": "ordered-carry", "to": "tern",
+                                  "why": "skiff is short of memory"}),
+                },
+            )
+        };
+        tern_says(&store, Some("macos"));
+        assert_eq!(
+            order().await,
+            Err(ACROSS.to_owned()),
+            "a Mac holding the fence still runs strict otherwise"
+        );
+        tern_says(&store, None);
+        assert_eq!(
+            order().await,
+            Err(
+                "HARBOR isn't carried to tern: tern doesn't say its system, so only the person \
+                 carries a strict session there"
+                    .to_owned()
+            ),
+            "a node too old to say is taken as another system's"
+        );
+        assert_eq!(
+            held_in(&inboxes(&socket).join("HARBOR")),
+            Vec::<Value>::new(),
+            "nothing refused reaches the inbox"
+        );
+        tern_says(&store, Some("linux"));
+        assert!(
+            matches!(order().await, Ok(Response::Steered { .. })),
+            "the same order to a machine of its own system is carried"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_strict_session_carries_itself_only_within_its_system() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let places = dir.path().join("places");
+        let sharing = Places {
+            quests: places.join("quests"),
+            scratch: places.join("scratch"),
+            home: places.join("home"),
+            state: places.join("state"),
+        };
+        let store = Memory::default();
+        let (_stop, _node, _client) = harbour_sharing(
+            &store,
+            &socket,
+            (&orchestrations(), &[]),
+            ("strict", STRICT),
+            Some(sharing),
+        )
+        .await;
+        tern_says(&store, Some("macos"));
+        asks_below(&socket, 7003);
+        assert_eq!(
+            ask(
+                socket.clone(),
+                Request::Steer {
+                    address: "harbor".to_owned(),
+                    steer: json!({"act": "self-carry", "to": "tern",
+                                  "why": "skiff is short of memory"}),
+                },
+            )
+            .await,
+            Err(ACROSS.to_owned()),
+            "a strict session can't choose the Mac's looser strict fence for itself"
+        );
+        assert!(
+            !socket.with_file_name("carries.jsonl").exists(),
+            "and nothing refused is kept as carried"
         );
     }
 

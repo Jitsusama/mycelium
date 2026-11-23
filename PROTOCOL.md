@@ -872,6 +872,13 @@ session says of itself:
   seen strict that later names a looser fence is refused. Where that
   file can't be read or kept, every ordered carry is refused. A
   session here seen fenced says so in its record as `fence_shown`.
+- A strict session goes only to a machine whose `system` is this
+  machine's, since each system's strict fence reads and writes its own
+  way: a Mac's reads more of the home folder than Linux's, so carried
+  across it would land looser though both say strict. A machine that
+  names no system is taken as another's. This holds for every carry a
+  node makes, eased, ordered or a session's of itself; only the person,
+  whose carry no node makes, takes a strict session across.
 
 A refusal says why and who could order it, as `OSPHT4 doesn't
 orchestrate QEST-... by this node's record, so it can't order its
@@ -1117,7 +1124,13 @@ run. After a carry it would carry none for half an hour, and it would
 carry at most six in a day. A session moved by anyone stays put for a
 day, by the carries kept here, and nothing goes to a machine a session
 came from within the hour, nor to a Mac whose node doesn't say
-`fences_held` but a session shown unfenced (see The Socket). Nor does
+`fences_held` but a session shown unfenced (see The Socket). A strict
+session goes only to a machine of its own system, by each machine's
+`system`, since a Mac's strict fence reads more of the home folder
+than Linux's: carried across, it would land looser though both say
+strict. A machine that names no system is taken as another. As with
+every carry a node makes (see A Carry an Orchestrator Orders), only
+the person takes such a session across. Nor does
 anything go to a machine whose facts are too old to place by (the
 `stale` flag, past 150 seconds), since it may have filled up since it
 was heard, or its link may be down.
@@ -1233,17 +1246,29 @@ orchestrations holds a claim of its naming a quest, or where the
 quests' record names its quest as another quest's `orchestrator`, or
 where another session says in its presence's `orchestratedBy` an
 address the session goes by, in any case, while that session runs,
-waits parked on this machine this boot, or is out of reach. A lane
-parked elsewhere never reaches this node, since links send only the
-sessions that live; one out of reach holds its orchestrator until a
-link to its machine comes back or the machine leaves. One that has
-ended counts no more, and a session naming itself orchestrates nobody
-by it. Where only a lane says so, the reason line names the lane and
-where it stands. Like `driven` and every other reason a presence gives
-to keep a session here, that word is believed unproven, since all it
-can do is keep a session where it is. A claim naming no quest
-orchestrates nobody, since any session may make one of itself, where
-a lane's word is another session's.
+waits parked on this machine this boot, or is out of reach and its
+link dropped within the hour. That hour runs from the `unreachableSince`
+this node's store marked on its own clock as the link dropped, never
+from when the lane's machine says it wrote it, since that clock may be
+another's and an idle lane leaves it old. A lane parked elsewhere never
+reaches this node, since links send only the sessions that live. A
+machine closed or retired may stay in the realm's records, never
+leaving, so a lane out of reach longer holds its orchestrator no
+more. A lane is parked this boot where its presence names the
+machine's boot; where either names none, as on a Mac, where its
+machine wrote it since the boot began. Where neither can be told, or
+a lane is out of reach since a time no store marked, whether it counts
+can't be told, which keeps its orchestrator here as anything unknown of
+a session does, and the reason line names that lane, after any that
+counts. One that has ended counts no more, and a
+session naming itself orchestrates nobody by it. Where only a lane
+says so, the reason line names the lane and where it stands, one
+running before one parked, and that before one out of reach. A lane
+counts even while the record can't be read. Like `driven` and every
+other reason a presence gives to keep a session here, that word is
+believed unproven, since all it can do is keep a session where it is.
+A claim naming no quest orchestrates nobody, since any session may
+make one of itself, where a lane's word is another session's.
 An orchestrator is never put to sleep either, since asleep it steers
 nothing. While the node's record can't be read, or the node serves no
 quests' record, hasn't read it whole or finds its file or folder not
