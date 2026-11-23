@@ -269,11 +269,12 @@ enum Action {
     /// Prints how the realm's network stands, for a daily read.
     ///
     /// One JSON line says each link, `up` or `unreachable`, with how many
-    /// times it dropped in the last day; each machine's sessions by how
-    /// they stand; how many presences still say they run with their
-    /// process gone; and the node's slowest answer to this read, in whole
-    /// seconds. Exits 0 whenever the node could be read, and within 10
-    /// seconds.
+    /// times it dropped in the last day and, while down, for how many
+    /// seconds since it last stood (`downFor`, null if it never did);
+    /// each machine's sessions by how they stand; how many presences
+    /// still say they run with their process gone; and the node's
+    /// slowest answer to this read, in whole seconds. Exits 0 whenever
+    /// the node could be read, and within 10 seconds.
     #[command(after_help = "Example:\n  mycelium health")]
     Health {
         #[command(flatten)]
@@ -2299,8 +2300,13 @@ fn health(socket: &Path, here: Here, realm: String) -> io::Result<()> {
     };
     print_line(&mycelium::health::line(
         &read,
-        |machine| store.endings(machine, day_ago),
-        |machine| store.link_refused(machine),
+        &mycelium::health::Kept {
+            ended: |machine: &str| store.endings(machine, day_ago),
+            refused: |machine: &str| store.link_refused(machine),
+            linked: |machine: &str| {
+                mycelium::store::last_linked(&store, machine).map(|at| at.div_euclid(1000))
+            },
+        },
     ))
 }
 
