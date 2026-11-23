@@ -1974,6 +1974,7 @@ fn eases_given(eases: bool, carries: bool, sleeps: Option<PathBuf>, state: &Path
 /// Runs this machine's node on `socket`, as `node` says, until it is asked
 /// to stop.
 fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
+    raise_open_files();
     // The node names its machine for every command there: what it was
     // given, else the system's, recorded once its realm is settled.
     let machine = place::node_machine(node.here.machine.as_deref())?;
@@ -2121,6 +2122,27 @@ fn run_link(here: Here, realm: String, socket: PathBuf, far: Option<String>) -> 
         }
         None => serve_link(store, &membership, shares, starting),
     }
+}
+
+/// Raises this process's limit on open files as far as it goes, saying
+/// so: a node holds a descriptor for each link, hold, watch and client,
+/// so it takes all its hard limit allows, whatever soft limit its service
+/// manager started it with.
+fn raise_open_files() {
+    match mycelium::open_files::raise() {
+        Ok(Some(raised)) => tell!(
+            "open files: the soft limit rose from {} to {}",
+            limit_said(raised.from),
+            limit_said(raised.to)
+        ),
+        Ok(None) => {}
+        Err(error) => tell!("open files: the soft limit stays, as raising it failed: {error}"),
+    }
+}
+
+/// A limit as said: its number, or `unlimited` where it has none.
+fn limit_said(limit: Option<u64>) -> String {
+    limit.map_or_else(|| "unlimited".to_owned(), |limit| limit.to_string())
 }
 
 /// Serves this end of a link over this process's input and output, as

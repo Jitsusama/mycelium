@@ -62,6 +62,7 @@
 //! - [`health`]: how a realm's network stands, for a daily read
 //! - [`place`]: where a node keeps things on its machine
 //! - [`awake`]: keeping its machine awake while it holds sessions
+//! - [`open_files`]: raising its own limit on open files as far as it goes
 //! - [`install`]: whether the build a process runs is still installed
 //! - [`ssh`]: what another machine's link key may run on this one
 //! - [`update`]: its configuration's updater, asked to update it to main
@@ -98,6 +99,7 @@ pub mod murmur;
 pub mod networks;
 pub mod node;
 pub mod offer;
+pub mod open_files;
 pub mod own_health;
 pub mod place;
 pub mod placement;
