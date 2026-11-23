@@ -329,7 +329,7 @@ same code, each line a JSON value:
     which the asking end sends as its asker takes each, as for a run.
     `{"Unlend": {"ask"}}` says the asker let go, and the lend is let
     go; a link that drops lets go every lend it carried, and the
-    asker hears it refused 503.
+    asking end hears nothing more of them, which it judges itself.
 
 Two ends of one `version` link whichever of them is newer, for as
 long as each change keeps to three rules. A new field is optional, so
@@ -2644,9 +2644,14 @@ link alone, and the node writes each `Lent` it answers as a line:
 `{"Head": {"status", "headers"}}`, then `{"Body": base64}` as it comes,
 then `"Done"`; or `{"Refused": {"status", "why"}}`, before the head or
 after it, which ends it. A node named no lender refuses every lend 403,
-so a lender's own node hands none on, and one whose lender no link
-reaches now refuses it 503, as it ends one whose link ends first. A
-client that hangs up lets the lend go.
+so a lender's own node hands none on. One whose lender no link reaches
+now, or whose link ends before the lender said anything of it, asks it
+again every quarter second for up to two minutes, since a lender's
+node restarting ends every link to it for a few seconds; it then
+refuses it 503. One whose link ends partway through its answer is
+refused 503 at once, since pi's answer has begun, as is one the link
+took but the lender never answered, which asking again might lend
+twice. A client that hangs up lets the lend go, waiting or not.
 
 Where the lender dialled this machine, as a maker dials its workers,
 the link runs apart from the node, and the lend crosses the `"Carry"`
