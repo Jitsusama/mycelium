@@ -4280,9 +4280,12 @@ mod tests {
         let put = |path: &str, len: u64| {
             let path = skiff.places.scratch.join(QUEST).join(path);
             fs::create_dir_all(path.parent().expect("a file has a folder")).expect("made");
-            fs::File::create(path).expect("made").set_len(len).expect("sized");
+            fs::File::create(path)
+                .expect("made")
+                .set_len(len)
+                .expect("sized");
         };
-        put("handover/optimus/session.jsonl", 360 << 20);
+        put("handover/skiff/session.jsonl", 360 << 20);
         put("bulk/one.bin", LARGEST_FILE + 1);
         skiff
             .places
@@ -4293,7 +4296,10 @@ mod tests {
             .name_scratch(QUEST, "bulk")
             .expect_err("refused")
             .to_string();
-        assert!(error.contains("more than the"), "refused as too large: {error}");
+        assert!(
+            error.contains("more than the"),
+            "refused as too large: {error}"
+        );
     }
 
     #[test]
