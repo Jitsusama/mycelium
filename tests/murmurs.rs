@@ -3,9 +3,9 @@
 //! with the cells rather than faster, and read again after one more
 //! murmur in a small share of the time, as only what changed is read.
 //! The time is the processor's own for this thread, not the clock's, so
-//! a builder busy with other work can't fail it. The time itself, 100 ms
-//! on the machine the bar is set for, is no builder's to hold, so the
-//! test says it rather than holds it:
+//! other builds' turns on a busy builder aren't counted. The time
+//! itself, 100 ms on the machine the bar is set for, is no builder's to
+//! hold, so the test says it rather than holds it:
 //!
 //! ```sh
 //! nix develop -c cargo test --release --test murmurs -- --nocapture
@@ -36,20 +36,18 @@ const FEWER: usize = CELLS / 10;
 const EACH: usize = 100;
 
 /// How many times longer ten times the cells may take: work that grows
-/// with them takes about ten times as long, and under musl, whose
-/// allocator slows as the heap grows, up to about thirty.
-#[cfg(not(any(target_env = "musl", target_os = "macos")))]
-const GROWS_AT_MOST: u32 = 15;
-
-/// How many times longer ten times the cells may take on macOS, whose
-/// allocator and a Mac lent to builds took 15.5 on the networks at a load
-/// of 95 to 130 (2026-11-16). Work that grows with the square of the
-/// cells and is a third of the build takes about forty, so this still
-/// tells it.
-#[cfg(target_os = "macos")]
+/// with them takes about ten times as long, but a busy builder takes
+/// more. A Mac lent to builds took 15.5 at a load of 95 to 130
+/// (2026-11-16), and a shared Linux builder 16.3 (2026-11-23): the
+/// thread's own time leaves out other builds' turns, but likely not what
+/// they do to the caches the larger heap needs. Work that grows with the
+/// square of the cells and is a third of the build takes about forty, so
+/// this still tells it.
+#[cfg(not(target_env = "musl"))]
 const GROWS_AT_MOST: u32 = 25;
 
-/// How many times longer ten times the cells may take under musl.
+/// How many times longer ten times the cells may take under musl, whose
+/// allocator slows as the heap grows, up to about thirty.
 #[cfg(target_env = "musl")]
 const GROWS_AT_MOST: u32 = 50;
 
