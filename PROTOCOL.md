@@ -200,7 +200,7 @@ same code, each line a JSON value:
    wouldn't: counted, limited and booked here as any agent's is, never
    read for a carry, and logged; it starts there or nowhere, never on
    a machine made for it, and waits for no room, since the asking node
-   stops waiting on its answer within 30 seconds. Where no person
+   stops waiting on its answer within 90 seconds. Where no person
    works, an agent's SSH login can't be told from a link's end, so
    every relay but its own process's is taken so, and a machine made
    from a basin still takes the starts placed on it, where its strict
@@ -1778,6 +1778,24 @@ nothing, since the `"Start"` that follows counts it there. So a burst of
 spawns spreads as a burst of starts does, rather than each being told
 the machine the last was. A node older than this answers it as a
 request it doesn't know, and an asker then asks `"Place"`.
+
+A machine whose link dropped in the last two minutes may be linked
+again within seconds, since a link redials two seconds after a drop.
+So work that names such a machine, which misses it only for being out
+of reach, is answered that machine by `"PlaceToStart"`, and a
+`"Start"` naming it, placed first as an ask that starts nothing,
+waits for its link where that is all it misses there, then is placed
+as any start is. It waits up to 25 seconds from when it was asked, so
+one that already waited for room under its limits waits that much
+less, and none once it waited 25 seconds. With a relayed start's 90
+seconds, that stays under the two minutes the harness waits on a
+start, unless it waited longer than half a minute for room, as such a
+start could before. A link that keeps dropping redials more slowly
+each time, so it may come back only after the wait. The
+node's error output says which program's start waited and whether the
+link came back, and when `"PlaceToStart"` answered a machine its
+placement kept as missed. A machine out of reach longer is judged at
+once, as before, and `"Place"`, which starts nothing, never waits.
 
 Each placement, by `"Place"`, `"PlaceToStart"` or `"Start"`, is kept
 as a JSON line in `placements/<date>.jsonl` in mycelium's folder, a file

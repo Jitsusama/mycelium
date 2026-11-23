@@ -26,9 +26,18 @@ use crate::share::exchange::Places;
 use crate::steer::Steer;
 use crate::wire::{Ran, Reply, Request, Response, Run, Start, Started};
 
-/// How long a start asked of another machine has to be answered: its
-/// holder has ten seconds to hold, and the link carries the rest.
+/// How long a run, a lend or a steer asked of another machine has to be
+/// answered.
 const ANSWERED_WITHIN: Duration = Duration::from_secs(30);
+
+/// How long a start asked of another machine has to be answered: its
+/// holder has ten seconds to hold, and the link carries the rest. On
+/// 2026-11-22 a carried session's start landed on a Mac after this end
+/// had given up on its answer at 30 s, so the carry took it for refused.
+/// A start asked again under its name joins one that landed late, so
+/// waiting longer only trades a refusal for the answer. It stays under
+/// the two minutes the harness waits on a start it asks for.
+const START_ANSWERED_WITHIN: Duration = Duration::from_secs(90);
 
 /// The words that join a session on the machine a link reaches, named
 /// first, from this one, given the words that join it there, as
@@ -207,7 +216,7 @@ impl Asks {
         start.work = start.work.asked_there();
         Ok(
             match self
-                .send(machine, asked(start), Some(ANSWERED_WITHIN))
+                .send(machine, asked(start), Some(START_ANSWERED_WITHIN))
                 .await?
             {
                 // A start relayed there starts there or nowhere, so an

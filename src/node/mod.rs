@@ -109,6 +109,19 @@ const TAKES_MOST: usize = starts::RESUMED_AN_HOUR;
 const REDIAL_FIRST: Duration = Duration::from_secs(2);
 const REDIAL_MOST: Duration = Duration::from_secs(60);
 
+/// How lately a link must have dropped for a start naming its machine to
+/// wait for it to link again, and how long that start waits at most,
+/// looking this often. A link redials [`REDIAL_FIRST`] after it drops, so
+/// a drop the network mends at once is linked again within the wait,
+/// where refusing would send the start elsewhere for a few seconds' gap;
+/// a machine gone longer is refused at once, as before. The wait and a
+/// relayed start's answer ([`crate::link::starts`], 90 s) together stay
+/// under the two minutes the harness waits on a start it asks for, so
+/// it never gives up and asks again while the first is still going.
+const REDIAL_AWAITED_SINCE: Duration = Duration::from_secs(120);
+const REDIAL_AWAITED_MOST: Duration = Duration::from_secs(25);
+const REDIAL_LOOKED_EVERY: Duration = Duration::from_secs(1);
+
 /// How long a link's way in may take to finish saying why it ended, once
 /// the link is over.
 const SAID_WITHIN: Duration = Duration::from_secs(5);
@@ -3553,6 +3566,76 @@ impl<S: Store> Shared<S> {
             .collect()
     }
 
+    /// Waits, up to [`REDIAL_AWAITED_MOST`], for the machine `work` names
+    /// to link again where its link dropped within
+    /// [`REDIAL_AWAITED_SINCE`] ([`redial_awaited`]) and being out of
+    /// reach is all that keeps the start from it ([`awaiting_redial`]),
+    /// as placed in `fence` through `screen`, so a start isn't refused,
+    /// nor sent to another machine, for a drop the next dial mends, and
+    /// one refused there for something else isn't kept waiting. The wait
+    /// counts from `at`, when the start was asked, in milliseconds of the
+    /// wall clock, so one that already waited for room under its limits
+    /// waits that much less, and none once it has waited the whole of it.
+    /// Said in the log either way, with the start's program, since the
+    /// start answers later.
+    async fn awaits_redial(
+        &self,
+        (asked, at): (&Start, i64),
+        fence: Option<crate::declared::Kind>,
+        screen: Screen,
+    ) {
+        let work = &asked.work;
+        let Some(left) = redial_left(at, jiff::Timestamp::now().as_millisecond()) else {
+            return;
+        };
+        let since = redial_since();
+        let others = self.others();
+        let Some(machine) = redial_awaited(work, &self.machine, &others, |name| {
+            self.store.endings(name, since) > 0
+        }) else {
+            return;
+        };
+        let admits = self.admits().await;
+        let placement = self.place(work, Counts::Never, fence, screen, &admits);
+        if !matches!(
+            awaiting_redial(placement, Some(machine)),
+            Placement::Placed { machine: awaited, .. } if awaited == machine
+        ) {
+            return;
+        }
+        let program = asked
+            .command
+            .first()
+            .map_or("", String::as_str)
+            .escape_debug();
+        let until = tokio::time::Instant::now() + left;
+        while tokio::time::Instant::now() < until {
+            tokio::time::sleep(REDIAL_LOOKED_EVERY).await;
+            match link_back(&self.others(), machine) {
+                Back::Unreachable => {}
+                Back::Linked => {
+                    eprintln!(
+                        "a start of {program} waited for {machine}'s link, which dropped \
+                         lately, and it came back"
+                    );
+                    return;
+                }
+                Back::Gone => {
+                    eprintln!(
+                        "a start of {program} waited for {machine}'s link, which dropped \
+                         lately, and the machine is no longer known"
+                    );
+                    return;
+                }
+            }
+        }
+        eprintln!(
+            "a start of {program} waited {}s for {machine}'s link, which dropped lately, and \
+             it is still out of reach",
+            left.as_secs()
+        );
+    }
+
     /// Every machine of the realm: this one measured now, then each other
     /// as its links last carried it, but for those that said they would
     /// leave and have.
@@ -5586,7 +5669,7 @@ impl<S: Store> Shared<S> {
                 self.asked_again(machine, reopened, dropped, reopening, asked, fence)
                     .await
             }
-            (Whither::Placed, None) => self.placed_held(asked, by, dropped).await,
+            (Whither::Placed, None) => self.placed_held(asked, by, dropped, at).await,
             // One relayed here starts here or nowhere, so a name another
             // machine hasn't answered under stays held for asking there.
             (Whither::Here, Some((machine, reopens))) if machine != self.machine => {
@@ -6168,17 +6251,20 @@ impl<S: Store> Shared<S> {
     /// is told in the log, so the fence's next step on a Mac knows which
     /// to move. A reopening let through unfenced (`reopens`) is placed
     /// as a start with no fence is, as [`Self::here`] places one, and
-    /// only on the machine it names ([`Self::placed`]).
-    async fn placed_held(&self, asked: Start, by: By, reopens: bool) -> Reply {
+    /// only on the machine it names ([`Self::placed`]). It was asked at
+    /// `at`, in milliseconds of the wall clock.
+    async fn placed_held(&self, asked: Start, by: By, reopens: bool, at: i64) -> Reply {
         if reopens {
-            return self.placed(asked, None, held_screen(None), true).await;
+            return self
+                .placed((asked, at), None, held_screen(None), true)
+                .await;
         }
         let unfenced = self.unfenced_asking(by, asked.work.fence).await;
         if let Some(above) = &unfenced {
             eprintln!("{}", told_unfenced_held(above, &asked));
         }
         let screen = held_or_run(unfenced.is_some(), by);
-        self.placed(asked, fence_of(by), screen, false).await
+        self.placed((asked, at), fence_of(by), screen, false).await
     }
 
     /// Where each of `asked`'s starts would be placed as
@@ -6336,11 +6422,12 @@ impl<S: Store> Shared<S> {
     /// goes nowhere but the machine it names, never one made for it.
     async fn placed(
         &self,
-        asked: Start,
+        (asked, at): (Start, i64),
         fence: Option<crate::declared::Kind>,
         screen: Screen,
         reopens: bool,
     ) -> Reply {
+        self.awaits_redial((&asked, at), fence, screen).await;
         let admits = self.admits().await;
         let (misses, nowhere) =
             match self.place(&asked.work, Counts::Always, fence, screen, &admits) {
@@ -7044,9 +7131,27 @@ impl<S: Store> Shared<S> {
         } else {
             held_screen(fence)
         };
-        Ok(Response::Placement(
-            self.place(work, counts, fence, screen, &admits),
-        ))
+        let placement = self.place(work, counts, fence, screen, &admits);
+        if counts != Counts::Here {
+            return Ok(Response::Placement(placement));
+        }
+        let since = redial_since();
+        let others = self.others();
+        let awaited = redial_awaited(work, &self.machine, &others, |name| {
+            self.store.endings(name, since) > 0
+        });
+        let answered = awaiting_redial(placement.clone(), awaited);
+        // The placement kept in the log is what the work missed; the
+        // answer differs from it only here, so the log says so.
+        if answered != placement
+            && let Some(awaited) = awaited
+        {
+            eprintln!(
+                "an ask to start was answered {awaited}, whose link dropped lately, since the \
+                 start that follows waits for it"
+            );
+        }
+        Ok(Response::Placement(answered))
     }
 
     /// Who asks a run, as [`asker::judge`] tells it, and the sessions
@@ -7435,6 +7540,104 @@ fn held_or_run(unfenced: bool, by: By) -> Screen {
         Screen::Run
     } else {
         held_screen(fence_of(by))
+    }
+}
+
+/// The machine `work` names, other than `here`, that `machines` hold out
+/// of reach and whose link `dropped_lately` says dropped lately: the one a
+/// start waits for, since the next dial may mend the drop. None where it
+/// names no such machine.
+fn redial_awaited<'a>(
+    work: &'a Work,
+    here: &str,
+    machines: &[facts::Machine],
+    dropped_lately: impl Fn(&str) -> bool,
+) -> Option<&'a str> {
+    work.needs.iter().find_map(|need| match need {
+        Need::Machine(name)
+            if name != here
+                && machines
+                    .iter()
+                    .any(|one| one.name == *name && one.state == Readiness::Unreachable)
+                && dropped_lately(name) =>
+        {
+            Some(name.as_str())
+        }
+        _ => None,
+    })
+}
+
+/// How a machine a start waits for stands among the realm's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Back {
+    /// Still out of reach, so the start waits on.
+    Unreachable,
+    /// Linked again, or at least not out of reach.
+    Linked,
+    /// No longer among the realm's machines, so nothing comes back.
+    Gone,
+}
+
+/// How `machine` stands among `machines`, for [`Shared::awaits_redial`].
+fn link_back(machines: &[facts::Machine], machine: &str) -> Back {
+    match machines.iter().find(|one| one.name == machine) {
+        None => Back::Gone,
+        Some(one) if one.state == Readiness::Unreachable => Back::Unreachable,
+        Some(_) => Back::Linked,
+    }
+}
+
+/// Since when, in milliseconds since the epoch, a link's drop counts as
+/// lately for [`redial_awaited`].
+fn redial_since() -> i64 {
+    jiff::Timestamp::now()
+        .as_millisecond()
+        .saturating_sub(i64::try_from(REDIAL_AWAITED_SINCE.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// How much longer a start asked at `at` may wait for a link to redial,
+/// both in milliseconds since the epoch with `now` the time it is: what
+/// is left of [`REDIAL_AWAITED_MOST`] once the time it already spent,
+/// mostly waiting for room under its limits, is taken off, and nothing
+/// once that is gone, so waiting for a link adds nothing to a start that
+/// already waited that long for room. A clock that went back counts as
+/// no time spent.
+fn redial_left(at: i64, now: i64) -> Option<Duration> {
+    let spent = Duration::from_millis(now.saturating_sub(at).max(0).unsigned_abs());
+    REDIAL_AWAITED_MOST
+        .checked_sub(spent)
+        .filter(|left| !left.is_zero())
+}
+
+/// `placement`, an ask to start's, answered as the `awaited` machine where
+/// it missed that machine only for being out of reach: the start that
+/// follows goes through this node, which waits for that machine's link
+/// ([`Shared::awaits_redial`]) and judges the start again, so an asker
+/// whose patience is a few seconds isn't sent elsewhere for a drop the next
+/// dial mends.
+fn awaiting_redial(placement: Placement, awaited: Option<&str>) -> Placement {
+    let Some(awaited) = awaited else {
+        return placement;
+    };
+    match placement {
+        Placement::Pending { misses } | Placement::Refused { misses }
+            if misses.iter().any(|miss| {
+                miss.machine == awaited
+                    && miss
+                        .because
+                        .iter()
+                        .all(|why| matches!(why, placement::Because::Unreachable))
+            }) =>
+        {
+            Placement::Placed {
+                machine: awaited.to_owned(),
+                passed: misses
+                    .into_iter()
+                    .filter(|miss| miss.machine != awaited)
+                    .collect(),
+            }
+        }
+        placement => placement,
     }
 }
 
@@ -7852,6 +8055,144 @@ mod tests {
             lasts: None,
             fence: None,
         }
+    }
+
+    #[test]
+    fn a_start_waits_only_for_a_named_machine_whose_link_dropped_lately() {
+        let known = |name: &str, state| facts::Machine {
+            state,
+            ..facts::measure(name, &facts::Sources::nowhere())
+        };
+        let machines = [
+            known("skiff", Readiness::Ready),
+            known("tern", Readiness::Unreachable),
+            known("kestrel", Readiness::Ready),
+            known("osprey", Readiness::Unreachable),
+        ];
+        let lately = |name: &str| name != "osprey";
+        let named = |name: &str| work(vec![Need::Machine(name.to_owned())]);
+        assert_eq!(
+            redial_awaited(&named("tern"), "skiff", &machines, lately),
+            Some("tern"),
+            "tern's link dropped lately, so a start naming it waits"
+        );
+        assert_eq!(
+            redial_awaited(&named("osprey"), "skiff", &machines, lately),
+            None,
+            "osprey dropped long ago, so it is refused at once"
+        );
+        assert_eq!(
+            redial_awaited(&named("kestrel"), "skiff", &machines, lately),
+            None,
+            "kestrel is linked, so nothing waits"
+        );
+        assert_eq!(
+            redial_awaited(&work(Vec::new()), "skiff", &machines, lately),
+            None,
+            "a start naming no machine is placed among those linked"
+        );
+        assert_eq!(
+            redial_awaited(&named("wren"), "skiff", &machines, lately),
+            None,
+            "a machine never known isn't waited for"
+        );
+        assert_eq!(
+            redial_awaited(&named("tern"), "tern", &machines, lately),
+            None,
+            "this node's own machine is never waited for"
+        );
+    }
+
+    #[test]
+    fn a_start_waits_for_a_link_only_what_its_ask_has_left() {
+        let at = 1_700_000_000_000;
+        assert_eq!(
+            redial_left(at, at),
+            Some(REDIAL_AWAITED_MOST),
+            "a start placed as soon as it was asked waits the whole of it"
+        );
+        assert_eq!(
+            redial_left(at, at + 10_000),
+            REDIAL_AWAITED_MOST.checked_sub(Duration::from_secs(10)),
+            "a start that waited 10s for room waits that much less"
+        );
+        assert_eq!(
+            redial_left(at, at + 60_000),
+            None,
+            "a start that waited a minute for room waits for no link"
+        );
+        assert_eq!(
+            redial_left(at, at + 25_000),
+            None,
+            "a start with nothing left waits for no link"
+        );
+        assert_eq!(
+            redial_left(at, at - 5_000),
+            Some(REDIAL_AWAITED_MOST),
+            "a clock that went back counts as no time spent"
+        );
+    }
+
+    #[test]
+    fn a_start_waiting_for_a_link_ends_once_its_machine_is_back_or_gone() {
+        let known = |name: &str, state| facts::Machine {
+            state,
+            ..facts::measure(name, &facts::Sources::nowhere())
+        };
+        let machines = [
+            known("tern", Readiness::Unreachable),
+            known("kestrel", Readiness::Ready),
+        ];
+        assert_eq!(link_back(&machines, "tern"), Back::Unreachable, "waits on");
+        assert_eq!(link_back(&machines, "kestrel"), Back::Linked, "came back");
+        assert_eq!(
+            link_back(&machines, "wren"),
+            Back::Gone,
+            "a machine no longer known isn't taken as come back"
+        );
+    }
+
+    #[test]
+    fn an_ask_to_start_is_answered_as_the_machine_awaited_only_where_reach_was_all_it_lacked() {
+        use placement::Because;
+        let miss = |machine: &str, because: Vec<Because>| Miss {
+            machine: machine.to_owned(),
+            because,
+        };
+        let refused = |tern: Vec<Because>| Placement::Refused {
+            misses: vec![miss("skiff", vec![Because::Ranked]), miss("tern", tern)],
+        };
+        assert_eq!(
+            awaiting_redial(refused(vec![Because::Unreachable]), Some("tern")),
+            Placement::Placed {
+                machine: "tern".to_owned(),
+                passed: vec![miss("skiff", vec![Because::Ranked])],
+            },
+            "tern lacked only reach, so the start goes to it and waits there"
+        );
+        let lacking = vec![
+            Because::Unreachable,
+            Because::Lacks(Need::Machine("kestrel".to_owned())),
+        ];
+        assert_eq!(
+            awaiting_redial(refused(lacking.clone()), Some("tern")),
+            refused(lacking),
+            "tern lacks more than reach, so the refusal stands"
+        );
+        assert_eq!(
+            awaiting_redial(refused(vec![Because::Unreachable]), None),
+            refused(vec![Because::Unreachable]),
+            "with no machine awaited, the placement stands"
+        );
+        let placed = Placement::Placed {
+            machine: "skiff".to_owned(),
+            passed: Vec::new(),
+        };
+        assert_eq!(
+            awaiting_redial(placed.clone(), Some("tern")),
+            placed,
+            "a placement made stands"
+        );
     }
 
     /// Runs a node of `machine` in the work realm on `socket`, linked over
