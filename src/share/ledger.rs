@@ -81,6 +81,16 @@ pub struct Ledger {
     /// said it shares the quest, even holding none of it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub theirs: BTreeMap<String, BTreeMap<String, State>>,
+    /// What each worker given the quest to read last said it holds of
+    /// its files, by machine and key, only those it holds as this machine
+    /// does: a worker that spoke and holds none yet is kept, holding
+    /// nothing, so a share waiting for it waits for its files rather than
+    /// reading it as a machine that never took the quest up.
+    /// Kept apart from `theirs`, which takes a machine's writes and lets
+    /// its runs into this one's trees: a worker's word only tells a share
+    /// waiting for it that the quest arrived ([`super::reached::reach`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub read: BTreeMap<String, BTreeMap<String, State>>,
     /// Whether the quest is shared only as one above another shared quest,
     /// so it stops once no shared quest is under it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -289,11 +299,36 @@ impl Ledger {
         self.theirs.get(machine) != before.as_ref()
     }
 
-    /// Keeps what the other machines hold to the files this one holds,
-    /// answering whether any dropped out.
+    /// Enters what `worker`, given the quest to read, said it holds of
+    /// `files`, answering whether that changed what the ledger holds of
+    /// it. Only a file it holds as this machine holds it, by its content's
+    /// hash, is kept, and kept as this machine's own state: the worker
+    /// names nothing this machine doesn't hold, and chooses nothing of
+    /// what is written. Any other file it names is dropped, so what is
+    /// kept of a worker is bounded by what this machine holds, while the
+    /// worker itself is kept holding what is left, even nothing.
+    pub fn read_by(&mut self, worker: &str, files: BTreeMap<String, State>) -> bool {
+        let before = self.read.get(worker).cloned();
+        let read = self.read.entry(worker.to_owned()).or_default();
+        for (key, state) in files {
+            match self.files.get(&key) {
+                Some(ours) if ours.hash.is_some() && ours.hash == state.hash => {
+                    read.insert(key, ours.state());
+                }
+                _ => {
+                    read.remove(&key);
+                }
+            }
+        }
+        self.read.get(worker) != before.as_ref()
+    }
+
+    /// Keeps what the other machines hold, and the workers given the quest
+    /// read, to the files this one holds, answering whether any dropped
+    /// out.
     pub fn bound_theirs(&mut self) -> bool {
         let mut dropped = false;
-        for held in self.theirs.values_mut() {
+        for held in self.theirs.values_mut().chain(self.read.values_mut()) {
             let before = held.len();
             held.retain(|key, state| {
                 state.hash.is_some()
@@ -783,6 +818,78 @@ mod tests {
             ledgers.hold(quest_id).expect("held").ledger,
             Ledger::default(),
             "and shared again as new"
+        );
+    }
+
+    /// A worker given the quest names only files this machine holds, as
+    /// it holds them, and what is kept of each is this machine's own.
+    #[test]
+    fn a_worker_is_kept_to_the_files_held_here_as_held_here() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let quest = quest(dir.path());
+        write(&quest, "README.md", "# Ours\n");
+        write(&quest, "notes.md", "notes\n");
+        let mut ledger = Ledger::default();
+        ledger.scan(&quest, "kestrel").expect("scanned");
+        let ours = ledger.states();
+        let theirs = |hash: &str| State {
+            hash: Some(hash.to_owned()),
+            version: Version::default().changed_on("tern").changed_on("tern"),
+        };
+        let said = BTreeMap::from([
+            (
+                "record/README.md".to_owned(),
+                ours["record/README.md"].clone(),
+            ),
+            ("record/notes.md".to_owned(), theirs("another")),
+            ("record/elsewhere.md".to_owned(), theirs("any")),
+        ]);
+        assert!(
+            ledger.read_by("tern", said.clone()),
+            "what it holds is heard"
+        );
+        assert_eq!(
+            ledger.read["tern"],
+            BTreeMap::from([(
+                "record/README.md".to_owned(),
+                ours["record/README.md"].clone()
+            )]),
+            "only the file it holds as kestrel does, as kestrel holds it"
+        );
+        assert!(
+            !ledger.read_by("tern", said),
+            "saying it again changes nothing"
+        );
+
+        let lacking = BTreeMap::from([("record/notes.md".to_owned(), theirs("another"))]);
+        assert!(
+            ledger.read_by("wren", lacking),
+            "a worker holding none of kestrel's files as kestrel does is heard"
+        );
+        assert_eq!(
+            ledger.read.get("wren"),
+            Some(&BTreeMap::new()),
+            "and kept holding nothing, so a wait for it waits for its files"
+        );
+        assert!(
+            ledger.read_by("osprey", BTreeMap::new()),
+            "a worker saying it holds nothing yet is heard"
+        );
+        assert!(
+            !ledger.read_by("osprey", BTreeMap::new()),
+            "and saying it again changes nothing"
+        );
+
+        fs::remove_file(quest.record.join("README.md")).expect("removed");
+        ledger.scan(&quest, "kestrel").expect("scanned");
+        assert!(
+            ledger.bound_theirs(),
+            "what kestrel no longer holds drops out"
+        );
+        assert_eq!(
+            ledger.read.get("tern"),
+            Some(&BTreeMap::new()),
+            "a worker keeps none of what kestrel no longer holds"
         );
     }
 }

@@ -777,6 +777,25 @@ impl Exchange {
         false
     }
 
+    /// Keeps what this end's worker said it holds of `id`, a quest it was
+    /// given, apart from what the ledger takes ([`Ledger::read`]), as word
+    /// that the quest reached it: nothing of it is taken. A quest this
+    /// machine no longer shares is left unshared: holding a ledger makes
+    /// one, and keeping it would share the quest again.
+    ///
+    /// # Errors
+    ///
+    /// When the quest's ledger can't be read or kept.
+    fn read_by_worker(&self, id: &str, files: BTreeMap<String, State>) -> io::Result<()> {
+        let ledgers = self.places.ledgers();
+        let mut held = ledgers.hold(id)?;
+        // Asked under the hold, since sharing stops under it too.
+        if ledgers.shares(id) && held.ledger.read_by(&self.other, files) {
+            held.keep()?;
+        }
+        Ok(())
+    }
+
     /// How many files this end has asked of the other, or will ask in
     /// their turn, and not yet taken. Once the other end has said all it
     /// holds, none means this end holds all of it, as frames cross in the
@@ -1080,12 +1099,8 @@ impl Exchange {
                 mut ended,
                 mut above,
             } => {
-                let mut taken = BTreeSet::new();
-                for id in &quests {
-                    if self.takes(id) {
-                        taken.insert(id.clone());
-                    }
-                }
+                let taken: BTreeSet<String> =
+                    quests.iter().filter(|id| self.takes(id)).cloned().collect();
                 quests.retain(|id| taken.contains(id));
                 scratch.retain(|id, _| taken.contains(id));
                 clones.retain(|id, _| taken.contains(id));
@@ -1100,6 +1115,10 @@ impl Exchange {
                 });
                 self.drop_unnamed();
                 self.take_up_theirs()?;
+                Ok(Vec::new())
+            }
+            Say::Holds { quest, files } if self.worker && self.serves(&quest) => {
+                self.read_by_worker(&quest, files)?;
                 Ok(Vec::new())
             }
             Say::Holds { quest, .. } | Say::Piece { quest, .. } | Say::File { quest, .. }
@@ -4959,6 +4978,18 @@ mod tests {
             !skiff.places.given("tern", began),
             "nor is it given to the worker by its beginning it"
         );
+        let ledger = || skiff.places.ledgers().hold(given).expect("held").ledger;
+        assert!(
+            ledger()
+                .read
+                .get("tern")
+                .is_some_and(|read| read.contains_key(README)),
+            "what the worker says it holds of the quest is heard, so a wait for it ends"
+        );
+        assert!(
+            !ledger().theirs.contains_key("tern"),
+            "though not as a machine sharing it, which would let its runs into skiff's trees"
+        );
 
         shared(&tern, given, "# Given, then rewritten on tern\n");
         shared(&tern, ungiven, "# Theirs\n");
@@ -4976,6 +5007,25 @@ mod tests {
         assert!(
             !skiff.places.given("tern", ungiven),
             "nor take it by saying it shares it"
+        );
+        assert!(
+            !ledger().theirs.contains_key("tern"),
+            "and its rewriting the quest makes it no machine sharing it"
+        );
+        assert!(
+            ledger()
+                .read
+                .get("tern")
+                .is_some_and(|read| !read.contains_key(README)),
+            "nor one holding skiff's quest as skiff holds it"
+        );
+
+        skiff.places.ledgers().stop(given).expect("stopped");
+        shared(&tern, given, "# Given, rewritten on tern again\n");
+        talk(&mut near, &mut far);
+        assert!(
+            !skiff.places.ledgers().shares(given),
+            "what a worker says of a quest skiff stopped sharing doesn't share it again"
         );
     }
 }

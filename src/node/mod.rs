@@ -3784,6 +3784,7 @@ impl<S: Store> Shared<S> {
         here.health.clone_from(&self.health.borrow());
         here.kit = self.given_kit().and_then(start::Kit::said);
         here.fences_held = self.fences_held;
+        here.holds = Some(hold::running(&self.held));
         here
     }
 

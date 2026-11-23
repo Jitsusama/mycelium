@@ -116,6 +116,14 @@ pub struct Machine {
     /// outside any fence, so its Mac is refused every agent's held start.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fences_held: bool,
+    /// How many sessions its node holds running, parked ones aside, each
+    /// a start's whether or not it says it is a session: a fenced pi on a
+    /// worker runs with no mesh, so no presence counts it. Weighed against
+    /// how many it holds at most ([`crate::placement::full`]). Unknown
+    /// from a node too old to say; measuring leaves it unknown, and the
+    /// node and its links set it from the sessions they hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holds: Option<u32>,
 }
 
 /// A realm's kit on one machine: a folder whose `bin` holds the tools
@@ -367,6 +375,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         kit: None,
         worker: false,
         fences_held: FENCES_HELD,
+        holds: None,
     }
 }
 
