@@ -2630,7 +2630,7 @@ impl<S: Store> Shared<S> {
         let listed = ids.len();
         // An id opens with when it was sent, in milliseconds, so the
         // newest sort last, by that time rather than as text.
-        ids.sort_by_cached_key(|id| (crate::store::folders::sent_at(id), id.clone()));
+        ids.sort_by_cached_key(|id| (store::folders::sent_at(id), id.clone()));
         // The newest the node keeps, held or not: an older one would be
         // let go as soon as read, so a rescan with every kept message
         // held opens none. A message older than all those, waiting to
