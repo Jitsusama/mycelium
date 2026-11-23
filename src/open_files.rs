@@ -49,7 +49,7 @@ pub struct Raised {
 /// Where the system refuses the new limit.
 pub fn raise() -> std::io::Result<Option<Raised>> {
     let now = getrlimit(Resource::Nofile);
-    let started = STARTED_WITH.get_or_init(|| now.clone());
+    let started = STARTED_WITH.get_or_init(|| now);
     let Some(new) = raised(&now, ceiling()) else {
         return Ok(None);
     };
@@ -73,7 +73,7 @@ pub fn raise() -> std::io::Result<Option<Raised>> {
 pub fn as_started(command: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
 
-    let Some(started) = STARTED_WITH.get().cloned() else {
+    let Some(started) = STARTED_WITH.get().copied() else {
         return;
     };
     #[expect(
@@ -85,7 +85,7 @@ pub fn as_started(command: &mut std::process::Command) {
     // before the fork.
     unsafe {
         command.pre_exec(move || {
-            let _ = setrlimit(Resource::Nofile, started.clone());
+            let _ = setrlimit(Resource::Nofile, started);
             Ok(())
         });
     }
@@ -216,7 +216,7 @@ mod tests {
     fn the_process_takes_all_it_may_and_what_it_starts_gets_what_it_started_with() {
         let before = getrlimit(Resource::Nofile);
         raise().expect("a process may raise its own soft limit");
-        let expected = raised(&before, ceiling()).unwrap_or_else(|| before.clone());
+        let expected = raised(&before, ceiling()).unwrap_or(before);
         assert_eq!(
             getrlimit(Resource::Nofile),
             expected,
