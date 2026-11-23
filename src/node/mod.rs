@@ -14282,19 +14282,10 @@ esac
         let far_socket = dir.path().join("kestrel").join("work.sock");
         let near_socket = dir.path().join("skiff").join("work.sock");
         // Both declare the same strict fence, so kestrel's ground is as
-        // firm as skiff's.
-        for (socket, name) in [(&far_socket, "kestrel"), (&near_socket, "skiff")] {
-            fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(socket.parent().expect("its folder"))
-                .expect("its folder is made");
-            let said = fenced(name, &["remote"]).declared;
-            fs::write(
-                socket.with_file_name("declared.json"),
-                serde_json::to_vec(&said).expect("it is JSON"),
-            )
-            .expect("its declaration is written");
+        // firm as skiff's, with a launcher that runs, since kestrel holds
+        // the start it is relayed in the fence it judges.
+        for socket in [&far_socket, &near_socket] {
+            declares_runs(socket, true);
         }
         let far_store = Memory::default();
         let holds = Starter {
