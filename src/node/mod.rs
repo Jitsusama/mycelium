@@ -722,6 +722,9 @@ where
     let mut health = shared.health.subscribe();
     tokio::pin!(stop);
     let mut resting = None;
+    // However the node ends, dropped mid-step as by its runtime ending
+    // too, what it carries on in the background hears it.
+    let _stops = Stops(shared.stopped.clone());
     let result = loop {
         tokio::select! {
             () = &mut stop => break Ok(()),
@@ -1235,6 +1238,29 @@ struct Kept {
     receptors: Option<tokio::task::JoinHandle<()>>,
 }
 
+/// Sets its flag as it drops: held by the node's loop, so the flag says
+/// the node has stopped however it ends.
+struct Stops(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for Stops {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Who asked a carry of itself, as the node judged them while they ran,
+/// which the node's own asks carrying it on are judged as, since by then
+/// the session and the command below it have ended.
+struct Vouched {
+    /// Who asked, as [`asker::judge`] told it.
+    by: By,
+    /// The session its starts count toward.
+    charged: Option<String>,
+    /// The sessions claiming it, each with its quest, where it was shown
+    /// unfenced, as [`Shared::unfenced_asking`] says.
+    unfenced: Option<Vec<(String, serde_json::Value)>>,
+}
+
 /// What the node's loop and every client share.
 struct Shared<S> {
     store: S,
@@ -1259,6 +1285,13 @@ struct Shared<S> {
     /// connected, so a later read of it can tell its id wasn't taken
     /// again; none where it can't be read, as on a Mac.
     client_started: Option<u64>,
+    /// Who the node asks as where it carries on a carry a session asked
+    /// of itself, as it judged that asker while it still ran; none for
+    /// every client, each judged as it asks.
+    vouched: Option<Arc<Vouched>>,
+    /// Set once the node stops, so what it carries on in the background
+    /// waits no longer.
+    stopped: Arc<std::sync::atomic::AtomicBool>,
     /// Where it keeps each carry an orchestrator ordered.
     carries: PathBuf,
     /// What lets go of the trees a carry ordered from here left, once it
@@ -1485,6 +1518,8 @@ impl<S: Clone> Clone for Shared<S> {
             processes: self.processes.clone(),
             client: self.client,
             client_started: self.client_started,
+            vouched: self.vouched.clone(),
+            stopped: self.stopped.clone(),
             carries: self.carries.clone(),
             settles: self.settles.clone(),
             scratch: self.scratch.clone(),
@@ -2459,6 +2494,8 @@ impl<S: Store> Shared<S> {
             carrying: Arc::default(),
             client: None,
             client_started: None,
+            vouched: None,
+            stopped: Arc::default(),
             served: Arc::new(Served::start(serves)),
             builders: Arc::new(Builders::start(builders)),
             murmurs: Arc::new(Murmurs::start(scratch, hello.machine.clone())),
@@ -5028,23 +5065,119 @@ impl<S: Store> Shared<S> {
                 self.address_of(&sessions, &asker)
             ));
         }
+        let Some(shares) = self.shares.clone() else {
+            return Err(format!(
+                "{} shares no quest, so it carries no session's work",
+                self.machine
+            ));
+        };
         // Its quest names what settles it: the record's where that holds
-        // it, or else the one it says it runs, since it asks of itself
-        // and settling touches only its own trees.
-        let quest = self.quest_holding(&asker, &address).or_else(|why| {
-            target
+        // it, or else, where the record holds it in none or there is no
+        // record, the one it says it runs, since it asks of itself and
+        // settling touches only its own trees. A record that can't be
+        // read refuses it, since it may hold it in another.
+        let quest = match self.quests_holding(&asker, &address)? {
+            Some(holding) if !holding.is_empty() => Self::the_quest(&holding, &asker, &address)?,
+            _ => target
                 .quest
                 .clone()
                 .filter(|quest| plain_quest(quest))
-                .ok_or(why)
-        })?;
+                .ok_or_else(|| {
+                    format!(
+                        "no open quest holds {asker} in the quests' record, and it says none \
+                         that is a plain name, so {address} isn't carried"
+                    )
+                })?,
+        };
+        // Judged now, while it runs: by the time the node starts it
+        // there, it and the command that asked have ended.
+        let (by, _, charged) = self.judged_charging().await?;
+        let unfenced = self.unfenced_asking(by, None).await;
         let extra = serde_json::json!({ "asker": asker, "quest": quest, "itself": true });
         self.carry_from_here(target, &address, &said, &address, extra)
             .await?;
+        let why = said
+            .get("why")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let whole = !sessions.iter().any(|one| {
+            easing::id(one) != asker
+                && one.machine == self.machine
+                && stands(one)
+                && one.quest.as_deref() == Some(quest.as_str())
+        });
+        let to = said
+            .get("to")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        self.carry_on(
+            (target.clone(), whole),
+            (quest, to, shares),
+            crate::carry::Ordered {
+                by: address.clone(),
+                why,
+            },
+            Vouched {
+                by,
+                charged,
+                unfenced,
+            },
+        );
         Ok(Response::Steered {
             machine: self.machine.clone(),
             by: Some(address),
         })
+    }
+
+    /// Carries on, in the background, the carry `session` asked of itself
+    /// once told, as [`crate::carry::carry_told`] does, through this node
+    /// answering as `vouched`, who asked as it judged them while they ran.
+    /// Each line goes to the node's log, since no command waits for it.
+    fn carry_on(
+        &self,
+        (session, whole): (Session, bool),
+        (quest, to, shares): (String, String, Arc<Places>),
+        ordered: crate::carry::Ordered,
+        vouched: Vouched,
+    ) {
+        let mut shared = self.clone();
+        shared.client = None;
+        shared.client_started = None;
+        shared.vouched = Some(Arc::new(vouched));
+        let (socket, here, stopped) = (
+            self.node.clone(),
+            self.machine.clone(),
+            self.stopped.clone(),
+        );
+        let runtime = tokio::runtime::Handle::current();
+        let asking: through::Asking = Box::new(move |request| {
+            if shared.stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("this machine's node stopped".to_owned());
+            }
+            match runtime.block_on(answered(&shared, Ok(request.clone()))) {
+                Answer::Ok(response) => Ok(response),
+                Answer::Err(why) => Err(why),
+                Answer::Refused(refused) => Err(refused.why),
+            }
+        });
+        tokio::task::spawn_blocking(move || {
+            let mut hands =
+                through::Through::new(socket, (*shares).clone(), &quest, through::PATIENCE)
+                    .asking(asking)
+                    .stopping(stopped);
+            let carried = crate::carry::carry_told(
+                &mut hands,
+                (&quest, &here, &to),
+                (&session, whole),
+                &ordered,
+                &mut |line| eprintln!("{} carrying itself: {line}", session.address),
+            );
+            if carried.is_err() {
+                eprintln!("{} carrying itself to {to} failed", session.address);
+            }
+        });
     }
 
     /// The one session among `sessions` standing by `address`, in capitals,
@@ -5238,6 +5371,16 @@ impl<S: Store> Shared<S> {
     /// `session` in, read whole; refused, naming `address`, where none or
     /// several do, or the record can't be read.
     fn quest_holding(&self, session: &str, address: &str) -> Result<String, String> {
+        let holding = self.quests_holding(session, address)?.ok_or_else(|| {
+            format!("this node serves no quests' record, so {address} isn't carried")
+        })?;
+        Self::the_quest(&holding, session, address)
+    }
+
+    /// The open quests the quests' record this node serves holds `session`
+    /// in, read whole; none where it serves no such record, and refused,
+    /// naming `address`, where it can't be read.
+    fn quests_holding(&self, session: &str, address: &str) -> Result<Option<Vec<String>>, String> {
         let quests = match self.served.records_whole("quest") {
             Some(Ok(quests)) => quests,
             Some(Err(why)) => {
@@ -5245,23 +5388,27 @@ impl<S: Store> Shared<S> {
                     "the quests' record can't be read ({why}), so {address} isn't carried"
                 ));
             }
-            None => {
-                return Err(format!(
-                    "this node serves no quests' record, so {address} isn't carried"
-                ));
-            }
+            None => return Ok(None),
         };
-        let holding: Vec<&str> = quests
-            .values()
-            .filter(|quest| ordered::open(quest) && ordered::attached(quest, session))
-            .map(ordered::id)
-            .collect();
-        match holding.as_slice() {
+        Ok(Some(
+            quests
+                .values()
+                .filter(|quest| ordered::open(quest) && ordered::attached(quest, session))
+                .map(|quest| ordered::id(quest).to_owned())
+                .collect(),
+        ))
+    }
+
+    /// The one quest of `holding`, those the quests' record holds
+    /// `session` in; refused, naming `address`, where none or several are,
+    /// or it isn't a plain name.
+    fn the_quest(holding: &[String], session: &str, address: &str) -> Result<String, String> {
+        match holding {
             [] => Err(format!(
                 "no open quest holds {session} in the quests' record, so {address} isn't carried"
             )),
             // Its id names its scratch's folder, so it is a plain name.
-            [quest] if plain_quest(quest) => Ok((*quest).to_owned()),
+            [quest] if plain_quest(quest) => Ok(quest.clone()),
             [quest] => Err(format!(
                 "the quests' record names {session}'s quest {quest}, which isn't a plain \
                  name, so {address} isn't carried"
@@ -7061,6 +7208,9 @@ impl<S: Store> Shared<S> {
     /// tells them, and the session a start it asks counts toward, as
     /// [`asker::charged`] tells it, all from one reading.
     async fn judged_charging(&self) -> Result<(By, Vec<String>, Option<String>), String> {
+        if let Some(vouched) = &self.vouched {
+            return Ok((vouched.by, Vec::new(), vouched.charged.clone()));
+        }
         let (claims, fences) = self.claims_saying_fences();
         let (client, processes) = (self.client, self.processes.clone());
         tokio::task::spawn_blocking(move || {
@@ -7126,6 +7276,9 @@ impl<S: Store> Shared<S> {
             || declared.is_some_and(|declared| Kind::from(declared.kind) == Kind::Strict)
         {
             return None;
+        }
+        if let Some(vouched) = &self.vouched {
+            return vouched.unfenced.clone();
         }
         let home = PathBuf::from(std::env::var_os("HOME")?);
         if !asker::hosts_are_the_harnesses(&self.hosts, &home) {
@@ -7306,54 +7459,61 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             keep_watching(&shared, groups.as_ref(), recent, lines, writing).await;
             return;
         }
-        let reply: Answer = match request {
-            Ok(Request::Start(asked)) => shared.start(asked).await.into(),
-            Ok(Request::Takes(asked)) => shared.would_take(&asked).await.into(),
-            Ok(Request::Relayed { from, start }) => shared.relayed(&from, start).await.into(),
-            Ok(Request::Sprout(asked)) => shared.sprout(asked).await.into(),
-            Ok(Request::Steer { address, steer }) => shared.steer(&address, &steer).await.into(),
-            Ok(Request::End { held }) => shared.end(&held).await.into(),
-            Ok(Request::Orchestrates { heads, quests }) => {
-                shared.orchestrates(heads, quests).await.into()
-            }
-            Ok(Request::Orchestrating) => shared.orchestrating().await.into(),
-            Ok(Request::Free { quest }) => shared.frees(quest).await.into(),
-            Ok(Request::Starts { act }) => shared.starts_asked(act).await.into(),
-            Ok(Request::Spawned {
-                pid,
-                started,
-                session,
-            }) => shared.spawned((pid, started), session).await.into(),
-            Ok(Request::Update { machine }) => shared.update(&machine).await.into(),
-            Ok(Request::Offers) => Answer::Ok(Response::Offers(shared.offers().await)),
-            // A receptor's cell is named `<source>@<machine>`, and only the
-            // node holding it speaks as it, so no client is a name with @.
-            Ok(Request::Send(draft)) if draft.from.contains('@') => Answer::Err(
-                "only the node speaks as a name with @ in it, such as a receptor's".to_owned(),
-            ),
-            Ok(Request::Send(draft))
-                if draft
-                    .realm
-                    .as_ref()
-                    .is_some_and(|realm| *realm != shared.realm) =>
-            {
-                shared.send_across(draft).await
-            }
-            // A crossing is another realm's node handing on what it took,
-            // and its receptors' signals stay with it.
-            Ok(Request::Cross(crossing))
-                if crate::stimuli::speaks_as_receptor(&crossing.message.from) =>
-            {
-                Answer::Err("a receptor's signal stays in its own realm".to_owned())
-            }
-            Ok(Request::Cross(crossing)) => shared.take(crossing),
-            Ok(Request::Place(work)) => shared.place_asked(&work, Counts::Never).await.into(),
-            Ok(Request::PlaceToStart(work)) => shared.place_asked(&work, Counts::Here).await.into(),
-            asked => asked.and_then(|request| shared.answer(request)).into(),
-        };
+        let reply = answered(&shared, request).await;
         if write(&mut writing, &reply).await.is_err() {
             return;
         }
+    }
+}
+
+/// The node's answer to `request`, one of those answered a line each, as
+/// whoever `shared` says asks: a client, or the node itself carrying on a
+/// carry it vouched for.
+async fn answered<S: Store>(shared: &Shared<S>, request: Result<Request, String>) -> Answer {
+    match request {
+        Ok(Request::Start(asked)) => shared.start(asked).await.into(),
+        Ok(Request::Takes(asked)) => shared.would_take(&asked).await.into(),
+        Ok(Request::Relayed { from, start }) => shared.relayed(&from, start).await.into(),
+        Ok(Request::Sprout(asked)) => shared.sprout(asked).await.into(),
+        Ok(Request::Steer { address, steer }) => shared.steer(&address, &steer).await.into(),
+        Ok(Request::End { held }) => shared.end(&held).await.into(),
+        Ok(Request::Orchestrates { heads, quests }) => {
+            shared.orchestrates(heads, quests).await.into()
+        }
+        Ok(Request::Orchestrating) => shared.orchestrating().await.into(),
+        Ok(Request::Free { quest }) => shared.frees(quest).await.into(),
+        Ok(Request::Starts { act }) => shared.starts_asked(act).await.into(),
+        Ok(Request::Spawned {
+            pid,
+            started,
+            session,
+        }) => shared.spawned((pid, started), session).await.into(),
+        Ok(Request::Update { machine }) => shared.update(&machine).await.into(),
+        Ok(Request::Offers) => Answer::Ok(Response::Offers(shared.offers().await)),
+        // A receptor's cell is named `<source>@<machine>`, and only the
+        // node holding it speaks as it, so no client is a name with @.
+        Ok(Request::Send(draft)) if draft.from.contains('@') => Answer::Err(
+            "only the node speaks as a name with @ in it, such as a receptor's".to_owned(),
+        ),
+        Ok(Request::Send(draft))
+            if draft
+                .realm
+                .as_ref()
+                .is_some_and(|realm| *realm != shared.realm) =>
+        {
+            shared.send_across(draft).await
+        }
+        // A crossing is another realm's node handing on what it took,
+        // and its receptors' signals stay with it.
+        Ok(Request::Cross(crossing))
+            if crate::stimuli::speaks_as_receptor(&crossing.message.from) =>
+        {
+            Answer::Err("a receptor's signal stays in its own realm".to_owned())
+        }
+        Ok(Request::Cross(crossing)) => shared.take(crossing),
+        Ok(Request::Place(work)) => shared.place_asked(&work, Counts::Never).await.into(),
+        Ok(Request::PlaceToStart(work)) => shared.place_asked(&work, Counts::Here).await.into(),
+        asked => asked.and_then(|request| shared.answer(request)).into(),
     }
 }
 
@@ -9680,7 +9840,22 @@ esac
         socket: &Path,
         quests: &Value,
         also: &[Value],
+        fence: (&str, &str),
+    ) -> (
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<io::Result<()>>,
+        Speaking,
+    ) {
+        harbour_sharing(store, socket, (quests, also), fence, None).await
+    }
+
+    /// As [`harbour_claiming`], sharing quests in `sharing`, where given.
+    async fn harbour_sharing(
+        store: &Memory,
+        socket: &Path,
+        (quests, also): (&Value, &[Value]),
         (fence, began): (&str, &str),
+        sharing: Option<Places>,
     ) -> (
         tokio::sync::oneshot::Sender<()>,
         tokio::task::JoinHandle<io::Result<()>>,
@@ -9723,7 +9898,8 @@ esac
         for (at, presence) in also.iter().enumerate() {
             store.start_here(&format!("also-{at}"), presence.clone(), true);
         }
-        let (stop, running) = alone(store, "skiff", socket);
+        let (stop, running) =
+            node_sharing(store, "skiff", Vec::<Piped>::new(), None, socket, sharing);
         let mut client = Speaking::greeted(socket).await;
         // Once the node has started, as a link carries it, since a machine
         // no link claims as the node starts is marked out of reach.
@@ -11862,7 +12038,21 @@ esac
     async fn a_session_carries_itself_and_no_other() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
-        let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
+        let places = dir.path().join("places");
+        let sharing = Places {
+            quests: places.join("quests"),
+            scratch: places.join("scratch"),
+            home: places.join("home"),
+            state: places.join("state"),
+        };
+        let (_stop, _node, _client) = harbour_sharing(
+            &Memory::default(),
+            &socket,
+            (&orchestrations(), &[]),
+            ("strict", STRICT),
+            Some(sharing),
+        )
+        .await;
         let inbox = inboxes(&socket).join("HARBOR");
         let kept = socket.with_file_name("carries.jsonl");
         let carry = |said: Value| {
@@ -11929,6 +12119,33 @@ esac
                 &json!("skiff is short of memory"),
             ),
             "kept as carried by itself: {line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_sharing_no_quest_carries_no_session_of_itself() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
+        let inbox = inboxes(&socket).join("HARBOR");
+        asks_below(&socket, 7003);
+        let asked = ask(
+            socket.clone(),
+            Request::Steer {
+                address: "harbor".to_owned(),
+                steer: json!({"act": "self-carry", "to": "tern", "why": "memory"}),
+            },
+        )
+        .await;
+        assert_eq!(
+            asked,
+            Err("skiff shares no quest, so it carries no session's work".to_owned()),
+            "since nothing would carry on once the session ended"
+        );
+        assert_eq!(
+            held_in(&inbox),
+            Vec::<Value>::new(),
+            "so the session isn't told"
         );
     }
 
@@ -20599,6 +20816,57 @@ esac
             to_dial,
         );
         shared
+    }
+
+    #[tokio::test]
+    async fn the_node_carrying_on_asks_as_it_vouched_while_the_asker_ran() {
+        use crate::declared::Kind;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let mut shared = holding_skiff(
+            dir.path(),
+            Memory::default(),
+            None,
+            Processes::Folder("/nowhere/proc".into()),
+        );
+        shared.client = None;
+        assert!(
+            shared
+                .judged_charging()
+                .await
+                .is_ok_and(|(by, _, charged)| {
+                    by == By::Agent(Kind::Strict) && charged.is_none()
+                }),
+            "no client and no vouching is judged strict, as the node's own asks were"
+        );
+        let quest = json!("QEST-20261115-HARBOR");
+        shared.vouched = Some(Arc::new(Vouched {
+            by: By::Agent(Kind::None),
+            charged: Some("s-harbour".to_owned()),
+            unfenced: Some(vec![("s-harbour".to_owned(), quest.clone())]),
+        }));
+        assert_eq!(
+            shared.judged_charging().await,
+            Ok((
+                By::Agent(Kind::None),
+                Vec::new(),
+                Some("s-harbour".to_owned())
+            )),
+            "vouched, it asks as the session was judged while it ran"
+        );
+        assert_eq!(
+            shared.unfenced_asking(By::Agent(Kind::None), None).await,
+            Some(vec![("s-harbour".to_owned(), quest)]),
+            "and was shown unfenced as it was then"
+        );
+        let strict = Some(DeclaredFence {
+            kind: FenceKind::Strict,
+            from: FenceFrom::Default,
+        });
+        assert_eq!(
+            shared.unfenced_asking(By::Agent(Kind::None), strict).await,
+            None,
+            "but a start declaring the strict fence is never shown unfenced"
+        );
     }
 
     /// The cell the carried session `s-harbour` stands as, once a minute

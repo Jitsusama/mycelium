@@ -35,6 +35,7 @@ pub mod sleep;
 pub mod through;
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -388,10 +389,101 @@ pub fn carry(
         "carrying each session's work".to_owned(),
     );
     said.or_failed(Step::Push, bring_cells(hands, &sessions))?;
-    let (done, ordered) = said.or_failed(
-        Step::Push,
-        push(hands, quest, to, asked, &sessions, skipped.is_empty()),
+    let ordered = said.or_failed(Step::Push, tell(hands, to, asked, &sessions))?;
+    if let Asked::Itself { .. } = asked {
+        // Its own session can't end while this runs below it, so the
+        // node carries on from here, once it has ended.
+        said.line(
+            Step::Push,
+            Stood::Done,
+            format!(
+                "{} told; this machine's node carries the rest once it has carried and ended",
+                names.join(", ")
+            ),
+        );
+        return Ok(Carried {
+            step: "handed",
+            state: Stood::Done,
+            machine: to.to_owned(),
+            sessions: Vec::new(),
+            skipped,
+        });
+    }
+    let whole = skipped.is_empty();
+    let arrived = rest(
+        hands,
+        (quest, here, to),
+        (&sessions, whole, false),
+        ordered.as_ref(),
+        &mut said,
     )?;
+    Ok(Carried {
+        step: "carried",
+        state: Stood::Done,
+        machine: to.to_owned(),
+        sessions: arrived,
+        skipped,
+    })
+}
+
+/// Carries on a carry a session asked of itself, once it was told, as
+/// this machine's node does, since the session can't end while the
+/// command that asked runs below it: waits for `session` to carry, then
+/// carries the rest where it is `whole`, the quest's only session here,
+/// shares, starts it on `to` as carried by `ordered`, and waits for it to
+/// end here. Only its own work starts there, and the quest's where it
+/// was whole, never what an earlier carry left.
+///
+/// # Errors
+///
+/// [`Failed`] when a step fails, its line having said why.
+pub fn carry_told(
+    hands: &mut impl Hands,
+    (quest, here, to): (&str, &str, &str),
+    (session, whole): (&Session, bool),
+    ordered: &Ordered,
+    say: &mut impl FnMut(&Value),
+) -> Result<Carried, Failed> {
+    let mut said = Saying { say };
+    let sessions = std::slice::from_ref(session);
+    let arrived = rest(
+        hands,
+        (quest, here, to),
+        (sessions, whole, true),
+        Some(ordered),
+        &mut said,
+    )?;
+    Ok(Carried {
+        step: "carried",
+        state: Stood::Done,
+        machine: to.to_owned(),
+        sessions: arrived,
+        skipped: Vec::new(),
+    })
+}
+
+/// A carry's steps once its `sessions` were told: waits until each has
+/// carried, carries the rest where `whole`, shares, starts each on `to`
+/// and waits until they have ended here. Where `own`, only the told
+/// sessions' work starts, and the quest's where `whole`.
+fn rest<F: FnMut(&Value)>(
+    hands: &mut impl Hands,
+    (quest, here, to): (&str, &str, &str),
+    (sessions, whole, own): (&[Session], bool, bool),
+    ordered: Option<&Ordered>,
+    said: &mut Saying<'_, F>,
+) -> Result<Vec<Arrived>, Failed> {
+    let mut done = said.or_failed(Step::Push, gathered(hands, quest, to, sessions, whole))?;
+    if own {
+        let told: BTreeSet<&str> = sessions.iter().filter_map(session_id).collect();
+        done.retain(|one| told.contains(one.session.as_str()) || (whole && one.session == quest));
+        if done.is_empty() {
+            said.or_failed(
+                Step::Push,
+                Err::<(), _>(format!("nothing of {quest} was carried into the handover")),
+            )?;
+        }
+    }
     let count = plural(done.len(), "session");
     said.line(
         Step::Push,
@@ -418,7 +510,7 @@ pub fn carry(
     );
     let arrived = said.or_failed(
         Step::Start,
-        start_each(hands, quest, here, to, &done, &sessions, ordered.as_ref()),
+        start_each(hands, quest, here, to, &done, sessions, ordered),
     )?;
     let count = plural(arrived.len(), "session");
     said.line(
@@ -432,7 +524,7 @@ pub fn carry(
         Stood::Doing,
         "waiting for the sessions here to end".to_owned(),
     );
-    said.or_failed(Step::Close, closed(hands, here, &sessions))?;
+    said.or_failed(Step::Close, closed(hands, here, sessions))?;
     if sessions.is_empty() {
         said.line(
             Step::Close,
@@ -446,13 +538,7 @@ pub fn carry(
             "the sessions here have ended".to_owned(),
         );
     }
-    Ok(Carried {
-        step: "carried",
-        state: Stood::Done,
-        machine: to.to_owned(),
-        sessions: arrived,
-        skipped,
-    })
+    Ok(arrived)
 }
 
 /// What a carry's sessions were, once found: those it carries, and the
@@ -508,8 +594,9 @@ impl<F: FnMut(&Value)> Saying<'_, F> {
 /// arrives as `ordered` says, where an orchestrator ordered it. The
 /// sessions told to carry start first, then the quest's own, as the
 /// find asked of them, and only then those it couldn't ask of: a
-/// session that had ended, or one an earlier carry left, so a refusal
-/// none asked of meets no session ended for this carry.
+/// session that had ended, or one an earlier carry left. One refused or
+/// unanswered doesn't stop the rest, since each told has ended here;
+/// those it names fail the step once every one was asked.
 fn start_each(
     hands: &mut impl Hands,
     quest: &str,
@@ -530,26 +617,49 @@ fn start_each(
             2
         }
     });
-    done.into_iter()
-        .map(|one| {
-            let address = sessions
-                .iter()
-                .find(|session| session_id(session) == Some(one.session.as_str()))
-                .map_or_else(|| one.session.clone(), |session| session.address.clone());
-            let started = hands
-                .start(arriving(quest, here, to, one, ordered))
-                .map_err(|why| format!("{address} didn't start on {to}: {why}"))?;
-            hands.started(one).map_err(|why| {
-                format!("{address} started on {to}, but a later carry would start it again: {why}")
-            })?;
-            Ok((one.session != quest).then_some(Arrived {
+    // Each is asked whatever the ones before it answered, since a session
+    // told has ended here, and one whose start went unanswered may still
+    // land there: asked again, under its name, it joins that start.
+    let mut arrived = Vec::new();
+    let mut failed = Vec::new();
+    for one in done {
+        let address = sessions
+            .iter()
+            .find(|session| session_id(session) == Some(one.session.as_str()))
+            .map_or_else(|| one.session.clone(), |session| session.address.clone());
+        let started = match hands.start(arriving(quest, here, to, one, ordered)) {
+            Ok(started) => started,
+            Err(why) => {
+                failed.push(format!("{address} didn't start on {to}: {why}"));
+                continue;
+            }
+        };
+        if let Err(why) = hands.started(one) {
+            failed.push(format!(
+                "{address} started on {to}, but a later carry would start it again: {why}"
+            ));
+            continue;
+        }
+        if one.session != quest {
+            arrived.push(Arrived {
                 address,
                 held: started.held,
                 attach: started.attach,
-            }))
-        })
-        .filter_map(Result::transpose)
-        .collect()
+            });
+        }
+    }
+    if failed.is_empty() {
+        return Ok(arrived);
+    }
+    let mut why = failed.join("; ");
+    if !arrived.is_empty() {
+        let went: Vec<&str> = arrived.iter().map(|one| one.address.as_str()).collect();
+        // Writing to a string can't fail.
+        let _ = write!(why, "; {} started there", went.join(", "));
+    }
+    Err(format!(
+        "{why}; what didn't start stays in the handover, for the person's carry to start"
+    ))
 }
 
 /// The quest's sessions on `here` that can carry their own work: those
@@ -658,18 +768,14 @@ fn find(
 }
 
 /// Tells each session to carry its work to `to`, as the person, its
-/// orchestrator or itself, as `asked` says, waits until each has, then,
-/// where `whole`, carries what none of them held, and answers everything
-/// carried, with who ordered it as the node proved. A session that
-/// refuses stops it at once.
-fn push(
+/// orchestrator or itself, as `asked` says, and answers who ordered it,
+/// as the node proved.
+fn tell(
     hands: &mut impl Hands,
-    quest: &str,
     to: &str,
     asked: Asked,
     sessions: &[Session],
-    whole: bool,
-) -> Result<(Vec<Done>, Option<Ordered>), String> {
+) -> Result<Option<Ordered>, String> {
     let steer = match asked {
         Asked::Person => json!({"act": "carry", "to": to, "from": "person"}),
         Asked::Ordered(why) => json!({"act": ordered::ACT, "to": to, "why": why}),
@@ -699,10 +805,22 @@ fn push(
         }
         by = Some(proved);
     }
-    let ordered = by.zip(why).map(|(by, why)| Ordered {
+    Ok(by.zip(why).map(|(by, why)| Ordered {
         by,
         why: why.to_owned(),
-    });
+    }))
+}
+
+/// Waits until each of `sessions`, told, has carried its work, then,
+/// where `whole`, carries what none of them held, and answers everything
+/// carried. A session that refuses stops it at once.
+fn gathered(
+    hands: &mut impl Hands,
+    quest: &str,
+    to: &str,
+    sessions: &[Session],
+    whole: bool,
+) -> Result<Vec<Done>, String> {
     let waiting: BTreeSet<&str> = sessions.iter().filter_map(session_id).collect();
     loop {
         let refused = hands.refused()?;
@@ -754,7 +872,7 @@ fn push(
             "nothing of {quest} was here to carry that hadn't started already"
         ));
     }
-    Ok((done, ordered))
+    Ok(done)
 }
 
 /// Puts in the handover what each session to be carried brings of its
@@ -1124,7 +1242,7 @@ mod tests {
     use super::cell::Brought;
     use super::{
         Asked, Carried, Done, Failed, Hands, Ordered, PI_CARRY, Refused, Step, Untaken, carry,
-        runs_on, session_id, unordered_arrival,
+        carry_told, runs_on, session_id, unordered_arrival,
     };
     use crate::placement::Need;
     use crate::record::{Session, State};
@@ -2213,11 +2331,81 @@ mod tests {
         );
     }
 
+    /// Carries on, as the node does, the carry of HARBOR's `session` from
+    /// skiff to tern it asked of itself, once told, ordered by `by`.
+    fn told(
+        realm: &mut Realm,
+        session: &str,
+        whole: bool,
+        by: &str,
+    ) -> (Result<Carried, Failed>, Vec<Value>) {
+        let one = realm
+            .sessions
+            .iter()
+            .find(|one| session_id(one) == Some(session))
+            .cloned()
+            .expect("a session of the realm");
+        let ordered = Ordered {
+            by: by.to_owned(),
+            why: "skiff is short of memory".to_owned(),
+        };
+        let mut lines = Vec::new();
+        let done = carry_told(
+            realm,
+            (QUEST, "skiff", "tern"),
+            (&one, whole),
+            &ordered,
+            &mut |line: &Value| lines.push(line.clone()),
+        );
+        (done, lines)
+    }
+
+    #[test]
+    fn a_session_carrying_itself_hands_the_rest_to_the_node_once_told() {
+        let mut realm = realm();
+        let (done, lines) = itself(&mut realm, "s-busy01");
+        let carried = done.expect("handed");
+        assert_eq!(carried.step, "handed", "its last line says so: {lines:?}");
+        assert!(carried.sessions.is_empty());
+        assert!(
+            realm.started.is_empty() && realm.shared.is_empty(),
+            "nothing is shared or started below the session, which can't end while \
+             the command runs: {lines:?}"
+        );
+        assert!(
+            last_said(&lines).contains("node carries the rest"),
+            "and the push says who carries on: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn the_node_carrying_on_starts_only_the_sessions_own_work() {
+        for (whole, own) in [(false, vec!["s-busy01"]), (true, vec!["s-busy01", QUEST])] {
+            let mut realm = realm();
+            // An earlier carry left NAPS02's done file unstarted.
+            realm.write("s-naps02");
+            let _ = itself(&mut realm, "s-busy01");
+            let (done, lines) = told(&mut realm, "s-busy01", whole, "BUSY01");
+            done.expect("carried");
+            assert_eq!(
+                arrivals(&realm.started),
+                own,
+                "never what an earlier carry left nor an ended session's work, and the \
+                 quest's own trees only where it was the quest's only session here: {lines:?}"
+            );
+            assert_eq!(
+                realm.rest.is_some(),
+                whole,
+                "the rest goes only with it whole"
+            );
+        }
+    }
+
     #[test]
     fn a_session_carries_itself_alone_and_arrives_carried_by_itself() {
         let mut realm = realm();
         let (done, lines) = itself(&mut realm, "s-busy01");
-        let carried = done.expect("carried");
+        let carried = done.expect("handed");
         assert_eq!(
             realm.steered,
             [(
@@ -2238,6 +2426,8 @@ mod tests {
             "and the find says so: {}",
             lines[1]
         );
+        let (done, _) = told(&mut realm, "s-busy01", false, "BUSY01");
+        done.expect("carried");
         assert_eq!(
             realm
                 .started
@@ -2273,11 +2463,9 @@ mod tests {
 
     #[test]
     fn a_session_carrying_itself_arrives_as_the_node_proved_it() {
-        let mut realm = Realm {
-            by_each: [("BUSY01".to_owned(), "NAPS02".to_owned())].into(),
-            ..realm()
-        };
-        let (done, _) = itself(&mut realm, "s-busy01");
+        let mut realm = realm();
+        let _ = itself(&mut realm, "s-busy01");
+        let (done, _) = told(&mut realm, "s-busy01", false, "NAPS02");
         done.expect("the carry goes, as the node said who");
         assert_eq!(
             realm.started[0].command[8], "NAPS02",
@@ -2780,18 +2968,46 @@ mod tests {
         );
         let said = last_said(&lines);
         assert!(said.contains("NAPS02"), "naming the one refused: {said}");
+        assert!(
+            said.contains("BUSY01, s-gone started there"),
+            "and those that did: {said}"
+        );
         assert_eq!(
             arrivals(&realm.started),
-            ["s-busy01"],
-            "the one before it started"
+            ["s-busy01", QUEST, "s-gone"],
+            "every other was asked all the same, since each told has ended here"
         );
         realm.refuses = None;
         let (done, lines) = carried(&mut realm, "tern");
         done.expect("taken again, it goes through");
         assert_eq!(
             arrivals(&realm.started),
-            ["s-busy01", "s-naps02", QUEST, "s-gone"],
+            ["s-busy01", QUEST, "s-gone", "s-naps02"],
             "each carried session starts once, those not yet started now: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_start_that_fails_first_leaves_the_rest_asked() {
+        let mut realm = Realm {
+            refuses: Some("s-busy01".to_owned()),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        assert_eq!(done, Err(Failed { step: Step::Start }));
+        assert_eq!(
+            arrivals(&realm.started),
+            ["s-naps02", QUEST, "s-gone"],
+            "the others start though the first was refused: {lines:?}"
+        );
+        let said = last_said(&lines);
+        assert!(
+            said.contains("BUSY01 didn't start on tern") && said.contains("stays in the handover"),
+            "naming the one refused and where its work is: {said}"
+        );
+        assert!(
+            !steps(&lines).contains(&"close doing".to_owned()),
+            "and nothing after the start runs: {lines:?}"
         );
     }
 }

@@ -694,7 +694,10 @@ in order and says each step:
    beside its done file, which stays for `pi-carry` there to read, and
    no carry takes a done file up again until it is written afresh, newer
    than its mark, so neither a later carry nor this one taken again
-   starts a session twice.
+   starts a session twice. A start that fails doesn't stop the others,
+   since each session told has ended here: every one is asked, and the
+   step fails naming those that didn't start, which stay in the
+   handover.
 5. `close`: the sessions here are seen to end.
 
 Each step prints `{"step", "state", "said"}` on a line as it begins
@@ -703,6 +706,9 @@ Each step prints `{"step", "state", "said"}` on a line as it begins
 session `{"address", "held", "attach"}`, with `skipped`, the addresses
 of the sessions left where they are, where any were: the parked ones an
 ordered carry passed over, or the others a session carrying itself left.
+A session carrying itself ends instead at `push` once it is told, with
+the last line `{"step": "handed", "state": "done", "machine",
+"sessions": []}`, since it can't end while the command runs below it.
 A step that fails says why, the
 command exits non-zero, and nothing after it runs; what was done stays
 done, since each step can be taken again. It waits 15 minutes in all for
@@ -1022,7 +1028,16 @@ or else the one its presence names, since only its own trees settle.
 from the session's own pi, asks it for the session `PI_SESSION_ID`
 names: the quest's other sessions here stay and are named in the
 Find line and in `skipped`, and what none of them held stays with
-them, so the quest's own trees aren't carried.
+them, so the quest's own trees aren't carried. The command ends once
+the session is told, answering `handed`. The node carries on from
+there, in the background, saying each step in its own log. It waits for
+the session to carry and end, then shares and starts it on the other
+machine, carried by itself. Only that session's done file starts there,
+and the quest's where no other session of it runs here. Those steps are
+asked of the node as the session was judged when it asked the carry,
+while it still ran: who asked, the session its start counts toward, and
+whether it was shown unfenced. Its start is judged as a client's would
+be on every other count. A node sharing no quest refuses the carry.
 
 ### A Machine Easing Itself
 
