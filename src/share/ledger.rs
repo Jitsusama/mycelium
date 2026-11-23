@@ -348,6 +348,8 @@ impl Held {
     /// Writes the ledger back, by rename so no reader sees half of it, and
     /// keeps it as read, so the next hold need not parse what it wrote.
     pub fn keep(&self) -> io::Result<()> {
+        #[cfg(test)]
+        KEPT.with(|kept| kept.set(kept.get() + 1));
         let staged = self.path.with_extension("json.mycelium.tmp");
         let text = serde_json::to_vec_pretty(&self.ledger).map_err(io::Error::other)?;
         fs::write(&staged, text)?;
@@ -365,6 +367,19 @@ impl Held {
         };
         Ok(())
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many ledgers this thread has kept, so a test can count writes.
+    static KEPT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many ledgers this thread has kept.
+#[cfg(test)]
+#[must_use]
+pub fn kept_here() -> usize {
+    KEPT.with(std::cell::Cell::get)
 }
 
 /// What tells one written ledger from another without reading it: the

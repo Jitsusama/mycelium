@@ -1547,6 +1547,31 @@ impl Exchange {
     ) -> io::Result<()> {
         let mut held = self.places.ledgers().hold(id)?;
         let quest = self.quest(id, &held.ledger);
+        let mut changed = false;
+        let each = self.held_each(id, files, wants, &mut held, &quest, &mut changed);
+        // Kept once for the whole Holds, rather than once a file: each
+        // keep writes the whole ledger, which runs to megabytes for a
+        // quest of thousands of files, so keeping once a file held the
+        // link for minutes. Kept where a file failed too, so what was
+        // taken before it, a deletion included, isn't seen again.
+        if changed {
+            held.keep()?;
+        }
+        each
+    }
+
+    /// Settles each of `files` the other end holds against `held`, as
+    /// [`Self::held_into`] does, saying in `changed` whether the ledger
+    /// holds anything new to keep.
+    fn held_each(
+        &mut self,
+        id: &str,
+        files: BTreeMap<String, State>,
+        wants: &mut Vec<Say>,
+        held: &mut Held,
+        quest: &Quest,
+        changed: &mut bool,
+    ) -> io::Result<()> {
         for (key, theirs) in files {
             let Some(shared) = shared_of(&key).filter(|shared| quest.carries(shared)) else {
                 continue;
@@ -1555,11 +1580,9 @@ impl Exchange {
             let sight = if held.ledger.aside && shared.place == Place::Record {
                 Sight::Same
             } else {
-                held.ledger.scan_one(&quest, &shared, &self.machine)?
+                held.ledger.scan_one(quest, &shared, &self.machine)?
             };
-            if sight.is_new() {
-                held.keep()?;
-            }
+            *changed |= sight.is_new();
             if sight == Sight::Changed {
                 self.unsay(id, &key);
             }
@@ -1596,7 +1619,7 @@ impl Exchange {
                             seen: None,
                         },
                     );
-                    held.keep()?;
+                    *changed = true;
                 }
                 _ => match asked {
                     // Said again while asked, it changed there since, so a
@@ -4407,6 +4430,55 @@ mod tests {
         assert!(
             far.places.ledgers().shares(QUEST),
             "one saying it live with a README is taken up"
+        );
+    }
+
+    /// Each keep writes the whole ledger, so a Holds of a quest's
+    /// thousands of files that kept once a file held the link for minutes.
+    #[test]
+    fn a_holds_of_many_files_seen_anew_keeps_the_ledger_once() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        kestrel.write("README.md", &format!("---\nid: {QUEST}\n---\n# Shared\n"));
+        share(&kestrel, QUEST);
+        let mut far = kestrel.exchange(&skiff);
+        far.hear(Say::Shares {
+            quests: vec![QUEST.to_owned()],
+            scratch: BTreeMap::new(),
+            clones: BTreeMap::new(),
+            ended: BTreeSet::new(),
+            above: BTreeSet::new(),
+        })
+        .expect("heard");
+        let files: BTreeMap<String, State> = (0..20)
+            .map(|n| {
+                let path = format!("attachments/note-{n}.md");
+                kestrel.write(&path, "the same note\n");
+                let state = State {
+                    hash: Some(content(b"the same note\n").hash),
+                    ..State::default()
+                };
+                (format!("record/{path}"), state)
+            })
+            .collect();
+        let before = super::super::ledger::kept_here();
+        far.hear(Say::Holds {
+            quest: QUEST.to_owned(),
+            files: files.clone(),
+        })
+        .expect("heard");
+        let kept = super::super::ledger::kept_here() - before;
+        assert!(
+            kept <= 2,
+            "the ledger is kept for the files and for what was heard, not {kept} times"
+        );
+        let ledger = kestrel.places.ledgers().hold(QUEST).expect("held").ledger;
+        assert!(
+            files.keys().all(|key| ledger
+                .files
+                .get(key)
+                .is_some_and(|entry| entry.seen.is_some())),
+            "and each file is kept as seen"
         );
     }
 
