@@ -12,30 +12,72 @@ use std::sync::OnceLock;
 
 use crate::share::exchange::Places;
 
+/// The variable naming the login's runtime folder outright, ahead of
+/// `XDG_RUNTIME_DIR`, as a Mac's pi host is started with it.
+const AGENTS_RUNTIME: &str = "AGENTS_RUNTIME_DIR";
+
 /// The socket the node for `realm` serves, in the login's runtime folder
 /// ([`login_runtime`]), or the temporary folder on a system with none.
 pub fn socket(realm: &str) -> PathBuf {
     runtime().join(format!("{realm}.sock"))
 }
 
+/// The socket a client finds the node for `realm` at: the one it serves
+/// ([`socket`]), or while nothing is there, the one a node started before
+/// the runtime folder moved still serves ([`former_runtime`]).
+pub fn reach(realm: &str) -> PathBuf {
+    let name = format!("{realm}.sock");
+    found(&runtime().join(&name), former().map(|dir| dir.join(&name)))
+}
+
+/// Where a node of `realm` started before the runtime folder moved served
+/// its socket, for a node of now to be found there too, by a client of
+/// then; none where the folder didn't move.
+pub fn former_socket(realm: &str) -> Option<PathBuf> {
+    former().map(|dir| dir.join(format!("{realm}.sock")))
+}
+
+/// `now` if it is there, else `before` if that is, else `now`, which is
+/// where what isn't anywhere yet will be.
+pub fn found(now: &Path, before: Option<PathBuf>) -> PathBuf {
+    match before {
+        Some(before) if !now.exists() && before.exists() => before,
+        _ => now.to_owned(),
+    }
+}
+
 /// The folder of the sessions held in `realm` on this machine, each a
-/// holder's socket and record, beside the node's socket.
+/// holder's socket and record. It stays where it was before the runtime
+/// folder moved, so a node of now still finds the sessions a holder of
+/// then holds, and moves with the release that reads both folders.
 pub fn held(realm: &str) -> PathBuf {
-    runtime().join(format!("{realm}.held"))
+    former()
+        .unwrap_or_else(runtime)
+        .join(format!("{realm}.held"))
 }
 
 /// The record of the harness's machine queue, which says the room the
 /// machine has for more work: in the login's runtime folder, so nowhere
-/// on a system with none, as the harness keeps it.
+/// on a system with none, as the harness keeps it, or in the one it moved
+/// from while a harness of then keeps it there.
 pub fn queue() -> Option<PathBuf> {
-    login_runtime().map(|dir| dir.join("jobs").join("queue.json"))
+    let record = |dir: PathBuf| dir.join("jobs").join("queue.json");
+    login_runtime().map(|dir| found(&record(dir), former_runtime().map(record)))
 }
 
 /// The status of the machine's disk guard, which says how full each disk
-/// is: in the login's runtime folder, so nowhere on a system with none, as
-/// the guard keeps it.
+/// is, where the guard keeps it: in `XDG_RUNTIME_DIR`, or on macOS the
+/// account's temporary folder, so nowhere on another system with none.
 pub fn disk_guard() -> Option<PathBuf> {
-    login_runtime().map(|dir| dir.join("disk-guard").join("status.json"))
+    let kept = runtime_of(
+        &Variables {
+            agents: None,
+            xdg: env::var_os("XDG_RUNTIME_DIR"),
+        },
+        cfg!(target_os = "macos"),
+        darwin_temporary_kept,
+    )?;
+    Some(kept.join("disk-guard").join("status.json"))
 }
 
 /// The socket the machine's updater takes asks on, where the system's
@@ -59,40 +101,123 @@ pub fn updated() -> PathBuf {
 }
 
 /// The login's own runtime folder, as the harness finds it: what
-/// `XDG_RUNTIME_DIR` names, or on macOS, which has none, the account's own
-/// temporary folder as the system names it. Not `TMPDIR`, which the
-/// harness moves for a session's quest. None on any other system without
-/// one.
+/// `AGENTS_RUNTIME_DIR` names, else what `XDG_RUNTIME_DIR` names, or on
+/// macOS, which has neither, the account's cache folder as the system
+/// names it. Not its temporary folder, where it was before: a fenced
+/// command's `TMPDIR` is hidden there, and its sockets with it. None on
+/// any other system without one.
 pub fn login_runtime() -> Option<PathBuf> {
-    static DARWIN: OnceLock<Option<PathBuf>> = OnceLock::new();
-    runtime_of(
-        env::var_os("XDG_RUNTIME_DIR"),
+    runtime_of(&variables(), cfg!(target_os = "macos"), darwin_cache)
+}
+
+/// Where a Mac kept the login's runtime folder before it moved to the
+/// cache folder: the account's temporary folder, where a node, a holder
+/// or a harness started before the move still serves, for one release.
+/// None off a Mac, where `XDG_RUNTIME_DIR` names the folder, where
+/// `AGENTS_RUNTIME_DIR` names one other than the cache folder, as a
+/// sandbox does, which nothing of then served in, or where it is the same
+/// folder.
+pub fn former_runtime() -> Option<PathBuf> {
+    former_of(
+        &variables(),
         cfg!(target_os = "macos"),
-        || DARWIN.get_or_init(darwin_temporary).clone(),
+        darwin_cache,
+        darwin_temporary_kept,
     )
 }
 
-/// The runtime folder `xdg` names, else on a Mac (`mac`) the one
-/// `darwin` gives.
-fn runtime_of(
+/// The node's folder within [`former_runtime`].
+fn former() -> Option<PathBuf> {
+    former_runtime().map(|dir| dir.join("mycelium"))
+}
+
+/// What the variables naming a runtime folder say, set or not.
+struct Variables {
+    /// `AGENTS_RUNTIME_DIR`.
+    agents: Option<OsString>,
+    /// `XDG_RUNTIME_DIR`.
     xdg: Option<OsString>,
+}
+
+/// What this process's variables name.
+fn variables() -> Variables {
+    Variables {
+        agents: env::var_os(AGENTS_RUNTIME),
+        xdg: env::var_os("XDG_RUNTIME_DIR"),
+    }
+}
+
+/// A variable's folder, unless it is unset or empty.
+fn set(dir: Option<&OsString>) -> Option<PathBuf> {
+    dir.filter(|dir| !dir.is_empty()).map(PathBuf::from)
+}
+
+/// The runtime folder `named` names, the agents' ahead of XDG's, else on a
+/// Mac (`mac`) the one `darwin` gives.
+fn runtime_of(
+    named: &Variables,
     mac: bool,
     darwin: impl FnOnce() -> Option<PathBuf>,
 ) -> Option<PathBuf> {
-    match xdg {
-        Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
-        _ if mac => darwin(),
-        _ => None,
+    match set(named.agents.as_ref()).or_else(|| set(named.xdg.as_ref())) {
+        Some(dir) => Some(dir),
+        None if mac => darwin(),
+        None => None,
     }
+}
+
+/// The folder the runtime folder `named` gives moved from on a Mac
+/// (`mac`): the temporary folder `temporary` gives, unless XDG names the
+/// folder, the agents' variable names one other than the cache folder
+/// `cache` gives, or the two are one.
+fn former_of(
+    named: &Variables,
+    mac: bool,
+    cache: impl Fn() -> Option<PathBuf>,
+    temporary: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    if !mac || set(named.xdg.as_ref()).is_some() {
+        return None;
+    }
+    let now = match set(named.agents.as_ref()) {
+        Some(dir) if !same(Some(&dir), cache().as_ref()) => return None,
+        Some(dir) => dir,
+        None => cache()?,
+    };
+    temporary().filter(|before| !same(Some(before), Some(&now)))
+}
+
+/// Whether two folders are one, a trailing slash or none, as `getconf`
+/// ends its folders with one and a variable may not.
+fn same(one: Option<&PathBuf>, other: Option<&PathBuf>) -> bool {
+    one.zip(other)
+        .is_some_and(|(one, other)| one.components().eq(other.components()))
+}
+
+/// The account's cache folder on macOS, once `getconf` has named it.
+fn darwin_cache() -> Option<PathBuf> {
+    static CACHE: OnceLock<Option<PathBuf>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| darwin_folder("DARWIN_USER_CACHE_DIR"))
+        .clone()
+}
+
+/// The account's temporary folder on macOS, once `getconf` has named it.
+fn darwin_temporary_kept() -> Option<PathBuf> {
+    static TEMPORARY: OnceLock<Option<PathBuf>> = OnceLock::new();
+    TEMPORARY.get_or_init(darwin_temporary).clone()
 }
 
 /// The account's own temporary folder on macOS, as `getconf` says it, or
 /// none if it won't.
 fn darwin_temporary() -> Option<PathBuf> {
-    let said = Command::new("/usr/bin/getconf")
-        .arg("DARWIN_USER_TEMP_DIR")
-        .output()
-        .ok()?;
+    darwin_folder("DARWIN_USER_TEMP_DIR")
+}
+
+/// The account's folder `getconf` names `name` on macOS, or none if it
+/// won't say.
+fn darwin_folder(name: &str) -> Option<PathBuf> {
+    let said = Command::new("/usr/bin/getconf").arg(name).output().ok()?;
     let dir = String::from_utf8(said.stdout).ok()?;
     let dir = dir.trim();
     (said.status.success() && !dir.is_empty()).then(|| PathBuf::from(dir))
@@ -353,31 +478,150 @@ fn xdg(variable: &str, default: &[&str]) -> PathBuf {
 mod tests {
     use super::*;
 
+    const CACHE: &str = "/var/folders/xb/C/";
+    const TEMPORARY: &str = "/var/folders/xb/T/";
+
+    fn set_to(agents: Option<&str>, xdg: Option<&str>) -> Variables {
+        Variables {
+            agents: agents.map(OsString::from),
+            xdg: xdg.map(OsString::from),
+        }
+    }
+
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "it stands in for getconf's folder, which may be none"
+    )]
+    fn cache() -> Option<PathBuf> {
+        Some(PathBuf::from(CACHE))
+    }
+
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "it stands in for getconf's folder, which may be none"
+    )]
+    fn temporary() -> Option<PathBuf> {
+        Some(PathBuf::from(TEMPORARY))
+    }
+
     #[test]
     fn a_mac_keeps_its_runtime_folder_where_the_system_says() {
-        let darwin = || Some(PathBuf::from("/var/folders/xb/T"));
         assert_eq!(
-            runtime_of(None, true, darwin),
-            Some(PathBuf::from("/var/folders/xb/T")),
-            "a Mac, with no XDG_RUNTIME_DIR, has the account's temporary folder"
+            runtime_of(&set_to(None, None), true, cache),
+            cache(),
+            "a Mac, with neither variable, has the account's cache folder"
         );
         assert_eq!(
-            runtime_of(Some("/run/user/501".into()), true, darwin),
+            runtime_of(&set_to(None, Some("/run/user/501")), true, cache),
             Some(PathBuf::from("/run/user/501")),
             "one that names a runtime folder keeps it"
         );
         assert_eq!(
-            runtime_of(None, false, darwin),
+            runtime_of(&set_to(None, None), false, cache),
             None,
             "another system without one has none"
         );
     }
 
+    #[test]
+    fn the_agents_folder_comes_before_every_other() {
+        assert_eq!(
+            runtime_of(&set_to(Some("/sandbox"), Some("/run/user/501")), true, cache),
+            Some(PathBuf::from("/sandbox")),
+            "AGENTS_RUNTIME_DIR comes ahead of XDG_RUNTIME_DIR"
+        );
+        assert_eq!(
+            runtime_of(&set_to(Some("/sandbox"), None), false, || None),
+            Some(PathBuf::from("/sandbox")),
+            "off a Mac too"
+        );
+        assert_eq!(
+            runtime_of(&set_to(Some(""), Some("/run/user/501")), true, cache),
+            Some(PathBuf::from("/run/user/501")),
+            "an empty one names nothing"
+        );
+    }
+
+    #[test]
+    fn a_mac_finds_what_was_started_before_the_move_in_its_temporary_folder() {
+        assert_eq!(
+            former_of(&set_to(None, None), true, cache, temporary),
+            temporary(),
+            "with neither variable"
+        );
+        assert_eq!(
+            former_of(
+                &set_to(Some("/var/folders/xb/C"), None),
+                true,
+                cache,
+                temporary
+            ),
+            temporary(),
+            "with the agents' variable naming the cache folder, a slash or none"
+        );
+    }
+
+    #[test]
+    fn nothing_moved_where_the_folder_is_named_otherwise() {
+        assert_eq!(
+            former_of(&set_to(None, None), false, cache, temporary),
+            None,
+            "off a Mac"
+        );
+        assert_eq!(
+            former_of(&set_to(None, Some("/run/user/501")), true, cache, temporary),
+            None,
+            "where XDG_RUNTIME_DIR names it"
+        );
+        assert_eq!(
+            former_of(&set_to(Some("/sandbox"), None), true, cache, temporary),
+            None,
+            "where the agents' variable names a sandbox nothing of then served in"
+        );
+        assert_eq!(
+            former_of(&set_to(None, None), true, cache, cache),
+            None,
+            "where the temporary folder is the cache folder"
+        );
+        assert_eq!(
+            former_of(&set_to(None, None), true, || None, temporary),
+            None,
+            "where the system names no cache folder, so there is no runtime folder"
+        );
+    }
+
+    #[test]
+    fn a_client_finds_the_node_where_it_serves_else_where_it_served() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let now = dir.path().join("now.sock");
+        let before = dir.path().join("before.sock");
+        assert_eq!(
+            found(&now, Some(before.clone())),
+            now,
+            "with neither there, where it will be"
+        );
+        fs::write(&before, b"").expect("the former socket");
+        assert_eq!(
+            found(&now, Some(before.clone())),
+            before,
+            "with only the former there, that one"
+        );
+        fs::write(&now, b"").expect("the socket");
+        assert_eq!(
+            found(&now, Some(before)),
+            now,
+            "with both there, the one of now"
+        );
+        assert_eq!(found(&now, None), now, "where nothing moved");
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
-    fn a_mac_names_its_own_temporary_folder() {
-        let dir = darwin_temporary().expect("getconf names it");
-        assert!(dir.is_dir(), "{} is a folder", dir.display());
+    fn a_mac_names_its_own_temporary_and_cache_folders() {
+        for dir in [darwin_temporary(), darwin_cache()] {
+            let dir = dir.expect("getconf names it");
+            assert!(dir.is_dir(), "{} is a folder", dir.display());
+        }
     }
 
     #[test]

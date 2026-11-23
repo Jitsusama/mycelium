@@ -140,12 +140,31 @@ const WATCH_PATIENCE: Duration = Duration::from_secs(10);
 pub struct Socket {
     listener: UnixListener,
     path: PathBuf,
+    /// Where it is linked in besides ([`Socket::also_at`]), with the
+    /// device and file it is there, to take down only while it is still
+    /// this socket.
+    also: Option<(PathBuf, (u64, u64))>,
 }
 
 impl Socket {
     /// The next client to connect.
     pub async fn accept(&self) -> io::Result<UnixStream> {
         self.listener.accept().await.map(|(stream, _)| stream)
+    }
+
+    /// Links the socket in at `former` too, where a node served before the
+    /// runtime folder moved, so a client started then reaches this node
+    /// for one release. A live node serving there is left alone, as is a
+    /// path that isn't a socket, and so is a folder open to others.
+    pub fn also_at(&mut self, former: &Path) -> io::Result<()> {
+        if let Some(parent) = former.parent() {
+            private_folder(parent)?;
+        }
+        take_over(former)?;
+        fs::hard_link(&self.path, former).map_err(|error| in_use(error, former))?;
+        let linked = fs::symlink_metadata(former)?;
+        self.also = Some((former.to_owned(), (linked.dev(), linked.ino())));
+        Ok(())
     }
 }
 
@@ -187,6 +206,15 @@ impl Drop for Socket {
         // The socket is the node's alone, made at bind; if it's already
         // gone there is nothing to take down.
         let _ = fs::remove_file(&self.path);
+        if let Some((former, file)) = &self.also {
+            let still =
+                fs::symlink_metadata(former).is_ok_and(|now| (now.dev(), now.ino()) == *file);
+            if still {
+                // Another node may have taken it since it was looked at;
+                // what it took is its own to keep or take down.
+                let _ = fs::remove_file(former);
+            }
+        }
     }
 }
 
@@ -202,36 +230,11 @@ impl Drop for Socket {
 /// meanwhile. Hidden names left by binds whose process died before
 /// linking in are swept first.
 pub fn bind(path: &Path) -> io::Result<Socket> {
-    let refused = |why: String| io::Error::new(io::ErrorKind::PermissionDenied, why);
     if let Some(parent) = path.parent() {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)?;
-        let folder = fs::metadata(parent)?;
-        if folder.uid() != rustix::process::geteuid().as_raw() || folder.mode() & 0o077 != 0 {
-            return Err(refused(format!(
-                "{} is open to others, so the socket can't go there",
-                parent.display()
-            )));
-        }
+        private_folder(parent)?;
         sweep_staged(parent);
     }
-    if let Ok(held) = fs::symlink_metadata(path) {
-        if !held.file_type().is_socket() {
-            return Err(refused(format!(
-                "{} is not a socket, so it is left alone",
-                path.display()
-            )));
-        }
-        if std::os::unix::net::UnixStream::connect(path).is_ok() {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                format!("a node already serves {}", path.display()),
-            ));
-        }
-        fs::remove_file(path)?;
-    }
+    take_over(path)?;
     let staged = staged(path);
     let _ = fs::remove_file(&staged);
     let listener = UnixListener::bind(&staged)?;
@@ -240,23 +243,71 @@ pub fn bind(path: &Path) -> io::Result<Socket> {
     placed.map(|()| Socket {
         listener,
         path: path.to_owned(),
+        also: None,
     })
+}
+
+/// Makes `folder` if it isn't there, only this account's to enter,
+/// refusing one anyone else could.
+fn private_folder(folder: &Path) -> io::Result<()> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(folder)?;
+    let made = fs::metadata(folder)?;
+    if made.uid() != rustix::process::geteuid().as_raw() || made.mode() & 0o077 != 0 {
+        return Err(no_socket(format!(
+            "{} is open to others, so the socket can't go there",
+            folder.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Clears `path` for a socket of this node's: refusing a path that isn't a
+/// socket or one a live node serves, and taking down one nothing serves.
+fn take_over(path: &Path) -> io::Result<()> {
+    let Ok(held) = fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    if !held.file_type().is_socket() {
+        return Err(no_socket(format!(
+            "{} is not a socket, so it is left alone",
+            path.display()
+        )));
+    }
+    if std::os::unix::net::UnixStream::connect(path).is_ok() {
+        return Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!("a node already serves {}", path.display()),
+        ));
+    }
+    fs::remove_file(path)
+}
+
+/// A refusal to put a socket where `why` says.
+fn no_socket(why: String) -> io::Error {
+    io::Error::new(io::ErrorKind::PermissionDenied, why)
 }
 
 /// Makes the socket bound at `staged` private and links it in at `path`,
 /// refusing a `path` another node took since this one looked.
 fn link_in(staged: &Path, path: &Path) -> io::Result<()> {
     fs::set_permissions(staged, fs::Permissions::from_mode(0o600))?;
-    fs::hard_link(staged, path).map_err(|error| {
-        if error.kind() == io::ErrorKind::AlreadyExists {
-            io::Error::new(
-                io::ErrorKind::AddrInUse,
-                format!("a node already serves {}", path.display()),
-            )
-        } else {
-            error
-        }
-    })
+    fs::hard_link(staged, path).map_err(|error| in_use(error, path))
+}
+
+/// A link refused at `path` as in use where something took it since it
+/// was looked at, else as `error` says.
+fn in_use(error: io::Error, path: &Path) -> io::Error {
+    if error.kind() == io::ErrorKind::AlreadyExists {
+        io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!("a node already serves {}", path.display()),
+        )
+    } else {
+        error
+    }
 }
 
 /// Where the socket for `path` is bound before it is linked into place:
@@ -18616,6 +18667,70 @@ esac
             assert_eq!(mode, 0o600, "the socket appeared open to others");
             drop(bound);
         }
+    }
+
+    #[tokio::test]
+    async fn a_client_of_the_folder_before_reaches_the_node_of_now() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("C").join("mycelium").join("work.sock");
+        let former = dir.path().join("T").join("mycelium").join("work.sock");
+        fs::create_dir_all(former.parent().expect("a folder")).expect("the former folder");
+        fs::set_permissions(
+            former.parent().expect("a folder"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .expect("private");
+        drop(std::os::unix::net::UnixListener::bind(&former).expect("a node of then"));
+        let mut bound = bind(&socket).expect("the socket binds");
+        bound
+            .also_at(&former)
+            .expect("it takes over the socket nothing serves");
+        let client = UnixStream::connect(&former);
+        let taken = bound.accept();
+        let (client, taken) = tokio::join!(client, taken);
+        assert!(
+            client.is_ok(),
+            "the former socket reached nothing: {client:?}"
+        );
+        assert!(taken.is_ok(), "the node of now took no client: {taken:?}");
+        drop(bound);
+        assert!(!socket.exists(), "the socket of now is taken down");
+        assert!(!former.exists(), "so is its link where it served before");
+    }
+
+    #[tokio::test]
+    async fn a_node_of_then_still_serving_keeps_its_socket() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("C").join("mycelium").join("work.sock");
+        let former = dir.path().join("T").join("mycelium").join("work.sock");
+        let then = bind(&former).expect("a node of then serves");
+        let mut now = bind(&socket).expect("the node of now binds");
+        let linked = now.also_at(&former);
+        assert_eq!(
+            linked.as_ref().map_err(io::Error::kind),
+            Err(io::ErrorKind::AddrInUse),
+            "it took a socket a live node serves: {linked:?}"
+        );
+        drop(now);
+        assert!(former.exists(), "the node of then's socket is left to it");
+        drop(then);
+    }
+
+    #[tokio::test]
+    async fn a_link_another_node_took_since_is_left_to_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("C").join("mycelium").join("work.sock");
+        let former = dir.path().join("T").join("mycelium").join("work.sock");
+        let mut now = bind(&socket).expect("the node of now binds");
+        now.also_at(&former).expect("it links in where nothing was");
+        fs::remove_file(&former).expect("a node of then takes the place over");
+        let then = bind(&former).expect("and serves there");
+        drop(now);
+        assert!(
+            former.exists(),
+            "the node of then's socket outlasts the node of now"
+        );
+        drop(then);
     }
 
     #[tokio::test]

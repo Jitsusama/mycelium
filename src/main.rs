@@ -1601,13 +1601,14 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         )
     })?;
     let realm = realm_named(realm)?;
-    let socket = socket.unwrap_or_else(|| place::socket(&realm));
+    let named = socket;
+    let socket = named.clone().unwrap_or_else(|| place::reach(&realm));
     if let Some(asked) = tree(&action) {
         let asked = asked.map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
         return in_tree(&socket, &realm, asked);
     }
     let ran = match action {
-        Action::Node(node) => run_node(*node, realm, &socket),
+        Action::Node(node) => run_node(*node, realm, named.as_deref()),
         Action::Link { here } => run_link(here, realm, socket, None),
         Action::Ssh { here, from } => return run_asked(here, realm, socket, from),
         Action::Share(sharing) => share(sharing, realm, &socket),
@@ -1973,8 +1974,13 @@ fn eases_given(eases: bool, carries: bool, sleeps: Option<PathBuf>, state: &Path
 
 /// Runs this machine's node on `socket`, as `node` says, until it is asked
 /// to stop.
-fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
+fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
     raise_open_files();
+    // A node serves where the runtime folder is now, and where it was
+    // before it moved, for its clients of then; a socket named is the
+    // only place it serves.
+    let socket = named.map_or_else(|| place::socket(&realm), Path::to_owned);
+    let former = named.map_or_else(|| place::former_socket(&realm), |_| None);
     // The node names its machine for every command there: what it was
     // given, else the system's, recorded once its realm is settled.
     let machine = place::node_machine(node.here.machine.as_deref())?;
@@ -2002,6 +2008,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         to: checked(node.flows_to)?,
         from: checked(node.flows_from)?,
         sockets: place::runtime(),
+        before: place::former_runtime().map(|dir| dir.join("mycelium")),
         log: state.join("crossings.jsonl"),
     };
     let held = place::held(&realm);
@@ -2072,7 +2079,20 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     }
     let runtime = runtime()?;
     let ran = runtime.block_on(async {
-        let bound = node::bind(socket)?;
+        let mut bound = node::bind(&socket)?;
+        if let Some(former) = former {
+            match bound.also_at(&former) {
+                Ok(()) => tell!(
+                    "mycelium: serving at {} too, for clients started before the runtime folder moved",
+                    former.display()
+                ),
+                Err(why) => tell!(
+                    "mycelium: not serving at {} too, so clients started before the runtime folder \
+                     moved won't reach this node: {why}",
+                    former.display()
+                ),
+            }
+        }
         // Probing ends with the process, when the node does.
         tokio::spawn(mycelium::reach::keep(declared, place::reached()));
         node::run(store, membership, Listed(dials), given, bound, stopped()).await
@@ -3091,6 +3111,12 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
     })?;
     let socket = hosted_attach::socket(&runtime_dir, realm, host)
         .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
+    // A host started before the runtime folder moved still serves where it
+    // was, until it restarts.
+    let socket = place::found(
+        &socket,
+        place::former_runtime().and_then(|dir| hosted_attach::socket(&dir, realm, host).ok()),
+    );
     if !socket.exists() {
         tell!("mycelium: no pi host {host} is running here");
         hold::say_gone();
