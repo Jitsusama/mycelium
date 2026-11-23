@@ -1515,10 +1515,9 @@ impl Exchange {
             if sight == Sight::Changed {
                 self.unsay(id, &key);
             }
-            // Asked again below if it still should be, but for one asked
-            // already and not yet answered, whose answer is on its way
-            // and holds the file as it stands when the other end reads
-            // the ask.
+            // Asked again below if it still should be: one asked already
+            // and not yet answered keeps its turn, so it is never counted
+            // twice against the quest's.
             let file = (id.to_owned(), key.clone());
             let asked = self.wanted.remove(&file);
             self.unanswered.remove(&file);
@@ -1552,8 +1551,16 @@ impl Exchange {
                     held.keep()?;
                 }
                 _ => match asked {
-                    Some(at) => {
-                        self.wanted.insert(file, at);
+                    // Said again while asked, it changed there since, so a
+                    // crossing in pieces of what it was would go astray:
+                    // asked again from its start, in the turn it holds.
+                    Some(_) => {
+                        self.wanted.insert(file, Instant::now());
+                        wants.push(Say::Want {
+                            quest: id.to_owned(),
+                            file: key,
+                            at: Some(0),
+                        });
                     }
                     None => {
                         self.to_want.entry(id.to_owned()).or_default().insert(key);
@@ -3650,6 +3657,48 @@ mod tests {
             kestrel.read("attachments/19.md").as_deref(),
             Some("note 19\n"),
             "each one taken asked the next, to the last"
+        );
+    }
+
+    /// A file said again while its ask is on its way changed there since,
+    /// so it is asked again from its start, in the same turn, and what is
+    /// taken is the file as it stands now.
+    #[test]
+    fn a_file_changed_while_asked_is_asked_again_in_its_turn() {
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        skiff.write("README.md", "# First\n");
+        share(&skiff, QUEST);
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
+
+        near.watch.hear_anything();
+        let mut wants = Vec::new();
+        for say in near.look().expect("skiff looks") {
+            wants.extend(far.hear(say).expect("kestrel hears"));
+        }
+        assert_eq!(asked(&wants), [(QUEST, README)], "the README is asked");
+
+        // It changes on skiff before the ask is answered.
+        skiff.write("README.md", "# Second, and longer\n");
+        near.watch.hear_anything();
+        let mut again = Vec::new();
+        for say in near.look().expect("skiff looks again") {
+            again.extend(far.hear(say).expect("kestrel hears again"));
+        }
+        assert!(
+            again.iter().any(|say| matches!(
+                say,
+                Say::Want { quest, file, at: Some(0) } if quest == QUEST && file == README
+            )),
+            "asked again from its start: {again:?}"
+        );
+        assert_eq!(far.waiting(), 1, "in the turn it held, counted once");
+
+        carry(again, &mut far, &mut near);
+        assert_eq!(
+            kestrel.read("README.md").as_deref(),
+            Some("# Second, and longer\n"),
+            "what is taken is the file as it stands"
         );
     }
 
