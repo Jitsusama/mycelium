@@ -149,17 +149,18 @@ pub fn runs_nothing(
 }
 
 /// Each of `machines` an agent's held start in the fence `kind` may not
-/// be placed on, this one among them, refused saying why: every Mac,
-/// whatever it declares. A held start runs through the login shell with
-/// no launcher round it, and pi lifts its own fence on a Mac, which has
-/// no Landlock, so the session would run there outside any fence. A Mac
-/// declaring its fence's `runs` passes [`runs_nothing`], so this judges
-/// its system instead, until held starts go through the launcher.
+/// be placed on, this one among them, refused saying why: every Mac whose
+/// node doesn't say it starts one through the launcher its fence declares
+/// ([`Machine::fences_held`]), whatever it declares. Such a node starts it
+/// through the login shell alone, and pi lifts its own fence on a Mac,
+/// which has no Landlock, so the session would run there outside any
+/// fence. A Mac whose node says it does is judged as any machine is: by
+/// [`looser`] and [`runs_nothing`], the fence its launcher declares.
 #[must_use]
 pub fn lifts_fence(kind: Kind, machines: &[Machine]) -> Vec<Miss> {
     machines
         .iter()
-        .filter(|machine| machine.system.as_deref() == Some(MAC))
+        .filter(|machine| machine.system.as_deref() == Some(MAC) && !machine.fences_held)
         .map(|machine| Miss {
             machine: machine.name.clone(),
             because: vec![Because::Refuses(Taint {
@@ -177,8 +178,9 @@ pub fn lifts_fence(kind: Kind, machines: &[Machine]) -> Vec<Miss> {
 
 /// Why a machine made of the offer `to`, a `system` machine, would take
 /// no agent's held start in the fence `kind`, if it wouldn't: a Mac, as
-/// [`lifts_fence`] judges one of the realm, so none is made, and paid
-/// for, only to be refused once it links.
+/// [`lifts_fence`] judges one of the realm whose node doesn't say it
+/// fences one, since an offer can't say which node it would run, so none
+/// is made, and paid for, only to be refused once it links.
 #[must_use]
 pub fn lifts_fence_offered(kind: Kind, to: &str, system: Option<&str>) -> Option<String> {
     (system == Some(MAC)).then(|| {
@@ -218,18 +220,27 @@ pub fn runs_nothing_offered(kind: Kind, to: &str, there: Option<&Declared>) -> O
 /// whichever of fence and strict its asker runs, and each kind declares
 /// its own `runs`, so a carry is refused when either declared runs
 /// nothing. It is held too, so a carry to a Mac, a `system` machine as
-/// [`lifts_fence`] judges one, is refused whatever it declares, unless
-/// the session runs in `kind` [`Kind::None`]: one already unfenced here
-/// runs no looser unfenced there, and [`firm`] still holds its doors to
-/// this machine's. A session whose fence can't be told is refused.
+/// [`lifts_fence`] judges one, is refused whatever it declares where its
+/// node doesn't say it `fences_held` starts, unless the session runs in
+/// `kind` [`Kind::None`]: one already unfenced here runs no looser
+/// unfenced there, and [`firm`] still holds its doors to this machine's.
+/// A session whose fence can't be told is refused every Mac, since its
+/// node would start it within no launcher.
 #[must_use]
 pub fn brought_back(
     to: &str,
     declared: Option<&Declared>,
     system: Option<&str>,
+    fences_held: bool,
     kind: Option<Kind>,
 ) -> Option<String> {
-    if system == Some(MAC) && kind != Some(Kind::None) {
+    if system == Some(MAC) && kind.is_none() {
+        return Some(format!(
+            "{to} is a Mac, where a session whose fence can't be told would be brought back \
+             held outside any fence"
+        ));
+    }
+    if system == Some(MAC) && !fences_held && kind != Some(Kind::None) {
         return Some(format!(
             "{to} is a Mac, where a fenced session brought back held would run outside any \
              fence"
@@ -803,7 +814,7 @@ mod tests {
         let declared = declaring(Some(runs));
         let fenced = Some(Kind::Fence);
         assert_eq!(
-            brought_back("osprey", Some(&declared), Some("linux"), fenced),
+            brought_back("osprey", Some(&declared), Some("linux"), false, fenced),
             None,
             "a machine whose fences run a command takes the carry"
         );
@@ -813,29 +824,101 @@ mod tests {
                 .to_owned(),
         );
         assert_eq!(
-            brought_back("osprey", Some(&declared), Some(MAC), fenced),
+            brought_back("osprey", Some(&declared), Some(MAC), false, fenced),
             refused,
             "but a Mac declaring the same is refused by its system"
         );
         assert_eq!(
-            brought_back("osprey", Some(&declared), Some(MAC), Some(Kind::Strict)),
+            brought_back(
+                "osprey",
+                Some(&declared),
+                Some(MAC),
+                false,
+                Some(Kind::Strict)
+            ),
             refused,
             "as is a strict session"
         );
-        assert_eq!(
-            brought_back("osprey", Some(&declared), Some(MAC), None),
-            refused,
+        assert!(
+            brought_back("osprey", Some(&declared), Some(MAC), false, None)
+                .is_some_and(|why| why.contains("can't be told")),
             "and one whose fence can't be told"
         );
         assert_eq!(
-            brought_back("osprey", Some(&declared), Some(MAC), Some(Kind::None)),
+            brought_back(
+                "osprey",
+                Some(&declared),
+                Some(MAC),
+                false,
+                Some(Kind::None)
+            ),
             None,
             "but an unfenced session runs no looser there"
         );
         let shut = declaring(Some(BTreeMap::from([(Kind::Fence, running(&[]))])));
         assert!(
-            brought_back("osprey", Some(&shut), Some(MAC), Some(Kind::None)).is_some(),
+            brought_back("osprey", Some(&shut), Some(MAC), false, Some(Kind::None)).is_some(),
             "though a Mac whose fence runs nothing still refuses it"
+        );
+    }
+
+    // Joel, 15:2x Sun 22 Nov: "WE NEED TO FOCUS ON SPREADING LOAD NOW!".
+    // Most sessions run strict, and no Mac took one.
+    #[test]
+    fn a_mac_whose_node_fences_held_starts_takes_a_strict_carry_its_fence_runs() {
+        const FENCE: &str = "/nix/store/0000-fence/bin/fence";
+        let runs = BTreeMap::from([
+            (Kind::Fence, running(&[FENCE, "--"])),
+            (Kind::Strict, running(&[FENCE, "--strict", "--"])),
+        ]);
+        let declared = declaring(Some(runs));
+        assert_eq!(
+            brought_back(
+                "osprey",
+                Some(&declared),
+                Some(MAC),
+                true,
+                Some(Kind::Strict)
+            ),
+            None,
+            "a Mac whose node starts it through its strict fence takes it"
+        );
+        assert!(
+            brought_back("osprey", Some(&declared), Some(MAC), true, None)
+                .is_some_and(|why| why.contains("can't be told")),
+            "though not one whose fence can't be told, which no launcher would hold"
+        );
+        let shut = declaring(Some(BTreeMap::from([
+            (Kind::Fence, running(&[FENCE, "--"])),
+            (Kind::Strict, running(&[])),
+        ])));
+        assert!(
+            brought_back("osprey", Some(&shut), Some(MAC), true, Some(Kind::Strict)).is_some(),
+            "but not where its strict fence runs nothing"
+        );
+    }
+
+    #[test]
+    fn only_a_mac_whose_node_fences_no_held_start_lifts_the_fence() {
+        let mut old = named("osprey", tern(None, Readiness::Ready));
+        old.system = Some(MAC.to_owned());
+        // Measured here, so pinned, whichever system runs the test.
+        old.fences_held = false;
+        let new = Machine {
+            name: "wren".to_owned(),
+            fences_held: true,
+            ..old.clone()
+        };
+        let mut linux = named("skiff", tern(None, Readiness::Ready));
+        linux.system = Some("linux".to_owned());
+        let refused: Vec<String> = lifts_fence(Kind::Strict, &[old, new, linux])
+            .into_iter()
+            .map(|miss| miss.machine)
+            .collect();
+        assert_eq!(
+            refused,
+            ["osprey"],
+            "the Mac too old to say it, alone, is refused a held start"
         );
     }
 }

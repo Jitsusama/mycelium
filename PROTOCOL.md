@@ -1027,8 +1027,8 @@ way through is told only once its presence says `"leases":
 run. After a carry it would carry none for half an hour, and it would
 carry at most six in a day. A session moved by anyone stays put for a
 day, by the carries kept here, and nothing goes to a machine a session
-came from within the hour, nor to a Mac but a session shown unfenced
-(see The Socket).
+came from within the hour, nor to a Mac whose node doesn't say
+`fences_held` but a session shown unfenced (see The Socket).
 
 Each choice to sleep or carry, and each change in why it does nothing,
 is a JSON line in the state folder's `eases`, a file each day of at
@@ -1447,6 +1447,13 @@ node too old to read why still finds no tool there. It is absent where
 the node is given no kit or is too old to say, and absent reads as
 unknown. Both the node a machine dialled and the links it keeps say it.
 
+Its `fences_held` is `true` where its node starts an agent's held
+session through the launcher the session's fence declares there, as a
+Mac's node does, since pi lifts its own fence on a Mac. It is absent
+where the node doesn't, as on Linux, where pi fences itself, or where
+the node is too old to say, which starts one through the login shell
+alone.
+
 A kit is a whole path holding no colon, which the node refuses
 otherwise. Its tools come first for every session and run, an agent's
 fenced ones too, so it belongs where no agent can write, such as the
@@ -1649,8 +1656,11 @@ whatever declared it: the node can't tell the harness's start from one
 an agent asks itself, so a session started below a strict one runs
 strict. It moves only a start's judgement: a `Place` that starts
 nothing and a `Run` are judged without it, and a start relayed from
-another machine is judged by its link's end, its declaration neither
-weighed nor kept there. The person's work is judged as before, and
+another machine is judged by its link's end, its declaration raising
+that judgement but not kept there, though a Mac whose node says
+`fences_held` starts one relayed as the person's within the launcher of
+the fence it declares (see The Socket). The person's work is judged as
+before, and
 each start keeps what it declared in its line in the book, as
 `declared`. A node older than the field ignores it, judging as before.
 A machine carries the taints its configuration
@@ -2249,24 +2259,45 @@ A `"Place"` an agent asks is judged the same way, as a run, so where
 it is told the work would go is where the work may run. An agent's
 start placed (`"PlaceToStart"`, `"Start"`) is held to `runs` too,
 missed as `runs-nothing`, so it starts only where that fence runs a
-command: its session doesn't run through that launcher yet, but a
-machine declaring none would run it looser than its asker. Since a
-Mac is refused too, as below, an agent's session that ran on a Mac
-isn't brought back there after a restart, as its start is pinned to
-that machine, and an agent's start on a Mac that names no machine goes
-to one that runs its fence. There it begins in its home where its
+command: on Linux its session runs in pi's own fence rather than that
+launcher, but a machine declaring none would run it looser than its
+asker. Since a Mac whose node doesn't say `fences_held` is refused
+too, as below, an agent's session that ran on such a Mac isn't brought
+back there after a restart, as its start is pinned to that machine,
+and an agent's start on one that names no machine goes to one that
+runs its fence. One that ran on a Mac whose node says `fences_held` is
+brought back there within the launcher of the fence its start is
+judged in. There it begins in its home where its
 folder isn't, unless it asks `"strict"`, or it is told what a machine
-made for it would cost. The node placing a start judges it, as a relay
-carries no asker's fence, so a machine stops taking these starts only
+made for it would cost. The node placing a start judges it, and sends
+the fence it judged as the start's `fence`, so a machine stops taking
+these starts only
 once every node that may place on it judges so. Only placement is held
 so: an agent's session already held on a Mac wakes there as before,
 outside any fence, until it ends or the Mac boots again. A Mac's
 holder starts a held session outside its fence even where the Mac
-declares `runs`, so an agent's start is refused every machine whose
-facts say `system` `macos` too, missed as `lifts-fence`, `never`, and
-its refusal says so, nor is a Mac made of an offer for one; an agent's
-run there still goes through its launcher. Only an agent shown
-unfenced is let through to a Mac, screened then as a run is: its start
+declares `runs`, unless its node says `fences_held`, so an agent's
+start is refused every machine whose facts say `system` `macos` and
+no `fences_held`, missed as `lifts-fence`, `never`, and its refusal
+says so, nor is a Mac made of an offer for one; an agent's run there
+still goes through its launcher. A Mac whose node says `fences_held`
+is judged as any machine is, and starts an agent's held session, its
+first start and each after a park, within the launcher of the fence it
+was placed in, outside the login shell, so the profile runs fenced too,
+as a run does; it refuses the start where that launcher is refused. A
+node sending a start to another machine says that fence as the start's
+`fence`, raised to it where looser. A node taking a start relayed from
+an end it judges an agent's raises its judgement by that `fence`, as
+any declaration only raises, and a Mac's node taking one relayed as the
+person's starts it within that `fence`'s launcher. A start bringing a
+session carried from this machine back declares at least the fence
+that session ran in here: the fence its carry was judged by, kept with
+the carry as `fence`, or strict where none was kept and the session is
+gone, so a carry run by an asker in a looser fence never starts it
+looser. Its line in the book keeps that raised `fence` as `declared`.
+Only an
+agent shown unfenced is let through to a Mac whose node doesn't say
+`fences_held`, screened then as a run is: its start
 declares nothing strict, every session claiming it says it runs
 unfenced and was never seen stricter, and the kernel shows it so, from
 the asker's own process (no `no_new_privs` the node lacks, and the
@@ -2274,9 +2305,10 @@ node's own mounts) and from each of those sessions, a hosted one's
 record read only from the harness's own state. Anything that can't be
 read refuses, as on a Mac itself, and each start let through is told
 in the node's log with who asked, their quests, what it declared, its
-folder and its program. A carry to a Mac, ordered or made by a node
-easing itself, is refused before any session ends unless the session
-claims and has shown no fence and was never seen stricter, and the
+folder and its program. A carry to a Mac whose node doesn't say
+`fences_held`, ordered or made by a node easing itself, is refused
+before any session ends unless the session claims and has shown no
+fence and was never seen stricter, and the
 Mac's `none` fence is still judged as firm as here. The person's start is
 relayed as theirs, but a machine no person works at, or one where the
 link's end can't be named, judges it an agent's, so there it needs that

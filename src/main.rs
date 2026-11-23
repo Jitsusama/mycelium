@@ -531,6 +531,10 @@ enum Action {
         /// gives it.
         #[arg(long, requires = "login", value_parser = kit)]
         kit: Option<PathBuf>,
+        /// The launcher of the fence each start of it runs within, the
+        /// first and every one after a park, as a JSON list of its words.
+        #[arg(long, value_parser = within)]
+        within: Option<Within>,
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
@@ -1675,9 +1679,11 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
             folder,
             login,
             kit,
+            within,
             command,
         } => {
-            let through = held_through(login, &realm, kit.as_deref());
+            let within = within.map(|Within(words)| words).unwrap_or_default();
+            let through = held_through(&within, login, &realm, kit.as_deref());
             hold_here(&realm, &id, &folder, &through, &command, &socket)
         }
         Action::Watch { groups, recent } => watch(&socket, groups, recent),
@@ -1991,6 +1997,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
             // Checked below, against the declarers its runs trust.
             kit: None,
         }),
+        fences_held: mycelium::facts::FENCES_HELD,
         awake: Awake::here(),
         updater: place::updater(),
         serves,
@@ -2922,7 +2929,7 @@ fn hold(
         // A terminal's hold has the person's own path already.
         kit: None,
     };
-    let id = starter.start(realm, &folder, command, false)?;
+    let id = starter.start(realm, &folder, (&[], command), false)?;
     if detached {
         writeln!(io::stdout().lock(), "{id}")
     } else {
@@ -2958,13 +2965,30 @@ fn hold_here(
 
 /// The words a held program starts inside: a login shell, for a hold a
 /// node starts, or none for a hold from a terminal, which has the
-/// person's environment already. A node's names its realm's `kit`.
-fn held_through(login: bool, realm: &str, kit: Option<&Path>) -> Vec<String> {
+/// person's environment already. A node's names its realm's `kit`. Each
+/// runs `within` its fence's launcher first, where it names one, so the
+/// login shell's profile runs inside the fence too, as a run's does.
+fn held_through(within: &[String], login: bool, realm: &str, kit: Option<&Path>) -> Vec<String> {
+    let mut through = within.to_vec();
     if login {
-        login_shell(realm, kit)
-    } else {
-        Vec::new()
+        through.extend(login_shell(realm, kit));
     }
+    through
+}
+
+/// A fence's launcher, as the words a held program starts within.
+#[derive(Debug, Clone)]
+struct Within(Vec<String>);
+
+/// The launcher `said` names, a JSON list of its words, the first a
+/// program.
+fn within(said: &str) -> Result<Within, String> {
+    let words: Vec<String> = serde_json::from_str(said)
+        .map_err(|error| format!("{said:?} is no JSON list of words: {error}"))?;
+    if words.first().is_none_or(String::is_empty) {
+        return Err(format!("{said:?} names no launcher"));
+    }
+    Ok(Within(words))
 }
 
 /// Is the holder `hold` starts: in a session of its own, so the window it
@@ -3316,10 +3340,44 @@ mod tests {
     use mycelium::wire::Request;
 
     use super::{
-        Action, Command, HELP_WIDTH, SAID_MOST, SWARM_WIDTH, SwarmAsked, Tree, in_place, kit,
-        orchestrates, processes_here, reader_left, room_of, said_text, swarm_asked, tree, width,
-        write_line,
+        Action, Command, HELP_WIDTH, SAID_MOST, SWARM_WIDTH, SwarmAsked, Tree, held_through,
+        in_place, kit, orchestrates, processes_here, reader_left, room_of, said_text, swarm_asked,
+        tree, width, within, write_line,
     };
+
+    #[test]
+    fn a_held_program_starts_within_its_fence_outside_the_login_shell() {
+        let fence = ["pi-fence", "--kind", "strict", "--"].map(str::to_owned);
+        let through = held_through(&fence, true, "harbour", None);
+        assert_eq!(
+            through[..fence.len()],
+            fence,
+            "the launcher first, so the profile runs inside it: {through:?}"
+        );
+        assert_eq!(
+            through[fence.len()..],
+            mycelium::hold::start::login_shell("harbour", None),
+            "then the login shell, as without one"
+        );
+        assert_eq!(
+            held_through(&fence, false, "harbour", None),
+            fence,
+            "a hold with no login shell runs within it alone"
+        );
+        assert!(
+            held_through(&[], false, "harbour", None).is_empty(),
+            "a terminal's hold, as ever, within nothing"
+        );
+    }
+
+    #[test]
+    fn a_launcher_is_given_as_a_json_list_naming_a_program() {
+        let said = within(r#"["pi-fence","--kind","strict","--"]"#).expect("a launcher");
+        assert_eq!(said.0, ["pi-fence", "--kind", "strict", "--"]);
+        for refused in ["[]", r#"[""]"#, "pi-fence --kind strict", r#"{"runs":[]}"#] {
+            assert!(within(refused).is_err(), "{refused} names no launcher");
+        }
+    }
 
     #[test]
     fn a_terminal_is_as_wide_as_columns_says_then_as_it_says_then_eighty() {

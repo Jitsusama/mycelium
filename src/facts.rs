@@ -109,6 +109,13 @@ pub struct Machine {
     /// measuring leaves it unset.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub worker: bool,
+    /// Whether its node starts an agent's held session through the launcher
+    /// the session's fence declares there, as a Mac's node now does, so a
+    /// Mac saying it may take an agent's held start. A node too old to say
+    /// starts one through the login shell alone, where pi on a Mac runs
+    /// outside any fence, so its Mac is refused every agent's held start.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fences_held: bool,
 }
 
 /// A realm's kit on one machine: a folder whose `bin` holds the tools
@@ -359,8 +366,17 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         health: None,
         kit: None,
         worker: false,
+        fences_held: FENCES_HELD,
     }
 }
+
+/// Whether this build's node starts an agent's held session through the
+/// launcher its fence declares: on a Mac, where pi lifts its own fence for
+/// want of Landlock, so a held start needs the launcher round it. A Linux
+/// node leaves it to pi's own fence, as it always has. A node is given it
+/// to do and says what it was given, so what it says and what it does are
+/// one value.
+pub const FENCES_HELD: bool = cfg!(target_os = "macos");
 
 /// What this machine runs on now, read alone and as [`measure`] reads it:
 /// a machine within another has its host's power while its host's word

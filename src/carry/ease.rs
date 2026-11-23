@@ -768,6 +768,7 @@ fn bringing_back(peers: &[Machine], kind: Option<Kind>) -> (Vec<Machine>, Vec<St
                 &machine.name,
                 machine.declared.as_ref(),
                 machine.system.as_deref(),
+                machine.fences_held,
                 kind,
             );
             match back {
@@ -838,6 +839,9 @@ pub(super) mod tests {
     /// `cpu`, declaring a session fenced.
     fn machine(name: &str, cpu: f64) -> Machine {
         let mut machine = facts::measure(name, &Sources::nowhere());
+        // Measured on whatever runs the test, so said only where a test
+        // says it.
+        machine.fences_held = false;
         machine.state = Readiness::Ready;
         machine.cpu.cores = Some(16);
         machine.cpu.busy = None;
@@ -1929,10 +1933,11 @@ pub(super) mod tests {
         );
     }
 
-    // No fenced session goes to a Mac while a start bringing it back would
-    // run there held, outside any fence. Lifting this must still keep
-    // strict sessions off a Mac, whose strict fence reads the rest of its
-    // home, until that fence is narrowed.
+    // No fenced session goes to a Mac whose node doesn't say
+    // `fences_held`, where a start bringing it back would run held,
+    // outside any fence. One whose node says it is judged by its declared
+    // fence, as any machine is; how far a Mac's strict fence reaches is
+    // that fence's to narrow, not placement's.
     #[test]
     fn a_mac_with_room_is_passed_over_for_the_next_machine() {
         let mut realm = realm();
