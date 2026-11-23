@@ -966,7 +966,9 @@ async fn greet(
         releases,
         ..membership.hello()
     };
-    send(writing, &Frame::Hello(ours)).await?;
+    send(writing, &Frame::Hello(ours))
+        .await
+        .map_err(unheard_write)?;
     let other = hello(frames, within).await?;
     if let Err(why) = membership.admit(&other) {
         if let Err(error) = store.refuse_link(&other.machine, &why) {
@@ -1017,21 +1019,40 @@ async fn hello(
         Some(Err(error)) => Err(error),
         // Why is the dial's to say, as SSH does on its own error output: a
         // machine it can't find, a key refused, or no mycelium there.
-        None => Err(io::Error::new(io::ErrorKind::UnexpectedEof, ClosedUnheard)),
+        None => Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            ClosedUnheard("the other end closed before saying hello".to_owned()),
+        )),
     }
 }
 
-/// The other end closed before it said hello, so no link came up.
+/// The other end closed before it said hello, so no link came up, in
+/// the words that say how.
 #[derive(Debug)]
-struct ClosedUnheard;
+struct ClosedUnheard(String);
 
-impl std::fmt::Display for ClosedUnheard {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the other end closed before saying hello")
+impl fmt::Display for ClosedUnheard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
 impl std::error::Error for ClosedUnheard {}
+
+/// Our hello, written to an end that closed before it was taken, which
+/// is a way in that ended before any link came up, as a provider's that
+/// says its machine is gone and exits may.
+fn unheard_write(error: io::Error) -> io::Error {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+    ) {
+        let words = format!("the other end closed before our hello was taken: {error}");
+        io::Error::new(error.kind(), ClosedUnheard(words))
+    } else {
+        error
+    }
+}
 
 /// Whether a link ended in `error` because the other end closed before
 /// it said hello, so no link ever came up. Only then is what the way in
@@ -1041,7 +1062,7 @@ impl std::error::Error for ClosedUnheard {}
 pub fn closed_unheard(error: &io::Error) -> bool {
     error
         .get_ref()
-        .is_some_and(|inner| inner.is::<ClosedUnheard>())
+        .is_some_and(<dyn std::error::Error + Send + Sync>::is::<ClosedUnheard>)
 }
 
 /// A living session's presence, the leases it holds, the id its holder

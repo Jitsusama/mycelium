@@ -796,6 +796,10 @@ fn tell_hosted(here: &facts::Machine) {
 
 /// Runs a node serving `socket` until `stop` resolves, then ends its links
 /// and lets go of the sessions they carried.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the node's one loop, each of whose arms is a source it waits on"
+)]
 pub async fn run<S, M, D>(
     store: S,
     membership: M,
@@ -1163,14 +1167,16 @@ fn past_the_hash(path: &str) -> Option<&str> {
 
 /// How long a release that failed waits before each time it is asked
 /// again, as a provider whose machine has just gone may still be clearing
-/// it away.
+/// it away. Together they end within [`ENDED_LET_GO_AFTER`], so a machine
+/// whose time was up is booked by what keeps it, not by
+/// [`let_go_ended`] too.
 const RELEASE_AGAIN_AFTER: [Duration; 3] = if cfg!(test) {
     [Duration::from_millis(10); 3]
 } else {
     [
         Duration::from_secs(30),
         Duration::from_secs(2 * 60),
-        Duration::from_secs(10 * 60),
+        Duration::from_secs(5 * 60),
     ]
 };
 
@@ -1178,9 +1184,10 @@ const RELEASE_AGAIN_AFTER: [Duration; 3] = if cfg!(test) {
 /// until its work has handed over and it was released, it isn't wanted
 /// once made, or its time is up, when it is released, or its provider
 /// says it is gone, when it is released too, so nothing it left is kept.
-/// A release that fails is asked again, as [`RELEASE_AGAIN_AFTER`] says.
-/// Keeps in the book that it was let go, and why, and has it leave the
-/// realm's machines at once, so nothing lists a machine that is gone.
+/// It leaves the realm's machines at once, so nothing lists a machine
+/// that is gone, even while a release that fails is asked again, as
+/// [`RELEASE_AGAIN_AFTER`] says. Keeps in the book that it was let go,
+/// and why, once the release has ended.
 async fn keep_made(
     dial: Arc<Program>,
     made: Made,
@@ -1206,6 +1213,8 @@ async fn keep_made(
             (Some("its time was up".to_owned()), false)
         }
     };
+    store::left(&store, &made.machine, jiff::Timestamp::now());
+    unbook();
     let why = match release {
         None => "its work handed over".to_owned(),
         Some(why) => match released(&*dial).await {
@@ -1224,8 +1233,6 @@ async fn keep_made(
         },
     };
     eprintln!("{} was let go: {why}", made.machine);
-    store::left(&store, &made.machine, jiff::Timestamp::now());
-    unbook();
     if let Err(error) = book.released(&made, &why) {
         eprintln!(
             "{} was let go, but the book doesn't say so: {error}",
@@ -9609,9 +9616,11 @@ mod tests {
         }
     }
 
-    /// A way in whose provider says its machine is gone each time.
+    /// A way in whose provider says its machine is gone each time, after
+    /// the far end said something of its own where `came_up`.
     struct Gone {
         dialled: mpsc::UnboundedSender<tokio::time::Instant>,
+        came_up: bool,
     }
 
     impl Dial for Gone {
@@ -9621,7 +9630,16 @@ mod tests {
 
         fn dial(&self, _realm: &str) -> impl Future<Output = io::Result<Connection>> + Send {
             let _ = self.dialled.send(tokio::time::Instant::now());
-            let (near, _far) = tokio::io::duplex(64);
+            let (near, mut far) = tokio::io::duplex(64);
+            let came_up = self.came_up;
+            tokio::spawn(async move {
+                if came_up {
+                    // It takes our hello, so what ends the link is what
+                    // it said, not a hello it never read.
+                    let _ = far.write_all(b"the far end's own words\n").await;
+                    let _ = tokio::io::copy(&mut far, &mut tokio::io::sink()).await;
+                }
+            });
             let mut connection = piped(near);
             connection.said = Some(tokio::spawn(async {
                 Some(refused::Said::Gone(
@@ -9638,27 +9656,35 @@ mod tests {
         }
     }
 
+    /// What a link's far end starts sessions through, all of it in `dir`.
+    fn starting_in(dir: &Path) -> Starting {
+        Starting {
+            node: dir.join("work.sock"),
+            held: dir.join("work.held"),
+            asking: None,
+            steers: dir.join("steer"),
+            health: None,
+            declared: Some(dir.join("declared.json")),
+            kit: None,
+            saturation: None,
+            lender: None,
+        }
+    }
+
     #[tokio::test]
     async fn a_machine_the_node_was_given_is_dialled_again_though_said_gone() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let (dialled, mut dials) = mpsc::unbounded_channel();
-        let starting = Starting {
-            node: dir.path().join("work.sock"),
-            held: dir.path().join("work.held"),
-            asking: None,
-            steers: dir.path().join("steer"),
-            health: None,
-            declared: Some(dir.path().join("declared.json")),
-            kit: None,
-            saturation: None,
-            lender: None,
-        };
+        let starting = starting_in(dir.path());
         let membership = Realm {
             name: "work".to_owned(),
             machine: "skiff".to_owned(),
         };
         let keeping = tokio::spawn(keep_linked(
-            Arc::new(Gone { dialled }),
+            Arc::new(Gone {
+                dialled,
+                came_up: false,
+            }),
             Memory::default(),
             membership,
             (None, starting, Refusals::default()),
@@ -9670,10 +9696,34 @@ mod tests {
             .await
             .expect("a machine the node can't let go is dialled again")
             .expect("the link is kept");
-        assert!(
-            !keeping.is_finished(),
-            "and kept for as long as the node runs"
-        );
+        keeping.abort();
+    }
+
+    #[tokio::test]
+    async fn a_made_machine_that_said_gone_once_its_link_came_up_is_dialled_again() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (dialled, mut dials) = mpsc::unbounded_channel();
+        let starting = starting_in(dir.path());
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let keeping = tokio::spawn(keep_linked(
+            Arc::new(Gone {
+                dialled,
+                came_up: true,
+            }),
+            Memory::default(),
+            membership,
+            (None, starting, Refusals::default()),
+            true,
+        ));
+
+        dials.recv().await.expect("the link is dialled");
+        tokio::time::timeout(PATIENCE, dials.recv())
+            .await
+            .expect("what a machine reached says can't let it go, so it is dialled again")
+            .expect("the link is kept");
         keeping.abort();
     }
 
@@ -23075,22 +23125,11 @@ esac
         let made = made_by(&provider.display().to_string(), "wren", later);
         book.made(&made).expect("the make is booked");
         let dial = shared.book_for(&made);
-        let starting = Starting {
-            node: dir.path().join("work.sock"),
-            held: dir.path().join("work.held"),
-            asking: None,
-            steers: dir.path().join("steer"),
-            health: None,
-            declared: Some(dir.path().join("declared.json")),
-            kit: None,
-            saturation: None,
-            lender: None,
-        };
         let linked = keep_linked(
             dial.clone(),
             Memory::default(),
             membership,
-            (None, starting, Refusals::default()),
+            (None, starting_in(dir.path()), Refusals::default()),
             true,
         );
         let keeping = shared.keeping(&made);

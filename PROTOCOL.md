@@ -392,15 +392,16 @@ Three seams shape a link:
   it ends when it can't. Its error output is passed on, and a line
   saying the other end "turned this machine away" is taken as a refused
   SSH key is. A line starting `mycelium-gone:`, from a program whose
-  far end closed before it said hello, says the machine no longer
-  exists, as one its provider took back: a machine the node made is
-  then released, asked again three times if that fails, booked as let
-  go and leaves the realm's machines at once, rather than being
-  dialled until its time; one it was given is dialled again as any
-  link that dropped, since the node can't let it go. Once a link came
-  up, the line may be the far machine's own, so it counts for nothing.
-  A provider writes it only when it knows, never for a machine merely
-  out of reach. A refusal said too is taken over it.
+  far end closed before it said hello or took ours, says the machine
+  no longer exists, as one its provider took back: a machine the node
+  made leaves the realm's machines at once and is released, asked
+  again three times within eight minutes if that fails, then booked
+  as let go, rather than being dialled until its time; one it was
+  given is dialled again as any link that dropped, since the node
+  can't let it go. Once a link came up, the line may be the far
+  machine's own, so it counts for nothing. A provider writes it only
+  when it knows, never for a machine merely out of reach. A refusal
+  said too is taken over it.
   A machine reached so is a worker: it is asked and asks
   nothing back. Its end's starts, steers, updates, carries, ends and
   runs are refused, its follows are ignored, and a presence of its
