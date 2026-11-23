@@ -1755,7 +1755,9 @@ over that link while it declares nothing, for 10 minutes at most, so
 a node restarting or slow to answer leaves its machine's ground as it
 was; past that, the machine reads as declaring nothing. A declaration
 said again replaces it at once. Where the node did answer, declaring
-nothing, the end says `declares_nothing: true` (left out when false),
+nothing, or an end reading its declaration's file itself found it
+declares nothing or couldn't read it, the end says
+`declares_nothing: true` (left out when false),
 and the end hearing it drops what was declared before at once, so only
 a silence is kept through. While a declaration is kept, the machine is
 still withheld the quests above those shared with it, as one declaring
@@ -2028,8 +2030,11 @@ folder src/elsewhere, which the start names` (a path within tern's
 home), since the work it's for is there and home won't do. A sprout's
 start is strict; any asker may make one so. A start that machine runs
 within its strict fence's launcher is refused so too, strict or not,
-since that fence won't let a command write home; one where pi fences
-itself begins in its home as ever. `strict` is false where it
+since that fence won't let a command write home, and so is one there
+that names no folder, or names home itself, as `tern would begin this
+start at home, which its strict fence won't let it write, so the start
+must name the folder of the work it's for`; one where pi fences itself
+begins in its home as ever. `strict` is false where it
 isn't said and isn't written when false, so a node, or a link's end,
 from before it reads the start as ever, dropping `strict`, and it
 begins in that machine's home; a sprout's command then ends itself
