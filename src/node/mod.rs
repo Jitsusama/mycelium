@@ -732,7 +732,7 @@ where
     // taken once they are read, so none lists a part of them, or misses
     // one the read held without telling.
     shared.read_sessions();
-    let mut unread = Some(shared.read_messages_apart());
+    let mut unread = shared.read_messages_apart();
     let mut links = JoinSet::new();
     let mut found = discovery.found();
     let mut leaving = tokio::time::interval(LEAVING_EVERY);
@@ -1301,6 +1301,8 @@ struct Shared<S> {
     /// The refusals in that handover that couldn't be read, each said on
     /// the node's stderr once.
     unreadable: Arc<through::Unreadable>,
+    /// Whether the messages the store holds are being read apart.
+    reads: Arc<Reads>,
     /// Where it keeps each command it runs, and who may say how a fenced
     /// one runs.
     runs: Arc<run::Given>,
@@ -1518,6 +1520,7 @@ impl<S: Clone> Clone for Shared<S> {
             scratch: self.scratch.clone(),
             hostname: Arc::clone(&self.hostname),
             unreadable: Arc::clone(&self.unreadable),
+            reads: Arc::clone(&self.reads),
             runs: self.runs.clone(),
             starts: Arc::clone(&self.starts),
             rejudge: Arc::clone(&self.rejudge),
@@ -1925,6 +1928,57 @@ struct Seen<'a> {
     held: &'a [hold::Held],
     /// The sessions carried away lately or waiting for their turn.
     coming_back: &'a HashSet<String>,
+}
+
+/// Whether the messages the store holds are being read apart
+/// ([`Shared::read_messages_apart`]), and whether they were asked for
+/// again while they were.
+#[derive(Default)]
+struct Reads(Mutex<ReadsAsked>);
+
+#[derive(Default)]
+struct ReadsAsked {
+    running: bool,
+    again: bool,
+}
+
+impl Reads {
+    fn asked(&self) -> MutexGuard<'_, ReadsAsked> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Begins a read, unless one runs, which is asked to read again.
+    fn begin(&self) -> bool {
+        let mut asked = self.asked();
+        if asked.running {
+            asked.again = true;
+            return false;
+        }
+        asked.running = true;
+        true
+    }
+
+    /// Whether the read running was asked for again, so reads once more;
+    /// where not, it ends, in the same look, so no ask falls between.
+    fn again(&self) -> bool {
+        let mut asked = self.asked();
+        asked.running = std::mem::take(&mut asked.again);
+        asked.running
+    }
+}
+
+/// A read running ([`Reads::begin`]), which ends where it panics too, so
+/// the next ask reads again.
+struct Reading<'a>(&'a Reads);
+
+impl Drop for Reading<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            *self.0.asked() = ReadsAsked::default();
+        }
+    }
 }
 
 /// The sessions being reopened here by a relayed start, each held while
@@ -2468,6 +2522,7 @@ impl<S: Store> Shared<S> {
             scratch: sharing.as_ref().map(|places| places.scratch.clone()),
             hostname: rustix::system::uname().nodename().to_string_lossy().into(),
             unreadable: Arc::default(),
+            reads: Arc::default(),
             starts,
             rejudge: Arc::default(),
             onces: Arc::default(),
@@ -2540,10 +2595,24 @@ impl<S: Store> Shared<S> {
     }
 
     /// Reads the messages as [`Self::read_messages`] does, off the node's
-    /// one thread, so the node takes its dials as they are read.
-    fn read_messages_apart(&self) -> tokio::task::JoinHandle<()> {
+    /// one thread, so the node takes its dials as they are read. One read
+    /// runs at a time: asked again while one runs, as a watch that
+    /// overflowed twice asks, it reads once more when that one ends,
+    /// rather than starting a second beside it, and answers none.
+    fn read_messages_apart(&self) -> Option<tokio::task::JoinHandle<()>> {
+        if !self.reads.begin() {
+            return None;
+        }
         let shared = self.clone();
-        tokio::task::spawn_blocking(move || shared.read_messages())
+        Some(tokio::task::spawn_blocking(move || {
+            let reading = Reading(&shared.reads);
+            loop {
+                shared.read_messages();
+                if !reading.0.again() {
+                    break;
+                }
+            }
+        }))
     }
 
     /// Reads the messages the store holds that the node doesn't yet, the
@@ -2556,19 +2625,24 @@ impl<S: Store> Shared<S> {
     /// far more messages than the mesh keeps, its week, so none it let go
     /// is read again.
     fn read_messages(&self) {
+        let began = std::time::Instant::now();
         let mut ids = self.store.message_ids(0);
+        let listed = ids.len();
         // An id opens with when it was sent, in milliseconds, so the
-        // newest sort last.
-        ids.sort_unstable();
+        // newest sort last, by that time rather than as text.
+        ids.sort_by_cached_key(|id| (crate::store::folders::sent_at(id), id.clone()));
+        // The newest the node keeps, held or not: an older one would be
+        // let go as soon as read, so a rescan with every kept message
+        // held opens none. A message older than all those, waiting to
+        // cross to another realm, isn't read again after a restart.
+        let newest = ids.split_off(ids.len().saturating_sub(crate::state::KEPT_MESSAGES));
         let unread: Vec<String> = {
             let refused = self.refused_ids();
             let inner = self.lock();
-            let unread: Vec<String> = ids
+            newest
                 .into_iter()
                 .filter(|id| !inner.state.holds_message(id) && !refused.contains(id))
-                .collect();
-            let older = unread.len().saturating_sub(crate::state::KEPT_MESSAGES);
-            unread.into_iter().skip(older).collect()
+                .collect()
         };
         let (waiting, messages): (Vec<Message>, Vec<Message>) = unread
             .iter()
@@ -2578,6 +2652,11 @@ impl<S: Store> Shared<S> {
         self.lock().state.add_messages(messages);
         self.wait_to_cross(waiting);
         self.said.messages_moved();
+        eprintln!(
+            "read {} of the {listed} messages the store holds in {:.1}s",
+            unread.len(),
+            began.elapsed().as_secs_f64()
+        );
     }
 
     /// Judges every session again and sends what changed, with what is
@@ -17505,6 +17584,29 @@ esac
         );
     }
 
+    /// Reads asked for while one runs are one more read once it ends,
+    /// however many asked, and a read that panicked lets the next begin.
+    #[test]
+    fn reads_asked_while_one_runs_are_read_once_after_it() {
+        let reads = Reads::default();
+        assert!(reads.begin(), "the first read begins");
+        assert!(!reads.begin(), "a second waits for it");
+        assert!(!reads.begin(), "and so does a third");
+        assert!(reads.again(), "once it ends, it reads once more");
+        assert!(!reads.again(), "and only once");
+        assert!(reads.begin(), "then the next read begins");
+        let panicked = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _reading = Reading(&reads);
+                    panic!("a read fails");
+                })
+                .join()
+        });
+        assert!(panicked.is_err(), "the read panicked");
+        assert!(reads.begin(), "a read that panicked lets the next begin");
+    }
+
     #[test]
     fn a_session_is_held_as_being_reopened_only_for_a_while() {
         let mut reopening = Reopening::default();
@@ -18524,7 +18626,7 @@ esac
         let holding = std::thread::spawn({
             let lapsed = Arc::clone(&lapsed);
             move || {
-                let told = let_go.recv_timeout(Duration::from_secs(10));
+                let told = let_go.recv_timeout(2 * PATIENCE);
                 lapsed.store(told.is_err(), std::sync::atomic::Ordering::SeqCst);
                 drop(reads);
             }
@@ -18540,9 +18642,7 @@ esac
             !lapsed.load(std::sync::atomic::Ordering::SeqCst),
             "kestrel is dialled while the store's messages are still being read"
         );
-        letting_go.send(()).expect("the reads are still held");
-        holding.join().expect("the reads are let go");
-        let listed = tokio::task::spawn_blocking(move || {
+        let mut listed = tokio::task::spawn_blocking(move || {
             let mut client = Client::connect(&socket).expect("the client connects");
             let asked = Request::Messages {
                 groups: Pattern::new("peer.*").expect("a valid pattern"),
@@ -18553,6 +18653,14 @@ esac
             };
             all.into_iter().map(|one| one.text).collect::<Vec<_>>()
         });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), &mut listed)
+                .await
+                .is_err(),
+            "a client isn't answered while the store's messages are still being read"
+        );
+        letting_go.send(()).expect("the reads are still held");
+        holding.join().expect("the reads are let go");
         let texts = tokio::time::timeout(PATIENCE, listed)
             .await
             .expect("the node answers in time")
