@@ -7,13 +7,25 @@
 //! process may raise its own soft limit as far as its hard one without
 //! any privilege, so the node does, as Go's runtime does for every Go
 //! program, rather than leaving its reach to whatever its unit says.
+//!
+//! What the node starts is given back the limit the node was started
+//! with ([`as_started`]), as Go's runtime does for what it starts too: a
+//! program that waits on its descriptors with `select` can't take one
+//! numbered past 1024, and a session's tools are no business of the
+//! node's limit.
+
+use std::sync::OnceLock;
 
 use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
 
-/// The most a soft limit on open files may be on macOS, whose kernel
-/// refuses a soft limit above it, an unlimited one included, whatever
-/// the hard limit says.
-const MACOS_CEILING: u64 = 10_240;
+/// The most a soft limit on open files may be on macOS where the kernel
+/// won't say its own most: `OPEN_MAX`, which every Mac takes.
+#[cfg(target_os = "macos")]
+const MACOS_OPEN_MAX: u64 = 10_240;
+
+/// This process's limit on open files as it started, kept by the first
+/// [`raise`].
+static STARTED_WITH: OnceLock<Rlimit> = OnceLock::new();
 
 /// What the soft limit on open files was raised from and to, where it
 /// was raised.
@@ -21,30 +33,103 @@ const MACOS_CEILING: u64 = 10_240;
 pub struct Raised {
     /// The soft limit before, or none where it was unlimited.
     pub from: Option<u64>,
-    /// The soft limit after, or none where it is unlimited.
+    /// The soft limit after, as the kernel says it set it, or none where
+    /// it is unlimited.
     pub to: Option<u64>,
 }
 
 /// Raises this process's soft limit on open files to its hard limit, or
 /// to the most this system takes where that is lower, answering what it
 /// was raised from and to, or none where it was already there. A refusal
-/// is the system's error, and leaves the limit as it was.
+/// is the system's error, naming the limit asked for, and leaves the
+/// limit as it was.
 ///
 /// # Errors
 ///
 /// Where the system refuses the new limit.
 pub fn raise() -> std::io::Result<Option<Raised>> {
-    let ceiling = cfg!(target_os = "macos").then_some(MACOS_CEILING);
     let now = getrlimit(Resource::Nofile);
-    let Some(new) = raised(&now, ceiling) else {
+    let started = STARTED_WITH.get_or_init(|| now.clone());
+    let Some(new) = raised(&now, ceiling()) else {
         return Ok(None);
     };
-    let to = new.current;
-    setrlimit(Resource::Nofile, new)?;
+    let asked = new.current;
+    setrlimit(Resource::Nofile, new).map_err(|error| {
+        std::io::Error::new(
+            std::io::Error::from(error).kind(),
+            format!("raising it to {} failed: {error}", said(asked)),
+        )
+    })?;
     Ok(Some(Raised {
-        from: now.current,
-        to,
+        from: started.current,
+        to: getrlimit(Resource::Nofile).current,
     }))
+}
+
+/// Has `command` start with the limit on open files this process was
+/// started with, where [`raise`] raised it since: set between its fork
+/// and its exec, so this process's own stays as raised. A child whose
+/// limit can't be lowered starts with this process's.
+pub fn as_started(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+
+    let Some(started) = STARTED_WITH.get().cloned() else {
+        return;
+    };
+    #[expect(
+        unsafe_code,
+        reason = "a child is given back its limit only between fork and exec"
+    )]
+    // SAFETY: setrlimit is one system call, safe between fork and exec: it
+    // takes no lock and allocates nothing, and the limit is copied in
+    // before the fork.
+    unsafe {
+        command.pre_exec(move || {
+            let _ = setrlimit(Resource::Nofile, started.clone());
+            Ok(())
+        });
+    }
+}
+
+/// The limit as said: its number, or `unlimited` where it has none.
+fn said(limit: Option<u64>) -> String {
+    limit.map_or_else(|| "unlimited".to_owned(), |limit| limit.to_string())
+}
+
+/// The most this system takes as a soft limit on open files whatever the
+/// hard limit says, where it has one: on macOS the kernel refuses a soft
+/// limit above `kern.maxfilesperproc`, an unlimited one included, as Go's
+/// runtime reads it too.
+#[cfg(target_os = "macos")]
+fn ceiling() -> Option<u64> {
+    let mut most: libc::c_int = 0;
+    let mut size = size_of::<libc::c_int>();
+    #[expect(
+        unsafe_code,
+        reason = "macOS says its most open files per process only through sysctl"
+    )]
+    // SAFETY: the name is a NUL-ended string, and the value is read into
+    // an int of the size given, only once sysctlbyname says it succeeded.
+    let read = unsafe {
+        libc::sysctlbyname(
+            c"kern.maxfilesperproc".as_ptr(),
+            (&raw mut most).cast(),
+            &raw mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    let read = (read == 0).then_some(most);
+    Some(
+        read.and_then(|most| u64::try_from(most).ok())
+            .filter(|most| *most > 0)
+            .unwrap_or(MACOS_OPEN_MAX),
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+const fn ceiling() -> Option<u64> {
+    None
 }
 
 /// The limit `now` raised as far as it may go, its hard limit kept: its
@@ -70,7 +155,9 @@ fn raised(now: &Rlimit, ceiling: Option<u64>) -> Option<Rlimit> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Raised, Rlimit, raise, raised};
+    use super::{
+        Resource, Rlimit, STARTED_WITH, as_started, ceiling, getrlimit, raise, raised, said,
+    };
 
     fn limit(current: Option<u64>, maximum: Option<u64>) -> Rlimit {
         Rlimit { current, maximum }
@@ -93,12 +180,12 @@ mod tests {
     #[test]
     fn a_ceiling_holds_it_below_an_unlimited_or_higher_hard_limit() {
         assert_eq!(
-            raised(&limit(Some(256), None), Some(10_240)),
-            Some(limit(Some(10_240), None)),
+            raised(&limit(Some(256), None), Some(184_320)),
+            Some(limit(Some(184_320), None)),
             "launchd's soft 256 under an unlimited hard limit stops at the ceiling"
         );
         assert_eq!(
-            raised(&limit(Some(256), Some(4096)), Some(10_240)),
+            raised(&limit(Some(256), Some(4096)), Some(184_320)),
             Some(limit(Some(4096), Some(4096))),
             "a hard limit below the ceiling is the most"
         );
@@ -123,13 +210,34 @@ mod tests {
         );
     }
 
+    /// The only test that raises this test process's own limit, so what
+    /// it started with is known here.
     #[test]
-    fn raising_twice_raises_once() {
-        let first: Option<Raised> = raise().expect("a process may raise its own soft limit");
+    fn the_process_takes_all_it_may_and_what_it_starts_gets_what_it_started_with() {
+        let before = getrlimit(Resource::Nofile);
+        raise().expect("a process may raise its own soft limit");
+        let expected = raised(&before, ceiling()).unwrap_or_else(|| before.clone());
+        assert_eq!(
+            getrlimit(Resource::Nofile),
+            expected,
+            "the soft limit is all the hard limit and the system allow"
+        );
         assert_eq!(
             raise().expect("and ask again"),
             None,
-            "the second finds it raised already, after {first:?}"
+            "a second raise finds it raised already"
+        );
+
+        let started = STARTED_WITH.get().expect("kept by the first raise");
+        let mut child = std::process::Command::new("sh");
+        child.args(["-c", "ulimit -n"]);
+        as_started(&mut child);
+        let output = child.output().expect("sh runs");
+        let child_said = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        assert_eq!(
+            child_said,
+            said(started.current),
+            "a child starts with the limit this process started with"
         );
     }
 }

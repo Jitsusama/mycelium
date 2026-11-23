@@ -235,6 +235,8 @@ fn command(
         .split_first()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "nothing to run"))?;
     let mut command = tokio::process::Command::new(program);
+    // A run is given the limit on open files the node was started with.
+    crate::open_files::as_started(command.as_std_mut());
     match folder {
         Folder::At(path) => {
             command.current_dir(path);
