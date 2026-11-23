@@ -355,9 +355,9 @@ pub async fn run(
     }
     let claim = claimed(&store, &other.machine)?;
     let reach = reach_start(&store, &other.machine);
-    // Read before admission, which marks a machine never linked as of now.
-    let began = store.linked_until(&other.machine);
-    admitted(&store, &other.machine)?;
+    // As it stood before admission, which marks a machine never linked
+    // as of now.
+    let began = admitted(&store, &other.machine)?;
     let exchange = shares.map(|places| exchange_with(places, &membership.hello(), &other, worker));
     let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine);
     let (answering, mut answered) = mpsc::unbounded_channel();
@@ -694,15 +694,17 @@ fn claimed(store: &impl Store, machine: &str) -> io::Result<Claim> {
 /// already kept stays where it is, since the link's first keep, or its
 /// end, keeps it where the link began until its catch-up has stood
 /// ([`Hearing::linked_until`]), and a node killed before either leaves
-/// it there too, so the next link still reaches back that far.
-fn admitted(store: &impl Store, machine: &str) -> io::Result<()> {
-    if store.linked_until(machine).is_none() {
+/// it there too, so the next link still reaches back that far. Answers
+/// the mark as it stood before, none for a machine never linked.
+fn admitted(store: &impl Store, machine: &str) -> io::Result<Option<i64>> {
+    let before = store.linked_until(machine);
+    if before.is_none() {
         store.mark_linked(machine, now())?;
     }
     if let Err(error) = store.link_admitted(machine) {
         eprintln!("{machine} linked, but its last refusal stands: {error}");
     }
-    Ok(())
+    Ok(before)
 }
 
 /// Says this end's hello, saying whether its way in `releases` the other
