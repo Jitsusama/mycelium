@@ -53,6 +53,7 @@ mod started;
 pub mod starts;
 pub mod steers;
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -527,8 +528,9 @@ impl Drop for Reader {
 /// sends a line that isn't one, keeping in `arrived` when the last came:
 /// the other end is heard as its words arrive, not only once the link's
 /// own work reaches them, which may be held minutes behind a quest it
-/// shares. A frame after the hello that this end can't read is skipped
-/// ([`unread`]).
+/// shares. A frame after the hello of a kind this end doesn't know is
+/// skipped ([`unread`]), said once a link for each of the first
+/// [`SKIPS_SAID`] kinds.
 fn read_frames(
     reading: Box<dyn AsyncRead + Unpin + Send>,
     arrived: Arc<AtomicI64>,
@@ -536,7 +538,8 @@ fn read_frames(
     let (sender, frames) = mpsc::unbounded_channel();
     let task = tokio::spawn(async move {
         let mut lines = BufReader::new(reading).lines();
-        let mut greeted = false;
+        // The machine the first frame named, once one has been read.
+        let mut greeted: Option<String> = None;
         let mut skipped = HashSet::new();
         loop {
             let line = lines.next_line().await;
@@ -544,14 +547,10 @@ fn read_frames(
             let frame = match line {
                 Ok(Some(line)) => match serde_json::from_str(&line) {
                     Ok(frame) => Ok(frame),
-                    Err(error) => match unread(&line, greeted) {
-                        Some(kind) => {
-                            if skipped.insert(kind.clone()) {
-                                eprintln!(
-                                    "the other end sent a {kind} this node can't read ({error}), \
-                                     so it skips each it sends; update this node to read them"
-                                );
-                            }
+                    // Before the first frame is read, nothing is skipped.
+                    Err(error) => match greeted.as_deref().zip(unread(&line)) {
+                        Some((machine, kind)) => {
+                            say_skipped(machine, kind, &mut skipped);
                             continue;
                         }
                         None => Err(io::Error::new(io::ErrorKind::InvalidData, error)),
@@ -560,7 +559,12 @@ fn read_frames(
                 Ok(None) => return,
                 Err(error) => Err(error),
             };
-            greeted = true;
+            if greeted.is_none() {
+                greeted = Some(match &frame {
+                    Ok(Frame::Hello(hello)) => hello.machine.clone(),
+                    _ => "the other end".to_owned(),
+                });
+            }
             let failed = frame.is_err();
             if sender.send(frame).is_err() || failed {
                 return;
@@ -570,20 +574,95 @@ fn read_frames(
     (frames, Reader(task))
 }
 
-/// The kind of frame `line` is, where it is one this end can't read but
-/// the link can carry on past: a frame after the hello, from an end newer
-/// than this one, of a kind or with a kind within it that this end
-/// doesn't know (PROTOCOL.md, A Link). None for a line that isn't a frame
-/// at all, which ends the link, as does any line before the hello is
-/// read.
-fn unread(line: &str, greeted: bool) -> Option<String> {
-    if !greeted {
-        return None;
+/// How many kinds of skipped frame a link says, each once: past them a
+/// link says only that there are more, so an end sending ever new kinds
+/// grows neither this end's memory nor its log.
+const SKIPS_SAID: usize = 8;
+
+/// Says that `machine` sent a frame of `kind`, which this end skips, the
+/// first time a link meets that kind, keeping the kinds met in `said`. The
+/// kind is the other end's word, so it is cut short and quoted, its marks
+/// escaped, and can't write a line of its own into the log.
+fn say_skipped(machine: &str, kind: String, said: &mut HashSet<String>) {
+    if said.len() > SKIPS_SAID || said.contains(&kind) {
+        return;
     }
-    match serde_json::from_str::<Value>(line).ok()? {
-        Value::Object(frame) if frame.len() == 1 => frame.keys().next().cloned(),
-        Value::String(kind) => Some(kind),
+    if said.len() == SKIPS_SAID {
+        said.insert(String::new());
+        eprintln!("{machine:?} sent more kinds of frame this node can't read, skipped unsaid");
+        return;
+    }
+    let shown: String = kind.chars().take(40).collect();
+    said.insert(kind);
+    eprintln!(
+        "{machine:?} sent a frame of a kind this node doesn't know, {shown:?}, so it skips \
+         each it sends; update this node to read them"
+    );
+}
+
+/// The kind of frame `line` is, where it is one this end can't read but
+/// the link can carry on past: a frame, from an end newer
+/// than this one, of a kind this end doesn't know, or a share of a kind
+/// it doesn't (PROTOCOL.md, A Link). None for a line that isn't a frame
+/// at all, and for a frame of a kind this end knows whose body it can't
+/// read, which may be one an ask waits on: either ends the link.
+fn unread(line: &str) -> Option<String> {
+    let frame = serde_json::from_str::<Value>(line).ok()?;
+    let outer = kind_of(&frame)?;
+    if !kinds::<Frame>().contains(&outer.as_str()) {
+        return Some(outer);
+    }
+    let inner = match (outer.as_str(), &frame) {
+        ("Share", Value::Object(frame)) => kind_of(frame.get("Share")?)?,
+        _ => return None,
+    };
+    (!kinds::<Say>().contains(&inner.as_str())).then(|| format!("Share {inner}"))
+}
+
+/// The kind a value names as serde writes an enum's variant: an object of
+/// one key, or a bare string.
+fn kind_of(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(value) if value.len() == 1 => value.keys().next().cloned(),
+        Value::String(kind) => Some(kind.clone()),
         _ => None,
+    }
+}
+
+/// The variants of enum `T` by the names it reads them by, as its own
+/// derive hands them to a deserializer, so the list can't drift from the
+/// enum.
+fn kinds<T: for<'de> Deserialize<'de>>() -> &'static [&'static str] {
+    let named = Cell::new(&[][..]);
+    let _ = T::deserialize(Kinds(&named));
+    named.get()
+}
+
+/// A deserializer that reads nothing, keeping the variants an enum asks
+/// it for ([`kinds`]).
+struct Kinds<'a>(&'a Cell<&'static [&'static str]>);
+
+impl<'de> serde::Deserializer<'de> for Kinds<'_> {
+    type Error = serde::de::value::Error;
+
+    fn deserialize_any<V: serde::de::Visitor<'de>>(self, _: V) -> Result<V::Value, Self::Error> {
+        Err(serde::de::Error::custom("only an enum's variants are read"))
+    }
+
+    fn deserialize_enum<V: serde::de::Visitor<'de>>(
+        self,
+        _: &'static str,
+        variants: &'static [&'static str],
+        _: V,
+    ) -> Result<V::Value, Self::Error> {
+        self.0.set(variants);
+        Err(serde::de::Error::custom("only its variants are read"))
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf
+        option unit unit_struct newtype_struct seq tuple tuple_struct map struct identifier
+        ignored_any
     }
 }
 
@@ -4376,15 +4455,95 @@ mod tests {
         );
     }
 
-    /// After the hello, a frame of a kind this end doesn't know, or with a
-    /// kind within it that it doesn't, is skipped and the frames after it
-    /// are read, as an end newer than this one may send them; a line that
-    /// isn't a frame still ends the reading, as does any unread first line.
-    #[tokio::test]
-    async fn the_reader_skips_a_frame_it_cant_read_after_the_hello() {
-        let (far, near) = tokio::io::duplex(4096);
+    /// What `read_frames` gives for `lines`, each frame or the kind of error
+    /// that ended the reading.
+    async fn read_lines(lines: &[&str]) -> Vec<Result<Frame, io::ErrorKind>> {
+        let (far, near) = tokio::io::duplex(8192);
         let (_, mut writing) = tokio::io::split(far);
         let (mut frames, _reader) = read_frames(Box::new(near), Arc::new(AtomicI64::new(0)));
+        writing
+            .write_all(format!("{}\n", lines.join("\n")).as_bytes())
+            .await
+            .expect("written");
+        drop(writing);
+        let mut heard = Vec::new();
+        while let Some(frame) = frames.recv().await {
+            heard.push(frame.map_err(|error| error.kind()));
+        }
+        heard
+    }
+
+    fn ended(session: &str) -> Result<Frame, io::ErrorKind> {
+        Ok(Frame::Ended {
+            session: session.to_owned(),
+        })
+    }
+
+    /// A frame of a kind this end knows whose body it can't read ends the
+    /// reading, as it did before kinds were skipped: it may be the answer an
+    /// ask waits on with no time limit, or a piece whose window slot would
+    /// never come back, and only the link's drop answers those. So does a
+    /// second hello this end can't read, and JSON of no frame's shape.
+    #[tokio::test]
+    async fn the_reader_ends_at_a_known_kind_it_cant_read() {
+        for bad in [
+            "{\"Ended\":{\"session\":7}}",
+            "{\"Started\":{\"reply\":{\"Ok\":\"Zzz\"}}}",
+            "{\"Hello\":{}}",
+            "{\"Share\":{\"Holds\":{\"quest\":1}}}",
+            "{\"Share\":7}",
+            "[\"Ended\",\"s2\"]",
+            "{\"Ended\":{\"session\":\"s2\"},\"Left\":null}",
+        ] {
+            let ended_by = [
+                "{\"Ended\":{\"session\":\"s1\"}}",
+                bad,
+                "{\"Ended\":{\"session\":\"s3\"}}",
+            ];
+            assert_eq!(
+                read_lines(&ended_by).await,
+                [ended("s1"), Err(io::ErrorKind::InvalidData)],
+                "{bad} ends the reading, and nothing after it is read"
+            );
+        }
+    }
+
+    /// The kinds the reader checks a frame against are the enums' own, so
+    /// a variant added later is known without a list to keep.
+    #[test]
+    fn the_kinds_known_are_the_enums_own() {
+        let frames = kinds::<Frame>();
+        for kind in ["Hello", "Share", "Ended", "Started", "HandedOver"] {
+            assert!(frames.contains(&kind), "{kind} is a frame: {frames:?}");
+        }
+        assert!(kinds::<Say>().contains(&"Holds"), "Holds is a share");
+        assert!(!frames.contains(&"Holds"), "and not a frame");
+    }
+
+    /// Each skipped kind is said once a link, and past [`SKIPS_SAID`] kinds
+    /// only once more that there are others, so the kinds kept stay bounded
+    /// however many an end sends.
+    #[test]
+    fn the_kinds_skipped_are_said_a_bounded_number_of_times() {
+        let mut said = HashSet::new();
+        for kind in 0..40 {
+            say_skipped("tern", format!("Gossip{kind}"), &mut said);
+            say_skipped("tern", format!("Gossip{kind}"), &mut said);
+        }
+        assert_eq!(
+            said.len(),
+            SKIPS_SAID + 1,
+            "the first kinds and the word for more"
+        );
+        assert!(said.contains("Gossip0") && !said.contains("Gossip39"));
+    }
+
+    /// After the hello, a frame of a kind this end doesn't know, or a share
+    /// of a kind it doesn't, is skipped and the frames after it are read,
+    /// as an end newer than this one may send them; a line that isn't JSON
+    /// still ends the reading, as does any unread first line.
+    #[tokio::test]
+    async fn the_reader_skips_a_frame_it_cant_read_after_the_hello() {
         let lines = [
             "{\"Ended\":{\"session\":\"s1\"}}",
             "{\"Gossip\":{\"about\":\"what is next\"}}",
@@ -4394,40 +4553,15 @@ mod tests {
             "not a frame",
             "{\"Ended\":{\"session\":\"s3\"}}",
         ];
-        writing
-            .write_all(format!("{}\n", lines.join("\n")).as_bytes())
-            .await
-            .expect("written");
-        let mut heard = Vec::new();
-        while let Some(frame) = frames.recv().await {
-            heard.push(frame.map_err(|error| error.kind()));
-        }
-        let ended = |session: &str| {
-            Ok(Frame::Ended {
-                session: session.to_owned(),
-            })
-        };
         assert_eq!(
-            heard,
+            read_lines(&lines).await,
             [ended("s1"), ended("s2"), Err(io::ErrorKind::InvalidData)],
             "the three it can't read are skipped, and reading ends at the line that isn't one"
         );
-
-        let (far, near) = tokio::io::duplex(1024);
-        let (_, mut writing) = tokio::io::split(far);
-        let (mut frames, _reader) = read_frames(Box::new(near), Arc::new(AtomicI64::new(0)));
-        writing
-            .write_all(b"{\"Gossip\":{}}\n{\"Ended\":{\"session\":\"s1\"}}\n")
-            .await
-            .expect("written");
-        let first = frames.recv().await.expect("a line");
-        assert!(
-            first.is_err(),
-            "a first line it can't read ends it: {first:?}"
-        );
-        assert!(
-            frames.recv().await.is_none(),
-            "and nothing after it is read"
+        assert_eq!(
+            read_lines(&["{\"Gossip\":{}}", "{\"Ended\":{\"session\":\"s1\"}}"]).await,
+            [Err(io::ErrorKind::InvalidData)],
+            "a first line it can't read ends it, and nothing after it is read"
         );
     }
 

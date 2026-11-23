@@ -336,13 +336,18 @@ long as each change keeps to three rules. A new field is optional, so
 an end older than it reads the frame without it, and an end newer
 reads a frame that lacks it. A new frame, or a new kind within one, is
 sent only to an end whose hello says it knows of it, as each flag
-above says. And an end skips a frame after the hello that it can't
-read, saying so once a link for each kind, rather than ending the
-link, so a frame sent past those rules costs only itself. A line that
-isn't JSON, and a hello that can't be read, still end the link. A
-change that can't keep to the rules, as one changing what a frame
-means would be, raises `version`, and ends of two versions are
-refused, saying which to update (Membership, below).
+above says. And after the first frame, an end skips a frame of a kind
+it doesn't know, or a `Share` of a kind it doesn't, saying so once a
+link for each of its first eight kinds, rather than ending the link.
+A frame of a kind it knows whose body it can't read still ends the
+link, as a hello it can't read does, and a line that isn't JSON or
+holds no frame's shape: such a frame may be the answer an ask waits
+on, which only the link's drop then answers. A change that can't keep
+to the rules, as one changing what a frame means would be, raises
+`version`, and ends of two versions are refused, saying which to
+update (Membership, below). An end older than skipping ends the link
+at any frame it can't read, so the rules hold fully only between ends
+that skip.
 
 Only one link joins two machines, and whichever dialled first holds it,
 so each end carries what its own node asks of the other machine: starts,
