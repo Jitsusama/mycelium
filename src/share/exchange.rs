@@ -779,14 +779,18 @@ impl Exchange {
 
     /// Keeps what this end's worker said it holds of `id`, a quest it was
     /// given, apart from what the ledger takes ([`Ledger::read`]), as word
-    /// that the quest reached it: nothing of it is taken.
+    /// that the quest reached it: nothing of it is taken. A quest this
+    /// machine no longer shares is left unshared: holding a ledger makes
+    /// one, and keeping it would share the quest again.
     ///
     /// # Errors
     ///
     /// When the quest's ledger can't be read or kept.
     fn read_by_worker(&self, id: &str, files: BTreeMap<String, State>) -> io::Result<()> {
-        let mut held = self.places.ledgers().hold(id)?;
-        if held.ledger.read_by(&self.other, files) {
+        let ledgers = self.places.ledgers();
+        let mut held = ledgers.hold(id)?;
+        // Asked under the hold, since sharing stops under it too.
+        if ledgers.shares(id) && held.ledger.read_by(&self.other, files) {
             held.keep()?;
         }
         Ok(())
@@ -5001,6 +5005,18 @@ mod tests {
         assert!(
             !ledger().theirs.contains_key("tern"),
             "and its rewriting the quest makes it no machine sharing it"
+        );
+        assert!(
+            !ledger().read.contains_key("tern"),
+            "nor one holding skiff's quest as skiff holds it"
+        );
+
+        skiff.places.ledgers().stop(given).expect("stopped");
+        shared(&tern, given, "# Given, rewritten on tern again\n");
+        talk(&mut near, &mut far);
+        assert!(
+            !skiff.places.ledgers().shares(given),
+            "what a worker says of a quest skiff stopped sharing doesn't share it again"
         );
     }
 }

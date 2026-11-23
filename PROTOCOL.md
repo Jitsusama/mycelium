@@ -526,6 +526,13 @@ that takes a file says `Holds` of it even when it now holds just what
 was sent, so the sender knows. Only files an end holds itself are kept
 there, so a file deleted drops out.
 
+What a worker says it holds of a quest it was given is kept apart, as
+`read`, since nothing a worker says is taken: `theirs` would let its
+runs into this machine's trees. Only a file the worker holds by the same
+hash as this end is kept, as this end's own state, and a worker holding
+none is dropped. A quest this end no longer shares isn't shared again
+by a worker speaking of it.
+
 `mycelium share QEST-... --to <machine> --wait` returns only once that
 machine's node holds the quest, so a session started there after finds
 all it needs. It counts every file of the record and of the named
@@ -1537,6 +1544,15 @@ why, with `path` the folder as it was given and `tools` empty, so a
 node too old to read why still finds no tool there. It is absent where
 the node is given no kit or is too old to say, and absent reads as
 unknown. Both the node a machine dialled and the links it keeps say it.
+
+Its `holds` is how many sessions its node holds running, parked ones
+aside, whether or not each says it is a session, as a worker's fenced
+pi, with no mesh, doesn't. Its node and its links say it each time they
+say the machine. A machine's most (`sessions_at_most`, or what its offer
+promised) is weighed against the larger of `holds` and the live
+sessions known there, rather than their sum, since a held session that
+says it is one is in both. It is absent from a node too old to say,
+which counts only the sessions known.
 
 Its `fences_held` is `true` where its node starts an agent's held
 session through the launcher the session's fence declares there, as a
