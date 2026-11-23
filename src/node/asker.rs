@@ -390,6 +390,13 @@ const SANDBOX: &[u8] = b"PI_SANDBOX=";
 /// command it fences.
 const BWRAP: &str = "bwrap";
 
+/// The processes the agent fence's bubblewrap is started through below
+/// the pi it fences: the host's spawner and the shell that runs each
+/// command. A bubblewrap reached through anything else, such as a test
+/// suite's own under a command the agent ran, is that command's, and
+/// says nothing of the fence the agent runs in (85PKB2, 23 November).
+const FENCED_THROUGH: &[&str] = &["pi-spawner", "bash", "sh"];
+
 /// How many processes are looked through at most for those below a pi,
 /// so a machine running a great many can't hold a carry up for long.
 const LOOKED_THROUGH: usize = 65_536;
@@ -398,8 +405,9 @@ const LOOKED_THROUGH: usize = 65_536;
 /// holds, proved as [`proved`] proves it, and never by the session's own
 /// presence: `PI_SANDBOX` in the environment that process began with,
 /// which pi never changes there and no command it fences can reach; and,
-/// where that pi owns this session alone, a bubblewrap running below it,
-/// which only the agent fence starts. The harness fences each command
+/// where that pi owns this session alone, a bubblewrap started below it
+/// through its spawner and shells alone ([`FENCED_THROUGH`]), as only the
+/// agent fence starts one. The harness fences each command
 /// rather than pi itself, so pi's own seccomp, `no_new_privs` and mount
 /// namespace say nothing of it, and the strict fence's Landlock leaves
 /// nothing past each command it runs. A pi host's environment and
@@ -542,7 +550,7 @@ fn shown_of(
     session: &str,
 ) -> Result<Kind, String> {
     let began = began_in(procs, pid, session)?;
-    let fenced_below = tree.runs_below(pid, BWRAP);
+    let fenced_below = tree.fences_below(pid);
     // Read again last, so what was read before was that process's.
     if started(procs, pid) != Some(ticks) {
         return Err(format!(
@@ -652,7 +660,7 @@ fn hosted_fence(
         .all(|one| one.get("id").and_then(Value::as_str) == Some(session));
     let kind = kind.max(began_in(procs, pid, session)?);
     let weighs = beside.weighs_bubblewrap || alone;
-    let kind = if weighs && !fenced_beside && beside.tree.runs_below(pid, BWRAP) {
+    let kind = if weighs && !fenced_beside && beside.tree.fences_below(pid) {
         kind.max(Kind::Fence)
     } else {
         kind
@@ -768,17 +776,17 @@ impl Tree {
         )
     }
 
-    /// Whether a process named `name` runs below process `pid`, at any
-    /// depth.
-    fn runs_below(&self, pid: i32, name: &str) -> bool {
+    /// Whether the agent fence's bubblewrap runs below process `pid`: one
+    /// reached from it through [`FENCED_THROUGH`] alone, at any depth.
+    fn fences_below(&self, pid: i32) -> bool {
         let mut below = vec![pid];
         let mut seen = std::collections::BTreeSet::from([pid]);
         while let Some(parent) = below.pop() {
             for (child, named, _) in self.0.iter().filter(|(_, _, of)| *of == parent) {
-                if named == name {
+                if named == BWRAP {
                     return true;
                 }
-                if seen.insert(*child) {
+                if FENCED_THROUGH.contains(&named.as_str()) && seen.insert(*child) {
                     below.push(*child);
                 }
             }
@@ -3269,7 +3277,16 @@ mod tests {
         assert_eq!(
             shown(&running, None),
             Ok(Kind::Fence),
-            "a command fenced below it, at any depth"
+            "a command fenced below it, through the shell that runs it"
+        );
+        let spawned = fenced_pi(
+            "HOME=/home/jsama\0",
+            &[(69, "pi-spawner", 58), (70, "bash", 69), (71, "bwrap", 70)],
+        );
+        assert_eq!(
+            shown(&spawned, None),
+            Ok(Kind::Fence),
+            "or through the host's spawner and its shell"
         );
         let strict = fenced_pi("PI_SANDBOX=strict\0", &[(71, "bwrap", 58)]);
         assert_eq!(
@@ -3282,6 +3299,33 @@ mod tests {
             shown(&beside, None),
             Ok(Kind::None),
             "a bubblewrap of another's says nothing of it"
+        );
+    }
+
+    #[test]
+    fn a_bubblewrap_a_command_starts_says_nothing_of_the_agents_fence() {
+        let tested = fenced_pi(
+            "HOME=/home/jsama\0",
+            &[(70, "bash", 58), (71, "node", 70), (72, "bwrap", 71)],
+        );
+        assert_eq!(
+            shown(&tested, None),
+            Ok(Kind::None),
+            "a test suite's own bubblewrap, under a command the agent ran unfenced"
+        );
+        let deeper = fenced_pi(
+            "HOME=/home/jsama\0",
+            &[
+                (70, "bash", 58),
+                (71, "cargo", 70),
+                (72, "sh", 71),
+                (73, "bwrap", 72),
+            ],
+        );
+        assert_eq!(
+            shown(&deeper, None),
+            Ok(Kind::None),
+            "nor one a shell starts below such a command"
         );
     }
 

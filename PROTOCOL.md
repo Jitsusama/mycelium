@@ -833,8 +833,11 @@ session says of itself:
 - The fence it names is never looser than its process shows. The
   node reads the proved owner's process: `PI_SANDBOX` in the
   environment it began with (`strict` or `fence`), and, for a pi that
-  owns its session alone, a `bwrap` running anywhere below it, which
-  shows it fenced. A presence naming a looser fence than that is
+  owns its session alone, a `bwrap` running below it, which shows it
+  fenced. Only a `bwrap` reached from the owner through `pi-spawner`,
+  `bash` or `sh` alone counts, as the agent fence starts it; one a
+  command starts, such as a test suite's, says nothing of the agent's
+  fence. A presence naming a looser fence than that is
   refused, as `HARBOR says it runs unfenced, but its process shows it
   fenced, so where it may land can't be told`; one naming a stricter
   stands, since the strict fence leaves nothing lasting to show. A
@@ -855,7 +858,7 @@ session says of itself:
   in the record only where no fenced command could have replaced the
   record, so one a command could have written names none, and reads
   as untold. It is never looser than its host's `PI_SANDBOX` either.
-  At a carry, a `bwrap` running below the host shows it fenced too,
+  At a carry, a `bwrap` below the host, reached so, shows it fenced too,
   unless another session the record names `fence` is proved on that
   host and explains it. The look kept in `fences.json`, below, leaves
   that out where the record names another session, since a sibling's
@@ -1744,7 +1747,11 @@ machine dialled runs apart from the node, so it asks the node for
 `Machine` and says that; while no node answers within 5 seconds, it
 says only what it measures, with nothing declared. It is `null` where
 nothing is declared, or where the file isn't in this shape, which the
-node logs.
+node logs. The end hearing it keeps what the machine last declared
+over that link while it declares nothing, for 10 minutes at most, so
+a node restarting or slow to answer leaves its machine's ground as it
+was; past that, the machine reads as declaring nothing. A declaration
+said again replaces it at once.
 
 Its `reached` says whether each probed network answered, by name. The
 node tries each probe every 30 seconds, giving each 3 to answer (a
