@@ -6793,16 +6793,20 @@ impl<S: Store> Shared<S> {
         // Its launcher first, so a fence whose launcher is refused starts
         // nothing, whatever else this node lacks. The holder runs each
         // start within it, the first and every one after a park.
-        let declared = crate::declared::read(&self.declared).unwrap_or_default();
+        // A node that can't read what it declares runs `pi` within the
+        // launcher, so a fence is never loosened for a word it lacks.
+        let declared = crate::declared::read(&self.declared);
         let agent = declared
-            .agents
-            .get(&self.realm)
-            .cloned()
+            .as_ref()
+            .and_then(|declared| declared.agents.get(&self.realm).cloned())
             .unwrap_or_else(|| "pi".to_owned());
         // A Mac whose pi lays its own fence round each command it runs,
         // as its configuration says, leaves pi to fence itself as Linux
         // does, since pi can't reach its own state within the launcher.
-        let fences = self.fences_held && !declared.pi_fences_itself;
+        let fences = self.fences_held
+            && !declared
+                .as_ref()
+                .is_some_and(|declared| declared.pi_fences_itself);
         let within = held_within(fences, fence, (&asked.command, &agent), |kind| {
             crate::declared::launcher(&self.declared, kind, &self.runs.declarers)
                 .map_err(|why| format!("{machine} can't start this held session {kind}: {why}"))
@@ -20083,7 +20087,7 @@ esac
     fn a_held_spawns_first_text_is_never_read_by_a_shell() {
         // The start as the node runs it, through the script its login
         // shell is given, but in `sh` alone, without a profile.
-        let through = crate::hold::start::login_shell("harbour", None);
+        let through = start::login_shell("harbour", None);
         let lic = through
             .iter()
             .position(|word| word == "-lic")
