@@ -45,6 +45,7 @@
 //! [`discovery`]'s.
 
 pub mod carried;
+mod declared_heard;
 pub mod dial;
 pub mod discovery;
 pub mod membership;
@@ -386,6 +387,7 @@ pub async fn run(
         held: starting.as_ref().map(|starting| starting.held.clone()),
         health: health_of(starting.as_ref()),
         declared: declared_of(starting.as_ref()),
+        heard_declared: declared_heard::DeclaredHeard::default(),
         lender: lender_of(starting.as_ref()),
         node: starting.map(|starting| starting.node),
         starters,
@@ -1091,6 +1093,9 @@ struct End<S> {
     health: OwnHealth,
     /// Where what this machine's configuration declares is read from.
     declared: Declaring,
+    /// What the other machine last declared, kept through a short silence
+    /// about it.
+    heard_declared: declared_heard::DeclaredHeard,
     _claim: Claim,
 }
 
@@ -2029,6 +2034,15 @@ impl<S: Store> End<S> {
         // Whether it is a worker is this end's to say: a worker saying it
         // isn't one, or a peer saying it is, changes nothing.
         said.worker = self.worker;
+        // A node restarting, or too slow to answer its end, has it say its
+        // machine with nothing declared; what the machine last declared
+        // stands for a while, so a carry isn't refused for ground the
+        // machine still stands on.
+        said.declared = self.heard_declared.heard(
+            &self.other,
+            said.declared.take(),
+            tokio::time::Instant::now(),
+        );
         if let Some(exchange) = self.exchange.as_mut() {
             exchange.withhold_above(
                 said.declared
