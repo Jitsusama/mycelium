@@ -3548,7 +3548,7 @@ mod tests {
         let kestrel = Machine::new("kestrel");
         skiff.write("README.md", "# Many\n");
         for n in 0..20 {
-            skiff.write(&format!("notes/{n:02}.md"), &format!("note {n}\n"));
+            skiff.write(&format!("attachments/{n:02}.md"), &format!("note {n}\n"));
         }
         let small = skiff.places.quests.join(SMALL);
         fs::create_dir_all(&small).expect("made");
@@ -3594,7 +3594,7 @@ mod tests {
             "what was let go waits for the next Holds, as an unanswered ask always has"
         );
         assert_eq!(
-            kestrel.read("notes/19.md").as_deref(),
+            kestrel.read("attachments/19.md").as_deref(),
             Some("note 19\n"),
             "each one taken asked the next, to the last"
         );
