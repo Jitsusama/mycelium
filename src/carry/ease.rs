@@ -16,8 +16,9 @@
 //! [`SETTLE`] after its first sleep still say it is over. Those that
 //! wait anew sleep too: while it settles, and once it has, only where it
 //! carries none. It carries one asleep session at a time to a peer with
-//! room, placed as any work is, onto ground as firm as here's, never one
-//! in a turn, on the person's screen, orchestrating
+//! room whose latest facts are fresh enough to place by, placed as any
+//! work is, onto ground as firm as here's, never one in a turn, on the
+//! person's screen, orchestrating
 //! other sessions, part way through something a carry would break, or
 //! whose quest runs elsewhere too; what can't be told of a session keeps
 //! it here. After a carry it waits [`COOLDOWN`], and it carries at most
@@ -549,8 +550,8 @@ fn carry(
     let peers = peers(here, reading, history, now);
     if peers.is_empty() {
         return nothing(
-            "no machine with room is a peer it may carry to, or one a session came from within \
-             the hour"
+            "no machine with room is a peer it may carry to, with facts fresh enough to place \
+             by, that no session came from within the hour"
                 .to_owned(),
         );
     }
@@ -630,12 +631,21 @@ fn over(
 
 /// The machines `here` may carry to: those with room while it is over,
 /// as the watch holds it and in `reading` itself, peers rather than
-/// workers, and none a session came from within the hour.
+/// workers, whose facts in `reading` aren't too old to place by, and
+/// none a session came from within the hour. A machine last heard
+/// minutes ago may have filled up since, or its link may be down, so a
+/// carry there may close a session here that it can't open there.
 fn peers(here: &Here, reading: &Reading, history: &History, now: Timestamp) -> Vec<Machine> {
     let cool = |flags: &[Flag], name: &str| {
         flags.iter().any(
             |flag| matches!(flag, Flag::HotWhileCool { hot, cool } if hot == here.name && cool == name),
         )
+    };
+    let stale = |name: &str| {
+        reading
+            .flags
+            .iter()
+            .any(|flag| matches!(flag, Flag::Stale { machine } if machine == name))
     };
     let held = reading.held.as_deref().unwrap_or_default();
     here.machines
@@ -644,6 +654,7 @@ fn peers(here: &Here, reading: &Reading, history: &History, now: Timestamp) -> V
             machine.name != here.name
                 && cool(held, &machine.name)
                 && cool(&reading.flags, &machine.name)
+                && !stale(&machine.name)
         })
         .filter(|machine| {
             machine
@@ -1181,6 +1192,20 @@ pub(super) mod tests {
         assert!(
             why_not(&choosing(&roomy, &full)).starts_with("skiff isn't held past its memory limit"),
             "a peer that has just filled up is carried nothing"
+        );
+        // Osprey was last heard four minutes ago, past what work is placed
+        // by, as a Mac's facts are while its link is down.
+        let mut unheard = roomy.clone();
+        unheard[2].measured_at = ago(4).to_string();
+        assert_eq!(
+            carries(&choosing(&roomy, &unheard)),
+            Some(("s1", "tern")),
+            "a peer whose facts are too old to place by is carried nothing"
+        );
+        unheard[1].measured_at = ago(4).to_string();
+        assert!(
+            why_not(&choosing(&roomy, &unheard)).starts_with("no machine with room is a peer"),
+            "nor is any, when each peer with room was last heard too long ago"
         );
         let tern_only = [
             machine("skiff", 86.0),
