@@ -562,6 +562,11 @@ fn know_how_it_runs(starting: Option<&Starting>, machine: &str) {
     }
 }
 
+/// How long a link `machine` dialled waits for its node to take the asks
+/// of `machine` ([`asked_of`]): far past the moment a node at hand takes,
+/// so only a node stalled for longer has its facts go on first.
+const ASKS_TAKEN_WITHIN: Duration = Duration::from_secs(5);
+
 /// The starts this machine's node asks of `machine`, taken for this link
 /// until what it answers is dropped, when the link carries the node's
 /// starts: in the node's own process for a link it keeps, and over its
@@ -573,11 +578,6 @@ fn know_how_it_runs(starting: Option<&Starting>, machine: &str) {
 /// would otherwise find no link reaching it. A node that can't be reached
 /// ends the wait at once, and is asked again as [`carried::from_node`]
 /// says, while the link carries on.
-/// How long a link `machine` dialled waits for its node to take the asks
-/// of `machine` ([`asked_of`]): far past the moment a node at hand takes,
-/// so only a node stalled for longer has its facts go on first.
-const ASKS_TAKEN_WITHIN: Duration = Duration::from_secs(5);
-
 async fn asked_of(
     starting: Option<&Starting>,
     machine: &str,
@@ -3176,9 +3176,7 @@ mod tests {
             skiff.machines().is_empty(),
             "nothing of kestrel is said before its node takes the asks"
         );
-        let carrying =
-            serde_json::to_string(&crate::wire::Reply::Ok(crate::wire::Response::Carrying))
-                .expect("a reply");
+        let carrying = serde_json::to_string(&Reply::Ok(Response::Carrying)).expect("a reply");
         writing
             .write_all(format!("{carrying}\n").as_bytes())
             .await

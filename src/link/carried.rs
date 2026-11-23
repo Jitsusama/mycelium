@@ -589,10 +589,10 @@ mod tests {
         async fn carried_by(asks: &Asks) -> Self {
             let (node, link) = tokio::io::duplex(64 * 1024);
             let (reading, writing) = tokio::io::split(node);
-            let asks = asks.clone();
+            let node_asks = asks.clone();
             tokio::spawn(async move {
                 to_link(
-                    &asks,
+                    &node_asks,
                     ("tern", true),
                     BufReader::new(reading).lines(),
                     writing,
