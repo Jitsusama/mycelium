@@ -355,8 +355,7 @@ pub async fn run(
     }
     let claim = claimed(&store, &other.machine)?;
     let reach = reach_start(&store, &other.machine);
-    // Read before it is admitted, which marks it linked as of now where
-    // it never was.
+    // Read before admission, which marks a machine never linked as of now.
     let began = store.linked_until(&other.machine);
     admitted(&store, &other.machine)?;
     let exchange = shares.map(|places| exchange_with(places, &membership.hello(), &other, worker));
@@ -402,12 +401,9 @@ pub async fn run(
         _claim: claim,
     };
 
-    // Left as any end is, so a link that fails as it opens puts its mark
-    // back where the link began, as one that fails later does.
+    // A link that fails as it opens leaves as one failing later does.
     if let Err(error) = end.open(&mut writing).await {
-        let failed = Err(error);
-        end.leave(&failed);
-        return failed;
+        return end.leave(Err(error));
     }
 
     let (mut keeping, mut looking) = paces();
@@ -438,8 +434,7 @@ pub async fn run(
             break Ok(Ending::HandedOver);
         }
     };
-    end.leave(&result);
-    result
+    end.leave(result)
 }
 
 /// When a link keeps what it said, a minute on since the start has just
@@ -950,8 +945,8 @@ struct Handover {
 
 impl<S: Store> End<S> {
     /// Marks the link left as it ends, however it ended, and its machine
-    /// out of reach.
-    fn leave(&self, result: &io::Result<Ending>) {
+    /// out of reach, and gives back how it ended.
+    fn leave(&self, result: io::Result<Ending>) -> io::Result<Ending> {
         let left = now();
         // Had the link died outright, the last minute's mark would stand.
         let _ = self
@@ -962,6 +957,7 @@ impl<S: Store> End<S> {
             let _ = self.store.mark_ended(&self.other, left);
         }
         store::out_of_reach(&self.store, &self.other, left);
+        result
     }
 
     /// Says what opens a link, once the hellos are said: the Have, then
