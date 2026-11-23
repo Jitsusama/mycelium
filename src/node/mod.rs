@@ -3592,7 +3592,19 @@ impl<S: Store> Shared<S> {
         screen: Screen,
     ) {
         let work = &asked.work;
+        let program = asked
+            .command
+            .first()
+            .map_or("", String::as_str)
+            .escape_debug();
         let Some(left) = redial_left(at, jiff::Timestamp::now().as_millisecond()) else {
+            // The ask to start may have said it waits, so its end is said
+            // too, or the log would leave the wait it named unfinished.
+            eprintln!(
+                "a start of {program} waits for no link: the {}s a start waits for a dropped \
+                 link went on its ask",
+                REDIAL_AWAITED_MOST.as_secs()
+            );
             return;
         };
         let since = redial_since();
@@ -3603,21 +3615,21 @@ impl<S: Store> Shared<S> {
             return;
         };
         let admits = self.admits().await;
-        let placement = self.place(work, Counts::Never, fence, screen, &admits);
+        let placement = self.would_place(work, fence, screen, &admits);
         if !matches!(
             awaiting_redial(placement, Some(machine)),
             Placement::Placed { machine: awaited, .. } if awaited == machine
         ) {
             return;
         }
-        let program = asked
-            .command
-            .first()
-            .map_or("", String::as_str)
-            .escape_debug();
-        let until = tokio::time::Instant::now() + left;
-        while tokio::time::Instant::now() < until {
-            tokio::time::sleep(REDIAL_LOOKED_EVERY).await;
+        let began = tokio::time::Instant::now();
+        let until = began + left;
+        while let Some(rest) = until.checked_duration_since(tokio::time::Instant::now())
+            && !rest.is_zero()
+        {
+            // The last look comes at the end of the wait, not a whole
+            // look past it.
+            tokio::time::sleep(REDIAL_LOOKED_EVERY.min(rest)).await;
             match link_back(&self.others(), machine) {
                 Back::Unreachable => {}
                 Back::Linked => {
@@ -3637,9 +3649,9 @@ impl<S: Store> Shared<S> {
             }
         }
         eprintln!(
-            "a start of {program} waited {}s for {machine}'s link, which dropped lately, and \
-             it is still out of reach",
-            left.as_secs()
+            "a start of {program} waited {:.1}s for {machine}'s link, which dropped lately, \
+             and it is still out of reach",
+            began.elapsed().as_secs_f64()
         );
     }
 
@@ -3676,6 +3688,45 @@ impl<S: Store> Shared<S> {
         screen: Screen,
         admits: &Admits,
     ) -> Placement {
+        let (record, now) = self.weigh(work, counts, fence, screen, admits);
+        if let Some(log) = &self.placements {
+            let day = now.to_zoned(jiff::tz::TimeZone::system()).date();
+            if let Err(error) = log.keep(&record, day) {
+                // A placement unkept costs the monitor one line, never
+                // the work its place.
+                eprintln!("a placement wasn't kept: {error}");
+            }
+        }
+        record.decision.placement
+    }
+
+    /// Where `work` would be placed, as [`Shared::place`] judges it, with
+    /// nothing kept in the placements' log: for a look ahead at a start
+    /// the node is about to place, which the monitor would otherwise read
+    /// as an ask of its own.
+    fn would_place(
+        &self,
+        work: &Work,
+        fence: Option<crate::declared::Kind>,
+        screen: Screen,
+        admits: &Admits,
+    ) -> Placement {
+        self.weigh(work, Counts::Never, fence, screen, admits)
+            .0
+            .decision
+            .placement
+    }
+
+    /// The placement of `work`, as [`Shared::place`] says it, and when it
+    /// was weighed, counting the start `counts` says but keeping nothing.
+    fn weigh(
+        &self,
+        work: &Work,
+        counts: Counts,
+        fence: Option<crate::declared::Kind>,
+        screen: Screen,
+        admits: &Admits,
+    ) -> (placements::Record, jiff::Timestamp) {
         // Measured before the lock is taken, since measuring reads this
         // machine and the store. This machine, first, is never booked.
         let mut machines = self.machines();
@@ -3732,9 +3783,6 @@ impl<S: Store> Shared<S> {
             // was asked one.
             (loads, decision, counted || counts == Counts::Always)
         };
-        let Some(log) = &self.placements else {
-            return decision.placement;
-        };
         let record = placements::Record {
             at: now.to_string(),
             start,
@@ -3744,13 +3792,7 @@ impl<S: Store> Shared<S> {
             refused,
             decision,
         };
-        let day = now.to_zoned(jiff::tz::TimeZone::system()).date();
-        if let Err(error) = log.keep(&record, day) {
-            // A placement unkept costs the monitor one line, never the
-            // work its place.
-            eprintln!("a placement wasn't kept: {error}");
-        }
-        record.decision.placement
+        (record, now)
     }
 
     fn answer(&self, request: Request) -> Reply {
