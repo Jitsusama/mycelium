@@ -4047,7 +4047,7 @@ impl<S: Store> Shared<S> {
             // The last look comes at the end of the wait, not a whole
             // look past it.
             tokio::time::sleep(REDIAL_LOOKED_EVERY.min(rest)).await;
-            match link_back(&self.others(), machine) {
+            match link_back(&self.others(), machine, self.asks.there(machine).is_some()) {
                 Back::Unreachable => {}
                 Back::Linked => {
                     eprintln!(
@@ -8220,17 +8220,22 @@ fn redial_awaited<'a>(
 enum Back {
     /// Still out of reach, so the start waits on.
     Unreachable,
-    /// Linked again, or at least not out of reach.
+    /// Linked again, with a link that carries this node's asks to it.
     Linked,
     /// No longer among the realm's machines, so nothing comes back.
     Gone,
 }
 
-/// How `machine` stands among `machines`, for [`Shared::awaits_redial`].
-fn link_back(machines: &[facts::Machine], machine: &str) -> Back {
+/// How `machine` stands among `machines`, for [`Shared::awaits_redial`],
+/// with `reached` saying whether a link carries this node's asks to it.
+/// A machine is back only once both say so: a link that machine dialled
+/// keeps it ready as its facts arrive, but takes the node's asks over
+/// the node's socket on a task of its own, so for a moment a start sent
+/// to a machine that reads ready would find no link reaching it.
+fn link_back(machines: &[facts::Machine], machine: &str, reached: bool) -> Back {
     match machines.iter().find(|one| one.name == machine) {
         None => Back::Gone,
-        Some(one) if one.state == Readiness::Unreachable => Back::Unreachable,
+        Some(one) if one.state == Readiness::Unreachable || !reached => Back::Unreachable,
         Some(_) => Back::Linked,
     }
 }
@@ -8851,10 +8856,28 @@ mod tests {
             known("tern", Readiness::Unreachable),
             known("kestrel", Readiness::Ready),
         ];
-        assert_eq!(link_back(&machines, "tern"), Back::Unreachable, "waits on");
-        assert_eq!(link_back(&machines, "kestrel"), Back::Linked, "came back");
         assert_eq!(
-            link_back(&machines, "wren"),
+            link_back(&machines, "tern", false),
+            Back::Unreachable,
+            "waits on"
+        );
+        assert_eq!(
+            link_back(&machines, "tern", true),
+            Back::Unreachable,
+            "a link left reaching a machine out of reach isn't taken as come back"
+        );
+        assert_eq!(
+            link_back(&machines, "kestrel", true),
+            Back::Linked,
+            "came back"
+        );
+        assert_eq!(
+            link_back(&machines, "kestrel", false),
+            Back::Unreachable,
+            "a machine that reads ready before a link carries the node's asks to it waits on"
+        );
+        assert_eq!(
+            link_back(&machines, "wren", true),
             Back::Gone,
             "a machine no longer known isn't taken as come back"
         );
