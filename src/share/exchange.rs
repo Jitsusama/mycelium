@@ -1095,12 +1095,8 @@ impl Exchange {
                 mut ended,
                 mut above,
             } => {
-                let mut taken = BTreeSet::new();
-                for id in &quests {
-                    if self.takes(id) {
-                        taken.insert(id.clone());
-                    }
-                }
+                let taken: BTreeSet<String> =
+                    quests.iter().filter(|id| self.takes(id)).cloned().collect();
                 quests.retain(|id| taken.contains(id));
                 scratch.retain(|id, _| taken.contains(id));
                 clones.retain(|id, _| taken.contains(id));
