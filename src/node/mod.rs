@@ -2414,6 +2414,23 @@ fn held_within(
     launch(kind)
 }
 
+/// Whether a start, `strict` or not, run in `kind` as [`held_within`]
+/// runs it, must begin in the folder it names, refused where this machine
+/// hasn't it: one strict itself, and one within the strict fence's
+/// launcher, which won't let a command write home, so begun there it
+/// would only die (9R6RA6, 23 November). Where pi fences itself, it
+/// begins at home as before.
+fn needs_its_folder(
+    strict: bool,
+    fences: bool,
+    kind: Option<crate::declared::Kind>,
+    (command, agent): (&[String], &str),
+) -> bool {
+    strict
+        || (kind == Some(crate::declared::Kind::Strict)
+            && (fences || !fences_itself(command, agent)))
+}
+
 /// The variables a harness hands a pi it starts that keep a start pi
 /// fencing itself: the quest it loads and its first word, each a plain
 /// word, and `PI_SANDBOX` naming the strict sandbox, the tightest there
@@ -7386,8 +7403,12 @@ impl<S: Store> Shared<S> {
         let Some(home) = std::env::home_dir() else {
             return Err(format!("{machine} has no home to start it in"));
         };
-        let folder =
-            start::begins_strictly(asked.folder.as_deref(), asked.strict, &home, &machine)?;
+        let folder = start::begins_strictly(
+            asked.folder.as_deref(),
+            needs_its_folder(asked.strict, fences, fence, (&asked.command, &agent)),
+            &home,
+            &machine,
+        )?;
         let realm = self.realm.clone();
         let begins = folder.clone();
         let command = asked.command;
@@ -21071,6 +21092,33 @@ esac
             shared.admits().await,
             Admits::All,
             "once a machine is booked, a start is held to who asks"
+        );
+    }
+
+    #[test]
+    fn a_start_within_the_strict_launcher_needs_the_folder_it_names() {
+        use crate::declared::Kind;
+        let pi = vec!["pi".to_owned()];
+        let sh = vec!["sh".to_owned()];
+        assert!(
+            needs_its_folder(false, true, Some(Kind::Strict), (&pi, "pi")),
+            "where the node fences, a strict start runs in its launcher, which won't write home"
+        );
+        assert!(
+            needs_its_folder(false, false, Some(Kind::Strict), (&sh, "pi")),
+            "so does any command but pi's own, wherever it runs"
+        );
+        assert!(
+            !needs_its_folder(false, false, Some(Kind::Strict), (&pi, "pi")),
+            "pi fencing itself begins at home, as before"
+        );
+        assert!(
+            !needs_its_folder(false, true, Some(Kind::Fence), (&pi, "pi")),
+            "as does one in the ordinary fence"
+        );
+        assert!(
+            needs_its_folder(true, false, None, (&pi, "pi")),
+            "and a strict start always needs its folder"
         );
     }
 
