@@ -741,6 +741,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_agent_may_start_where_here_accepts_the_doors_that_machine_opens() {
+        // An agent on a machine with no builders asks to start on one that
+        // builds on lent machines and pushes through its own forge door, as
+        // a gate run from a machine without builders does.
+        let builds = || {
+            Some(BTreeMap::from([(
+                Kind::Fence,
+                doors(&["lent"], &["door"], &[]),
+            )]))
+        };
+        let machines = [
+            named("tern", tern(builds(), Readiness::Ready)),
+            named("wren", tern(builds(), Readiness::Ready)),
+        ];
+        let mut ours = doors(&[], &[], &[]);
+        let without = declaring(Some(BTreeMap::from([(Kind::Fence, ours.clone())])));
+        let refused = |here: &Declared| -> Vec<String> {
+            looser(Kind::Fence, Some(here), "kestrel", &machines)
+                .iter()
+                .map(|miss| miss.machine.clone())
+                .collect()
+        };
+        assert_eq!(
+            refused(&without),
+            ["tern", "wren"],
+            "without an allowance, both machines are looser ground"
+        );
+        ours.accepts = BTreeMap::from([(
+            "tern".to_owned(),
+            Accepted {
+                builders: BTreeSet::from(["lent".to_owned()]),
+                forges: BTreeSet::from(["door".to_owned()]),
+                ..Accepted::default()
+            },
+        )]);
+        let accepting = declaring(Some(BTreeMap::from([(Kind::Fence, ours)])));
+        assert_eq!(
+            refused(&accepting),
+            ["wren"],
+            "a start gains the doors here accepts for the machine it goes to, as a carry \
+             does, and no other machine gains them"
+        );
+    }
+
     fn running(runs: &[&str]) -> Doors {
         Doors {
             runs: runs.iter().map(|&word| word.to_owned()).collect(),
