@@ -313,7 +313,11 @@ fn gone(pid: u32) -> bool {
 /// it, and only where the quests' record holds it there (`recorded`). A
 /// quest it only says it runs is carried no further than its own trees,
 /// since that name could be another quest's.
-fn carries_whole(recorded: bool, (quest, asker, here): (&str, &str, &str), sessions: &[Session]) -> bool {
+fn carries_whole(
+    recorded: bool,
+    (quest, asker, here): (&str, &str, &str),
+    sessions: &[Session],
+) -> bool {
     recorded
         && !sessions.iter().any(|one| {
             easing::id(one) != asker
