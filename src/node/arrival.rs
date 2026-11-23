@@ -223,7 +223,7 @@ impl Arrivals {
             .map(|(id, one)| (id, &one.brought))
             .filter(|(id, brought)| {
                 let other_is = sessions.iter().any(|other| {
-                    other.id != **id && other.state != State::Ended && goes_by(other, &brought.cell)
+                    other.id != **id && other.state != State::Ended && other.goes_by(&brought.cell)
                 });
                 let twice = kept.iter().any(|(other, said)| {
                     other != *id
@@ -441,18 +441,6 @@ fn settled(mut brought: Brought, then: i64) -> Brought {
         }
     }
     brought
-}
-
-/// Whether `session` goes by `name`, in any case: as its address, or as
-/// any other address its presence says.
-fn goes_by(session: &Session, name: &str) -> bool {
-    session.address.eq_ignore_ascii_case(name)
-        || session.presence["addresses"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .any(|address| address.eq_ignore_ascii_case(name))
 }
 
 /// The cell the session `id` arrived with by `carried`, as the file its

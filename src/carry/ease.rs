@@ -122,11 +122,17 @@ pub struct Cell {
     pub alone: Option<bool>,
     /// Whether it is on the person's screen.
     pub on_screen: Option<bool>,
+    /// Whether the person has written in it.
+    pub driven: Option<bool>,
     /// Whether it sleeps already: parked, its process ended until it is
     /// started again.
     pub asleep: bool,
     /// Whether it orchestrates other sessions.
     pub orchestrates: Option<bool>,
+    /// The session that says it answers to it, and where that session
+    /// stands if it doesn't run, where only that session's word says it
+    /// orchestrates.
+    pub lane: Option<String>,
     /// What it is part way through.
     pub busy: Option<Vec<Busy>>,
     /// How much of it a carry takes, in bytes: its log's size.
@@ -157,9 +163,26 @@ impl Cell {
                 ));
             }
         }
+        // A session the person has written in is theirs, wherever its
+        // window is: they come back to it here, and a carry or a sleep they
+        // didn't ask for would leave them looking for it.
+        match self.driven {
+            Some(false) => {}
+            Some(true) => return Some(format!("{who} is the person's, who has written in it")),
+            None => {
+                return Some(format!(
+                    "whether the person has written in {who} can't be told"
+                ));
+            }
+        }
         match self.orchestrates {
             Some(false) => {}
-            Some(true) => return Some(format!("{who} orchestrates other sessions")),
+            Some(true) => {
+                return Some(match &self.lane {
+                    Some(lane) => format!("{who} orchestrates {lane}, by that session's word"),
+                    None => format!("{who} orchestrates other sessions"),
+                });
+            }
             None => {
                 return Some(format!(
                     "whether {who} orchestrates other sessions can't be told"
@@ -991,8 +1014,10 @@ pub(super) mod tests {
             fence: Some(Kind::Fence),
             alone: Some(true),
             on_screen: Some(false),
+            driven: Some(false),
             asleep: true,
             orchestrates: Some(false),
+            lane: None,
             busy: Some(Vec::new()),
             size: None,
         }
@@ -1408,6 +1433,39 @@ pub(super) mod tests {
         );
     }
 
+    // The shadow lines that showed these gaps were sleeps, so a sleep is
+    // where each is shown kept.
+    #[test]
+    fn the_persons_and_orchestrators_stay_awake_while_memory_is_short() {
+        let realm = short_realm();
+        let history = minutely(&[&realm[..]; 11]);
+        let theirs = |change: &dyn Fn(&mut Cell)| {
+            let mut one = awake("s2");
+            change(&mut one);
+            chose(&realm, &[awake("s1"), one], &history)
+        };
+        assert_eq!(
+            theirs(&|_| {}),
+            sleeps(&["s1", "s2"], None),
+            "left as it is, the second sleeps beside the first"
+        );
+        assert_eq!(
+            theirs(&|one| one.driven = Some(true)),
+            sleeps(&["s1"], None),
+            "one the person has written in stays awake"
+        );
+        assert_eq!(
+            theirs(&|one| one.driven = None),
+            sleeps(&["s1"], None),
+            "as does one nobody can say of"
+        );
+        assert_eq!(
+            theirs(&|one| one.orchestrates = Some(true)),
+            sleeps(&["s1"], None),
+            "and one orchestrating others"
+        );
+    }
+
     /// A session of skiff's waiting, awake.
     fn awake(id: &str) -> Cell {
         Cell {
@@ -1601,8 +1659,23 @@ pub(super) mod tests {
             "what S1 is part way through can't be told"
         );
         assert_eq!(
+            with(&|one| one.driven = Some(true)),
+            "S1 is the person's, who has written in it"
+        );
+        assert_eq!(
+            with(&|one| one.driven = None),
+            "whether the person has written in S1 can't be told"
+        );
+        assert_eq!(
             with(&|one| one.orchestrates = Some(true)),
             "S1 orchestrates other sessions"
+        );
+        assert_eq!(
+            with(&|one| {
+                one.orchestrates = Some(true);
+                one.lane = Some("S9, out of reach on tern".to_owned());
+            }),
+            "S1 orchestrates S9, out of reach on tern, by that session's word"
         );
         assert_eq!(
             with(&|one| one.orchestrates = None),
