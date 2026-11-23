@@ -1292,7 +1292,8 @@ impl<S: Store> End<S> {
         if !matches!(result, Ok(Ending::HandedOver)) {
             let _ = self.store.mark_ended(&self.other, left);
         }
-        store::out_of_reach(&self.store, &self.other, left);
+        // This node runs as the link drops, so it sees the drop as it is.
+        store::out_of_reach(&self.store, &self.other, left, left);
         result
     }
 
@@ -4463,7 +4464,7 @@ mod tests {
         skiff
             .put_presence("walgit", "kestrel", &json!({"session": "walgit"}))
             .expect("a copy is kept");
-        store::out_of_reach(&skiff, "kestrel", now());
+        store::out_of_reach(&skiff, "kestrel", now(), now());
         let (near, far) = tokio::io::duplex(1 << 16);
         let _skiff_end = end(&skiff, "skiff", near);
         let (_far_reading, mut far_writing) = tokio::io::split(far);

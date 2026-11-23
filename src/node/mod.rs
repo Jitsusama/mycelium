@@ -1572,9 +1572,6 @@ struct Shared<S> {
     /// The boot this machine runs in, which says which sessions ended
     /// this boot.
     boot: Arc<standing::Boot>,
-    /// When this node started, in milliseconds since the epoch, since it
-    /// has seen a machine out of reach only while it has run.
-    up_since: i64,
     /// This machine's sessions' steer inboxes.
     steers: PathBuf,
     /// Where the machine tells who runs its processes, which says who asks
@@ -1821,7 +1818,6 @@ impl<S: Clone> Clone for Shared<S> {
             held: self.held.clone(),
             parked: self.parked.clone(),
             boot: self.boot.clone(),
-            up_since: self.up_since,
             steers: self.steers.clone(),
             processes: self.processes.clone(),
             client: self.client,
@@ -3050,7 +3046,6 @@ impl<S: Store> Shared<S> {
             held: held_here,
             parked,
             boot: Arc::new(standing::Boot::this()),
-            up_since: jiff::Timestamp::now().as_millisecond(),
             steers,
             updater,
             store,
@@ -5405,7 +5400,6 @@ impl<S: Store> Shared<S> {
             orchestrators: orchestrators.as_ref().ok(),
             boot: self.boot.id.as_deref(),
             began: self.boot.began,
-            up_since: self.up_since,
             now,
         };
         let cells = easing::cells(&self.machine, &looked);

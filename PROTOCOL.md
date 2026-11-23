@@ -121,7 +121,12 @@ it keeps what it carried but marks each `unreachableSince` the drop, in
 milliseconds since the epoch, since a dropped link says nothing of
 whether those sessions still run; what a link killed outright left is
 marked by the node as it starts and stops, since that machine was last
-linked. The next link to that machine settles them: the far end's `Have`
+linked. Each mark also says, as `unreachableSeen`, when a running node
+here first saw that machine gone: the drop itself, or the start of a
+node that was down as it dropped. A mark keeps both times until a link
+settles it; a mark with no `unreachableSeen`, left by an older node,
+gains one as this node starts. The next link to that machine settles
+them: the far end's `Have`
 names its living sessions, those are carried again and unmarked, and the
 rest are let go. While a link stands it touches each file it carried
 once a minute, and a mark keeps the file's time, so a copy whose time
@@ -1332,10 +1337,13 @@ quests' record names its quest as another quest's `orchestrator`, or
 where another session says in its presence's `orchestratedBy` an
 address the session goes by, in any case, while that session runs,
 waits parked on this machine this boot, or is out of reach and its
-link dropped within the hour. That hour runs from the `unreachableSince`
-this node's store marked on its own clock as the link dropped, never
-from when the lane's machine says it wrote it, since that clock may be
-another's and an idle lane leaves it old. A lane parked elsewhere never
+link dropped within the hour. That hour runs from the `unreachableSeen`
+this node's store marked on its own clock, or from `unreachableSince`
+where a mark has none, never from when the lane's machine says it
+wrote it, since that clock may be another's and an idle lane leaves it
+old. A restart keeps the time first seen, so a node restarted more
+often than hourly still lets a gone machine's lanes go. A lane parked
+elsewhere never
 reaches this node, since links send only the sessions that live. A
 machine closed or retired may stay in the realm's records, never
 leaving, so a lane out of reach longer holds its orchestrator no

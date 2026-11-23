@@ -58,6 +58,12 @@ pub(crate) const MACHINE: &str = "machine";
 /// has reached the machine of a session elsewhere.
 const UNREACHABLE: &str = "unreachableSince";
 
+/// The field saying when, in milliseconds since the epoch, a running node
+/// here first saw the machine of a session elsewhere out of reach, which
+/// is later than [`UNREACHABLE`] where the link dropped while the node was
+/// down.
+const UNREACHABLE_SEEN: &str = "unreachableSeen";
+
 /// How long the ends of a machine's links are kept, in milliseconds: a
 /// day, which is as far back as anything asks.
 const ENDINGS_KEPT: i64 = 24 * 60 * 60 * 1000;
@@ -491,11 +497,18 @@ impl Store for Folders {
         // carrying it has reached that machine.
         fields.remove("owner");
         fields.remove(UNREACHABLE);
+        fields.remove(UNREACHABLE_SEEN);
         fields.insert(MACHINE.to_owned(), Value::String(machine.to_owned()));
         write_in(&presence, &file, &body)
     }
 
-    fn mark_unreachable(&self, session: &str, machine: &str, since: i64) -> io::Result<()> {
+    fn mark_unreachable(
+        &self,
+        session: &str,
+        machine: &str,
+        since: i64,
+        seen: i64,
+    ) -> io::Result<()> {
         let Some((presence, file)) = self.carried(session, machine)? else {
             return Ok(());
         };
@@ -508,13 +521,18 @@ impl Store for Folders {
         let Some(fields) = body.as_object_mut() else {
             return Ok(());
         };
-        if fields.contains_key(UNREACHABLE) {
+        if fields.contains_key(UNREACHABLE_SEEN) {
             return Ok(());
         }
         // The file's time is when a link last said the session stands,
         // which the mesh reads, so marking it keeps that time.
         let vouched = found.metadata()?.modified()?;
-        fields.insert(UNREACHABLE.to_owned(), Value::from(since));
+        // A mark an older node left keeps its time and gains when one
+        // running here saw it.
+        fields
+            .entry(UNREACHABLE)
+            .or_insert_with(|| Value::from(since));
+        fields.insert(UNREACHABLE_SEEN.to_owned(), Value::from(seen));
         write_in(&presence, &file, &body)?;
         presence.touch(&file, vouched)
     }
@@ -1556,10 +1574,10 @@ mod tests {
             .expect("its time is set");
 
         store
-            .mark_unreachable("there", "kestrel", 7)
+            .mark_unreachable("there", "kestrel", 7, 8)
             .expect("marked");
         store
-            .mark_unreachable("there", "kestrel", 9)
+            .mark_unreachable("there", "kestrel", 9, 10)
             .expect("marked again");
         let held = store.presences();
         assert_eq!(
@@ -1568,18 +1586,49 @@ mod tests {
             "it is out of reach since it was first marked"
         );
         assert_eq!(
+            held[0].body[UNREACHABLE_SEEN],
+            json!(8),
+            "as it was first seen"
+        );
+        assert_eq!(
             fs::metadata(&file).and_then(|meta| meta.modified()).ok(),
             Some(vouched),
             "the file keeps when a link last said it stands"
         );
 
+        let mut naming = json!({"session": "there", "owner": {"pid": 1}});
+        naming[UNREACHABLE] = json!(3);
+        naming[UNREACHABLE_SEEN] = json!(4);
         store
-            .put_presence("there", "kestrel", &there)
+            .put_presence("there", "kestrel", &naming)
             .expect("carried again");
+        let held = store.presences();
         assert_eq!(
-            store.presences()[0].unreachable_since,
-            None,
+            held[0].unreachable_since, None,
             "a link carrying it again has reached its machine"
+        );
+        assert_eq!(
+            [UNREACHABLE, UNREACHABLE_SEEN, "owner"].map(|field| held[0].body[field].clone()),
+            [Value::Null, Value::Null, Value::Null],
+            "and no time or owner the body names stands, as in the store in memory"
+        );
+
+        // As an older node left it: out of reach, with no time it was seen.
+        let mut older = json!({"session": "there"});
+        older[MACHINE] = json!("kestrel");
+        older[UNREACHABLE] = json!(5);
+        fs::write(&file, older.to_string()).expect("an older mark");
+        store
+            .mark_unreachable("there", "kestrel", 9, 10)
+            .expect("seen at this start");
+        let held = store.presences();
+        assert_eq!(
+            (
+                held[0].unreachable_since,
+                held[0].body[UNREACHABLE_SEEN].clone()
+            ),
+            (Some(5), json!(10)),
+            "an older mark keeps since when and gains when it was seen"
         );
     }
 
