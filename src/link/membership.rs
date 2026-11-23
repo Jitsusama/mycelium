@@ -76,6 +76,11 @@ pub struct Hello {
     /// neither, and would end a link that asked.
     #[serde(default)]
     pub ends: bool,
+    /// Whether its node judges a reopening relayed to it, taking pi's
+    /// bare resume of a session only where that session ended there; an
+    /// end older than this takes one as any start, so none is asked of it.
+    #[serde(default)]
+    pub reopens: bool,
     /// Whether it carries lends of model calls, handing a worker's to its
     /// machine's lender and streaming back what it answers, and refusing
     /// every other machine's; an end older than this does neither, and
@@ -125,6 +130,7 @@ impl Membership for Realm {
             carries: true,
             shows: true,
             ends: true,
+            reopens: true,
             lends: true,
         }
     }

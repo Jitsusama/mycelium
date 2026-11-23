@@ -47,6 +47,7 @@ const STALLED_AFTER: usize = 1024;
 #[derive(Debug, Serialize, Deserialize)]
 enum Carried {
     Start(Start),
+    Reopen(Start),
     Steer {
         address: String,
         steer: Map<String, Value>,
@@ -73,6 +74,7 @@ impl Carried {
     fn of(asked: Asked) -> Result<(Self, Option<mpsc::Sender<Lent>>), String> {
         let carried = match asked {
             Asked::Start(start) => Self::Start(start),
+            Asked::Reopen(start) => Self::Reopen(start),
             Asked::Steer(steer) => Self::Steer {
                 address: steer.address,
                 steer: steer.body,
@@ -96,6 +98,7 @@ impl Carried {
     fn asked(self) -> (Asked, Option<mpsc::Receiver<Lent>>) {
         let asked = match self {
             Self::Start(start) => Asked::Start(start),
+            Self::Reopen(start) => Asked::Reopen(start),
             Self::Steer {
                 address,
                 steer,
@@ -159,8 +162,16 @@ enum FromLink {
 /// back, until the connection closes or another link reaching `machine`
 /// takes its place. An ask still waiting then hears that the link dropped,
 /// and a lend still answering ends short.
-pub async fn to_link<R, W>(asks: &Asks, machine: &str, mut lines: Lines<R>, mut writing: W)
-where
+///
+/// A link that doesn't say it carries a reopening (`reopens`) is older
+/// than reopenings and couldn't read one, so each is answered here
+/// instead, rather than handed to it.
+pub async fn to_link<R, W>(
+    asks: &Asks,
+    (machine, reopens): (&str, bool),
+    mut lines: Lines<R>,
+    mut writing: W,
+) where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
 {
@@ -183,6 +194,13 @@ where
                 // this one's place.
                 let Some(Ask { asked, answer }) = ask else { return };
                 let (asked, lent) = match Carried::of(asked) {
+                    Ok((Carried::Reopen(_), _)) if !reopens => {
+                        // The asker may have given up waiting.
+                        let _ = answer.send(Err(format!(
+                            "{machine}'s link here is too old to carry a reopening"
+                        )));
+                        continue;
+                    }
                     Ok(carried) => carried,
                     Err(why) => {
                         // The asker may have given up waiting.
@@ -323,6 +341,7 @@ async fn carry(node: &Path, machine: &str, asks: &mpsc::UnboundedSender<Ask>) ->
     let mut lines = BufReader::new(reading).lines();
     let carry = Request::Carry {
         machine: machine.to_owned(),
+        reopens: true,
     };
     write(&mut writing, &carry).await?;
     let first = lines
@@ -434,6 +453,87 @@ mod tests {
 
     use super::*;
 
+    /// A bare reopening of `s-gone`, asked of no machine in particular.
+    fn reopening() -> Start {
+        Start {
+            work: crate::placement::Work {
+                needs: Vec::new(),
+                prefers: Vec::new(),
+                tolerates: Vec::new(),
+                may_wait: false,
+                lasts: None,
+                fence: None,
+            },
+            folder: None,
+            strict: false,
+            command: vec!["pi".to_owned(), "--session".to_owned(), "s-gone".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        }
+    }
+
+    // Our council on the reopen rule (2026-11-19): a link process older
+    // than reopenings couldn't read one, so its node answers it instead.
+    #[tokio::test]
+    async fn a_link_that_doesnt_say_it_carries_a_reopening_is_handed_none() {
+        let said = serde_json::to_string(&Request::Carry {
+            machine: "kestrel".to_owned(),
+            reopens: true,
+        })
+        .expect("a carry is said")
+        .replace(",\"reopens\":true", "");
+        assert!(
+            matches!(
+                serde_json::from_str::<Request>(&said),
+                Ok(Request::Carry { reopens: false, .. })
+            ),
+            "a link that doesn't say it carries one carries none: {said}"
+        );
+        let asks = Asks::default();
+        let (node_end, link_end) = tokio::io::duplex(4096);
+        let (reading, writing) = tokio::io::split(node_end);
+        let carrying = tokio::spawn({
+            let asks = asks.clone();
+            async move {
+                to_link(
+                    &asks,
+                    ("kestrel", false),
+                    BufReader::new(reading).lines(),
+                    writing,
+                )
+                .await;
+            }
+        });
+        let mut link = BufReader::new(link_end).lines();
+        assert!(
+            link.next_line().await.is_ok_and(|said| said.is_some()),
+            "the link is told it carries"
+        );
+        assert_eq!(
+            asks.reopen("kestrel", reopening()).await,
+            Ok(Err(
+                "kestrel's link here is too old to carry a reopening".to_owned()
+            )),
+            "a reopening is answered here, never handed on"
+        );
+        let started = tokio::spawn({
+            let asks = asks.clone();
+            async move { asks.ask("kestrel", reopening()).await }
+        });
+        let handed = link
+            .next_line()
+            .await
+            .expect("the link reads on")
+            .expect("a start is handed on");
+        assert!(
+            handed.contains("\"Start\"") && !handed.contains("\"Reopen\""),
+            "any other start is still handed on: {handed}"
+        );
+        started.abort();
+        carrying.abort();
+    }
+
     /// Longer than any of these waits should take, so a test fails rather
     /// than hangs.
     const PATIENCE: Duration = Duration::from_secs(10);
@@ -462,7 +562,13 @@ mod tests {
             let (reading, writing) = tokio::io::split(node);
             let asks = asks.clone();
             tokio::spawn(async move {
-                to_link(&asks, "tern", BufReader::new(reading).lines(), writing).await;
+                to_link(
+                    &asks,
+                    ("tern", true),
+                    BufReader::new(reading).lines(),
+                    writing,
+                )
+                .await;
             });
             let (reading, writing) = tokio::io::split(link);
             let mut link = Self {

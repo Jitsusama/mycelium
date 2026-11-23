@@ -163,9 +163,15 @@ pub trait Store: Clone + Send + Sync + 'static {
     fn mark_unreachable(&self, session: &str, machine: &str, since: i64) -> io::Result<()>;
 
     /// Lets go of the presence of a session that runs on `machine`, and of
-    /// the leases it holds; this machine's own sessions, and other
-    /// machines', are never touched.
+    /// the leases it holds, keeping it among those [`Self::gone`]; this
+    /// machine's own sessions, and other machines', are never touched.
     fn remove_presence(&self, session: &str, machine: &str) -> io::Result<()>;
+
+    /// Each session another machine ran whose presence was let go here in
+    /// the last week, as that machine last wrote it and living no more,
+    /// so a session that ended there is still known by who ran it. Kept
+    /// apart from the mesh's folders, so no session here reads it.
+    fn gone(&self) -> Vec<Presence>;
 
     /// Every holding of leases kept here, as the mesh writes them: one per
     /// session, this machine's and those carried from others.

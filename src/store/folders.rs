@@ -56,6 +56,15 @@ const UNREACHABLE: &str = "unreachableSince";
 /// day, which is as far back as anything asks.
 const ENDINGS_KEPT: i64 = 24 * 60 * 60 * 1000;
 
+/// What the name of a file holding the sessions a machine ran, let go
+/// here, ends with, after the machine's name.
+const GONE: &str = ".gone";
+
+/// How long a session another machine ran is kept once let go, in
+/// milliseconds: a week, as long as the mesh keeps its messages, so one
+/// ended any time its talk is still read can be judged by who ran it.
+const GONE_KEPT: i64 = 7 * 24 * 60 * 60 * 1000;
+
 /// How long a verdict on a session's process is kept while no end is told,
 /// so a process whose end no watch tells is still judged again this often.
 const JUDGED_FOR: Duration = Duration::from_secs(60);
@@ -133,6 +142,20 @@ impl Folders {
             kept: Arc::default(),
             judged: Arc::default(),
         })
+    }
+
+    /// Keeps `body`, the presence of `session` that `machine` ran, among
+    /// those gone, letting go of any kept past [`GONE_KEPT`]. Written
+    /// whole: a machine ending a few hundred sessions a week keeps the
+    /// file to a few hundred presences.
+    fn keep_gone(&self, session: &str, machine: &str, body: Value) -> io::Result<()> {
+        let file = format!("{}{GONE}", safe(machine)?);
+        let at = now();
+        let mut gone: BTreeMap<String, Gone> = read(&self.claims.join(&file)).unwrap_or_default();
+        gone.retain(|_, one| one.at > at - GONE_KEPT);
+        gone.insert(session.to_owned(), Gone { at, presence: body });
+        let body = serde_json::to_value(gone).map_err(io::Error::other)?;
+        write_whole(&self.claims, &file, &body)
     }
 
     /// When each link with `machine` kept here ended, oldest first; none
@@ -466,8 +489,40 @@ impl Store for Folders {
         let Some(path) = self.carried(session, machine)? else {
             return Ok(());
         };
+        // Letting it go matters more than remembering it, so a record
+        // that can't be written is told, never in the way.
+        if let Some(body) = read::<Value>(&path)
+            && let Err(error) = self.keep_gone(session, machine, body)
+        {
+            eprintln!("couldn't keep {session} from {machine} as gone: {error}");
+        }
         fs::remove_file(path)?;
         self.put_leases(session, machine, &[])
+    }
+
+    fn gone(&self) -> Vec<Presence> {
+        let Ok(entries) = fs::read_dir(&*self.claims) else {
+            return Vec::new();
+        };
+        let since = now() - GONE_KEPT;
+        entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let machine = entry.file_name().to_str()?.strip_suffix(GONE)?.to_owned();
+                Some((machine, read::<BTreeMap<String, Gone>>(&entry.path())?))
+            })
+            .flat_map(|(machine, gone)| {
+                gone.into_iter().filter(move |(_, one)| one.at > since).map(
+                    move |(session, one)| Presence {
+                        session,
+                        body: Arc::new(one.presence),
+                        elsewhere: Some(machine.clone()),
+                        lives: false,
+                        unreachable_since: None,
+                    },
+                )
+            })
+            .collect()
     }
 
     fn holdings(&self) -> Vec<Value> {
@@ -728,6 +783,20 @@ impl Owner {
 /// fails now is read again at its next change.
 fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+/// A session another machine ran, as kept once let go here.
+#[derive(Deserialize, serde::Serialize)]
+struct Gone {
+    /// When it was let go, in milliseconds since the epoch.
+    at: i64,
+    /// Its presence, as its machine last wrote it.
+    presence: Value,
+}
+
+/// Now, in milliseconds since the epoch.
+fn now() -> i64 {
+    jiff::Timestamp::now().as_millisecond()
 }
 
 /// Writes `body` to `dir/file` whole: staged under a name no other write
@@ -1262,6 +1331,55 @@ mod tests {
             .map(|presence| presence.session)
             .collect();
         assert_eq!(left, ["here"]);
+    }
+
+    #[test]
+    fn a_session_elsewhere_let_go_is_kept_as_gone_for_a_week() {
+        let (_dir, store) = store();
+        let there = json!({"session": "there", "quest": "QEST-20261007-WCJQSG"});
+        store
+            .put_presence("there", "kestrel", &there)
+            .expect("the session elsewhere is kept");
+        assert!(
+            store.gone().is_empty(),
+            "nothing is gone while it is carried"
+        );
+        store
+            .remove_presence("there", "kestrel")
+            .expect("the session elsewhere is let go");
+        let gone = store.gone();
+        assert_eq!(gone.len(), 1, "it is kept once let go");
+        assert_eq!(gone[0].session, "there");
+        assert_eq!(gone[0].elsewhere.as_deref(), Some("kestrel"));
+        assert!(!gone[0].lives, "what is gone lives no more");
+        assert_eq!(gone[0].body["quest"], "QEST-20261007-WCJQSG");
+        assert!(
+            store.presences().is_empty(),
+            "what is gone is nowhere the mesh's sessions read"
+        );
+
+        let old = now() - GONE_KEPT - 1;
+        let kept = json!({"old": {"at": old, "presence": {"session": "old"}}});
+        write_whole(&store.claims, "tern.gone", &kept).expect("an old one is written");
+        assert_eq!(
+            store.gone().len(),
+            1,
+            "one let go over a week ago isn't read"
+        );
+        let later = json!({"session": "later"});
+        store
+            .put_presence("later", "tern", &later)
+            .expect("tern's session is kept");
+        store
+            .remove_presence("later", "tern")
+            .expect("tern's session is let go");
+        let tern: Value = read(&store.claims.join("tern.gone")).expect("tern's are kept");
+        assert_eq!(
+            tern.as_object()
+                .map(|kept| kept.keys().cloned().collect::<Vec<_>>()),
+            Some(vec!["later".to_owned()]),
+            "keeping another lets go of those over a week old"
+        );
     }
 
     #[test]

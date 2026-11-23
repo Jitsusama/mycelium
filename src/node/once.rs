@@ -11,7 +11,10 @@
 //! that failed or was refused is let go, so asking again tries afresh.
 //! One sent to another machine that answered nothing may still land
 //! there, so for that hour an ask again goes back to that machine, under
-//! the same name, rather than being placed and counted again.
+//! the same name, rather than being placed and counted again. One sent
+//! as a reopening let through without its asker's fence is held saying
+//! so, since only such a reopening, of a session there, may go back
+//! there without it.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -117,8 +120,13 @@ enum Held {
     },
     /// Landed at this time, in milliseconds since the epoch.
     Landed { at: i64, started: Started },
-    /// Sent to this machine, which answered nothing, at this time.
-    Unanswered { at: i64, machine: String },
+    /// Sent to this machine, which answered nothing, at this time, as a
+    /// reopening without its asker's fence where `reopens` says.
+    Unanswered {
+        at: i64,
+        machine: String,
+        reopens: bool,
+    },
 }
 
 impl Held {
@@ -135,8 +143,9 @@ impl Held {
 struct Book {
     held: HashMap<Name, Held>,
     /// The names sent on to another machine whose link answered nothing,
-    /// with that machine and whether the ask was sent before it did.
-    unanswered: HashMap<String, (String, bool)>,
+    /// with that machine, whether the ask was sent before it did, and
+    /// whether it went as a reopening without its asker's fence.
+    unanswered: HashMap<String, (String, bool, bool)>,
 }
 
 /// The starts asked under a name, landing or landed.
@@ -153,8 +162,14 @@ pub enum Joined {
     Leads(Lead),
     /// The one under it went to `machine`, which answered nothing: this
     /// ask asks it there again, under the same name, counting nothing
-    /// more, and says how that ends.
-    Resends { machine: String, lead: Lead },
+    /// more, and says how that ends. Where `reopens` says it went as a
+    /// reopening without its asker's fence, only such a reopening, of a
+    /// session there, goes.
+    Resends {
+        machine: String,
+        reopens: bool,
+        lead: Lead,
+    },
 }
 
 /// An ask waiting on the start under its name.
@@ -218,9 +233,15 @@ impl Lead {
                     },
                 );
             }
-            (Err(_), Some((machine, sent))) if sent || self.again => {
-                book.held
-                    .insert(self.name.clone(), Held::Unanswered { at, machine });
+            (Err(_), Some((machine, sent, reopens))) if sent || self.again => {
+                book.held.insert(
+                    self.name.clone(),
+                    Held::Unanswered {
+                        at,
+                        machine,
+                        reopens,
+                    },
+                );
             }
             (Err(_), _) => {}
         }
@@ -260,7 +281,9 @@ impl Onces {
                 *joined = joined.saturating_add(1);
                 return Joined::Landing(Joining(told.clone()));
             }
-            Some(Held::Unanswered { machine, .. }) => Some(machine.clone()),
+            Some(Held::Unanswered {
+                machine, reopens, ..
+            }) => Some((machine.clone(), *reopens)),
             None => None,
         };
         while book.held.len() >= HELD_MOST {
@@ -293,18 +316,41 @@ impl Onces {
             ended: false,
         };
         match again {
-            Some(machine) => Joined::Resends { machine, lead },
+            Some((machine, reopens)) => Joined::Resends {
+                machine,
+                reopens,
+                lead,
+            },
             None => Joined::Leads(lead),
         }
     }
 
     /// Says the start sent to `machine` under the name `there` had no
     /// answer from it, `sent` saying whether it was asked before the link
-    /// failed, so its lead holds the name to ask there again.
-    pub fn unanswered(&self, there: &str, machine: &str, sent: bool) {
+    /// failed, so its lead holds the name to ask there again, and
+    /// `reopens` whether it went as a reopening without its asker's fence.
+    pub fn unanswered(&self, there: &str, machine: &str, sent: bool, reopens: bool) {
         self.lock()
             .unanswered
-            .insert(there.to_owned(), (machine.to_owned(), sent));
+            .insert(there.to_owned(), (machine.to_owned(), sent, reopens));
+    }
+
+    /// Joins the start under `name` where one landed within the hour
+    /// before `at`, or is landing, as [`Self::join`] would, but leads none:
+    /// `None` where there is none to join, so whoever asks judges the ask
+    /// before it leads one.
+    pub fn joins(&self, name: &Name, at: i64) -> Option<Joined> {
+        match self.lock().held.get_mut(name)? {
+            Held::Landing { told, joined } => {
+                *joined = joined.saturating_add(1);
+                Some(Joined::Landing(Joining(told.clone())))
+            }
+            Held::Landed {
+                at: landed,
+                started,
+            } if at - *landed < LANDED_FOR => Some(Joined::Landed(started.clone())),
+            Held::Landed { .. } | Held::Unanswered { .. } => None,
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, Book> {
@@ -345,7 +391,7 @@ mod tests {
 
     fn resends(joined: Joined) -> (String, Lead) {
         match joined {
-            Joined::Resends { machine, lead } => (machine, lead),
+            Joined::Resends { machine, lead, .. } => (machine, lead),
             _ => panic!("it isn't asked again where it went"),
         }
     }
@@ -425,12 +471,12 @@ mod tests {
         let onces = Arc::new(Onces::default());
         let name = agent("OSPREY", "01J");
         let lead = leads(onces.join(name.clone(), HERE, NOW));
-        onces.unanswered(&name.there(HERE), "kestrel", true);
+        onces.unanswered(&name.there(HERE), "kestrel", true, false);
         lead.ends(NOW, &Err("kestrel didn't answer within 30s".to_owned()));
 
         let (machine, again) = resends(onces.join(name.clone(), HERE, NOW + 1));
         assert_eq!(machine, "kestrel", "it is asked where it went");
-        onces.unanswered(&name.there(HERE), "kestrel", false);
+        onces.unanswered(&name.there(HERE), "kestrel", false, false);
         again.ends(NOW + 1, &Err("no link reaches kestrel now".to_owned()));
 
         let (_, again) = resends(onces.join(name.clone(), HERE, NOW + 2));
@@ -442,12 +488,32 @@ mod tests {
 
         let other = agent("OSPREY", "01K");
         let lead = leads(onces.join(other.clone(), HERE, NOW));
-        onces.unanswered(&other.there(HERE), "kestrel", false);
+        onces.unanswered(&other.there(HERE), "kestrel", false, false);
         lead.ends(NOW, &Err("the link to kestrel has just dropped".to_owned()));
         assert!(
             matches!(onces.join(other, HERE, NOW + 1), Joined::Leads(_)),
             "one never sent there is placed afresh"
         );
+    }
+
+    // Our council's round 13 on the reopen rule (2026-11-20): a reopening
+    // let through without its asker's fence that went unanswered is held
+    // saying so, so no other start under its name goes there unfenced.
+    #[test]
+    fn a_reopening_another_machine_answered_nothing_is_held_as_one() {
+        let onces = Arc::new(Onces::default());
+        let name = agent("OSPREY", "01J");
+        let lead = leads(onces.join(name.clone(), HERE, NOW));
+        onces.unanswered(&name.there(HERE), "kestrel", true, true);
+        lead.ends(NOW, &Err("kestrel didn't answer within 30s".to_owned()));
+        let Joined::Resends {
+            machine, reopens, ..
+        } = onces.join(name, HERE, NOW + 1)
+        else {
+            panic!("it isn't asked again where it went");
+        };
+        assert_eq!(machine, "kestrel");
+        assert!(reopens, "it is held as a reopening");
     }
 
     #[test]

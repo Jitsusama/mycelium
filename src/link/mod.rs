@@ -720,6 +720,23 @@ async fn greet(
     Ok(other)
 }
 
+/// What an end that said `said` in its hello is too old to do of what is
+/// `asked`, if it is: it carries only what it said it carries, and a
+/// reopening only where its node judges one too.
+fn cannot_carry(asked: &Asked, said: &Hello) -> Option<&'static str> {
+    let (carries, cannot) = match asked {
+        Asked::Start(_) => (said.starts, "start sessions"),
+        Asked::Reopen(_) => (said.starts && said.reopens, "judge a reopening"),
+        Asked::Steer(_) => (said.steers, "carry steers"),
+        Asked::Update => (said.updates, "be asked to update"),
+        Asked::Run(..) => (said.runs, "run commands"),
+        Asked::Lend(..) => (said.lends, "lend model calls"),
+        Asked::Carry { .. } => (said.carries, "carry sessions"),
+        Asked::End { .. } => (said.ends, "end held sessions"),
+    };
+    (!carries).then_some(cannot)
+}
+
 /// The other end's hello, which must come first, and within `within` if
 /// it says how long.
 async fn hello(
@@ -1233,18 +1250,9 @@ impl<S: Store> End<S> {
     }
 
     /// Asks the other machine to start what this machine's node placed
-    /// there, or answers why it can't be asked.
+    /// there, or answers why it can't be asked ([`cannot_carry`]).
     async fn ask(&mut self, ask: Ask, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
-        let carried = match &ask.asked {
-            Asked::Start(_) => self.said.starts.then_some(()).ok_or("start sessions"),
-            Asked::Steer(_) => self.said.steers.then_some(()).ok_or("carry steers"),
-            Asked::Update => self.said.updates.then_some(()).ok_or("be asked to update"),
-            Asked::Run(..) => self.said.runs.then_some(()).ok_or("run commands"),
-            Asked::Lend(..) => self.said.lends.then_some(()).ok_or("lend model calls"),
-            Asked::Carry { .. } => self.said.carries.then_some(()).ok_or("carry sessions"),
-            Asked::End { .. } => self.said.ends.then_some(()).ok_or("end held sessions"),
-        };
-        if let Err(cannot) = carried {
+        if let Some(cannot) = cannot_carry(&ask.asked, &self.said) {
             // The asker may have given up; then nobody hears it.
             let _ = ask.answer.send(Err(format!(
                 "{}'s mycelium is too old to {cannot}",
@@ -1276,7 +1284,7 @@ impl<S: Store> End<S> {
         }
         self.asks.insert(id, ask.answer);
         let frame = match ask.asked {
-            Asked::Start(start) => Frame::Start { ask: id, start },
+            Asked::Start(start) | Asked::Reopen(start) => Frame::Start { ask: id, start },
             Asked::Steer(steer) => Frame::Steer {
                 ask: id,
                 address: steer.address,
@@ -3062,6 +3070,60 @@ mod tests {
         })
     }
 
+    // Our council on the reopen rule (2026-11-19): an end too old to
+    // judge a reopening takes one as any start, on looser ground.
+    #[test]
+    fn a_reopening_is_asked_only_of_an_end_whose_node_judges_one() {
+        let start = || Start {
+            work: crate::placement::Work {
+                needs: Vec::new(),
+                prefers: Vec::new(),
+                tolerates: Vec::new(),
+                may_wait: false,
+                lasts: None,
+                fence: None,
+            },
+            folder: None,
+            strict: false,
+            command: vec!["pi".to_owned(), "--session".to_owned(), "s-gone".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let newer = realm("kestrel").hello();
+        let older = Hello {
+            reopens: false,
+            ..realm("kestrel").hello()
+        };
+        assert_eq!(cannot_carry(&Asked::Reopen(start()), &newer), None);
+        assert_eq!(
+            cannot_carry(&Asked::Reopen(start()), &older),
+            Some("judge a reopening"),
+            "an end that doesn't say it judges one is asked none"
+        );
+        assert_eq!(
+            cannot_carry(&Asked::Start(start()), &older),
+            None,
+            "it is still asked any other start"
+        );
+        let startless = Hello {
+            starts: false,
+            ..realm("kestrel").hello()
+        };
+        assert_eq!(
+            cannot_carry(&Asked::Reopen(start()), &startless),
+            Some("judge a reopening"),
+            "an end whose node starts no sessions is asked no reopening, whatever it judges"
+        );
+        assert!(
+            serde_json::from_value::<Hello>(
+                json!({"machine": "tern", "realm": "work", "version": VERSION})
+            )
+            .is_ok_and(|said| !said.reopens),
+            "an end whose hello doesn't say it judges none"
+        );
+    }
+
     /// The presence of `session`, held unless `held` says not, as a far
     /// end says it with `started_by`, the presence itself naming a starter
     /// of its own.
@@ -3717,6 +3779,7 @@ mod tests {
             carries: true,
             shows: true,
             ends: true,
+            reopens: true,
             lends: true,
         };
         send(&mut far_writing, &Frame::Hello(personal))
