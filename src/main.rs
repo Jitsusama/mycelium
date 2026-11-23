@@ -1976,11 +1976,7 @@ fn eases_given(eases: bool, carries: bool, sleeps: Option<PathBuf>, state: &Path
 /// to stop.
 fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
     raise_open_files();
-    // A node serves where the runtime folder is now, and where it was
-    // before it moved, for its clients of then; a socket named is the
-    // only place it serves.
-    let socket = named.map_or_else(|| place::socket(&realm), Path::to_owned);
-    let former = named.map_or_else(|| place::former_socket(&realm), |_| None);
+    let (socket, former) = node_sockets(&realm, named);
     // The node names its machine for every command there: what it was
     // given, else the system's, recorded once its realm is settled.
     let machine = place::node_machine(node.here.machine.as_deref())?;
@@ -2079,20 +2075,7 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
     }
     let runtime = runtime()?;
     let ran = runtime.block_on(async {
-        let mut bound = node::bind(&socket)?;
-        if let Some(former) = former {
-            match bound.also_at(&former) {
-                Ok(()) => tell!(
-                    "mycelium: serving at {} too, for clients started before the runtime folder moved",
-                    former.display()
-                ),
-                Err(why) => tell!(
-                    "mycelium: not serving at {} too, so clients started before the runtime folder \
-                     moved won't reach this node: {why}",
-                    former.display()
-                ),
-            }
-        }
+        let bound = bound_where_it_serves(&socket, former.as_deref())?;
         // Probing ends with the process, when the node does.
         tokio::spawn(mycelium::reach::keep(declared, place::reached()));
         node::run(store, membership, Listed(dials), given, bound, stopped()).await
@@ -2105,6 +2088,37 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
     // service.
     std::mem::forget(runtime);
     ran
+}
+
+/// Where a realm's node serves: the socket in the runtime folder now, and
+/// the one where it was before it moved, for its clients of then. A
+/// socket `named` is the only place it serves.
+fn node_sockets(realm: &str, named: Option<&Path>) -> (PathBuf, Option<PathBuf>) {
+    named.map_or_else(
+        || (place::socket(realm), place::former_socket(realm)),
+        |named| (named.to_owned(), None),
+    )
+}
+
+/// Binds the node's socket at `socket`, and serves at `former` too when
+/// it can, saying whether it does: a node still serving there, or a path
+/// that isn't a socket, keeps it from it without stopping this one.
+fn bound_where_it_serves(socket: &Path, former: Option<&Path>) -> io::Result<node::Socket> {
+    let mut bound = node::bind(socket)?;
+    if let Some(former) = former {
+        match bound.also_at(former) {
+            Ok(()) => tell!(
+                "mycelium: serving at {} too, for clients started before the runtime folder moved",
+                former.display()
+            ),
+            Err(why) => tell!(
+                "mycelium: not serving at {} too, so clients started before the runtime folder \
+                 moved won't reach this node: {why}",
+                former.display()
+            ),
+        }
+    }
+    Ok(bound)
 }
 
 /// Runs this machine's end of a link over this process's own input and

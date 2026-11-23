@@ -526,7 +526,11 @@ mod tests {
     #[test]
     fn the_agents_folder_comes_before_every_other() {
         assert_eq!(
-            runtime_of(&set_to(Some("/sandbox"), Some("/run/user/501")), true, cache),
+            runtime_of(
+                &set_to(Some("/sandbox"), Some("/run/user/501")),
+                true,
+                cache
+            ),
             Some(PathBuf::from("/sandbox")),
             "AGENTS_RUNTIME_DIR comes ahead of XDG_RUNTIME_DIR"
         );
