@@ -414,11 +414,7 @@ pub fn carry(
     if let Asked::Itself { .. } = asked {
         // Its own session can't end while this runs below it, so the
         // node carries on from here, once it has ended.
-        said.line(
-            Step::Push,
-            Stood::Done,
-            handed_said(&names, to),
-        );
+        said.line(Step::Push, Stood::Done, handed_said(&names, to));
         return Ok(Carried {
             step: "handed",
             state: Stood::Done,
@@ -465,11 +461,7 @@ fn handed_on<F: FnMut(&Value)>(
         .partition(|one| carried_on.contains(&one.address));
     let told: Vec<&str> = theirs.iter().map(|one| one.address.as_str()).collect();
     if ours.is_empty() {
-        said.line(
-            Step::Push,
-            Stood::Done,
-            handed_said(&told, to),
-        );
+        said.line(Step::Push, Stood::Done, handed_said(&told, to));
         return Ok(Carried {
             step: "handed",
             state: Stood::Done,

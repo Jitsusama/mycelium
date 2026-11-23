@@ -908,8 +908,8 @@ standing here, the node answers `"carries_on": true` as well and
 carries the rest on itself once the session has carried and ended,
 waiting up to an hour for it: the command then ends at step `handed`,
 so its own lifetime can't leave the quest half carried. A node too old
-to say leaves the rest to the command. A blank reason is refused, by the command and
-by the node. A parked session its quest's record doesn't hold alone,
+to say leaves the rest to the command. A blank reason is refused, by
+the command and by the node. A parked session its quest's record doesn't hold alone,
 as one no record holds, two hold, or another quest's does, is passed
 over, never told, since the node would refuse its steer and so stop the
 carry over a session asleep: it stays here, and `find` and the last
