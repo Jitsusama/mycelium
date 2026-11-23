@@ -8,7 +8,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -32,9 +33,19 @@ const TIES_WITHIN: Duration = Duration::from_secs(30);
 /// to end: time for a busy one to finish its turn and push.
 pub const PATIENCE: Duration = Duration::from_secs(15 * 60);
 
+/// How a carry's hands put a request to the node from within it, rather
+/// than over its socket: answered as the asker the node vouched for.
+pub type Asking = Box<dyn Fn(&Request) -> Reply + Send>;
+
 /// The command's hands: the node at `socket`, and the quest's share.
 pub struct Through {
     socket: PathBuf,
+    /// Where the node asks from within itself, what answers its
+    /// requests in place of the socket, which still serves its records.
+    asking: Option<Asking>,
+    /// Where it is set, that whoever carries through these hands has
+    /// stopped, so they wait no longer.
+    stopped: Option<Arc<AtomicBool>>,
     shares: Places,
     quest: String,
     /// Where this machine's carries are put: the quest's scratch's
@@ -63,6 +74,8 @@ impl Through {
         let handover = handover(&shares.scratch, quest, &host);
         Self {
             socket,
+            asking: None,
+            stopped: None,
             shares,
             quest: quest.to_owned(),
             handover,
@@ -71,8 +84,36 @@ impl Through {
         }
     }
 
+    /// These hands, putting each request to `asking` rather than the
+    /// socket: the node's own, carrying on a carry it vouched for.
+    #[must_use]
+    pub fn asking(mut self, asking: Asking) -> Self {
+        self.asking = Some(asking);
+        self
+    }
+
+    /// These hands, for a carry that began at `began`, before they were
+    /// made: its session was told first, so a refusal it wrote since then
+    /// is this carry's.
+    #[must_use]
+    pub fn since(mut self, began: jiff::Timestamp) -> Self {
+        self.began = began;
+        self
+    }
+
+    /// These hands, waiting no longer once `stopped` is set, as a node's
+    /// are once it stops.
+    #[must_use]
+    pub fn stopping(mut self, stopped: Arc<AtomicBool>) -> Self {
+        self.stopped = Some(stopped);
+        self
+    }
+
     /// The node's answer to `request`, or why there is none.
     fn ask(&self, request: &Request) -> Result<Response, String> {
+        if let Some(asking) = &self.asking {
+            return asking(request);
+        }
         Client::connect(&self.socket)
             .and_then(|mut client| client.ask(request))
             .map_err(|error| format!("the node didn't answer: {error}"))?
@@ -190,6 +231,9 @@ impl Hands for Through {
     }
 
     fn takes(&mut self, taking: &Taking) -> Result<(), Untaken> {
+        if let Some(asking) = &self.asking {
+            return untaken(asking(&Request::Takes(taking.clone())));
+        }
         let answer = Client::connect(&self.socket)
             .and_then(|mut client| client.ask(&Request::Takes(taking.clone())))
             .map_err(|error| Untaken::Unasked(format!("it didn't answer: {error}")))?;
@@ -197,7 +241,12 @@ impl Hands for Through {
     }
 
     fn wait(&mut self) -> bool {
-        if Instant::now() >= self.until {
+        if Instant::now() >= self.until
+            || self
+                .stopped
+                .as_ref()
+                .is_some_and(|it| it.load(Ordering::Relaxed))
+        {
             return false;
         }
         thread::sleep(LOOK_EVERY);
@@ -937,6 +986,62 @@ mod tests {
         assert!(
             refusals(handover, began).is_err(),
             "one naming another session than its file stops the carry"
+        );
+    }
+
+    // 8855BD77's council (23 November): hands made once the session was
+    // told passed over a refusal it wrote before they were made.
+    #[test]
+    fn hands_made_after_the_session_was_told_read_its_refusal_since() {
+        use super::{Hands, Places, Through};
+        let dir = tempfile::tempdir().expect("places");
+        let places = Places {
+            quests: dir.path().join("quests"),
+            scratch: dir.path().join("scratch"),
+            home: dir.path().join("home"),
+            state: dir.path().join("state"),
+        };
+        let quest = "QEST-20261115-HARBOR";
+        let host = rustix::system::uname()
+            .nodename()
+            .to_string_lossy()
+            .into_owned();
+        let at = handover(&places.scratch, quest, &host);
+        fs::create_dir_all(&at).expect("a handover");
+        // Told a minute ago, it refused a second ago, before the hands.
+        let told = jiff::Timestamp::now() - jiff::SignedDuration::from_secs(60);
+        let refused_at = jiff::Timestamp::now() - jiff::SignedDuration::from_secs(1);
+        let refusal = at.join("s-quick.refused.json");
+        fs::write(
+            &refusal,
+            format!(r#"{{"session": "s-quick", "why": "it holds a lease", "at": "{refused_at}"}}"#),
+        )
+        .expect("a refusal");
+        fs::File::options()
+            .write(true)
+            .open(&refusal)
+            .and_then(|file| file.set_modified(SystemTime::from(refused_at)))
+            .expect("dated as it was written");
+        let made = || {
+            Through::new(
+                dir.path().join("work.sock"),
+                places.clone(),
+                quest,
+                Duration::from_secs(1),
+            )
+        };
+        assert_eq!(
+            made().refused().expect("read"),
+            Vec::<Refused>::new(),
+            "hands dated as they're made pass it over"
+        );
+        assert_eq!(
+            made().since(told).refused().expect("read"),
+            [Refused {
+                session: "s-quick".to_owned(),
+                why: "it holds a lease".to_owned(),
+            }],
+            "dated from when the session was told, they read it"
         );
     }
 
