@@ -24,6 +24,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::ledger::{Seen, seen};
 use super::pieces::{PIECE, piece_of};
+use super::settle::beside;
 use super::tree::{Content, Place, Quest, Shared, content};
 
 /// What stands for the account's home folder in a record's text as it
@@ -162,6 +163,31 @@ impl Quest {
                 _ => Ok(None),
             },
         }
+    }
+
+    /// Writes what crossed from `machine` for a shared file beside this
+    /// end's own, under [`beside`]'s name, over any copy an earlier
+    /// clash left there, answering where. Its places are written as this
+    /// machine names them, as the file's own would be: the copy's name
+    /// ends in the machine's, so it can't say by itself that its text
+    /// names places.
+    pub fn write_beside(
+        &self,
+        shared: &Shared,
+        machine: &str,
+        body: &[u8],
+        mode: Option<u32>,
+    ) -> io::Result<Shared> {
+        let at = Shared {
+            place: shared.place,
+            path: beside(&shared.path, machine),
+        };
+        if translates(shared) {
+            self.write(&at, Some(&local(body, &self.home)), mode)?;
+        } else {
+            self.write(&at, Some(body), mode)?;
+        }
+        Ok(at)
     }
 }
 
@@ -403,6 +429,38 @@ mod tests {
             quest.read(&readme).expect("read"),
             None,
             "a deletion removes it"
+        );
+    }
+
+    #[test]
+    fn a_copy_beside_names_places_as_this_machine_does() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let quest = Quest::new(dir.path().join("record"), PathBuf::from("/Users/jsama"));
+        let at = quest
+            .write_beside(
+                &record("README.md"),
+                "skiff",
+                b"cwd: \x01home\x01/src\n",
+                None,
+            )
+            .expect("written beside");
+        assert_eq!(
+            at.path, "README.md.from-skiff",
+            "named for where it came from"
+        );
+        assert_eq!(
+            fs::read_to_string(quest.record.join("README.md.from-skiff")).expect("read"),
+            "cwd: /Users/jsama/src\n",
+            "its places are this machine's, as the README's own would be"
+        );
+        let mark = b"\x01home\x01";
+        quest
+            .write_beside(&record("attachments/a.md"), "skiff", mark, None)
+            .expect("an attachment written beside");
+        assert_eq!(
+            fs::read(quest.record.join("attachments/a.md.from-skiff")).expect("read"),
+            mark,
+            "what a record attaches crosses as it was, beside as anywhere"
         );
     }
 

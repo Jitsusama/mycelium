@@ -27,7 +27,7 @@ use super::ledger::{
     Entry, Held, Ledger, Ledgers, Scan, Sight, clock, is_quest, lasting, shared_of,
 };
 use super::pieces::{PIECE, Pieces, Staged};
-use super::settle::{Merge, Settled, State, beside, settle};
+use super::settle::{Merge, Settled, State, settle};
 use super::tree::{Place, Quest, Shared, content, may_name};
 use super::watch::Watch;
 use super::{journey, log};
@@ -1971,19 +1971,21 @@ impl Exchange {
                     seen: written.and_then(|written| lasting(written, clock())),
                 })
             }
-            Settled::Beside => {
-                let theirs_at = Shared {
-                    place: shared.place,
-                    path: beside(&shared.path, &self.other),
-                };
-                quest.write(&theirs_at, body, mode)?;
-                self.kept_beside(id, key, &theirs_at.path);
-                let ours_entry = held.ledger.files.get(key).cloned().unwrap_or_default();
-                Some(Entry {
-                    version: joined.changed_on(&self.machine),
-                    ..ours_entry
-                })
-            }
+            // Settling puts a copy beside only where both ends hold the
+            // file, so a deletion never comes here; were one to, this
+            // end's would be kept as it is.
+            Settled::Beside => match body {
+                None => None,
+                Some(body) => {
+                    let theirs_at = quest.write_beside(&shared, &self.other, body, mode)?;
+                    self.kept_beside(id, key, &theirs_at.path);
+                    let ours_entry = held.ledger.files.get(key).cloned().unwrap_or_default();
+                    Some(Entry {
+                        version: joined.changed_on(&self.machine),
+                        ..ours_entry
+                    })
+                }
+            },
         };
         let taken = entry.is_some();
         if let Some(entry) = entry {
@@ -2068,6 +2070,7 @@ fn waits(quest: &str, ledger: &Ledger) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    use super::super::settle::beside;
     use super::super::watch::HEARD_WITHIN;
 
     const QUEST: &str = "QEST-20261013-4UHC5Q";
@@ -3953,7 +3956,10 @@ mod tests {
         let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
 
-        skiff.write(plan, "here\n");
+        // skiff's names a place in its home, which its copy beside
+        // names in kestrel's.
+        let at = |machine: &Machine| format!("cwd: {}/src\n", machine.places.home.display());
+        skiff.write(plan, &at(&skiff));
         kestrel.write(plan, "there\n");
         talk(&mut near, &mut far);
 
@@ -3970,9 +3976,9 @@ mod tests {
             "and both ends hold it"
         );
         assert_eq!(
-            kestrel.read(&beside(plan, "skiff")).as_deref(),
-            Some("here\n"),
-            "the other's is kept beside it"
+            kestrel.read(&beside(plan, "skiff")),
+            Some(at(&kestrel)),
+            "the other's is kept beside it, naming places as this machine does"
         );
         assert_eq!(
             skiff.read(&beside(plan, "skiff")),
