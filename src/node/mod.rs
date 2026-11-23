@@ -182,6 +182,26 @@ async fn rested(rest: &mut Option<std::pin::Pin<Box<tokio::time::Sleep>>>) {
     }
 }
 
+/// Says how the read of the messages the store held at start `ended`
+/// where it failed, and answers that none is under way now.
+fn read_ended(ended: &Result<(), tokio::task::JoinError>) -> Option<tokio::task::JoinHandle<()>> {
+    if let Err(error) = ended {
+        eprintln!("the messages the store holds couldn't all be read: {error}");
+    }
+    None
+}
+
+/// How the read of the messages the store held at start ended, once it
+/// has, or never where it already has.
+async fn read(
+    reading: &mut Option<tokio::task::JoinHandle<()>>,
+) -> Result<(), tokio::task::JoinError> {
+    match reading {
+        Some(reading) => reading.await,
+        None => std::future::pending().await,
+    }
+}
+
 impl Drop for Socket {
     fn drop(&mut self) {
         // The socket is the node's alone, made at bind; if it's already
@@ -705,7 +725,14 @@ where
     let (_watching_parks, mut parks) = watch(&shared.parked, "what is parked");
     // The quests' record says whose sessions' ends are told, and to whom.
     let mut quests_told = shared.served.told("quest");
-    shared.read_store();
+    // Sessions are judged before anything can ask, as ever. The messages
+    // the store holds are read off the node's one thread, which took no
+    // dial until it had opened every one: some 97,000 on the busiest
+    // machine, read for minutes while its links stood down. Clients are
+    // taken once they are read, so none lists a part of them, or misses
+    // one the read held without telling.
+    shared.read_sessions();
+    let mut unread = Some(shared.read_messages_apart());
     let mut links = JoinSet::new();
     let mut found = discovery.found();
     let mut leaving = tokio::time::interval(LEAVING_EVERY);
@@ -725,7 +752,8 @@ where
     let result = loop {
         tokio::select! {
             () = &mut stop => break Ok(()),
-            accepted = socket.accept(), if resting.is_none() => match accepted {
+            ended = read(&mut unread) => unread = read_ended(&ended),
+            accepted = socket.accept(), if resting.is_none() && unread.is_none() => match accepted {
                 Ok(stream) => {
                     tokio::spawn(serve(stream, shared.clone()));
                 }
@@ -2512,20 +2540,42 @@ impl<S: Store> Shared<S> {
     }
 
     /// Reads the messages the store holds that the node doesn't yet, and
-    /// every session. A message is written once by its id and never
-    /// changes, so one already held isn't read again: a rescan after a
-    /// watch overflowed lists the messages rather than reading them all,
-    /// whose every open a Linux watch hears, which would overflow it
-    /// again. The node holds far more messages than the mesh keeps, its
-    /// week, so none it let go is read again.
+    /// every session.
     fn read_store(&self) {
-        let ids = self.store.message_ids(0);
+        self.read_messages();
+        self.read_sessions();
+    }
+
+    /// Reads the messages as [`Self::read_messages`] does, off the node's
+    /// one thread, so the node takes its dials as they are read.
+    fn read_messages_apart(&self) -> tokio::task::JoinHandle<()> {
+        let shared = self.clone();
+        tokio::task::spawn_blocking(move || shared.read_messages())
+    }
+
+    /// Reads the messages the store holds that the node doesn't yet, the
+    /// newest [`crate::state::KEPT_MESSAGES`] at most, since the node
+    /// keeps no more and would let go of the oldest as it read them. A
+    /// message is written once by its id and never changes, so one
+    /// already held isn't read again: a rescan after a watch overflowed
+    /// lists the messages rather than reading them all, whose every open
+    /// a Linux watch hears, which would overflow it again. The node holds
+    /// far more messages than the mesh keeps, its week, so none it let go
+    /// is read again.
+    fn read_messages(&self) {
+        let mut ids = self.store.message_ids(0);
+        // An id opens with when it was sent, in milliseconds, so the
+        // newest sort last.
+        ids.sort_unstable();
         let unread: Vec<String> = {
             let refused = self.refused_ids();
             let inner = self.lock();
-            ids.into_iter()
+            let unread: Vec<String> = ids
+                .into_iter()
                 .filter(|id| !inner.state.holds_message(id) && !refused.contains(id))
-                .collect()
+                .collect();
+            let older = unread.len().saturating_sub(crate::state::KEPT_MESSAGES);
+            unread.into_iter().skip(older).collect()
         };
         let (waiting, messages): (Vec<Message>, Vec<Message>) = unread
             .iter()
@@ -2535,7 +2585,6 @@ impl<S: Store> Shared<S> {
         self.lock().state.add_messages(messages);
         self.wait_to_cross(waiting);
         self.said.messages_moved();
-        self.read_sessions();
     }
 
     /// Judges every session again and sends what changed, with what is
@@ -3399,7 +3448,11 @@ impl<S: Store> Shared<S> {
                 self.keep_awake(awake, power);
             }
             Change::Rescan => {
-                self.read_store();
+                // Listing every message is the store's to do off the
+                // node's one thread, as the read at start is, and what
+                // it finds is told as it is read.
+                let shared = self.clone();
+                tokio::task::spawn_blocking(move || shared.read_store());
                 self.said.machines_moved();
             }
             Change::Machine(_) => self.said.machines_moved(),
@@ -8292,6 +8345,7 @@ mod tests {
 
     /// A dial whose way in always turns this machine away, telling
     /// `dialled` each time it is dialled.
+    #[derive(Clone)]
     struct Refusing {
         dialled: mpsc::UnboundedSender<tokio::time::Instant>,
     }
@@ -18448,6 +18502,77 @@ esac
             let stopped = node.await.expect("the node runs to its end");
             assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
         }
+    }
+
+    /// A node dials the machines it finds while it is still reading the
+    /// messages the store held at start, however long their opens take,
+    /// and lists them to its clients once it has read them.
+    #[tokio::test]
+    async fn a_node_dials_while_it_reads_what_the_store_held() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("mycelium").join("work.sock");
+        let store = Memory::default();
+        let draft = Draft {
+            from: "joel".to_owned(),
+            groups: vec![Group::new("peer.4uhc5q").expect("a valid group")],
+            intent: None,
+            text: "held".to_owned(),
+            re: None,
+            realm: None,
+        };
+        let (id, body) = mesh::written(&draft, 1);
+        store.send_here(&id, body);
+        // Let go by the test once kestrel is dialled, or by itself after
+        // a while: a node reading on its one thread would otherwise hold
+        // the test's thread too, and never fail it.
+        let reads = store.hold_reads();
+        let (letting_go, let_go) = std::sync::mpsc::channel::<()>();
+        let lapsed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let holding = std::thread::spawn({
+            let lapsed = Arc::clone(&lapsed);
+            move || {
+                let told = let_go.recv_timeout(Duration::from_secs(10));
+                lapsed.store(told.is_err(), std::sync::atomic::Ordering::SeqCst);
+                drop(reads);
+            }
+        });
+        let (dialled, mut dials) = mpsc::unbounded_channel();
+        let (stop, node) = node(&store, "skiff", vec![Refusing { dialled }], None, &socket);
+
+        tokio::time::timeout(PATIENCE, dials.recv())
+            .await
+            .expect("kestrel is dialled in time")
+            .expect("the dial is told");
+        assert!(
+            !lapsed.load(std::sync::atomic::Ordering::SeqCst),
+            "kestrel is dialled while the store's messages are still being read"
+        );
+        letting_go.send(()).expect("the reads are still held");
+        holding.join().expect("the reads are let go");
+        let listed = tokio::task::spawn_blocking(move || {
+            let mut client = Client::connect(&socket).expect("the client connects");
+            let asked = Request::Messages {
+                groups: Pattern::new("peer.*").expect("a valid pattern"),
+                limit: 10,
+            };
+            let Ok(Ok(Response::Messages(all))) = client.ask(&asked) else {
+                panic!("the node lists its messages");
+            };
+            all.into_iter().map(|one| one.text).collect::<Vec<_>>()
+        });
+        let texts = tokio::time::timeout(PATIENCE, listed)
+            .await
+            .expect("the node answers in time")
+            .expect("the client asks");
+        assert_eq!(
+            texts,
+            ["held"],
+            "its first client is taken once what the store held is read, and lists it"
+        );
+
+        drop(stop);
+        let stopped = node.await.expect("the node runs to its end");
+        assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
     }
 
     #[tokio::test]
