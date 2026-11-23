@@ -4389,7 +4389,7 @@ mod tests {
             "{\"Ended\":{\"session\":\"s1\"}}",
             "{\"Gossip\":{\"about\":\"what is next\"}}",
             "\"Wave\"",
-            "{\"Steer\":{\"ask\":1,\"address\":\"a\",\"steer\":{\"Hum\":{}}}}",
+            "{\"Share\":{\"Murmur\":{\"quest\":\"q\"}}}",
             "{\"Ended\":{\"session\":\"s2\"}}",
             "not a frame",
             "{\"Ended\":{\"session\":\"s3\"}}",
