@@ -2539,13 +2539,6 @@ impl<S: Store> Shared<S> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Reads the messages the store holds that the node doesn't yet, and
-    /// every session.
-    fn read_store(&self) {
-        self.read_messages();
-        self.read_sessions();
-    }
-
     /// Reads the messages as [`Self::read_messages`] does, off the node's
     /// one thread, so the node takes its dials as they are read.
     fn read_messages_apart(&self) -> tokio::task::JoinHandle<()> {
@@ -3448,11 +3441,11 @@ impl<S: Store> Shared<S> {
                 self.keep_awake(awake, power);
             }
             Change::Rescan => {
-                // Listing every message is the store's to do off the
-                // node's one thread, as the read at start is, and what
-                // it finds is told as it is read.
-                let shared = self.clone();
-                tokio::task::spawn_blocking(move || shared.read_store());
+                // Every message is listed off the node's one thread, as
+                // at start. Sessions are judged here, so no judgement on
+                // an older reading lands after one on a newer.
+                drop(self.read_messages_apart());
+                self.read_sessions();
                 self.said.machines_moved();
             }
             Change::Machine(_) => self.said.machines_moved(),
