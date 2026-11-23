@@ -10,10 +10,12 @@
 //! again within a tick of being hashed keeps its time, and a size and time
 //! that recent are hashed again rather than kept, as git does.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::io;
+use std::io::{self, Read as _};
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rustix::fs::FlockOperation;
@@ -343,13 +345,83 @@ pub struct Held {
 }
 
 impl Held {
-    /// Writes the ledger back, by rename so no reader sees half of it.
+    /// Writes the ledger back, by rename so no reader sees half of it, and
+    /// keeps it as read, so the next hold need not parse what it wrote.
     pub fn keep(&self) -> io::Result<()> {
         let staged = self.path.with_extension("json.mycelium.tmp");
         let text = serde_json::to_vec_pretty(&self.ledger).map_err(io::Error::other)?;
         fs::write(&staged, text)?;
-        fs::rename(staged, &self.path)
+        let stamp = Stamp::of(&fs::metadata(&staged)?);
+        fs::rename(staged, &self.path)?;
+        read_before().insert(self.path.clone(), (stamp, self.ledger.clone()));
+        Ok(())
     }
+}
+
+/// What tells one written ledger from another without reading it: the
+/// file's inode, size and change time. Every ledger is written whole to a
+/// new file and renamed into place, by this process or any other, so a
+/// write gives the path an inode it didn't have just before. Only a
+/// filesystem that hands a freed inode straight back, such as ext4, could
+/// show two writes as one, and then only were both another process's,
+/// within one tick of the clock, and of the same length: this process
+/// keeps what it writes itself as read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    device: u64,
+    inode: u64,
+    len: u64,
+    changed: (i64, i64),
+}
+
+impl Stamp {
+    fn of(metadata: &fs::Metadata) -> Self {
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            len: metadata.len(),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        }
+    }
+}
+
+/// The ledgers this process last read or wrote, by path, each with the
+/// stamp of the file it came from. Each link looks at every shared quest
+/// once a second, and parsing all of them each time read 28.7 MB of JSON a
+/// second per link on a machine sharing 71 quests, with nothing changed.
+static READ_BEFORE: LazyLock<Mutex<HashMap<PathBuf, (Stamp, Ledger)>>> =
+    LazyLock::new(Mutex::default);
+
+/// The ledgers read before, whatever a holder that panicked left: each
+/// entry is written whole, so none is ever half changed.
+fn read_before() -> std::sync::MutexGuard<'static, HashMap<PathBuf, (Stamp, Ledger)>> {
+    READ_BEFORE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The ledger at `path`, parsed only when its file isn't the one read
+/// before, or `None` where there is none. The stamp is read from the file
+/// opened, so what it stands for is what is read.
+fn read_ledger(path: &Path) -> io::Result<Option<Ledger>> {
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            read_before().remove(path);
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    let stamp = Stamp::of(&file.metadata()?);
+    if let Some((before, ledger)) = read_before().get(path)
+        && *before == stamp
+    {
+        return Ok(Some(ledger.clone()));
+    }
+    let mut text = Vec::new();
+    file.read_to_end(&mut text)?;
+    let ledger: Ledger = serde_json::from_slice(&text)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    read_before().insert(path.to_owned(), (stamp, ledger.clone()));
+    Ok(Some(ledger))
 }
 
 impl Ledgers {
@@ -395,9 +467,13 @@ impl Ledgers {
                 format!("{quest:?} is not a quest's id"),
             ));
         }
-        let text = fs::read(self.folder.join(format!("{quest}.json")))?;
-        serde_json::from_slice(&text)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        let path = self.folder.join(format!("{quest}.json"));
+        read_ledger(&path)?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{} isn't there", path.display()),
+            )
+        })
     }
 
     /// Whether this machine shares `quest`.
@@ -436,12 +512,7 @@ impl Ledgers {
         };
         rustix::fs::flock(&lock, FlockOperation::LockExclusive)?;
         let path = self.folder.join(format!("{quest}.json"));
-        let ledger = match fs::read(&path) {
-            Ok(text) => serde_json::from_slice(&text)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ledger::default(),
-            Err(error) => return Err(error),
-        };
+        let ledger = read_ledger(&path)?.unwrap_or_default();
         Ok(Held {
             ledger,
             path,
@@ -584,6 +655,58 @@ mod tests {
         assert!(
             ledgers.hold("../etc").is_err(),
             "only a quest's id names a ledger"
+        );
+    }
+
+    /// A ledger read before is read again once another process writes it,
+    /// by rename as every writer does or in place, and once it is gone.
+    #[test]
+    fn a_ledger_written_elsewhere_is_read_anew() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let ledgers = Ledgers::in_state(dir.path());
+        let quest_id = "QEST-20261013-4UHC5Q";
+        let mut held = ledgers.hold(quest_id).expect("held");
+        held.ledger.journey = Some("here".to_owned());
+        held.keep().expect("kept");
+        drop(held);
+        let journey = |ledgers: &Ledgers| ledgers.read(quest_id).ok().and_then(|l| l.journey);
+        assert_eq!(journey(&ledgers).as_deref(), Some("here"), "read as kept");
+
+        // Another process writes it whole and renames it into place.
+        let path = dir.path().join("shared").join(format!("{quest_id}.json"));
+        let staged = dir.path().join("staged.json");
+        fs::write(&staged, r#"{"files":{},"journey":"elsewhere"}"#).expect("staged");
+        fs::rename(&staged, &path).expect("renamed into place");
+        assert_eq!(
+            journey(&ledgers).as_deref(),
+            Some("elsewhere"),
+            "a rename is read"
+        );
+        assert_eq!(
+            ledgers
+                .hold(quest_id)
+                .expect("held")
+                .ledger
+                .journey
+                .as_deref(),
+            Some("elsewhere"),
+            "and held"
+        );
+
+        // Then in place, within the same tick of the file's clock.
+        fs::write(&path, r#"{"files":{},"journey":"in place"}"#).expect("written");
+        assert_eq!(
+            journey(&ledgers).as_deref(),
+            Some("in place"),
+            "an edit in place is read"
+        );
+
+        fs::remove_file(&path).expect("removed");
+        assert!(ledgers.read(quest_id).is_err(), "a ledger gone is none");
+        assert_eq!(
+            ledgers.hold(quest_id).expect("held").ledger,
+            Ledger::default(),
+            "and is held anew"
         );
     }
 }
