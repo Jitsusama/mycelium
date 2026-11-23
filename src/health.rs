@@ -35,14 +35,19 @@ pub struct Kept<Ended, Refused, Linked> {
     pub ended: Ended,
     /// Why its last was refused, if none was admitted since.
     pub refused: Refused,
-    /// When it last stood, in seconds since the epoch, if it ever did.
+    /// Until when it last stood, in milliseconds since the epoch, if it
+    /// ever did: the link's mark ([`crate::store::Store::linked_until`]),
+    /// which a link moves only once it has stood a minute past its
+    /// catch-up, never when it is merely let in.
     pub linked: Linked,
 }
 
 /// The line `read` makes, with what `kept` says of each link. A link not
 /// up says for how long, in whole seconds, as `downFor`: since it last
 /// stood, or null for a machine never linked. So a link down a minute
-/// for a restart reads apart from one down all night.
+/// for a restart reads apart from one down all night, and one the other
+/// end keeps turning away, or that drops each time before it stands,
+/// reads as down since it last stood, not since its last try.
 #[must_use]
 pub fn line<Ended, Refused, Linked>(read: &Read<'_>, kept: &Kept<Ended, Refused, Linked>) -> Value
 where
@@ -56,12 +61,16 @@ where
         .filter(|machine| machine.name != read.here)
         .map(|machine| {
             let ended = (kept.ended)(&machine.name);
-            if machine.state == Readiness::Ready {
-                return json!({"machine": machine.name, "state": "up", "ended24h": ended});
+            match machine.state {
+                Readiness::Ready => {
+                    return json!({"machine": machine.name, "state": "up", "ended24h": ended});
+                }
+                Readiness::Unreachable => {}
             }
             // A mark ahead of the read, as a clock stepped back leaves
             // it, reads as down no time rather than a time to come.
-            let down = (kept.linked)(&machine.name).map(|at| (read.at - at).max(0));
+            let down =
+                (kept.linked)(&machine.name).map(|at| (read.at - at.div_euclid(1000)).max(0));
             // A machine refused, as for speaking another version, says
             // why, so it isn't read as one that is only asleep.
             match (kept.refused)(&machine.name) {
@@ -228,7 +237,7 @@ mod tests {
             &Kept {
                 ended: |machine: &str| usize::from(machine == "osprey") * 1_410,
                 refused: |_: &str| None,
-                linked: |_: &str| Some(1_794_470_400 - 7 * 60),
+                linked: |_: &str| Some((1_794_470_400 - 7 * 60) * 1000),
             },
         );
         assert_eq!(
@@ -313,9 +322,10 @@ mod tests {
             &read,
             &Kept {
                 linked: |machine: &str| match machine {
-                    "tern" => Some(at - 9 * 60 * 60),
+                    // Part of a second on, which counts no whole second.
+                    "tern" => Some((at - 9 * 60 * 60) * 1000 + 999),
                     // As a clock stepped back leaves a mark.
-                    "wren" => Some(at + 30),
+                    "wren" => Some((at + 30) * 1000),
                     _ => None,
                 },
                 ended: |_: &str| 0,

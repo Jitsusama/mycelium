@@ -2303,9 +2303,7 @@ fn health(socket: &Path, here: Here, realm: String) -> io::Result<()> {
         &mycelium::health::Kept {
             ended: |machine: &str| store.endings(machine, day_ago),
             refused: |machine: &str| store.link_refused(machine),
-            linked: |machine: &str| {
-                mycelium::store::last_linked(&store, machine).map(|at| at.div_euclid(1000))
-            },
+            linked: |machine: &str| store.linked_until(machine),
         },
     ))
 }
