@@ -2254,17 +2254,49 @@ become the session's first words; `from` the address of the cell it
 comes from; `on` the machine, this one when it's none or names this
 one; and all but `words` may be left out. Beside its first words the
 session is given `QUEST_WORKFLOW_SPROUT`, the same work as data, a
-JSON object such as `{"v": 1, "link": "https://...", "from": "HARBOR"}`:
+JSON object such as
+`{"v": 1, "link": "https://...", "from": "HARBOR", "id": "sprout-..."}`:
 `v` the number 1; exactly one of `link`, a string, for a link alone,
-or `words`, a string, for words; and `from`, a string, only where
-`from` is an address, so its harness makes and ties the quest itself.
-It's left out where the link or words run past 4000 UTF-16 units, the
-most a session reads, and the first words alone stand. That address
-and that length are what the node sends, never a guarantee: any agent
-starting pi can set the variable itself, so a harness checks every
-field again and treats it as a seed. Where a harness reads it, the
-seed wins over the first words. It's a seed, as the words are, never
-a command. Its folder is
+or `words`, a string, for words; `from`, a string, only where
+`from` is an address, so its harness makes and ties the quest itself;
+and `id`, a string of at most 64 letters, digits, dots, dashes and
+underscores, the sprout's own, made where the `"Start"` is made (by
+the node, or by `mycelium sprout` where a node from before `"Sprout"`
+is asked for the `"Start"` it judged), so a session of it started
+again makes its quest once. A node that knows `"Sprout"` but is from
+before the id sends a seed with none, so a harness takes a seed with
+no `id` as it would one whose id it never saw. The id is a hint, never
+proof: any agent on the account can read a live sprout's id in its
+holder's `command` and start pi with it, so a harness that finds its
+quest by the id gives that session nothing an agent couldn't take with the quest
+tool, and must grant nothing on the id alone. The same holds the
+other way: an agent that reads the id before the session makes its
+quest can make one under it first, which the session then takes up.
+`from` is the asker's word, tied as said with no model in between: the
+same trust the first words give it, naming a cell the asker could name there.
+The seed, its id with it, is left out where the link or words run
+past 4000 UTF-16 units, the most a session reads, and the first words
+alone stand, so a session of it started again can't tell it made its
+quest. Where a seed is sent, a `from` that isn't an address is left
+out of it, so a harness making the quest from the seed leaves the
+quest untied to that cell. What was left out is said once the session
+has started, naming the sprout by its id, the machine it started on
+and the session holding it, the `"Started"` answer's `held`, since a
+seed left out takes its id with it and the id then names nothing
+else: in the log of the node asked, or by `mycelium sprout` on its
+error stream where a node from before `"Sprout"` is asked, since that
+node knows nothing of it. Where a node of now is asked, `mycelium
+sprout` says none of it, since its own id isn't the one sent, so its
+asker finds it only in that node's log, by the held session its
+attach line names; a node from before the id says it nowhere.
+Nothing is said for a start refused, nor for one whose answer was lost
+on its way back from another machine, though it may have started there;
+one that started is said even where its guard then ends it for
+beginning in home. That address and that length are what the node
+sends, never a guarantee: any agent starting pi can set the variable
+itself, so a harness checks every field again and treats it as a seed.
+Where a harness reads it, the seed wins over the first words. It's a
+seed, as the words are, never a command. Its folder is
 `folder`, the checkout a link's repository has under home, or where the
 asker is when that's inside a repository, never home itself, and the
 session begins in it as the node names it, within home. Starting here,

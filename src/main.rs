@@ -2843,13 +2843,19 @@ fn sprout(socket: &Path, asked: Sprouting) -> io::Result<()> {
         None => place::machine(None, &place::state())?,
         Some(_) => place::machine(None, &place::state()).unwrap_or_default(),
     };
-    let start = sprout::starting(&sprouting, &cwd, &home, &here, &sprout::ThisDisk)
-        .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
+    let sprout::Sprouted { start, left_out } =
+        sprout::starting(&sprouting, &cwd, &home, &here, &sprout::ThisDisk)
+            .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
     let mut reply = Client::connect(socket)?.ask(&Request::Sprout(sprouting))?;
     // A node from before sprouts were its own to judge is asked for the
-    // Start judged here, as it was then.
+    // Start judged here, as it was then. It knows nothing of what the
+    // seed left out, so that is said here, once the session started, as
+    // a node of now would log it.
     if matches!(&reply, Err(why) if why.starts_with("not a request") && why.contains("Sprout")) {
         reply = Client::connect(socket)?.ask(&Request::Start(start.clone()))?;
+        for said in left_out.told(&reply) {
+            tell!("mycelium sprout: {said}");
+        }
     }
     if asked.output.json() {
         return print_line(&reply);
