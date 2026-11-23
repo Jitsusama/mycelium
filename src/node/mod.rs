@@ -6244,18 +6244,9 @@ impl<S: Store> Shared<S> {
             // Asked again where it was asked under that name, in the
             // fence its first ask was placed in ([`Self::placed_held`]).
             (Whither::Placed, Some((machine, reopened))) => {
-                let unfenced = self.unfenced_asking(by, asked.work.fence).await;
-                let fence = starts_in(fence_of(by), held_or_run(unfenced.is_some(), by));
                 let reopening = reopening.as_ref();
-                let within = relayed_within(at, jiff::Timestamp::now().as_millisecond());
-                self.asked_again(
-                    machine,
-                    (reopened, dropped),
-                    reopening,
-                    (asked, within),
-                    fence,
-                )
-                .await
+                self.asked_again((machine, by), (reopened, dropped), reopening, asked, at)
+                    .await
             }
             (Whither::Placed, None) => self.placed_held(asked, by, dropped, at).await,
             // One relayed here starts here or nowhere, so a name another
@@ -7291,16 +7282,21 @@ impl<S: Store> Shared<S> {
     /// such a reopening: one let through without its fence, as `dropped`
     /// says, of a session on that machine, as `reopening` says, so no
     /// other start under its name rides it onto looser ground. Any other
-    /// goes again in `fence`, as [`Self::start_on`] sends it. Its answer
-    /// is waited on no longer than `within`.
+    /// goes again in the fence its first ask was placed in
+    /// ([`Self::placed_held`]) for the asker judged `by`, as
+    /// [`Self::start_on`] sends it. Its answer is waited on no longer
+    /// than what's left of the harness's wait on the ask begun `at`.
     async fn asked_again(
         &self,
-        machine: String,
+        (machine, by): (String, By),
         (reopened, dropped): (bool, bool),
         reopening: Option<&(String, String)>,
-        (asked, within): (Start, Duration),
-        fence: Option<crate::declared::Kind>,
+        asked: Start,
+        at: i64,
     ) -> Reply {
+        let unfenced = self.unfenced_asking(by, asked.work.fence).await;
+        let fence = starts_in(fence_of(by), held_or_run(unfenced.is_some(), by));
+        let within = relayed_within(at, jiff::Timestamp::now().as_millisecond());
         let reopens = dropped && reopening.is_some_and(|(at, _)| *at == machine);
         match (reopened, reopens) {
             (false, _) => self.start_on(machine, asked, (fence, within)).await,
