@@ -100,11 +100,18 @@ fn a_sprout_on_another_machine_needs_no_name_for_this_one() {
     );
 }
 
+/// How a node standing in answers one ask, given the line it was asked.
+type Answer = Box<dyn FnOnce(&str) -> serde_json::Value + Send>;
+
+/// An answer that is `value`, whatever was asked.
+fn always(value: serde_json::Value) -> Answer {
+    Box::new(move |_| value)
+}
+
 /// A node at `socket` answering its asks in turn with `answers`, one ask
 /// a connection as the client makes them, keeping each ask it was given.
-fn node_answering(socket: &Path, answers: &[serde_json::Value]) -> Arc<Mutex<Vec<String>>> {
+fn node_answering(socket: &Path, answers: Vec<Answer>) -> Arc<Mutex<Vec<String>>> {
     let listener = UnixListener::bind(socket).expect("the node's socket");
-    let answers: Vec<String> = answers.iter().map(ToString::to_string).collect();
     let asked = Arc::new(Mutex::new(Vec::new()));
     let kept = Arc::clone(&asked);
     std::thread::spawn(move || {
@@ -114,8 +121,9 @@ fn node_answering(socket: &Path, answers: &[serde_json::Value]) -> Arc<Mutex<Vec
             };
             let mut ask = String::new();
             let _ = BufReader::new(&client).read_line(&mut ask);
+            let answered = answer(&ask);
             kept.lock().expect("the asks kept").push(ask);
-            let _ = writeln!(&client, "{answer}");
+            let _ = writeln!(&client, "{answered}");
         }
     });
     asked
@@ -134,19 +142,31 @@ fn checkout_on_tern() -> (tempfile::TempDir, std::path::PathBuf) {
 }
 
 /// What a node answers a start that started, in `folder`.
-fn started_in(folder: &Path) -> serde_json::Value {
-    serde_json::json!({"Ok": {"Started": {
+fn started_in(folder: &Path) -> Answer {
+    always(serde_json::json!({"Ok": {"Started": {
         "machine": "tern",
         "held": "5e55",
         "folder": folder,
         "attach": ["mycelium", "--realm", "work", "attach", "5e55"],
-    }}})
+    }}}))
 }
 
-/// What a node from before `"Sprout"` answers a sprout.
-fn sprout_unknown() -> serde_json::Value {
-    serde_json::json!({
-        "Err": "not a request: unknown variant `Sprout`, expected one of `Hello`, `Start`"
+/// What a node from before `"Sprout"` answers the line it was asked, made
+/// as such a node makes it: serde's own refusal of a request it has no
+/// variant for, wrapped as the node wraps any line it can't read
+/// (`node::serve`), so a rename of the ask on the wire, or new wording
+/// from serde, reaches the fallback here as it would there.
+fn as_a_node_before_sprout() -> Answer {
+    // The requests of a node from before `"Sprout"`, as far as matters:
+    // serde refuses what isn't among them by name.
+    #[derive(Debug, serde::Deserialize)]
+    enum Old {
+        Start,
+        Sessions,
+    }
+    Box::new(|ask: &str| {
+        let error = serde_json::from_str::<Old>(ask.trim_end()).expect_err("unknown to it");
+        serde_json::json!({"Err": format!("not a request: {error}")})
     })
 }
 
@@ -161,7 +181,10 @@ fn left_out_lines(said: &str) -> Vec<&str> {
 fn a_node_from_before_sprout_is_asked_to_start_and_what_the_seed_left_out_is_said() {
     let (home, rows) = checkout_on_tern();
     let socket = home.path().join("old.sock");
-    let asked = node_answering(&socket, &[sprout_unknown(), started_in(&rows)]);
+    let asked = node_answering(
+        &socket,
+        vec![as_a_node_before_sprout(), started_in(&rows)],
+    );
 
     let (ran, said) = sprout_asking(
         home.path(),
@@ -179,8 +202,8 @@ fn a_node_from_before_sprout_is_asked_to_start_and_what_the_seed_left_out_is_sai
         "as the command, naming the sprout: {line}"
     );
     assert!(
-        line.contains(" on tern: its seed leaves out the cell it came from"),
-        "naming its machine and why: {line}"
+        line.contains(" on tern, held as 5e55: its seed leaves out the cell it came from"),
+        "naming its machine, its session and why: {line}"
     );
     let asked = asked.lock().expect("the asks kept");
     assert_eq!(asked.len(), 2, "a sprout, then the start it judged");
@@ -202,8 +225,8 @@ fn a_node_from_before_sprout_is_asked_to_start_and_what_the_seed_left_out_is_sai
 fn a_start_an_old_node_refuses_says_nothing_of_what_was_left_out() {
     let (home, rows) = checkout_on_tern();
     let socket = home.path().join("old.sock");
-    let refused = serde_json::json!({"Err": "no room on tern"});
-    let _asked = node_answering(&socket, &[sprout_unknown(), refused]);
+    let refused = always(serde_json::json!({"Err": "no room on tern"}));
+    let _asked = node_answering(&socket, vec![as_a_node_before_sprout(), refused]);
 
     let (ran, said) = sprout_asking(
         home.path(),
@@ -217,13 +240,14 @@ fn a_start_an_old_node_refuses_says_nothing_of_what_was_left_out() {
     assert_eq!(left_out_lines(&said), Vec::<&str>::new(), "{said}");
 }
 
-/// A node of now logs what the seed it made left out, naming its own id,
-/// so the command, whose id was never sent, says none of it.
+/// A node of now makes the seed and its own id, so what the seed left
+/// out is the node's to log (`sprout::LeftOut::tell`, tested there), and
+/// the command, whose id was never sent, says none of it.
 #[test]
-fn a_node_of_now_is_left_to_say_what_its_seed_left_out() {
+fn the_command_says_nothing_left_out_where_a_node_of_now_answers() {
     let (home, rows) = checkout_on_tern();
     let socket = home.path().join("now.sock");
-    let asked = node_answering(&socket, &[started_in(&rows)]);
+    let asked = node_answering(&socket, vec![started_in(&rows)]);
 
     let (ran, said) = sprout_asking(
         home.path(),
