@@ -2,9 +2,10 @@
 //!
 //! Both ends run the same code. Each says who it is ([`membership`]), then
 //! which messages it holds; each then sends the other what it lacks, and
-//! from there every new message as it lands. Messages are written once by
-//! id, so holding the union of both ends is always right and nothing needs
-//! agreeing. What is said to a machine's own group stays on that machine.
+//! from there every new message as it lands, and each minute whatever the
+//! other still lacks, in case its watch missed one. Messages are written
+//! once by id, so holding the union of both ends is always right and
+//! nothing needs agreeing. What is said to a machine's own group stays on that machine.
 //! Each end also sends its own living sessions' presence, which the other
 //! keeps until the session ends or the link drops, since only a session's
 //! own machine can say whether it lives; one link at a time carries a
@@ -1817,8 +1818,9 @@ impl<S: Store> End<S> {
         send(writing, &Frame::Machine(Box::new(machine))).await
     }
 
-    /// Says again that what this link carried here stands, and what this
-    /// end's machine is now, and whether it has handed over.
+    /// Offers the other end whatever it still lacks, then says again that
+    /// what this link carried here stands, and what this end's machine is
+    /// now, and whether it has handed over.
     async fn keep(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
         if self.hearing.gone(now()) {
             return Err(io::Error::new(
@@ -1826,6 +1828,12 @@ impl<S: Store> End<S> {
                 format!("{} has said nothing for {SILENT_AFTER:?}", self.other),
             ));
         }
+        // A message is sent as the store's watch tells of it, and a watch
+        // can miss one and say nothing: a Mac's messages stopped crossing
+        // for 38 minutes on 22 November while its link stood. The mark
+        // below is where the next link begins its offer, so what was
+        // missed is offered first, or it would never cross.
+        self.catch_up(writing).await?;
         self.keep_carried()?;
         // A starter the node named none for is asked about again here too,
         // so one booked late still crosses while no presence changes.
@@ -2539,6 +2547,32 @@ mod tests {
             kestrel.message(&stale),
             None,
             "a message past reach stays behind"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_message_no_watch_told_of_crosses_at_the_next_keep() {
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
+        apart_since(&skiff, &kestrel, 60_000);
+        let _link = linked(&skiff, &kestrel, 1 << 16);
+        let heard = recent(0, "WCJQSG", 0);
+        said(&skiff, &heard, "@20KSI7");
+        until(&kestrel, |store| store.message(&heard).is_some()).await;
+
+        let missed = recent(0, "E1EV6B", 0);
+        let body = json!({"id": missed, "to": ["@CIJMZQ"], "text": "missed"});
+        skiff.miss(&missed, body);
+        let mut changes = kestrel.changes().expect("a memory store tells its changes");
+        let waited = tokio::time::timeout(2 * KEEP_EVERY, async {
+            while kestrel.message(&missed).is_none() {
+                changes.changes.recv().await;
+            }
+        })
+        .await;
+        assert!(
+            waited.is_ok(),
+            "a message the watch never told of didn't cross at the next keep"
         );
     }
 

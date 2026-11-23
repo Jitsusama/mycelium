@@ -141,6 +141,10 @@ impl Hands for Through {
             .map_err(|error| error.to_string())
     }
 
+    fn quests(&mut self) -> Result<Vec<Value>, String> {
+        crate::swarm::records(&self.socket, "quest", TIES_WITHIN).map_err(|error| error.to_string())
+    }
+
     fn bring(&mut self, brought: &Brought) -> Result<(), String> {
         put_brought(&self.handover, brought)
     }
@@ -235,7 +239,8 @@ pub fn for_the_person(
 ) -> Result<Value, String> {
     let mut hands = Through::new(socket, shares, quest, PATIENCE);
     let mut last = None;
-    let carried = super::carry(&mut hands, quest, here, to, None, &mut |line| {
+    let asked = super::Asked::Person;
+    let carried = super::carry(&mut hands, quest, here, to, asked, &mut |line| {
         last = Some(line.clone());
     });
     if let Ok(carried) = carried {

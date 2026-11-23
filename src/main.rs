@@ -148,8 +148,12 @@ enum Action {
     /// `{"step", "state", "said"}`, and last where each session went.
     /// With `--why`, the quest's orchestrator orders it, and each session
     /// arrives as carried by it for that reason; one that refuses stops
-    /// the carry with its own.
-    #[command(after_help = "Example:\n  mycelium carry QEST-20261112-HARBOR --to tern")]
+    /// the carry with its own. With `--itself` too, the session asking
+    /// carries only itself, arriving as carried by itself, and the
+    /// quest's other sessions stay.
+    #[command(
+        after_help = "Example:\n  mycelium carry QEST-20261112-HARBOR --to tern --itself --why memory"
+    )]
     Carry {
         #[command(flatten)]
         here: Here,
@@ -159,9 +163,16 @@ enum Action {
         #[arg(long)]
         to: String,
         /// Why its orchestrator orders it, which only the orchestrator's
-        /// own session may.
+        /// own session may; with `--itself`, why the session carries
+        /// itself.
         #[arg(long, value_parser = reason)]
         why: Option<String>,
+        /// Carries only the session asking, as its own pi names it in
+        /// `PI_SESSION_ID`, which the node proves by its process; the
+        /// quest's other sessions stay, and it arrives as carried by
+        /// itself for `--why`.
+        #[arg(long, requires = "why")]
+        itself: bool,
     },
     /// Prints every session the node knows of.
     ///
@@ -1605,10 +1616,26 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
             quest,
             to,
             why,
+            itself,
         } => {
             let (_, membership, shares) = open(here, realm)?;
             let carrying = (quest.as_str(), membership.machine.as_str(), to.as_str());
-            carry(&socket, shares, carrying, why.as_deref())
+            let session = std::env::var("PI_SESSION_ID").ok();
+            let asked = match (why.as_deref(), itself) {
+                (None, _) => carry::Asked::Person,
+                (Some(why), false) => carry::Asked::Ordered(why),
+                (Some(why), true) => carry::Asked::Itself {
+                    session: session.as_deref().ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "a session carries itself from its own pi, which names it in \
+                             PI_SESSION_ID",
+                        )
+                    })?,
+                    why,
+                },
+            };
+            carry(&socket, shares, carrying, asked)
         }
         Action::Sessions => print_reply(&socket, &Request::Sessions),
         Action::Unanswered(output) => unanswered(&socket, &output),
@@ -2698,11 +2725,11 @@ fn carry(
     socket: &Path,
     shares: Places,
     (quest, machine, to): (&str, &str, &str),
-    why: Option<&str>,
+    asked: carry::Asked,
 ) -> io::Result<()> {
     let mut hands = Through::new(socket.to_owned(), shares, quest, carry::through::PATIENCE);
     let mut failed = None;
-    let carried = carry::carry(&mut hands, quest, machine, to, why, &mut |line| {
+    let carried = carry::carry(&mut hands, quest, machine, to, asked, &mut |line| {
         if let Err(error) = print_line(line) {
             failed.get_or_insert(error);
         }

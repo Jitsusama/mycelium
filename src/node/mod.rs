@@ -3816,8 +3816,10 @@ impl<S: Store> Shared<S> {
     /// so the replies carried back land where the person's launcher reads
     /// them.
     async fn steer(&self, address: &str, said: &serde_json::Value) -> Reply {
-        if said.get("act").and_then(serde_json::Value::as_str) == Some(ordered::ACT) {
-            return self.ordered_carry(address, said).await;
+        match said.get("act").and_then(serde_json::Value::as_str) {
+            Some(ordered::ACT) => return self.ordered_carry(address, said).await,
+            Some(ordered::ITSELF) => return self.own_carry(address, said).await,
+            _ => {}
         }
         // A Mac's `ps` takes tens of milliseconds, too long to hold the
         // node's other work up for.
@@ -5001,6 +5003,47 @@ impl<S: Store> Shared<S> {
         Ok(Response::Steered {
             machine: self.machine.clone(),
             by: Some(order.by),
+        })
+    }
+
+    /// Puts a carry a session asks of itself into its own inbox, once the
+    /// node has proved by its process that the session asking is the one
+    /// going by `address`: never the person's carry, and never an
+    /// orchestrator's, so it needs no quest's record. It goes as an
+    /// ordered carry stamped with the session's own address as `by` and
+    /// `from`, whatever the client said, so it arrives as carried by
+    /// itself, and is kept before it is delivered, as an ordered one is.
+    async fn own_carry(&self, address: &str, said: &serde_json::Value) -> Reply {
+        let mut body = said.as_object().cloned().unwrap_or_default();
+        body.insert("act".to_owned(), ordered::ACT.into());
+        let said = serde_json::Value::Object(body);
+        let address = Steer::new(address, &said)?.address;
+        let _carrying = self.carrying.lock().await;
+        let sessions = self.lock().state.sessions();
+        let target = self.alone_here(&sessions, &address)?;
+        let asker = self.asking_session().await?;
+        if easing::id(target) != asker {
+            return Err(format!(
+                "{} asks to carry {address}, and a session carries only itself",
+                self.address_of(&sessions, &asker)
+            ));
+        }
+        // Its quest names what settles it: the record's where that holds
+        // it, or else the one it says it runs, since it asks of itself
+        // and settling touches only its own trees.
+        let quest = self.quest_holding(&asker, &address).or_else(|why| {
+            target
+                .quest
+                .clone()
+                .filter(|quest| plain_quest(quest))
+                .ok_or(why)
+        })?;
+        let extra = serde_json::json!({ "asker": asker, "quest": quest, "itself": true });
+        self.carry_from_here(target, &address, &said, &address, extra)
+            .await?;
+        Ok(Response::Steered {
+            machine: self.machine.clone(),
+            by: Some(address),
         })
     }
 
@@ -11812,6 +11855,80 @@ esac
             carried,
             ["s-ferry-1"],
             "only the newest, asked by the cell that ordered it: {newest:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_carries_itself_and_no_other() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
+        let inbox = inboxes(&socket).join("HARBOR");
+        let kept = socket.with_file_name("carries.jsonl");
+        let carry = |said: Value| {
+            ask(
+                socket.clone(),
+                Request::Steer {
+                    address: "harbor".to_owned(),
+                    steer: said,
+                },
+            )
+        };
+        let itself = json!({"act": "self-carry", "to": "tern",
+                            "why": "skiff is short of memory", "by": "WCJQSG"});
+
+        asks_below(&socket, 7002);
+        assert_eq!(
+            carry(itself.clone()).await,
+            Err("OSPHT4 asks to carry HARBOR, and a session carries only itself".to_owned()),
+            "another session can't carry HARBOR as itself"
+        );
+        assert_eq!(
+            held_in(&inbox),
+            Vec::<Value>::new(),
+            "nothing refused reaches it"
+        );
+        assert!(!kept.exists(), "and nothing refused is kept as carried");
+
+        asks_below(&socket, 7003);
+        assert_eq!(
+            carry(itself).await,
+            Ok(Response::Steered {
+                machine: "skiff".to_owned(),
+                by: Some("HARBOR".to_owned()),
+            }),
+            "HARBOR's own session carries itself, needing no quest's record or orchestrator"
+        );
+        assert_eq!(
+            held_in(&inbox),
+            [
+                json!({"act": "ordered-carry", "to": "tern", "why": "skiff is short of memory",
+                    "by": "HARBOR", "from": "HARBOR"})
+            ],
+            "told as a carry ordered by itself, never the person or the one the client gave"
+        );
+        let line: Value = serde_json::from_str(
+            fs::read_to_string(&kept)
+                .expect("the carry is kept")
+                .trim_end(),
+        )
+        .expect("one JSON line");
+        assert_eq!(
+            (
+                &line["by"],
+                &line["asker"],
+                &line["itself"],
+                &line["quest"],
+                &line["why"],
+            ),
+            (
+                &json!("HARBOR"),
+                &json!("s-harbour"),
+                &json!(true),
+                &json!("QEST-20261115-HARBOR"),
+                &json!("skiff is short of memory"),
+            ),
+            "kept as carried by itself: {line}"
         );
     }
 

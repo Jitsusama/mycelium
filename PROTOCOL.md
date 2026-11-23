@@ -137,7 +137,10 @@ same code, each line a JSON value:
    session takes every message that arrives as new, and a week of talk
    from before the machines were linked was never its to hear.
 3. `{"Message": {"id", "body"}}`: a message the other end lacks, first
-   for each the Have didn't list, then each new one as it lands.
+   for each the Have didn't list, then each new one as it lands, and
+   each minute any since the link began that it hasn't yet sent or
+   heard, which a watch that missed a write would otherwise leave
+   behind for good.
 4. `{"Presence": {"session", "body", "leases", "held", "started_by"}}`:
    a living session of the sending end's machine, again whenever it, its
    leases, its `held` id or its starter change. `held` is the id a
@@ -697,7 +700,10 @@ in order and says each step:
 Each step prints `{"step", "state", "said"}` on a line as it begins
 (`doing`) and ends (`done`, `skipped` or `failed`), and the last line is
 `{"step": "carried", "state": "done", "machine", "sessions"}`, each
-session `{"address", "held", "attach"}`. A step that fails says why, the
+session `{"address", "held", "attach"}`, with `skipped`, the addresses
+of the sessions left where they are, where any were: the parked ones an
+ordered carry passed over, or the others a session carrying itself left.
+A step that fails says why, the
 command exits non-zero, and nothing after it runs; what was done stays
 done, since each step can be taken again. It waits 15 minutes in all for
 the sessions to carry and then to end.
@@ -847,9 +853,15 @@ orchestrator's own session, takes the steps above with the steer
 the carry is refused if `by` is missing, since a session it started
 couldn't arrive as anyone's, or if it differs between sessions, rather
 than stamping the last. A blank reason is refused, by the command and
-by the node. With no session of the quest here, it is refused too:
-only a session's steer proves who orchestrates it, so only the person
-carries what the quest left. A session that won't go, as one holding a
+by the node. A parked session no quest's record holds is passed over,
+never told, since the node would refuse its steer and so stop the
+carry over a session asleep: it stays here, and `find` and the last
+line name it. One running is told, and its refusal stops the carry.
+The quests' records are read only for an ordered carry, which is
+refused when they can't be. With no session of the quest here, or only
+parked ones passed over, it is refused too: only a session's steer
+proves who orchestrates it, so only the person carries what the quest
+left. A session that won't go, as one holding a
 lease, mid-push or mid-rebase, or with background work running, writes
 `<session>.refused.json` in the handover folder, `{"session", "why",
 "at"}` and nothing more, with `at` in RFC 3339 and `session` the one
@@ -990,6 +1002,27 @@ asked it over the link, as it takes any steer a link carries, then
 steers its own sessions through its own socket, where it is the
 person's own login. A steer a link carries to an inbox keeps no line,
 since that end knows no sessions or quests.
+
+### A Session Carrying Itself
+
+A session carries itself with a steer `{"act": "self-carry", "to":
+<machine>, "why": <reason>}` to its own address. The node proves who
+asks as it does for a carry an orchestrator orders, by the client's
+process, never by what the session says, and takes it only where the
+session asking is the session carried; any other is refused, naming
+who asked. It needs no orchestrator and no quest's record to prove it,
+and never speaks as the person. Its ground is judged as an ordered
+carry's, never looser than it stands on, and it is told to the session
+as `ordered-carry` with `by` and `from` its own address, so it arrives
+carried by itself for its reason, answered `Steered` with that `by`.
+It is kept in `carries.jsonl` with `by` its address, `asker` its
+session, `itself` true, and the quest the quests' record holds it in,
+or else the one its presence names, since only its own trees settle.
+`mycelium carry QUEST --to <machine> --itself --why <reason>`, run
+from the session's own pi, asks it for the session `PI_SESSION_ID`
+names: the quest's other sessions here stay and are named in the
+Find line and in `skipped`, and what none of them held stays with
+them, so the quest's own trees aren't carried.
 
 ### A Machine Easing Itself
 
