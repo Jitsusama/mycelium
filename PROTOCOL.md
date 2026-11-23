@@ -860,8 +860,9 @@ orchestrator's own session, takes the steps above with the steer
 the carry is refused if `by` is missing, since a session it started
 couldn't arrive as anyone's, or if it differs between sessions, rather
 than stamping the last. A blank reason is refused, by the command and
-by the node. A parked session no quest's record holds is passed over,
-never told, since the node would refuse its steer and so stop the
+by the node. A parked session its quest's record doesn't hold alone,
+as one no record holds, two hold, or another quest's does, is passed
+over, never told, since the node would refuse its steer and so stop the
 carry over a session asleep: it stays here, and `find` and the last
 line name it. One running is told, and its refusal stops the carry.
 The quests' records are read only for an ordered carry, which is
