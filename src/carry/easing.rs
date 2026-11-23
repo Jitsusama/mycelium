@@ -1472,13 +1472,15 @@ mod tests {
                         "presence": dropped("s2", 120)}),
             ),
         ];
+        let (fences, sizes) = (BTreeMap::new(), BTreeMap::new());
+        let (queued, orchestrators) = (BTreeSet::new(), BTreeSet::new());
         let looked = |up_mins: i64| Looked {
             sessions: &sessions,
-            fences: &BTreeMap::new(),
+            fences: &fences,
             holdings: &[],
-            queued: &BTreeSet::new(),
-            sizes: &BTreeMap::new(),
-            orchestrators: Some(&BTreeSet::new()),
+            queued: &queued,
+            sizes: &sizes,
+            orchestrators: Some(&orchestrators),
             boot: Some("b2"),
             began: Some(began()),
             up_since: ago(up_mins).as_millisecond(),
