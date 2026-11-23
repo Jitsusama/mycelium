@@ -1017,11 +1017,31 @@ async fn hello(
         Some(Err(error)) => Err(error),
         // Why is the dial's to say, as SSH does on its own error output: a
         // machine it can't find, a key refused, or no mycelium there.
-        None => Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "the other end closed before saying hello",
-        )),
+        None => Err(io::Error::new(io::ErrorKind::UnexpectedEof, ClosedUnheard)),
     }
+}
+
+/// The other end closed before it said hello, so no link came up.
+#[derive(Debug)]
+struct ClosedUnheard;
+
+impl std::fmt::Display for ClosedUnheard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the other end closed before saying hello")
+    }
+}
+
+impl std::error::Error for ClosedUnheard {}
+
+/// Whether a link ended in `error` because the other end closed before
+/// it said hello, so no link ever came up. Only then is what the way in
+/// said its own, as a provider says before it dials, rather than what a
+/// machine it reached said once there.
+#[must_use]
+pub fn closed_unheard(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<ClosedUnheard>())
 }
 
 /// A living session's presence, the leases it holds, the id its holder
@@ -2760,6 +2780,26 @@ mod tests {
                 .expect("read"),
             facts(4).expect("a frame"),
             "facts nothing newer waits behind are taken as they come"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_end_that_closes_before_hello_is_told_from_one_that_said_otherwise() {
+        let (_, mut closed) = mpsc::unbounded_channel::<io::Result<Frame>>();
+        let unheard = hello(&mut closed, None)
+            .await
+            .expect_err("nothing was said");
+        assert!(
+            closed_unheard(&unheard),
+            "an end that closed before saying anything brought no link up: {unheard}"
+        );
+        let (said, mut frames) = mpsc::unbounded_channel();
+        said.send(Err(io::Error::other("a frame that can't be read")))
+            .expect("sent");
+        let unreadable = hello(&mut frames, None).await.expect_err("no hello");
+        assert!(
+            !closed_unheard(&unreadable),
+            "an end that said something said more than its way in: {unreadable}"
         );
     }
 

@@ -33,7 +33,7 @@ use crate::hold::{self, start, start::Starter};
 use crate::hosted_attach;
 use crate::lend::{Lend, Lent};
 use crate::link::dial::{Dial, Program};
-use crate::link::refused::{Refusals, Said};
+use crate::link::refused::{self, Refusals};
 use crate::link::starts::{Asking, Asks, START_ANSWERED_WITHIN, Starting, Unsent};
 use crate::link::{self, discovery::Discovery, membership::Hello, membership::Membership};
 use crate::made::{self, Book, Made};
@@ -994,7 +994,7 @@ async fn keep_linked(
             }
             Err(error) => (Err(error), None),
         };
-        if let Some(Said::TurnedAway(why)) = said {
+        if let Some(refused::Said::TurnedAway(why)) = said {
             eprintln!(
                 "{} turned this machine away ({why}), so it isn't dialled again {}",
                 dial.describe(),
@@ -1010,12 +1010,21 @@ async fn keep_linked(
         if let Err(error) = refusals.forget(&words) {
             eprintln!("a refusal of {} wasn't forgotten: {error}", dial.describe());
         }
-        if let Some(Said::Gone(why)) = said {
-            if ends_when_gone {
+        // A provider says its machine is gone before it dials, so only a
+        // way in that brought no link up says it: once one did, what is
+        // said may be the machine's own, which can't let itself go.
+        if let Some(refused::Said::Gone(why)) = said {
+            let unheard = matches!(&ended, Err(error) if link::closed_unheard(error));
+            if ends_when_gone && unheard {
                 return Linked::Gone(why);
             }
+            let because = if unheard {
+                "the node was given it"
+            } else {
+                "its link came up, so that was said there"
+            };
             eprintln!(
-                "{} says its machine is gone ({why}), but the node was given it, so it is dialled again",
+                "{} says its machine is gone ({why}), but {because}, so it is dialled again",
                 dial.describe()
             );
         }
@@ -1152,13 +1161,26 @@ fn past_the_hash(path: &str) -> Option<&str> {
         .then_some(rest)
 }
 
+/// How long a release that failed waits before each time it is asked
+/// again, as a provider whose machine has just gone may still be clearing
+/// it away.
+const RELEASE_AGAIN_AFTER: [Duration; 3] = if cfg!(test) {
+    [Duration::from_millis(10); 3]
+} else {
+    [
+        Duration::from_secs(30),
+        Duration::from_secs(2 * 60),
+        Duration::from_secs(10 * 60),
+    ]
+};
+
 /// Keeps a machine made from an offer `linked` until it is done with:
 /// until its work has handed over and it was released, it isn't wanted
-/// once made, or its time is up, when it is released, or its provider says
-/// it is gone, when it is released too, so nothing it left is kept. Keeps
-/// in the book
-/// that it was let go, and why, and has it leave the realm's machines at
-/// once, so nothing lists a machine that is gone.
+/// once made, or its time is up, when it is released, or its provider
+/// says it is gone, when it is released too, so nothing it left is kept.
+/// A release that fails is asked again, as [`RELEASE_AGAIN_AFTER`] says.
+/// Keeps in the book that it was let go, and why, and has it leave the
+/// realm's machines at once, so nothing lists a machine that is gone.
 async fn keep_made(
     dial: Arc<Program>,
     made: Made,
@@ -1172,23 +1194,32 @@ async fn keep_made(
 ) {
     let left = jiff::Timestamp::now().duration_until(made.until);
     // A link lets its machine go itself once its work has handed over.
-    let release = tokio::select! {
+    let (release, gone) = tokio::select! {
         linked = linked => match linked {
-            Linked::HandedOver => None,
-            Linked::Gone(said) => Some(format!("its provider says it is gone ({said})")),
+            Linked::HandedOver => (None, false),
+            Linked::Gone(said) => (Some(format!("its provider says it is gone ({said})")), true),
         },
-        () = unwanted.notified() => Some("nothing started on it once it was made".to_owned()),
+        () = unwanted.notified() => {
+            (Some("nothing started on it once it was made".to_owned()), false)
+        }
         () = tokio::time::sleep(Duration::try_from(left).unwrap_or_default()) => {
-            Some("its time was up".to_owned())
+            (Some("its time was up".to_owned()), false)
         }
     };
     let why = match release {
         None => "its work handed over".to_owned(),
-        Some(why) => match dial.release().await {
+        Some(why) => match released(&*dial).await {
             Some(Ok(())) => why,
-            Some(Err(error)) => {
-                format!("{why}, but it wasn't released, so it ends at its time: {error}")
-            }
+            // A machine gone has no time left to end at, so what it left
+            // is its provider's to clear.
+            Some(Err(error)) if gone => format!(
+                "{why}, but it wasn't released, asked {} times, so what it left stays: {error}",
+                RELEASE_AGAIN_AFTER.len() + 1
+            ),
+            Some(Err(error)) => format!(
+                "{why}, but it wasn't released, asked {} times, so it ends at its time: {error}",
+                RELEASE_AGAIN_AFTER.len() + 1
+            ),
             None => format!("{why}, but nothing releases it, so it ends at its time"),
         },
     };
@@ -1201,6 +1232,25 @@ async fn keep_made(
             made.machine
         );
     }
+}
+
+/// What `dial` says of releasing its machine, asked again after each
+/// wait of [`RELEASE_AGAIN_AFTER`] while it fails, and its last answer.
+async fn released(dial: &impl Dial) -> Option<io::Result<()>> {
+    let mut answer = dial.release().await;
+    for wait in RELEASE_AGAIN_AFTER {
+        let Some(Err(error)) = &answer else {
+            break;
+        };
+        eprintln!(
+            "the machine over {} wasn't released, so it is asked again in {} s: {error}",
+            dial.describe(),
+            wait.as_secs()
+        );
+        tokio::time::sleep(wait).await;
+        answer = dial.release().await;
+    }
+    answer
 }
 
 /// How long past its time a machine made is given to be let go by what
@@ -1375,7 +1425,9 @@ fn nothing_offered(
 }
 
 /// What a way in that has ended said of the other machine, if anything.
-async fn said_why(said: Option<tokio::task::JoinHandle<Option<Said>>>) -> Option<Said> {
+async fn said_why(
+    said: Option<tokio::task::JoinHandle<Option<refused::Said>>>,
+) -> Option<refused::Said> {
     // The link is over and its process gone, so what it said is all but
     // read; a way in that hangs on to its output is taken as saying
     // nothing.
@@ -9543,7 +9595,7 @@ mod tests {
             let (near, _far) = tokio::io::duplex(64);
             let mut connection = piped(near);
             connection.said = Some(tokio::spawn(async {
-                Some(Said::TurnedAway(
+                Some(refused::Said::TurnedAway(
                     "joel@kestrel: Permission denied (publickey).".to_owned(),
                 ))
             }));
@@ -9572,7 +9624,7 @@ mod tests {
             let (near, _far) = tokio::io::duplex(64);
             let mut connection = piped(near);
             connection.said = Some(tokio::spawn(async {
-                Some(Said::Gone(
+                Some(refused::Said::Gone(
                     "mycelium-gone: wren no longer exists".to_owned(),
                 ))
             }));
@@ -22976,22 +23028,47 @@ esac
             book: book.clone(),
             ..bare("/nowhere/steer".into(), None)
         };
+        let store = Memory::default();
+        store
+            .put_machine(&facts::Machine {
+                declared: Some(crate::declared::Declared {
+                    pi_fences_itself: false,
+                    reach: Vec::new(),
+                    probes: BTreeMap::new(),
+                    outlives: Vec::new(),
+                    costs_money: true,
+                    taints: Vec::new(),
+                    cores: None,
+                    agents: BTreeMap::new(),
+                    leaves_at: None,
+                    within: None,
+                    hosts: Vec::new(),
+                    fence: None,
+                    basin: None,
+                    sessions_at_most: None,
+                }),
+                ..facts::measure("wren", &facts::Sources::nowhere())
+            })
+            .expect("what it said is kept");
         let (shared, _) = Shared::of(
-            Memory::default(),
+            store.clone(),
             (membership.hello(), "/nowhere/node".into()),
             given,
             to_dial,
         );
-        let released = dir.path().join("released");
+        let (released, failed) = (dir.path().join("released"), dir.path().join("failed"));
         let provider = dir.path().join("provider");
+        // Its first release fails, as one of a machine just gone may.
         crate::stand_in::program(
             &provider,
             &format!(
                 "#!/bin/sh\ncase \"$1\" in\n\
                  link) echo 'mycelium-gone: wren-place no longer exists' >&2; exit 1 ;;\n\
-                 release) printf '%s\\n' \"$2\" > '{}' ;;\n\
+                 release) [ -e '{failed}' ] || {{ : > '{failed}'; exit 1; }}\n\
+                 printf '%s\\n' \"$2\" > '{released}' ;;\n\
                  esac\n",
-                released.display()
+                failed = failed.display(),
+                released = released.display()
             ),
         );
         let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
@@ -23032,7 +23109,16 @@ esac
         assert_eq!(
             fs::read_to_string(&released).expect("its provider was asked to release it"),
             "wren-place\n",
-            "what it left behind, such as a stopped machine's disk, is released too"
+            "what it left behind, such as a stopped machine's disk, is released too, \
+             though its first release failed"
+        );
+        let leaves = store.machines()[0]
+            .declared
+            .as_ref()
+            .and_then(|declared| declared.leaves_at);
+        assert!(
+            leaves.is_some_and(|at| at <= jiff::Timestamp::now()),
+            "a machine gone leaves the realm's machines at once: {leaves:?}"
         );
         assert_eq!(
             shared.admits().await,

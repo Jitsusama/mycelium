@@ -35,8 +35,10 @@ const TURNED_AWAY: [&str; 4] = [
 
 /// What a provider's program says, on its error output, when the machine
 /// it links to no longer exists, as a cloud machine its provider took
-/// back: in mycelium's own words, `mycelium-gone: WHY`. Nothing else
-/// can tell a machine that is gone from one that is only out of reach.
+/// back: in mycelium's own words, a line starting `mycelium-gone: WHY`.
+/// Nothing else can tell a machine that is gone from one that is only
+/// out of reach. Only a line that starts with it counts, so a machine
+/// reached can't be let go by quoting it within another line.
 const GONE: &str = "mycelium-gone:";
 
 /// What a way in said of the other machine as it ended, beyond its being
@@ -144,7 +146,7 @@ pub async fn turned_away(said: impl AsyncRead + Unpin) -> Option<Said> {
         eprintln!("{line}");
         if refused.is_none() && TURNED_AWAY.iter().any(|away| line.contains(away)) {
             refused = Some(line);
-        } else if gone.is_none() && line.contains(GONE) {
+        } else if gone.is_none() && line.starts_with(GONE) {
             gone = Some(line);
         }
     }
@@ -210,6 +212,11 @@ mod tests {
             turned_away(&b"wren-1 doesn't answer yet\n"[..]).await,
             None,
             "a machine only out of reach isn't gone"
+        );
+        assert_eq!(
+            turned_away(&b"a session said: mycelium-gone: wren-1 no longer exists\n"[..]).await,
+            None,
+            "a line that only quotes the words isn't a provider saying them"
         );
     }
 
