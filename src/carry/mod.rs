@@ -417,10 +417,7 @@ pub fn carry(
         said.line(
             Step::Push,
             Stood::Done,
-            format!(
-                "{} told; this machine's node carries the rest once it has carried and ended",
-                names.join(", ")
-            ),
+            handed_said(&names, to),
         );
         return Ok(Carried {
             step: "handed",
@@ -471,11 +468,7 @@ fn handed_on<F: FnMut(&Value)>(
         said.line(
             Step::Push,
             Stood::Done,
-            format!(
-                "{} told; this machine's node carries the rest once it has carried and \
-                 ended, and its log says how it goes",
-                told.join(", ")
-            ),
+            handed_said(&told, to),
         );
         return Ok(Carried {
             step: "handed",
@@ -507,6 +500,19 @@ fn handed_on<F: FnMut(&Value)>(
         sessions: arrived,
         skipped,
     })
+}
+
+/// What a carry says where it hands the rest of a carry to this machine's
+/// node, those `told` being the sessions it carries on to `to`: that this
+/// command is done but the carry isn't, and how to see it land.
+fn handed_said(told: &[&str], to: &str) -> String {
+    format!(
+        "{} told; the carry goes on in this machine's node, not here: once each has \
+         carried and ended, the node carries the rest and starts it on {to}. It has \
+         landed when `mycelium sessions` shows it on {to}; until then the node's log \
+         says each step, on lines starting with the session's address and `carried by`",
+        told.join(", ")
+    )
 }
 
 /// Carries on a carry a session asked of itself, once it was told, as
