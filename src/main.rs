@@ -2853,7 +2853,7 @@ fn sprout(socket: &Path, asked: Sprouting) -> io::Result<()> {
     // a node of now would log it.
     if matches!(&reply, Err(why) if why.starts_with("not a request") && why.contains("Sprout")) {
         reply = Client::connect(socket)?.ask(&Request::Start(start.clone()))?;
-        for said in sprout::told(&left_out, &reply) {
+        for said in left_out.told(&reply) {
             tell!("mycelium sprout: {said}");
         }
     }

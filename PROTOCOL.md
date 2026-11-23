@@ -2277,12 +2277,15 @@ alone stand, so a session of it started again can't tell it made its
 quest. Where a seed is sent, a `from` that isn't an address is left
 out of it, so a harness making the quest from the seed leaves the
 quest untied to that cell. What was left out is said once the session
-has started, naming the sprout by its id and machine: in the log of
-the node asked, or by `mycelium sprout` on its error stream where a
-node from before `"Sprout"` is asked, since that node knows nothing
-of it. Where a node of now is asked, `mycelium sprout` says none of
-it, since its own id isn't the one sent, so its asker finds it only
-in that node's log; a node from before the id says it nowhere.
+has started, naming the sprout by its id, the machine it started on
+and the session holding it, the `"Started"` answer's `held`, since a
+seed left out takes its id with it and the id then names nothing
+else: in the log of the node asked, or by `mycelium sprout` on its
+error stream where a node from before `"Sprout"` is asked, since that
+node knows nothing of it. Where a node of now is asked, `mycelium
+sprout` says none of it, since its own id isn't the one sent, so its
+asker finds it only in that node's log, by the held session its
+attach line names; a node from before the id says it nowhere.
 Nothing is said for a start refused, nor for one whose answer was lost
 on its way back from another machine, though it may have started there;
 one that started is said even where its guard then ends it for

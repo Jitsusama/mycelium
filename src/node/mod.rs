@@ -6028,9 +6028,9 @@ impl<S: Store> Shared<S> {
         .await
         .map_err(|error| format!("the sprout couldn't be judged: {error}"))??;
         let reply = self.start(start).await;
-        for said in sprout::told(&left_out, &reply) {
-            eprintln!("{said}");
-        }
+        // A log that can't be written takes nothing from the asker, whose
+        // session started or didn't as the reply says.
+        let _ = left_out.tell(&reply, &mut std::io::stderr().lock());
         reply
     }
 

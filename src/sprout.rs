@@ -12,6 +12,7 @@
 
 use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
+use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
 use crate::placement::{Need, Work};
@@ -384,28 +385,62 @@ fn too_long(said: &str) -> bool {
 }
 
 /// A sprout judged: the [`Start`] the node is asked for, and what its
-/// seed leaves out, each line naming the sprout's id and its machine so
-/// it can be told from another's.
+/// seed leaves out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sprouted {
     /// What the node is asked to start.
     pub start: Start,
-    /// What its seed leaves out, said for the node's log.
-    pub left_out: Vec<String>,
+    /// What its seed leaves out, said once the start answers.
+    pub left_out: LeftOut,
 }
 
-/// What the node logs of what a sprout's seed left out, given what its
-/// start answered: all of it once a session started, and nothing where
-/// none did, since then no quest is made at all. A start whose answer
-/// was lost on its way back from another machine counts as none, though
-/// it may have started there, and one that started counts even where
-/// its guard then ends it for beginning in home, which no answer says.
-#[must_use]
-pub fn told<'a>(left_out: &'a [String], reply: &Reply) -> &'a [String] {
-    if matches!(reply, Ok(Response::Started(_))) {
-        left_out
-    } else {
-        &[]
+/// What a sprout's seed leaves out, kept to be said once its start has
+/// answered, since only then is the session it is about known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeftOut {
+    /// The sprout's own id, which its seed carries where one is sent.
+    id: String,
+    /// Each thing left out, with why.
+    reasons: Vec<String>,
+}
+
+impl LeftOut {
+    /// What is said of it, given what its start answered: each reason
+    /// once a session started, naming the sprout by its id, the machine
+    /// it started on and the session holding it, since a seed too long
+    /// for its session goes with its id, which then names nothing else;
+    /// and nothing where none started, since then no quest is made at
+    /// all. A start whose answer was lost on its way back from another
+    /// machine counts as none, though it may have started there, and one
+    /// that started counts even where its guard then ends it for
+    /// beginning in home, which no answer says.
+    #[must_use]
+    pub fn told(&self, reply: &Reply) -> Vec<String> {
+        let Ok(Response::Started(started)) = reply else {
+            return Vec::new();
+        };
+        self.reasons
+            .iter()
+            .map(|why| {
+                format!(
+                    "sprout {} on {}, held as {}: {why}",
+                    self.id, started.machine, started.held
+                )
+            })
+            .collect()
+    }
+
+    /// Writes to `log` what [`Self::told`] says, a line each, as the node
+    /// logs it once its start has answered.
+    ///
+    /// # Errors
+    ///
+    /// Where `log` can't be written.
+    pub fn tell(&self, reply: &Reply, log: &mut impl Write) -> io::Result<()> {
+        for said in self.told(reply) {
+            writeln!(log, "{said}")?;
+        }
+        Ok(())
     }
 }
 
@@ -543,10 +578,10 @@ pub fn start(
     };
     Sprouted {
         start,
-        left_out: left_out
-            .into_iter()
-            .map(|said| format!("sprout {id} on {machine}: {said}"))
-            .collect(),
+        left_out: LeftOut {
+            id: id.to_owned(),
+            reasons: left_out,
+        },
     }
 }
 
@@ -1135,8 +1170,19 @@ mod tests {
         }
     }
 
+    /// What a node answers a start that started on `machine`, held as
+    /// `held`.
+    fn started_as(machine: &str, held: &str) -> Reply {
+        Ok(Response::Started(crate::wire::Started {
+            machine: machine.to_owned(),
+            held: held.to_owned(),
+            folder: PathBuf::from("src"),
+            attach: Vec::new(),
+        }))
+    }
+
     #[test]
-    fn a_start_names_its_sprout_and_machine_in_what_it_leaves_out() {
+    fn a_start_names_its_sprout_machine_and_session_in_what_it_leaves_out() {
         let asked = start(
             "tern",
             None,
@@ -1144,11 +1190,11 @@ mod tests {
             Some("QEST-20261116-42P0R4"),
             ID,
         );
-        assert_eq!(asked.left_out.len(), 1);
+        let said = asked.left_out.told(&started_as("tern", "5e55"));
+        assert_eq!(said.len(), 1);
         assert!(
-            asked.left_out[0].starts_with(&format!("sprout {ID} on tern: its seed leaves out")),
-            "{:?}",
-            asked.left_out
+            said[0].starts_with(&format!("sprout {ID} on tern, held as 5e55: its seed leaves out")),
+            "{said:?}"
         );
         assert_eq!(
             seed_given(&asked.start).map(|seed| seed.get("from").is_none()),
@@ -1156,25 +1202,63 @@ mod tests {
         );
     }
 
+    // F36/F42 (#364 round 4): a seed too long goes with its id, so only
+    // the session holding it says which sprout the line is about.
     #[test]
-    fn what_a_seed_left_out_is_logged_only_once_its_session_started() {
-        let left_out = vec!["sprout x on tern: its seed leaves out the cell".to_owned()];
-        let started = Ok(Response::Started(crate::wire::Started {
-            machine: "tern".to_owned(),
-            held: "h".to_owned(),
-            folder: PathBuf::from("src"),
-            attach: Vec::new(),
-        }));
-        assert_eq!(told(&left_out, &started), left_out.as_slice());
+    fn a_seed_too_long_is_said_of_the_session_holding_it() {
+        let asked = start("tern", None, &words(&"a".repeat(SEED_MOST + 1)), None, ID);
+        assert_eq!(seed_given(&asked.start), None, "no seed, so no id sent");
+        let said = asked.left_out.told(&started_as("tern", "5e55"));
+        assert_eq!(said.len(), 1);
+        assert!(
+            said[0].contains(", held as 5e55: its seed is left out"),
+            "{said:?}"
+        );
+    }
+
+    #[test]
+    fn what_a_seed_left_out_is_said_only_once_its_session_started() {
+        let asked = start("tern", None, &words("make tea"), Some("QEST-1"), ID);
+        assert_eq!(asked.left_out.told(&started_as("tern", "h")).len(), 1);
         let refused: Reply = Err("the cell's start limit is reached".to_owned());
         assert!(
-            told(&left_out, &refused).is_empty(),
+            asked.left_out.told(&refused).is_empty(),
             "a refused start makes no quest"
         );
         assert!(
-            told(&left_out, &Ok(Response::Machines(Vec::new()))).is_empty(),
+            asked
+                .left_out
+                .told(&Ok(Response::Machines(Vec::new())))
+                .is_empty(),
             "only a start that started counts"
         );
+    }
+
+    // F35/F38/F40 (#364 round 4): what the node writes to its log, which
+    // `Shared::sprout` hands it once its start has answered.
+    #[test]
+    fn the_log_is_written_what_was_left_out_once_a_session_started() {
+        let asked = start("tern", None, &words("make tea"), Some("QEST-1"), ID);
+        let mut log = Vec::new();
+        asked
+            .left_out
+            .tell(&started_as("osprey", "5e55"), &mut log)
+            .expect("the log takes it");
+        assert_eq!(
+            String::from_utf8(log).expect("words"),
+            format!(
+                "sprout {ID} on osprey, held as 5e55: its seed leaves out the cell it came \
+                 from: \"QEST-1\" isn't an address, so a harness making the quest from the \
+                 seed leaves it untied to that cell\n"
+            ),
+            "one line, naming the machine it started on"
+        );
+        let mut log = Vec::new();
+        asked
+            .left_out
+            .tell(&Err("no room on tern".to_owned()), &mut log)
+            .expect("the log takes it");
+        assert!(log.is_empty(), "nothing for a start refused");
     }
 
     /// The seed a start's command gives pi, read back as JSON, or none.
