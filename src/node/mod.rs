@@ -2142,11 +2142,16 @@ enum Whither {
 }
 
 /// The launcher a held start runs within here, the first start and every
-/// one after a park, on a Mac, a node that `fences` its held starts: one
+/// one after a park. On a Mac, a node that `fences` its held starts, one
 /// in the fence `kind` runs within the launcher that fence declares
 /// (`launch`), since pi lifts its own fence on a Mac, which has no
-/// Landlock. Elsewhere, and for the person's, none, as pi fences itself
-/// there.
+/// Landlock. Elsewhere pi fences its own commands, so an agent's start
+/// of the realm's `agent` program, or a carried session's arrival, runs
+/// told the fence to keep ([`fencing_itself`]), as the node's environment
+/// names none. Any other command an agent holds there runs within the
+/// launcher too, as its runs do: through the login shell alone, a shell
+/// or a script would run as the account does. The person's, and one
+/// shown unfenced, run within none.
 ///
 /// # Errors
 ///
@@ -2155,12 +2160,82 @@ enum Whither {
 fn held_within(
     fences: bool,
     kind: Option<crate::declared::Kind>,
+    (command, agent): (&[String], &str),
     launch: impl FnOnce(crate::declared::Kind) -> Result<Vec<String>, String>,
 ) -> Result<Vec<String>, String> {
-    match kind.filter(|kind| fences && *kind > crate::declared::Kind::None) {
-        Some(kind) => launch(kind),
-        None => Ok(Vec::new()),
+    let Some(kind) = kind.filter(|kind| *kind > crate::declared::Kind::None) else {
+        return Ok(Vec::new());
+    };
+    if !fences && fences_itself(command, agent, kind) {
+        return Ok(fencing_itself(kind));
     }
+    launch(kind)
+}
+
+/// The variables a harness hands a pi it starts, and the fence `kind`
+/// keeps a start that sets them within: each is a word alone, and
+/// `PI_SANDBOX` names a sandbox no looser than `kind`. Any other, such as
+/// one that loads code into pi before it fences anything, isn't pi
+/// fencing itself.
+fn set_by_a_harness(word: &str, kind: crate::declared::Kind) -> bool {
+    let Some((name, value)) = word.split_once('=') else {
+        return false;
+    };
+    let plain = !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte));
+    let kept = match name {
+        "PI_SANDBOX" => {
+            value == "strict" || (value == "fence" && kind == crate::declared::Kind::Fence)
+        }
+        "PI_FENCE_DECLARED" | "PI_FENCE_STAGE" | "PI_SPAWNER" | "QUEST_WORKFLOW_AUTOLOAD_ID" => {
+            true
+        }
+        _ => false,
+    };
+    plain && kept
+}
+
+/// Whether `command`, held in the fence `kind` where pi fences itself,
+/// is pi fencing itself: a carried session's arrival, word for word as a
+/// carry gives it, or the realm's `agent` program named bare, after at
+/// most `env` and the variables a harness sets ([`set_by_a_harness`]).
+/// Anything else, a shell, a script or pi by a path among them, isn't.
+fn fences_itself(command: &[String], agent: &str, kind: crate::declared::Kind) -> bool {
+    if crate::carry::ordered_arrival(command).is_some()
+        || crate::carry::unordered_arrival(command).is_some()
+    {
+        return true;
+    }
+    let program = match command {
+        [env, rest @ ..] if env == "env" => {
+            let set = rest
+                .iter()
+                .take_while(|word| set_by_a_harness(word, kind))
+                .count();
+            rest.get(set)
+        }
+        _ => command.first(),
+    };
+    program.is_some_and(|program| program == agent || program == "pi")
+}
+
+/// The words a pi started in the fence `kind` begins within, where it
+/// fences its own commands: `PI_SANDBOX` naming it, and beside the fence
+/// the mark that keeps pi from lifting it, as a harness's spawn sets
+/// them. Outside the login shell, so they hold for each start of it.
+fn fencing_itself(kind: crate::declared::Kind) -> Vec<String> {
+    let mut words = vec!["/usr/bin/env".to_owned()];
+    if kind == crate::declared::Kind::Strict {
+        words.push("PI_SANDBOX=strict".to_owned());
+    } else {
+        words.extend([
+            "PI_SANDBOX=fence".to_owned(),
+            "PI_FENCE_DECLARED=1".to_owned(),
+        ]);
+    }
+    words
 }
 
 /// The fence a start placed in `fence` through `screen` starts in: none
@@ -6638,7 +6713,8 @@ impl<S: Store> Shared<S> {
     /// within that fence's launcher, as it starts its own here
     /// ([`held_within`]): a declaration only ever raises, so none of it
     /// fences less. Here it starts in `fence` alone, so the person's and
-    /// an agent's shown unfenced start as they always have.
+    /// an agent's shown unfenced start as they always have, and an
+    /// agent's in a fence starts in it however pi fences here.
     async fn start_on(
         &self,
         machine: String,
@@ -6652,7 +6728,10 @@ impl<S: Store> Shared<S> {
         // Its launcher first, so a fence whose launcher is refused starts
         // nothing, whatever else this node lacks. The holder runs each
         // start within it, the first and every one after a park.
-        let within = held_within(self.fences_held, fence, |kind| {
+        let agent = crate::declared::read(&self.declared)
+            .and_then(|mut declared| declared.agents.remove(&self.realm))
+            .unwrap_or_else(|| "pi".to_owned());
+        let within = held_within(self.fences_held, fence, (&asked.command, &agent), |kind| {
             crate::declared::launcher(&self.declared, kind, &self.runs.declarers)
                 .map_err(|why| format!("{machine} can't start this held session {kind}: {why}"))
         })?;
@@ -19671,29 +19750,101 @@ esac
     fn a_held_start_goes_through_its_fence_only_where_the_node_fences_it() {
         use crate::declared::Kind;
         let launch = |kind: Kind| Ok(vec!["fence".to_owned(), format!("{kind}"), "--".to_owned()]);
+        let launched = |kind: Kind| launch(kind).expect("a launcher");
+        let words = |said: &[&str]| said.iter().map(|&word| word.to_owned()).collect::<Vec<_>>();
+        let pi = words(&["pi", "--session", "s-harbour"]);
+        let pi_held = (pi.as_slice(), "pi");
         assert_eq!(
-            held_within(true, Some(Kind::Strict), launch),
-            Ok(vec![
-                "fence".to_owned(),
-                format!("{}", Kind::Strict),
-                "--".to_owned(),
-            ]),
+            held_within(true, Some(Kind::Strict), pi_held, launch),
+            Ok(launched(Kind::Strict)),
             "on a Mac, within the launcher of the fence it was placed in"
         );
         assert_eq!(
-            held_within(false, Some(Kind::Strict), launch),
-            Ok(Vec::new()),
-            "elsewhere, pi fences itself"
+            held_within(false, Some(Kind::Strict), pi_held, launch),
+            Ok(words(&["/usr/bin/env", "PI_SANDBOX=strict"])),
+            "elsewhere, pi fences itself, told which fence"
         );
-        for unfenced in [None, Some(Kind::None)] {
+        assert_eq!(
+            held_within(false, Some(Kind::Fence), pi_held, launch),
+            Ok(words(&[
+                "/usr/bin/env",
+                "PI_SANDBOX=fence",
+                "PI_FENCE_DECLARED=1"
+            ])),
+            "and the fence, marked declared so pi doesn't lift it"
+        );
+        let harnessed = words(&[
+            "env",
+            "PI_SANDBOX=strict",
+            "PI_SPAWNER=off",
+            "pi-claude",
+            "-c",
+        ]);
+        assert_eq!(
+            held_within(false, Some(Kind::Strict), (&harnessed, "pi-claude"), launch),
+            Ok(words(&["/usr/bin/env", "PI_SANDBOX=strict"])),
+            "as is the realm's agent program, after what a harness sets"
+        );
+        let arrival = crate::carry::arriving(
+            "QEST-20261107-HARBOR",
+            "skiff",
+            "tern",
+            &crate::carry::Done {
+                session: "s-harbour".to_owned(),
+                started_before: None,
+            },
+            None,
+        )
+        .command;
+        assert_eq!(
+            held_within(false, Some(Kind::Strict), (&arrival, "pi"), launch),
+            Ok(words(&["/usr/bin/env", "PI_SANDBOX=strict"])),
+            "as is a carried session's arrival, word for word"
+        );
+        let mut tampered = arrival.clone();
+        tampered[2].push_str("; sh");
+        let others = [
+            words(&["bash", "-c", "pi"]),
+            words(&["sh"]),
+            words(&["./pi"]),
+            words(&["/tmp/pi"]),
+            words(&["env", "PI_SANDBOX=off", "pi"]),
+            words(&["env", "PI_SANDBOX=fence", "pi"]),
+            words(&["env", "NODE_OPTIONS=--require=x", "pi"]),
+            words(&["env", "LD_PRELOAD=x.so", "pi"]),
+            words(&["env", "-u", "PI_SANDBOX", "pi"]),
+            words(&["env", "PI_SPAWNER=$(sh)", "pi"]),
+            words(&["env"]),
+            Vec::new(),
+            tampered,
+        ];
+        for other in &others {
             assert_eq!(
-                held_within(true, unfenced, launch),
-                Ok(Vec::new()),
-                "the person's, or one unfenced, as asked"
+                held_within(false, Some(Kind::Strict), (other, "pi"), launch),
+                Ok(launched(Kind::Strict)),
+                "anything else an agent in a fence holds runs within its launcher: {other:?}"
             );
         }
         assert_eq!(
-            held_within(true, Some(Kind::Fence), |_| Err("refused".to_owned())),
+            held_within(false, Some(Kind::Fence), (&others[0], "pi"), |_| {
+                Err("refused".to_owned())
+            }),
+            Err("refused".to_owned()),
+            "and where its launcher is refused, starts nothing"
+        );
+        for unfenced in [None, Some(Kind::None)] {
+            for fences in [true, false] {
+                assert_eq!(
+                    held_within(fences, unfenced, (&others[0], "pi"), launch),
+                    Ok(Vec::new()),
+                    "the person's, or one unfenced, as asked"
+                );
+            }
+        }
+        assert_eq!(
+            held_within(true, Some(Kind::Fence), pi_held, |_| Err(
+                "refused".to_owned()
+            )),
             Err("refused".to_owned()),
             "a launcher refused starts nothing, rather than outside its fence"
         );
@@ -19854,8 +20005,24 @@ esac
             .expect("it starts here");
         let words = fs::read_to_string(&given).expect("the holder was given its words");
         assert!(
-            !launched(&words),
-            "where pi fences itself, as asked: {words}"
+            !launched(&words) && words.contains("PI_SANDBOX=strict"),
+            "where pi fences itself, told its fence: {words}"
+        );
+        let shell = Start {
+            command: vec!["bash".to_owned(), "-c".to_owned(), "pi".to_owned()],
+            ..strict.clone()
+        };
+        link.relayed("tern", shell)
+            .await
+            .expect("it starts here, in its fence");
+        let words = fs::read_to_string(&given).expect("the holder was given its words");
+        let shelled = words.lines().position(|one| one.contains("FENCED=strict"));
+        let bash = words.lines().position(|one| one == "bash");
+        assert!(
+            shelled
+                .zip(bash)
+                .is_some_and(|(launcher, bash)| launcher < bash),
+            "but anything else through its strict fence's launcher there too: {words}"
         );
         link.fences_held = true;
         link.relayed("tern", strict)
