@@ -250,16 +250,16 @@ fn start(home: &Path, may_cost: bool) -> serde_json::Value {
 /// Whether the work skiff's node answered of as `said` started on lent,
 /// as `why` says it should: where lent is a Linux machine, it must have.
 /// On a Mac lent is the Mac the test runs on, and the node takes every
-/// asker there for a strictly fenced agent, whose held start a Mac's
-/// holder would run outside any fence, so the start must be refused for
-/// that, and the test has nothing further true to ask of lent.
+/// asker there for a strictly fenced agent. A Mac's node starts such a
+/// held start through the launcher its strict fence declares, and lent's
+/// fences are [`SHUT`], naming none, so lent refuses it once made, and
+/// the test has nothing further true to ask of lent.
 fn started_on_lent(said: &serde_json::Value, why: &str) -> bool {
     if cfg!(target_os = "macos") {
         let refused = said["Err"].as_str().unwrap_or_default();
         assert!(
             refused.contains(
-                "lent is a Mac, where a strictly fenced session started held would run outside \
-                 any fence"
+                "lent declares no way to run a command as its strictly fenced sessions run"
             ),
             "on a Mac, an agent's held start is refused there: {said}"
         );
