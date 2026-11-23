@@ -416,11 +416,17 @@ fn lane_word(here: &str, looked: &Looked, lane: &Session) -> Option<Word> {
 }
 
 /// How long after this node lost the link to its machine a lane out of
-/// reach still says its orchestrator leads it. A link drops for minutes, as a
-/// machine's network moves, and that is what the lane's word is kept
+/// reach still says its orchestrator leads it. A link drops for minutes,
+/// as a machine's network moves, and that is what the lane's word is kept
 /// through; a machine gone for longer, closed or retired, may never leave
 /// the realm's records, so without a bound its lane would keep its
 /// orchestrator here for good.
+///
+/// A node started after longer down marks each machine no link carries
+/// out of reach since it was last linked, so its lanes count for nothing
+/// until their links redial. Easing moves nothing in that while, since
+/// its readings start afresh and must say the machine is over for
+/// [`ease::HOT_FOR`] first.
 pub const OUT_OF_REACH_LEADS: SignedDuration = SignedDuration::from_hours(1);
 
 /// Whether `session` is parked and was parked in the machine's present
@@ -1396,6 +1402,43 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    // Our council, round 2 of #393 (2026-11-23): an idle lane's own time is
+    // as old as its last change, so only when its link dropped bounds it.
+    #[test]
+    fn an_idle_lane_out_of_reach_counts_by_when_its_link_dropped() {
+        let away = |id: &str, by: &str, dropped_mins: i64| {
+            json!({"orchestrated_by": by, "state": "unreachable", "at": EARLIER,
+                   "presence": dropped(id, dropped_mins)})
+        };
+        let sessions = [
+            session("s1", "skiff", &json!({})),
+            session("s2", "tern", &away("s2", "S1", 10)),
+            session("s3", "skiff", &json!({})),
+            session("s4", "tern", &away("s4", "S3", 90)),
+        ];
+        let looked = Looked {
+            sessions: &sessions,
+            fences: &BTreeMap::new(),
+            holdings: &[],
+            queued: &BTreeSet::new(),
+            sizes: &BTreeMap::new(),
+            orchestrators: Some(&BTreeSet::new()),
+            boot: Some("b2"),
+            began: Some(began()),
+            now: now(),
+        };
+        assert_eq!(
+            leading(&looked),
+            [(
+                "s1".to_owned(),
+                Some(true),
+                Some("S2, out of reach on tern".to_owned())
+            )],
+            "both lanes were last written two hours since, but only s4's link dropped \
+             more than the hour before"
+        );
     }
 
     /// The lane S4, parked in a boot that can't be told, as a reason names it.
