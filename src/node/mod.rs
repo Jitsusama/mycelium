@@ -195,6 +195,26 @@ async fn rested(rest: &mut Option<std::pin::Pin<Box<tokio::time::Sleep>>>) {
     }
 }
 
+/// Says how the read of the messages the store held at start `ended`
+/// where it failed, and answers that none is under way now.
+fn read_ended(ended: &Result<(), tokio::task::JoinError>) -> Option<tokio::task::JoinHandle<()>> {
+    if let Err(error) = ended {
+        eprintln!("the messages the store holds couldn't all be read: {error}");
+    }
+    None
+}
+
+/// How the read of the messages the store held at start ended, once it
+/// has, or never where it already has.
+async fn read(
+    reading: &mut Option<tokio::task::JoinHandle<()>>,
+) -> Result<(), tokio::task::JoinError> {
+    match reading {
+        Some(reading) => reading.await,
+        None => std::future::pending().await,
+    }
+}
+
 impl Drop for Socket {
     fn drop(&mut self) {
         // The socket is the node's alone, made at bind; if it's already
@@ -718,7 +738,14 @@ where
     let (_watching_parks, mut parks) = watch(&shared.parked, "what is parked");
     // The quests' record says whose sessions' ends are told, and to whom.
     let mut quests_told = shared.served.told("quest");
-    shared.read_store();
+    // Sessions are judged before anything can ask, as ever. The messages
+    // the store holds are read off the node's one thread, which took no
+    // dial until it had opened every one: some 97,000 on the busiest
+    // machine, read for minutes while its links stood down. Clients are
+    // taken once they are read, so none lists a part of them, or misses
+    // one the read held without telling.
+    shared.read_sessions();
+    let mut unread = shared.read_messages_apart();
     let mut links = JoinSet::new();
     let mut found = discovery.found();
     let mut leaving = tokio::time::interval(LEAVING_EVERY);
@@ -738,7 +765,8 @@ where
     let result = loop {
         tokio::select! {
             () = &mut stop => break Ok(()),
-            accepted = socket.accept(), if resting.is_none() => match accepted {
+            ended = read(&mut unread) => unread = read_ended(&ended),
+            accepted = socket.accept(), if resting.is_none() && unread.is_none() => match accepted {
                 Ok(stream) => {
                     tokio::spawn(serve(stream, shared.clone()));
                 }
@@ -1286,6 +1314,8 @@ struct Shared<S> {
     /// The refusals in that handover that couldn't be read, each said on
     /// the node's stderr once.
     unreadable: Arc<through::Unreadable>,
+    /// Whether the messages the store holds are being read apart.
+    reads: Arc<Reads>,
     /// Where it keeps each command it runs, and who may say how a fenced
     /// one runs.
     runs: Arc<run::Given>,
@@ -1503,6 +1533,7 @@ impl<S: Clone> Clone for Shared<S> {
             scratch: self.scratch.clone(),
             hostname: Arc::clone(&self.hostname),
             unreadable: Arc::clone(&self.unreadable),
+            reads: Arc::clone(&self.reads),
             runs: self.runs.clone(),
             starts: Arc::clone(&self.starts),
             rejudge: Arc::clone(&self.rejudge),
@@ -1914,6 +1945,57 @@ struct Seen<'a> {
     held: &'a [hold::Held],
     /// The sessions carried away lately or waiting for their turn.
     coming_back: &'a HashSet<String>,
+}
+
+/// Whether the messages the store holds are being read apart
+/// ([`Shared::read_messages_apart`]), and whether they were asked for
+/// again while they were.
+#[derive(Default)]
+struct Reads(Mutex<ReadsAsked>);
+
+#[derive(Default)]
+struct ReadsAsked {
+    running: bool,
+    again: bool,
+}
+
+impl Reads {
+    fn asked(&self) -> MutexGuard<'_, ReadsAsked> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Begins a read, unless one runs, which is asked to read again.
+    fn begin(&self) -> bool {
+        let mut asked = self.asked();
+        if asked.running {
+            asked.again = true;
+            return false;
+        }
+        asked.running = true;
+        true
+    }
+
+    /// Whether the read running was asked for again, so reads once more;
+    /// where not, it ends, in the same look, so no ask falls between.
+    fn again(&self) -> bool {
+        let mut asked = self.asked();
+        asked.running = std::mem::take(&mut asked.again);
+        asked.running
+    }
+}
+
+/// A read running ([`Reads::begin`]), which ends where it panics too, so
+/// the next ask reads again.
+struct Reading<'a>(&'a Reads);
+
+impl Drop for Reading<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            *self.0.asked() = ReadsAsked::default();
+        }
+    }
 }
 
 /// The sessions being reopened here by a relayed start, each held while
@@ -2470,6 +2552,7 @@ impl<S: Store> Shared<S> {
             scratch: sharing.as_ref().map(|places| places.scratch.clone()),
             hostname: rustix::system::uname().nodename().to_string_lossy().into(),
             unreadable: Arc::default(),
+            reads: Arc::default(),
             starts,
             rejudge: Arc::default(),
             onces: Arc::default(),
@@ -2541,19 +2624,53 @@ impl<S: Store> Shared<S> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Reads the messages the store holds that the node doesn't yet, and
-    /// every session. A message is written once by its id and never
-    /// changes, so one already held isn't read again: a rescan after a
-    /// watch overflowed lists the messages rather than reading them all,
-    /// whose every open a Linux watch hears, which would overflow it
-    /// again. The node holds far more messages than the mesh keeps, its
-    /// week, so none it let go is read again.
-    fn read_store(&self) {
-        let ids = self.store.message_ids(0);
+    /// Reads the messages as [`Self::read_messages`] does, off the node's
+    /// one thread, so the node takes its dials as they are read. One read
+    /// runs at a time: asked again while one runs, as a watch that
+    /// overflowed twice asks, it reads once more when that one ends,
+    /// rather than starting a second beside it, and answers none.
+    fn read_messages_apart(&self) -> Option<tokio::task::JoinHandle<()>> {
+        if !self.reads.begin() {
+            return None;
+        }
+        let shared = self.clone();
+        Some(tokio::task::spawn_blocking(move || {
+            let reading = Reading(&shared.reads);
+            loop {
+                shared.read_messages();
+                if !reading.0.again() {
+                    break;
+                }
+            }
+        }))
+    }
+
+    /// Reads the messages the store holds that the node doesn't yet, the
+    /// newest [`crate::state::KEPT_MESSAGES`] at most, since the node
+    /// keeps no more and would let go of the oldest as it read them. A
+    /// message is written once by its id and never changes, so one
+    /// already held isn't read again: a rescan after a watch overflowed
+    /// lists the messages rather than reading them all, whose every open
+    /// a Linux watch hears, which would overflow it again. The node holds
+    /// far more messages than the mesh keeps, its week, so none it let go
+    /// is read again.
+    fn read_messages(&self) {
+        let began = std::time::Instant::now();
+        let mut ids = self.store.message_ids(0);
+        let listed = ids.len();
+        // An id opens with when it was sent, in milliseconds, so the
+        // newest sort last, by that time rather than as text.
+        ids.sort_by_cached_key(|id| (store::folders::sent_at(id), id.clone()));
+        // The newest the node keeps, held or not: an older one would be
+        // let go as soon as read, so a rescan with every kept message
+        // held opens none. A message older than all those, waiting to
+        // cross to another realm, isn't read again after a restart.
+        let newest = ids.split_off(ids.len().saturating_sub(crate::state::KEPT_MESSAGES));
         let unread: Vec<String> = {
             let refused = self.refused_ids();
             let inner = self.lock();
-            ids.into_iter()
+            newest
+                .into_iter()
                 .filter(|id| !inner.state.holds_message(id) && !refused.contains(id))
                 .collect()
         };
@@ -2565,7 +2682,11 @@ impl<S: Store> Shared<S> {
         self.lock().state.add_messages(messages);
         self.wait_to_cross(waiting);
         self.said.messages_moved();
-        self.read_sessions();
+        eprintln!(
+            "read {} of the {listed} messages the store holds in {:.1}s",
+            unread.len(),
+            began.elapsed().as_secs_f64()
+        );
     }
 
     /// Judges every session again and sends what changed, with what is
@@ -3438,7 +3559,11 @@ impl<S: Store> Shared<S> {
                 self.keep_awake(awake, power);
             }
             Change::Rescan => {
-                self.read_store();
+                // Every message is listed off the node's one thread, as
+                // at start. Sessions are judged here, so no judgement on
+                // an older reading lands after one on a newer.
+                drop(self.read_messages_apart());
+                self.read_sessions();
                 self.said.machines_moved();
             }
             Change::Machine(_) => self.said.machines_moved(),
@@ -8674,6 +8799,7 @@ mod tests {
 
     /// A dial whose way in always turns this machine away, telling
     /// `dialled` each time it is dialled.
+    #[derive(Clone)]
     struct Refusing {
         dialled: mpsc::UnboundedSender<tokio::time::Instant>,
     }
@@ -17840,6 +17966,29 @@ esac
         );
     }
 
+    /// Reads asked for while one runs are one more read once it ends,
+    /// however many asked, and a read that panicked lets the next begin.
+    #[test]
+    fn reads_asked_while_one_runs_are_read_once_after_it() {
+        let reads = Reads::default();
+        assert!(reads.begin(), "the first read begins");
+        assert!(!reads.begin(), "a second waits for it");
+        assert!(!reads.begin(), "and so does a third");
+        assert!(reads.again(), "once it ends, it reads once more");
+        assert!(!reads.again(), "and only once");
+        assert!(reads.begin(), "then the next read begins");
+        let panicked = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _reading = Reading(&reads);
+                    panic!("a read fails");
+                })
+                .join()
+        });
+        assert!(panicked.is_err(), "the read panicked");
+        assert!(reads.begin(), "a read that panicked lets the next begin");
+    }
+
     #[test]
     fn a_session_is_held_as_being_reopened_only_for_a_while() {
         let mut reopening = Reopening::default();
@@ -18830,6 +18979,83 @@ esac
             let stopped = node.await.expect("the node runs to its end");
             assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
         }
+    }
+
+    /// A node dials the machines it finds while it is still reading the
+    /// messages the store held at start, however long their opens take,
+    /// and lists them to its clients once it has read them.
+    #[tokio::test]
+    async fn a_node_dials_while_it_reads_what_the_store_held() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("mycelium").join("work.sock");
+        let store = Memory::default();
+        let draft = Draft {
+            from: "joel".to_owned(),
+            groups: vec![Group::new("peer.4uhc5q").expect("a valid group")],
+            intent: None,
+            text: "held".to_owned(),
+            re: None,
+            realm: None,
+        };
+        let (id, body) = mesh::written(&draft, 1);
+        store.send_here(&id, body);
+        // Let go by the test once kestrel is dialled, or by itself after
+        // a while: a node reading on its one thread would otherwise hold
+        // the test's thread too, and never fail it.
+        let reads = store.hold_reads();
+        let (letting_go, let_go) = std::sync::mpsc::channel::<()>();
+        let lapsed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let holding = std::thread::spawn({
+            let lapsed = Arc::clone(&lapsed);
+            move || {
+                let told = let_go.recv_timeout(2 * PATIENCE);
+                lapsed.store(told.is_err(), std::sync::atomic::Ordering::SeqCst);
+                drop(reads);
+            }
+        });
+        let (dialled, mut dials) = mpsc::unbounded_channel();
+        let (stop, node) = node(&store, "skiff", vec![Refusing { dialled }], None, &socket);
+
+        tokio::time::timeout(PATIENCE, dials.recv())
+            .await
+            .expect("kestrel is dialled in time")
+            .expect("the dial is told");
+        assert!(
+            !lapsed.load(std::sync::atomic::Ordering::SeqCst),
+            "kestrel is dialled while the store's messages are still being read"
+        );
+        let mut listed = tokio::task::spawn_blocking(move || {
+            let mut client = Client::connect(&socket).expect("the client connects");
+            let asked = Request::Messages {
+                groups: Pattern::new("peer.*").expect("a valid pattern"),
+                limit: 10,
+            };
+            let Ok(Ok(Response::Messages(all))) = client.ask(&asked) else {
+                panic!("the node lists its messages");
+            };
+            all.into_iter().map(|one| one.text).collect::<Vec<_>>()
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), &mut listed)
+                .await
+                .is_err(),
+            "a client isn't answered while the store's messages are still being read"
+        );
+        letting_go.send(()).expect("the reads are still held");
+        holding.join().expect("the reads are let go");
+        let texts = tokio::time::timeout(PATIENCE, listed)
+            .await
+            .expect("the node answers in time")
+            .expect("the client asks");
+        assert_eq!(
+            texts,
+            ["held"],
+            "its first client is taken once what the store held is read, and lists it"
+        );
+
+        drop(stop);
+        let stopped = node.await.expect("the node runs to its end");
+        assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
     }
 
     #[tokio::test]
