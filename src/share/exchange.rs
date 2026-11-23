@@ -900,8 +900,31 @@ impl Exchange {
 
     /// Looks at every shared quest for changes, saying which quests are
     /// shared if that changed, everything held of a quest newly shared,
-    /// and what changed of the rest.
+    /// and what changed of the rest, then asks for the next of each
+    /// quest's files in its turn ([`Self::ask_in_turn`]), even where a
+    /// quest's look fails, so one quest never stops every other's turns.
+    ///
+    /// # Errors
+    ///
+    /// Where the look fails and no file was asked for in its turn.
     pub fn look(&mut self) -> io::Result<Vec<Say>> {
+        let turns = self.ask_in_turn();
+        match self.look_quests() {
+            Ok(mut says) => {
+                says.extend(turns);
+                Ok(says)
+            }
+            Err(error) if turns.is_empty() => Err(error),
+            Err(error) => {
+                eprintln!("sharing quests with {}: {error}", self.other);
+                Ok(turns)
+            }
+        }
+    }
+
+    /// Looks at every shared quest as [`Self::look`] does, asking for no
+    /// file in its turn.
+    fn look_quests(&mut self) -> io::Result<Vec<Say>> {
         self.cloning.reap();
         let replay = (self.above == Above::Lifted).then(|| self.take_up_held_back());
         let ledgers = self.places.ledgers();
@@ -1009,7 +1032,6 @@ impl Exchange {
             says.push(shares_said(&shares));
         }
         says.extend(holds);
-        says.extend(self.ask_in_turn());
         self.told = shares;
         self.whole = whole;
         self.passed_over = passed_over;
@@ -1571,17 +1593,20 @@ impl Exchange {
             .filter(|(_, asked)| now.duration_since(**asked) >= ANSWERED_WITHIN)
             .map(|(file, _)| file.clone())
             .collect();
-        let lapsed = gone.len();
+        if !gone.is_empty() {
+            let quests: BTreeSet<&str> = gone.iter().map(|(quest, _)| quest.as_str()).collect();
+            eprintln!(
+                "{} files asked of {} went unanswered for {}s, so the next are asked: {}, of {}",
+                gone.len(),
+                self.other,
+                ANSWERED_WITHIN.as_secs(),
+                gone.first().map_or("", |(_, file)| file.as_str()),
+                quests.into_iter().collect::<Vec<_>>().join(", "),
+            );
+        }
         for file in gone {
             self.wanted.remove(&file);
             self.unanswered.insert(file);
-        }
-        if lapsed > 0 {
-            eprintln!(
-                "{lapsed} files asked of {} went unanswered for {}s, so the next are asked",
-                self.other,
-                ANSWERED_WITHIN.as_secs()
-            );
         }
         let quests: Vec<String> = self.to_want.keys().cloned().collect();
         quests
@@ -1664,12 +1689,11 @@ impl Exchange {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         match self.pieces.stage(id, key, hash, at, len, &body)? {
             Staged::More(next) => {
-                // The next piece is asked in the same turn as the first.
+                // The next piece is asked in the same turn as the first,
+                // of a file this end asked for; a piece unasked takes none.
                 let file = (id.to_owned(), key.to_owned());
-                self.unanswered.remove(&file);
-                self.wanted.insert(file, Instant::now());
-                if let Some(queued) = self.to_want.get_mut(id) {
-                    queued.remove(key);
+                if self.wanted.contains_key(&file) || self.unanswered.remove(&file) {
+                    self.wanted.insert(file, Instant::now());
                 }
                 Ok(vec![Say::Want {
                     quest: id.to_owned(),
@@ -1719,6 +1743,14 @@ impl Exchange {
         let file = (id.to_owned(), key.to_owned());
         self.wanted.remove(&file);
         self.unanswered.remove(&file);
+        // Said again while its ask was on its way, it was queued again,
+        // and taken now it needn't be asked a second time.
+        if let Some(queued) = self.to_want.get_mut(id) {
+            queued.remove(key);
+            if queued.is_empty() {
+                self.to_want.remove(id);
+            }
+        }
         let taken = self.take_whole(id, key, theirs, body, mode);
         let next = self.ask_more(id);
         match taken {
@@ -3570,6 +3602,10 @@ mod tests {
             "and the small quest's file in the same turn: {first:?}"
         );
         assert_eq!(far.waiting(), 22, "every file is waited on, asked or not");
+        assert!(
+            asked(&far.look().expect("kestrel looks")).is_empty(),
+            "nothing more is asked while the asked are still in their time"
+        );
 
         // Unanswered, the asked go once their time is up, and the next are
         // asked in their place.
