@@ -350,11 +350,7 @@ pub async fn run(
     )
     .await?;
     pinned(&store, named.as_deref(), &other.machine)?;
-    // A dial that reached the machine says how a command runs there, even
-    // when a link that machine dialled holds it and carries the starts.
-    if let Some(Asking::Kept(asks, there)) = starting.as_ref().and_then(|s| s.asking.as_ref()) {
-        asks.know(&other.machine, there.clone());
-    }
+    know_how_it_runs(starting.as_ref(), &other.machine);
     let claim = claimed(&store, &other.machine)?;
     let reach = reach_start(&store, &other.machine);
     // As it stood before admission, which marks a machine never linked
@@ -555,6 +551,15 @@ fn read_frames(
         }
     });
     (frames, Reader(task))
+}
+
+/// Tells the node's asks how a command runs on `machine`, as this dial
+/// that reached it says, even when a link that machine dialled holds it
+/// and carries the starts.
+fn know_how_it_runs(starting: Option<&Starting>, machine: &str) {
+    if let Some(Asking::Kept(asks, there)) = starting.and_then(|s| s.asking.as_ref()) {
+        asks.know(machine, there.clone());
+    }
 }
 
 /// The starts this machine's node asks of `machine`, taken for this link
