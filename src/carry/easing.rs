@@ -101,20 +101,26 @@ pub fn cells(here: &str, looked: &Looked) -> Vec<Cell> {
             matches!(session.state, State::Idle | State::Busy)
                 || super::parked(session, looked.boot)
         })
-        .map(|session| Cell {
-            session: session.clone(),
-            fence: looked.fences.get(id(session)).copied(),
-            alone: alone(here, looked.sessions, session),
-            on_screen: on_screen(session),
-            driven: session.presence.get("driven").and_then(Value::as_bool),
-            asleep: super::parked(session, looked.boot),
-            orchestrates: looked.orchestrators.map(|named| {
-                named.contains(id(session))
-                    || named.contains(&session.id)
-                    || leads(looked.sessions, session)
-            }),
-            busy: busy(session, looked),
-            size: looked.sizes.get(id(session)).copied(),
+        .map(|session| {
+            let recorded = looked
+                .orchestrators
+                .map(|named| named.contains(id(session)) || named.contains(&session.id));
+            let lane = match recorded {
+                Some(true) => None,
+                _ => leads(here, looked, session),
+            };
+            Cell {
+                session: session.clone(),
+                fence: looked.fences.get(id(session)).copied(),
+                alone: alone(here, looked.sessions, session),
+                on_screen: on_screen(session),
+                driven: session.presence.get("driven").and_then(Value::as_bool),
+                asleep: super::parked(session, looked.boot),
+                orchestrates: recorded.map(|named| named || lane.is_some()),
+                lane,
+                busy: busy(session, looked),
+                size: looked.sizes.get(id(session)).copied(),
+            }
         })
         .collect()
 }
@@ -301,29 +307,46 @@ fn alone(here: &str, sessions: &[Session], session: &Session) -> Option<bool> {
     Some(super::runs_on(sessions, quest).is_ok_and(|on| on == here))
 }
 
-/// Whether another of `sessions`, running, parked or out of reach, says
-/// in its presence that `session` orchestrates it, by an address
-/// `session` goes by, in any case. The records of who orchestrates name only the quests
-/// an orchestrator claims, so a lane it started for a quest of the lane's
-/// own is told only by the lane. A lane at rest still counts, as its
-/// orchestrator is no less one for it; one that has ended counts no more,
-/// as a claim lapses once its session neither runs nor waits parked.
+/// Another of the realm's sessions that says in its presence that
+/// `session` orchestrates it, by an address `session` goes by, in any
+/// case, as the reason line names it: its address, and where it stands if
+/// it doesn't run. The records of who orchestrates name only the quests an
+/// orchestrator claims, so a lane it started for a quest of the lane's own
+/// is told only by the lane.
 ///
-/// The lane's word is believed though nothing proves it, where a claim
-/// naming no quest is not, because all it can do is keep a session here:
-/// a lane that names the wrong one costs its machine an easing, never the
-/// session its place.
-fn leads(sessions: &[Session], session: &Session) -> bool {
-    sessions.iter().any(|other| {
-        other.id != session.id
-            && (super::runs(other)
-                || other.state == State::Unreachable
-                || super::parked(other, None))
-            && other
+/// A lane counts while it runs, while it waits parked here this boot, as
+/// its orchestrator is no less one for a lane at rest, and while its
+/// machine is out of reach, which says nothing of whether it still runs;
+/// that holds until a link to its machine comes back or the machine leaves.
+/// A lane parked elsewhere never reaches this node, whose links send only
+/// the sessions that live.
+///
+/// The lane's word is believed though nothing proves it, as every reason
+/// a presence gives to keep a session here is, because all it can do is
+/// keep one here: a lane naming the wrong session costs its machine an
+/// easing, never the session its place. A claim naming no quest is
+/// refused because any session may make one of itself, where a lane's
+/// word is another session's, and one naming itself leads nobody.
+fn leads(here: &str, looked: &Looked, session: &Session) -> Option<String> {
+    looked
+        .sessions
+        .iter()
+        .filter(|other| other.id != session.id)
+        .filter(|other| {
+            other
                 .orchestrated_by
                 .as_deref()
-                .is_some_and(|said| crate::forage::is_address(said) && session.goes_by(said))
-    })
+                .is_some_and(|said| session.goes_by(said))
+        })
+        .find_map(|other| {
+            let who = &other.address;
+            match other.state {
+                State::Busy | State::Idle => Some(who.clone()),
+                State::Unreachable => Some(format!("{who}, out of reach on {}", other.machine)),
+                State::Ended => (other.machine == here && super::parked(other, looked.boot))
+                    .then(|| format!("{who}, parked")),
+            }
+        })
 }
 
 /// Whether the session is on the person's screen: not, where a host runs
@@ -1026,9 +1049,10 @@ mod tests {
             session("s3", "skiff", &json!({"orchestrated_by": "osprey"})),
             session(
                 "s4",
-                "tern",
+                "skiff",
                 &json!({"orchestrated_by": "steward", "state": "ended",
-                        "presence": {"session": "s4", "state": "parked"}}),
+                        "presence": {"session": "s4", "state": "parked",
+                                     "owner": {"bootId": "b2"}}}),
             ),
             session("s5", "skiff", &json!({"orchestrated_by": "S5"})),
             session("s6", "skiff", &json!({})),
@@ -1043,6 +1067,68 @@ mod tests {
                 "tern",
                 &json!({"orchestrated_by": "S8", "state": "unreachable"}),
             ),
+            session("s10", "skiff", &json!({})),
+            session(
+                "s11",
+                "skiff",
+                &json!({"orchestrated_by": "S10", "state": "ended",
+                        "presence": {"session": "s11", "state": "parked",
+                                     "owner": {"bootId": "b1"}}}),
+            ),
+            session("s12", "skiff", &json!({"address": "WREN"})),
+            session("s13", "skiff", &json!({"orchestrated_by": "s12"})),
+        ];
+        let looked = Looked {
+            sessions: &sessions,
+            fences: &BTreeMap::new(),
+            holdings: &[],
+            queued: &BTreeSet::new(),
+            sizes: &BTreeMap::new(),
+            orchestrators: Some(&BTreeSet::new()),
+            boot: Some("b2"),
+            now: now(),
+        };
+        let orchestrating: Vec<_> = cells("skiff", &looked)
+            .iter()
+            .filter(|cell| cell.orchestrates != Some(false))
+            .map(|cell| {
+                (
+                    cell.session.id.clone(),
+                    cell.orchestrates,
+                    cell.lane.clone(),
+                )
+            })
+            .collect();
+        let lane = |id: &str, said: &str| (id.to_owned(), Some(true), Some(said.to_owned()));
+        assert_eq!(
+            orchestrating,
+            [
+                lane("s1", "S3"),
+                lane("s2", "S4, parked"),
+                lane("s8", "S9, out of reach on tern"),
+            ],
+            "s1 by its address in any case; s2 by another it goes by, from a lane parked \
+             here this boot; s8 by a lane out of reach. None for s6, whose lane ended, s10, \
+             whose lane parked before this boot, s12, named by its id and not its address, \
+             or s5, which names itself"
+        );
+    }
+
+    #[test]
+    fn a_cell_is_the_persons_or_not_only_where_its_presence_says_so() {
+        let said = |id: &str, driven: Value| {
+            session(
+                id,
+                "skiff",
+                &json!({"presence": {"session": id, "driven": driven}}),
+            )
+        };
+        let sessions = [
+            said("s1", json!(true)),
+            said("s2", json!(false)),
+            said("s3", json!("yes")),
+            said("s4", json!(1)),
+            said("s5", Value::Null),
         ];
         let looked = Looked {
             sessions: &sessions,
@@ -1054,23 +1140,14 @@ mod tests {
             boot: None,
             now: now(),
         };
-        let orchestrating: Vec<_> = cells("skiff", &looked)
+        let driven: Vec<_> = cells("skiff", &looked)
             .iter()
-            .map(|cell| (cell.session.id.clone(), cell.orchestrates))
+            .map(|cell| cell.driven)
             .collect();
         assert_eq!(
-            orchestrating,
-            [
-                ("s1".to_owned(), Some(true)),
-                ("s2".to_owned(), Some(true)),
-                ("s3".to_owned(), Some(false)),
-                ("s5".to_owned(), Some(false)),
-                ("s6".to_owned(), Some(false)),
-                ("s8".to_owned(), Some(true)),
-            ],
-            "s1 by its address, not its id, in any case; s2 by another it goes by, from a \
-             lane parked on another machine; s8 by a lane out of reach; s6 by none, its lane \
-             having ended; s5 naming itself leads nobody"
+            driven,
+            [Some(true), Some(false), None, None, None],
+            "only a bool says, either way"
         );
     }
 

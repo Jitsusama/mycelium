@@ -129,6 +129,10 @@ pub struct Cell {
     pub asleep: bool,
     /// Whether it orchestrates other sessions.
     pub orchestrates: Option<bool>,
+    /// The session that says it answers to it, and where that session
+    /// stands if it doesn't run, where only that session's word says it
+    /// orchestrates.
+    pub lane: Option<String>,
     /// What it is part way through.
     pub busy: Option<Vec<Busy>>,
     /// How much of it a carry takes, in bytes: its log's size.
@@ -173,7 +177,12 @@ impl Cell {
         }
         match self.orchestrates {
             Some(false) => {}
-            Some(true) => return Some(format!("{who} orchestrates other sessions")),
+            Some(true) => {
+                return Some(match &self.lane {
+                    Some(lane) => format!("{who} orchestrates {lane}, by that session's word"),
+                    None => format!("{who} orchestrates other sessions"),
+                });
+            }
             None => {
                 return Some(format!(
                     "whether {who} orchestrates other sessions can't be told"
@@ -1008,6 +1017,7 @@ pub(super) mod tests {
             driven: Some(false),
             asleep: true,
             orchestrates: Some(false),
+            lane: None,
             busy: Some(Vec::new()),
             size: None,
         }
@@ -1435,6 +1445,11 @@ pub(super) mod tests {
             chose(&realm, &[awake("s1"), one], &history)
         };
         assert_eq!(
+            theirs(&|_| {}),
+            sleeps(&["s1", "s2"], None),
+            "left as it is, the second sleeps beside the first"
+        );
+        assert_eq!(
             theirs(&|one| one.driven = Some(true)),
             sleeps(&["s1"], None),
             "one the person has written in stays awake"
@@ -1654,6 +1669,13 @@ pub(super) mod tests {
         assert_eq!(
             with(&|one| one.orchestrates = Some(true)),
             "S1 orchestrates other sessions"
+        );
+        assert_eq!(
+            with(&|one| {
+                one.orchestrates = Some(true);
+                one.lane = Some("S9, out of reach on tern".to_owned());
+            }),
+            "S1 orchestrates S9, out of reach on tern, by that session's word"
         );
         assert_eq!(
             with(&|one| one.orchestrates = None),

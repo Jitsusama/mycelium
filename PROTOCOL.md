@@ -1181,13 +1181,19 @@ here.
 A session orchestrates others where this node's record of
 orchestrations holds a claim of its naming a quest, or where the
 quests' record names its quest as another quest's `orchestrator`, or
-where another session that runs, waits parked or is out of reach says
-in its presence's `orchestratedBy` an address the session goes by, in
-any case. One that has ended counts no more, and a session naming
-itself orchestrates nobody by it. That word is believed unproven,
-unlike the presence's other claims, since all it can do is keep a
-session where it is. A
-claim naming none orchestrates nobody, since any session may make one.
+where another session says in its presence's `orchestratedBy` an
+address the session goes by, in any case, while that session runs,
+waits parked on this machine this boot, or is out of reach. A lane
+parked elsewhere never reaches this node, since links send only the
+sessions that live; one out of reach holds its orchestrator until a
+link to its machine comes back or the machine leaves. One that has
+ended counts no more, and a session naming itself orchestrates nobody
+by it. Where only a lane says so, the reason line names the lane and
+where it stands. Like `driven` and every other reason a presence gives
+to keep a session here, that word is believed unproven, since all it
+can do is keep a session where it is. A claim naming no quest
+orchestrates nobody, since any session may make one of itself, where
+a lane's word is another session's.
 An orchestrator is never put to sleep either, since asleep it steers
 nothing. While the node's record can't be read, or the node serves no
 quests' record, hasn't read it whole or finds its file or folder not
