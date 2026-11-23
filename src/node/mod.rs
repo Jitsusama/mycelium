@@ -5532,16 +5532,13 @@ impl<S: Store> Shared<S> {
             .await
     }
 
-    /// The fence a start relayed as the person's is judged in here: none,
-    /// unless this node fences its held starts, where it takes the one it
-    /// was sent declaring, which its sender placed it in, so it starts in
-    /// that fence or not at all. Elsewhere pi fences itself.
-    fn persons_relay_fence(&self, asked: &Start) -> Option<crate::declared::Kind> {
-        asked
-            .work
-            .fence
-            .filter(|_| self.fences_held)
-            .map(|declared| declared.kind.into())
+    /// The fence a start relayed as the person's is judged in here: the
+    /// one it was sent declaring, which its sender placed it in, so an
+    /// agent's session carried or sent here starts in that fence or not at
+    /// all, as [`held_within`] fences it, and the person's own, which
+    /// declares none, starts as it always has.
+    fn persons_relay_fence(asked: &Start) -> Option<crate::declared::Kind> {
+        asked.work.fence.map(|declared| declared.kind.into())
     }
 
     /// `asked` declaring at least the fence its session ran in here, where
@@ -6188,7 +6185,7 @@ impl<S: Store> Shared<S> {
             },
             None => None,
         };
-        let fence = self.persons_relay_fence(&asked);
+        let fence = Self::persons_relay_fence(&asked);
         let started = match self.here(asked, fence).await {
             Ok(Response::Started(started)) => Ok(started),
             Ok(_) => Err("it answered with no session".to_owned()),
@@ -19281,17 +19278,22 @@ esac
         );
         // Which words a login shell takes, and a Mac's yielding before
         // them, is start's own test; here, only that the node asks for them.
+        // The test, an agent no claim names, is judged strict, and here pi
+        // fences itself, so it is told that fence.
         assert_eq!(
             given[7..],
             [
                 "--login",
                 "--kit",
                 "/nix/store/kit",
+                "--within",
+                r#"["/usr/bin/env","PI_SANDBOX=strict"]"#,
                 "--",
                 "pi",
                 "--continue"
             ],
-            "each start of the program runs through the login shell, with the realm's kit"
+            "each start of the program runs through the login shell, with the realm's kit, \
+             told its fence"
         );
 
         drop(stop);
@@ -19785,6 +19787,40 @@ esac
             Ok(words(&["/usr/bin/env", "PI_SANDBOX=strict"])),
             "as is the realm's agent program, after what a harness sets"
         );
+        for unfenced in [None, Some(Kind::None)] {
+            for fences in [true, false] {
+                assert_eq!(
+                    held_within(fences, unfenced, (&words(&["sh"]), "pi"), launch),
+                    Ok(Vec::new()),
+                    "the person's, or one unfenced, as asked"
+                );
+            }
+        }
+        assert_eq!(
+            held_within(true, Some(Kind::Fence), pi_held, |_| Err(
+                "refused".to_owned()
+            )),
+            Err("refused".to_owned()),
+            "a launcher refused starts nothing, rather than outside its fence"
+        );
+        assert_eq!(
+            starts_in(Some(Kind::Fence), Screen::Run),
+            None,
+            "an agent shown unfenced starts unfenced, as a Mac took it before"
+        );
+        assert_eq!(
+            starts_in(Some(Kind::Strict), Screen::Held),
+            Some(Kind::Strict),
+            "any other in the fence it was placed in"
+        );
+    }
+
+    #[test]
+    fn pi_fences_itself_only_named_bare_or_as_a_carried_arrival() {
+        use crate::declared::Kind;
+        let launch = |kind: Kind| Ok(vec!["fence".to_owned(), format!("{kind}"), "--".to_owned()]);
+        let launched = |kind: Kind| launch(kind).expect("a launcher");
+        let words = |said: &[&str]| said.iter().map(|&word| word.to_owned()).collect::<Vec<_>>();
         let arrival = crate::carry::arriving(
             "QEST-20261107-HARBOR",
             "skiff",
@@ -19831,32 +19867,6 @@ esac
             }),
             Err("refused".to_owned()),
             "and where its launcher is refused, starts nothing"
-        );
-        for unfenced in [None, Some(Kind::None)] {
-            for fences in [true, false] {
-                assert_eq!(
-                    held_within(fences, unfenced, (&others[0], "pi"), launch),
-                    Ok(Vec::new()),
-                    "the person's, or one unfenced, as asked"
-                );
-            }
-        }
-        assert_eq!(
-            held_within(true, Some(Kind::Fence), pi_held, |_| Err(
-                "refused".to_owned()
-            )),
-            Err("refused".to_owned()),
-            "a launcher refused starts nothing, rather than outside its fence"
-        );
-        assert_eq!(
-            starts_in(Some(Kind::Fence), Screen::Run),
-            None,
-            "an agent shown unfenced starts unfenced, as a Mac took it before"
-        );
-        assert_eq!(
-            starts_in(Some(Kind::Strict), Screen::Held),
-            Some(Kind::Strict),
-            "any other in the fence it was placed in"
         );
     }
 

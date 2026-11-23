@@ -1494,7 +1494,10 @@ plain word), or a carried session's arrival word for word, starts with
 so pi fences its commands so. Any other command an agent holds in a
 fence starts within that fence's launcher, as its runs do, or nowhere
 where none is declared, since through the login shell alone it would
-run as the account does.
+run as the account does. A start relayed as the person's, as a carried
+session is, is held in the fence it was sent declaring, which its
+sender placed it in, whether or not its node fences held starts; the
+person's own declares none and starts as it always has.
 
 A kit is a whole path holding no colon, which the node refuses
 otherwise. Its tools come first for every session and run, an agent's
