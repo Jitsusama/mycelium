@@ -166,28 +166,26 @@ impl Quest {
     }
 
     /// Writes what crossed from `machine` for a shared file beside this
-    /// end's own, under [`beside`]'s name, or deletes it there for `None`,
-    /// answering where. Its places are written as this machine names them,
-    /// as the file's own would be: the copy's name ends in the machine's,
-    /// so it can't say by itself that its text names places.
+    /// end's own, under [`beside`]'s name, over any copy an earlier
+    /// clash left there, answering where. Its places are written as this
+    /// machine names them, as the file's own would be: the copy's name
+    /// ends in the machine's, so it can't say by itself that its text
+    /// names places.
     pub fn write_beside(
         &self,
         shared: &Shared,
         machine: &str,
-        body: Option<&[u8]>,
+        body: &[u8],
         mode: Option<u32>,
     ) -> io::Result<Shared> {
         let at = Shared {
             place: shared.place,
             path: beside(&shared.path, machine),
         };
-        match body {
-            Some(body) if translates(shared) => {
-                self.write(&at, Some(&local(body, &self.home)), mode)?;
-            }
-            body => {
-                self.write(&at, body, mode)?;
-            }
+        if translates(shared) {
+            self.write(&at, Some(&local(body, &self.home)), mode)?;
+        } else {
+            self.write(&at, Some(body), mode)?;
         }
         Ok(at)
     }
@@ -442,7 +440,7 @@ mod tests {
             .write_beside(
                 &record("README.md"),
                 "skiff",
-                Some(b"cwd: \x01home\x01/src\n"),
+                b"cwd: \x01home\x01/src\n",
                 None,
             )
             .expect("written beside");
@@ -457,19 +455,12 @@ mod tests {
         );
         let mark = b"\x01home\x01";
         quest
-            .write_beside(&record("attachments/a.md"), "skiff", Some(mark), None)
+            .write_beside(&record("attachments/a.md"), "skiff", mark, None)
             .expect("an attachment written beside");
         assert_eq!(
             fs::read(quest.record.join("attachments/a.md.from-skiff")).expect("read"),
             mark,
             "what a record attaches crosses as it was, beside as anywhere"
-        );
-        quest
-            .write_beside(&record("README.md"), "skiff", None, None)
-            .expect("deleted");
-        assert!(
-            !quest.record.join("README.md.from-skiff").exists(),
-            "a deletion removes the copy"
         );
     }
 
