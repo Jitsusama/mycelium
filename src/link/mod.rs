@@ -53,16 +53,20 @@ mod started;
 pub mod starts;
 pub mod steers;
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::fmt;
 use std::io;
+use std::marker::PhantomData;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
@@ -339,7 +343,9 @@ pub async fn run(
     } = connection;
     let mut changes = store.changes()?;
     let arrived = Arc::new(AtomicI64::new(now()));
-    let (mut frames, _reader) = read_frames(reading, Arc::clone(&arrived));
+    let skipped_shares = Arc::new(AtomicBool::new(false));
+    let (mut frames, _reader) =
+        read_frames(reading, Arc::clone(&arrived), Arc::clone(&skipped_shares));
 
     let other = greet(
         &mut writing,
@@ -369,10 +375,7 @@ pub async fn run(
         proven: membership.proves(),
         worker,
         shows: membership.hello().shows && other.shows && !releases && !other.releases && !worker,
-        handover: Handover {
-            releases: other.releases,
-            ..Handover::default()
-        },
+        handover: Handover::new(other.releases, skipped_shares),
         // Two ends that both take facts each say their machine every
         // minute, so either hearing nothing for longer knows the other
         // is gone.
@@ -527,23 +530,53 @@ impl Drop for Reader {
 /// sends a line that isn't one, keeping in `arrived` when the last came:
 /// the other end is heard as its words arrive, not only once the link's
 /// own work reaches them, which may be held minutes behind a quest it
-/// shares.
+/// shares. A frame after the hello of a kind this end doesn't know is
+/// skipped ([`unread`]), said once a link for each of the first
+/// [`SKIPS_SAID`] kinds, and a skipped share is kept in `skipped_shares`,
+/// since it may have named a file this end then never hears of.
 fn read_frames(
     reading: Box<dyn AsyncRead + Unpin + Send>,
     arrived: Arc<AtomicI64>,
+    skipped_shares: Arc<AtomicBool>,
 ) -> (mpsc::UnboundedReceiver<io::Result<Frame>>, Reader) {
     let (sender, frames) = mpsc::unbounded_channel();
     let task = tokio::spawn(async move {
         let mut lines = BufReader::new(reading).lines();
+        // The machine the first frame named, once one has been read: the
+        // hello's own word, before the link admits it.
+        let mut greeted: Option<String> = None;
+        let mut skipped = Skipped::default();
         loop {
             let line = lines.next_line().await;
             arrived.fetch_max(now(), Ordering::Relaxed);
             let frame = match line {
-                Ok(Some(line)) => serde_json::from_str(&line)
-                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
+                Ok(Some(line)) => match serde_json::from_str(&line) {
+                    Ok(frame) => Ok(frame),
+                    // Before the first frame is read, nothing is skipped.
+                    Err(error) => match greeted.as_deref().zip(unread(&line)) {
+                        Some((machine, unread)) => {
+                            if let Unread::Share(_) = unread {
+                                // Set before the next frame is sent on, so
+                                // the link reads it by then.
+                                skipped_shares.store(true, Ordering::Relaxed);
+                            }
+                            if let Some(said) = say_skipped(machine, &unread, &mut skipped) {
+                                eprintln!("{said}");
+                            }
+                            continue;
+                        }
+                        None => Err(io::Error::new(io::ErrorKind::InvalidData, error)),
+                    },
+                },
                 Ok(None) => return,
                 Err(error) => Err(error),
             };
+            if greeted.is_none() {
+                greeted = Some(match &frame {
+                    Ok(Frame::Hello(hello)) => hello.machine.clone(),
+                    _ => "the other end".to_owned(),
+                });
+            }
             let failed = frame.is_err();
             if sender.send(frame).is_err() || failed {
                 return;
@@ -551,6 +584,174 @@ fn read_frames(
         }
     });
     (frames, Reader(task))
+}
+
+/// How many kinds of skipped frame a link says, each once: past them a
+/// link says only that there are more, so an end sending ever new kinds
+/// grows neither this end's memory nor its log.
+const SKIPS_SAID: usize = 8;
+
+/// How much of the other end's word, a kind or its machine's name, a
+/// skip says and keeps.
+const WORD_SHOWN: usize = 40;
+
+/// The kinds of frame a link has skipped, each cut to [`WORD_SHOWN`], and
+/// whether it has said that there are more than it keeps.
+#[derive(Default)]
+struct Skipped {
+    kinds: HashSet<String>,
+    more: bool,
+}
+
+/// What to log of `machine` sending `unread`, which this end skips: a line
+/// the first time a link meets its kind, and one more past
+/// [`SKIPS_SAID`] kinds, that there are others. The kind and the machine
+/// are the other end's words, so they are cut short and quoted, their
+/// marks escaped, and can't write a line of their own into the log.
+fn say_skipped(machine: &str, unread: &Unread, skipped: &mut Skipped) -> Option<String> {
+    let kind = cut(&unread.to_string());
+    if skipped.more || skipped.kinds.contains(&kind) {
+        return None;
+    }
+    let machine = cut(machine);
+    if skipped.kinds.len() == SKIPS_SAID {
+        skipped.more = true;
+        return Some(format!(
+            "{machine:?} sent more kinds of frame this node can't read, skipped unsaid"
+        ));
+    }
+    let said = format!(
+        "{machine:?} sent a frame of a kind this node doesn't know, {kind:?}, so it skips \
+         each it sends; update this node to read them"
+    );
+    skipped.kinds.insert(kind);
+    Some(said)
+}
+
+/// The first [`WORD_SHOWN`] characters of `word`.
+fn cut(word: &str) -> String {
+    word.chars().take(WORD_SHOWN).collect()
+}
+
+/// A frame this end can't read but the link can carry on past, by its
+/// kind.
+#[derive(Debug, PartialEq, Eq)]
+enum Unread {
+    /// A frame of a kind this end doesn't know.
+    Frame(String),
+    /// A share of a kind this end doesn't know.
+    Share(String),
+}
+
+impl fmt::Display for Unread {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Frame(kind) => f.write_str(kind),
+            Self::Share(kind) => write!(f, "Share {kind}"),
+        }
+    }
+}
+
+/// What `line` is, where it is a frame this end can't read but the link
+/// can carry on past: a frame, from an end newer than this one, of a kind
+/// this end doesn't know, or a share of a kind it doesn't (PROTOCOL.md, A
+/// Link). None for a line that isn't a frame at all, and for a frame of a
+/// kind this end knows whose body it can't read, which may be one an ask
+/// waits on: either ends the link.
+fn unread(line: &str) -> Option<Unread> {
+    let frame = serde_json::from_str::<Variant<IgnoredAny>>(line).ok()?;
+    if !kinds::<Frame>().contains(&frame.kind.as_str()) {
+        return Some(Unread::Frame(frame.kind));
+    }
+    if frame.kind != "Share" {
+        return None;
+    }
+    let share = serde_json::from_str::<Variant<Variant<IgnoredAny>>>(line)
+        .ok()?
+        .body?;
+    (!kinds::<Say>().contains(&share.kind.as_str())).then_some(Unread::Share(share.kind))
+}
+
+/// A value as serde writes an enum's variant, read without the enum: its
+/// kind, from a bare string or an object of exactly one key, and the body
+/// an object holds. A key said twice is refused, where a map would keep
+/// only the last, so a share of a known kind can't hide behind another.
+struct Variant<B> {
+    kind: String,
+    body: Option<B>,
+}
+
+impl<'de, B: Deserialize<'de>> Deserialize<'de> for Variant<B> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(VariantVisitor(PhantomData))
+    }
+}
+
+struct VariantVisitor<B>(PhantomData<B>);
+
+impl<'de, B: Deserialize<'de>> serde::de::Visitor<'de> for VariantVisitor<B> {
+    type Value = Variant<B>;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("an enum's variant")
+    }
+
+    fn visit_str<E: serde::de::Error>(self, kind: &str) -> Result<Self::Value, E> {
+        Ok(Variant {
+            kind: kind.to_owned(),
+            body: None,
+        })
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let Some((kind, body)) = map.next_entry::<String, B>()? else {
+            return Err(serde::de::Error::custom("a variant names its kind"));
+        };
+        if map.next_key::<IgnoredAny>()?.is_some() {
+            return Err(serde::de::Error::custom("a variant names one kind"));
+        }
+        Ok(Variant {
+            kind,
+            body: Some(body),
+        })
+    }
+}
+
+/// The variants of enum `T` by the names it reads them by, as its own
+/// derive hands them to a deserializer, so the list can't drift from the
+/// enum.
+fn kinds<T: for<'de> Deserialize<'de>>() -> &'static [&'static str] {
+    let named = Cell::new(&[][..]);
+    let _ = T::deserialize(Kinds(&named));
+    named.get()
+}
+
+/// A deserializer that reads nothing, keeping the variants an enum asks
+/// it for ([`kinds`]).
+struct Kinds<'a>(&'a Cell<&'static [&'static str]>);
+
+impl<'de> serde::Deserializer<'de> for Kinds<'_> {
+    type Error = serde::de::value::Error;
+
+    fn deserialize_any<V: serde::de::Visitor<'de>>(self, _: V) -> Result<V::Value, Self::Error> {
+        Err(serde::de::Error::custom("only an enum's variants are read"))
+    }
+
+    fn deserialize_enum<V: serde::de::Visitor<'de>>(
+        self,
+        _: &'static str,
+        variants: &'static [&'static str],
+        _: V,
+    ) -> Result<V::Value, Self::Error> {
+        self.0.set(variants);
+        Err(serde::de::Error::custom("only its variants are read"))
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf
+        option unit unit_struct newtype_struct seq tuple tuple_struct map struct identifier
+        ignored_any
+    }
 }
 
 /// Tells the node's asks how a command runs on `machine`, as this dial
@@ -964,6 +1165,21 @@ struct Handover {
     /// Whether the other end's machine has handed over, with this end
     /// holding all it said.
     done: bool,
+    /// Whether this end skipped a share of a kind it doesn't know, which
+    /// may have named a file it then never heard of.
+    skipped_shares: Arc<AtomicBool>,
+}
+
+impl Handover {
+    /// A handover not begun, at an end whose other end can release it
+    /// where `releases` says, and whose reading marks `skipped_shares`.
+    fn new(releases: bool, skipped_shares: Arc<AtomicBool>) -> Self {
+        Self {
+            releases,
+            skipped_shares,
+            ..Self::default()
+        }
+    }
 }
 
 impl<S: Store> End<S> {
@@ -1937,7 +2153,13 @@ impl<S: Store> End<S> {
     /// every file it holds has been heard of, and asked for if wanted.
     fn heard_handed_over(&mut self) {
         let lacking = self.exchange.as_ref().map_or(0, Exchange::waiting);
-        if lacking == 0 {
+        if self.handover.skipped_shares.load(Ordering::Relaxed) {
+            eprintln!(
+                "{} has handed over, but sent shares of a kind this node can't read, so it can't \
+                 tell its files all reached this machine; update this node to read them",
+                self.other
+            );
+        } else if lacking == 0 {
             self.handover.done = true;
         } else {
             eprintln!(
@@ -4328,7 +4550,8 @@ mod tests {
         let (far, near) = tokio::io::duplex(1024);
         let (_, mut writing) = tokio::io::split(far);
         let arrived = Arc::new(AtomicI64::new(0));
-        let (mut frames, _reader) = read_frames(Box::new(near), Arc::clone(&arrived));
+        let (mut frames, _reader) =
+            read_frames(Box::new(near), Arc::clone(&arrived), Arc::default());
         let before = now();
         writing
             .write_all(b"{\"Ended\":{\"session\":\"s1\"}}\n")
@@ -4342,8 +4565,200 @@ mod tests {
         );
     }
 
+    /// What `read_frames` gives for `lines`, each frame or the kind of error
+    /// that ended the reading.
+    async fn read_lines(lines: &[&str]) -> Vec<Result<Frame, io::ErrorKind>> {
+        read_lines_skipping(lines).await.0
+    }
+
+    /// What `read_frames` gives for `lines`, as [`read_lines`], and whether
+    /// it skipped a share.
+    async fn read_lines_skipping(lines: &[&str]) -> (Vec<Result<Frame, io::ErrorKind>>, bool) {
+        let (far, near) = tokio::io::duplex(8192);
+        let (_, mut writing) = tokio::io::split(far);
+        let skipped_shares = Arc::new(AtomicBool::new(false));
+        let (mut frames, _reader) = read_frames(
+            Box::new(near),
+            Arc::new(AtomicI64::new(0)),
+            Arc::clone(&skipped_shares),
+        );
+        writing
+            .write_all(format!("{}\n", lines.join("\n")).as_bytes())
+            .await
+            .expect("written");
+        drop(writing);
+        let mut heard = Vec::new();
+        while let Some(frame) = frames.recv().await {
+            heard.push(frame.map_err(|error| error.kind()));
+        }
+        (heard, skipped_shares.load(Ordering::Relaxed))
+    }
+
+    fn ended(session: &str) -> Frame {
+        Frame::Ended {
+            session: session.to_owned(),
+        }
+    }
+
+    /// A frame of a kind this end knows whose body it can't read ends the
+    /// reading, as it did before kinds were skipped: it may be the answer an
+    /// ask waits on with no time limit, or a piece whose window slot would
+    /// never come back, and only the link's drop answers those. So does a
+    /// second hello this end can't read, JSON of no frame's shape, and a
+    /// kind said twice, which a map would fold into the last.
+    #[tokio::test]
+    async fn the_reader_ends_at_a_known_kind_it_cant_read() {
+        for bad in [
+            "{\"Ended\":{\"session\":7}}",
+            "{\"Started\":{\"reply\":{\"Ok\":\"Zzz\"}}}",
+            "{\"Hello\":{}}",
+            "{\"Share\":{\"Holds\":{\"quest\":1}}}",
+            "{\"Share\":7}",
+            "\"Share\"",
+            "[\"Ended\",\"s2\"]",
+            "{\"Ended\":{\"session\":\"s2\"},\"Left\":null}",
+            "{\"Share\":{\"Want\":\"bad\"},\"Share\":{\"Zzz\":1}}",
+            "{\"Share\":{\"Want\":\"bad\",\"Zzz\":1}}",
+            "{\"Zzz\":1,\"Zzz\":2}",
+        ] {
+            let ended_by = [
+                "{\"Ended\":{\"session\":\"s1\"}}",
+                bad,
+                "{\"Ended\":{\"session\":\"s3\"}}",
+            ];
+            assert_eq!(
+                read_lines(&ended_by).await,
+                [Ok(ended("s1")), Err(io::ErrorKind::InvalidData)],
+                "{bad} ends the reading, and nothing after it is read"
+            );
+        }
+    }
+
+    /// The kinds the reader checks a frame against are the enums' own, so
+    /// a variant added later is known without a list to keep.
+    #[test]
+    fn the_kinds_known_are_the_enums_own() {
+        let frames = kinds::<Frame>();
+        for kind in ["Hello", "Share", "Ended", "Started", "HandedOver"] {
+            assert!(frames.contains(&kind), "{kind} is a frame: {frames:?}");
+        }
+        assert!(kinds::<Say>().contains(&"Holds"), "Holds is a share");
+        assert!(!frames.contains(&"Holds"), "and not a frame");
+    }
+
+    /// Each skipped kind is said once a link, and past [`SKIPS_SAID`] kinds
+    /// only once more that there are others, so the log and the kinds kept
+    /// stay bounded however many an end sends, an empty kind among them.
+    #[test]
+    fn the_kinds_skipped_are_said_a_bounded_number_of_times() {
+        let mut skipped = Skipped::default();
+        let mut said = Vec::new();
+        for kind in std::iter::once(String::new()).chain((0..40).map(|kind| format!("G{kind}"))) {
+            let unread = Unread::Frame(kind);
+            said.extend(say_skipped("tern", &unread, &mut skipped));
+            said.extend(say_skipped("tern", &unread, &mut skipped));
+        }
+        assert_eq!(
+            said.len(),
+            SKIPS_SAID + 1,
+            "the first kinds and the word for more: {said:?}"
+        );
+        assert!(said[SKIPS_SAID].contains("more kinds"), "{said:?}");
+        assert_eq!(
+            skipped.kinds.len(),
+            SKIPS_SAID,
+            "only the kinds said are kept"
+        );
+        assert!(skipped.kinds.contains("") && !skipped.kinds.contains("G39"));
+    }
+
+    /// A skip says the other end's words cut short and quoted, so a long or
+    /// marked kind or machine can't fill the log or write a line of its own,
+    /// and keeps only what it said.
+    #[test]
+    fn a_skip_says_the_other_ends_words_cut_and_quoted() {
+        let mut skipped = Skipped::default();
+        let long = format!("{}\nforged line", "k".repeat(60));
+        let said = say_skipped(&"m".repeat(60), &Unread::Share(long), &mut skipped)
+            .expect("a new kind is said");
+        assert!(
+            said.starts_with(&format!("{:?} sent", "m".repeat(WORD_SHOWN))),
+            "{said}"
+        );
+        assert!(!said.contains('\n') && !said.contains("forged"), "{said}");
+        let kept = skipped.kinds.iter().next().expect("one kind kept");
+        assert_eq!(kept.chars().count(), WORD_SHOWN, "{kept}");
+    }
+
+    /// After the hello, a frame of a kind this end doesn't know, or a share
+    /// of a kind it doesn't, is skipped and the frames after it are read,
+    /// as an end newer than this one may send them; a line that isn't JSON
+    /// still ends the reading, as does any unread first line.
+    #[tokio::test]
+    async fn the_reader_skips_a_frame_it_cant_read_after_the_hello() {
+        let hello = serde_json::to_string(&Frame::Hello(realm("tern").hello())).expect("a hello");
+        let lines = [
+            hello.as_str(),
+            "{\"Gossip\":{\"about\":\"what is next\"}}",
+            "\"Wave\"",
+            "{\"\":1}",
+            "{\"Ended\":{\"session\":\"s2\"}}",
+            "not a frame",
+            "{\"Ended\":{\"session\":\"s3\"}}",
+        ];
+        let (heard, skipped_shares) = read_lines_skipping(&lines).await;
+        assert!(matches!(heard[0], Ok(Frame::Hello(_))), "{heard:?}");
+        assert_eq!(
+            heard[1..],
+            [Ok(ended("s2")), Err(io::ErrorKind::InvalidData)],
+            "the three it can't read are skipped, and reading ends at the line that isn't one"
+        );
+        assert!(!skipped_shares, "none of them was a share");
+        let shares = [
+            "{\"Ended\":{\"session\":\"s1\"}}",
+            "{\"Share\":{\"Murmur\":{\"quest\":\"q\"}}}",
+            "{\"Share\":\"Hum\"}",
+            "{\"Ended\":{\"session\":\"s2\"}}",
+        ];
+        assert_eq!(
+            read_lines_skipping(&shares).await,
+            (vec![Ok(ended("s1")), Ok(ended("s2"))], true),
+            "shares of kinds it doesn't know are skipped, and kept as skipped"
+        );
+        assert_eq!(
+            read_lines(&["{\"Gossip\":{}}", "{\"Ended\":{\"session\":\"s1\"}}"]).await,
+            [Err(io::ErrorKind::InvalidData)],
+            "a first line it can't read ends it, and nothing after it is read"
+        );
+    }
+
     #[tokio::test]
     async fn a_link_that_can_release_ends_once_the_other_machine_hands_over() {
+        let (ended, skiff) = handed_over_after(&[]).await;
+        assert_eq!(
+            ended.expect("the link doesn't fail"),
+            Ending::HandedOver,
+            "holding all the other machine said, it may be released"
+        );
+        assert_eq!(skiff.endings("lent", 0), 0, "a handover is no drop");
+    }
+
+    /// A share this end skipped may have named a file it then never heard
+    /// of, so a handover after one isn't taken as holding all the other
+    /// machine said.
+    #[tokio::test]
+    async fn a_handover_after_a_skipped_share_doesnt_release() {
+        let (ended, _) = handed_over_after(&["{\"Share\":{\"Murmur\":{\"quest\":\"q\"}}}"]).await;
+        assert!(
+            !matches!(ended, Ok(Ending::HandedOver)),
+            "the link ends as the other end leaves, not as handed over: {ended:?}"
+        );
+    }
+
+    /// How a link that can release ends when the other machine says its
+    /// hello and what it has, then `before`, then that it has handed over,
+    /// and leaves; and the store at this end.
+    async fn handed_over_after(before: &[&str]) -> (io::Result<Ending>, Memory) {
         let skiff = Memory::default();
         let store = skiff.clone();
         let (skiff_end, far_reading, mut far_writing) = skiff_over(
@@ -4373,21 +4788,25 @@ mod tests {
                     messages: Vec::new(),
                     living: Some(Vec::new()),
                 },
-                Frame::HandedOver,
             ],
         )
         .await;
+        for line in before {
+            far_writing
+                .write_all(format!("{line}\n").as_bytes())
+                .await
+                .expect("written");
+        }
+        says(&mut far_writing, &[Frame::HandedOver]).await;
+        // Its reading half still holds the pipe open, so only a shutdown
+        // says it has left.
+        far_writing.shutdown().await.expect("shut");
+        drop(far_writing);
         let ended = tokio::time::timeout(PATIENCE, skiff_end)
             .await
             .expect("skiff's end ends")
             .expect("skiff's end runs");
-
-        assert_eq!(
-            ended.expect("the link doesn't fail"),
-            Ending::HandedOver,
-            "holding all the other machine said, it may be released"
-        );
-        assert_eq!(skiff.endings("lent", 0), 0, "a handover is no drop");
+        (ended, skiff)
     }
 
     /// What a worker, tern, says to the machine that dialled it: its hello,

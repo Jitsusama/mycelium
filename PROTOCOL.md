@@ -331,6 +331,27 @@ same code, each line a JSON value:
     go; a link that drops lets go every lend it carried, and the
     asker hears it refused 503.
 
+Two ends of one `version` link whichever of them is newer, for as
+long as each change keeps to three rules. A new field is optional, so
+an end older than it reads the frame without it, and an end newer
+reads a frame that lacks it. A new frame, or a new kind within one, is
+sent only to an end whose hello says it knows of it, as each flag
+above says. And after the first frame, an end skips a frame of a kind
+it doesn't know, or a `Share` of a kind it doesn't, saying so once a
+link for each of its first eight kinds, rather than ending the link.
+A frame of a kind it knows whose body it can't read still ends the
+link, as a hello it can't read does, a line that isn't JSON or holds
+no frame's shape, and a frame naming its kind twice: such a frame may
+be the answer an ask waits on, which only the link's drop then
+answers. A link that skipped a share may have missed a file it names,
+so it never takes the other end's `HandedOver` as holding all it said.
+A change that can't keep
+to the rules, as one changing what a frame means would be, raises
+`version`, and ends of two versions are refused, saying which to
+update (Membership, below). An end older than skipping ends the link
+at any frame it can't read, so the rules hold fully only between ends
+that skip.
+
 Only one link joins two machines, and whichever dialled first holds it,
 so each end carries what its own node asks of the other machine: starts,
 steers, updates, carries, ends and lends, and runs from the dialling end
