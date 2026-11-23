@@ -39,15 +39,24 @@ pub struct Flows {
     /// this machine, so a message for it waits for a link to carry it to a
     /// machine that has.
     pub sockets: PathBuf,
+    /// The folder they served in before the runtime folder moved, where a
+    /// realm's node started then still serves, for one release
+    /// ([`crate::place::former_runtime`]).
+    pub before: Option<PathBuf>,
     /// The crossings log, a JSON line each.
     pub log: PathBuf,
 }
 
 impl Flows {
-    /// The socket `realm`'s node on this machine serves.
+    /// The socket `realm`'s node on this machine serves: in `sockets`, or
+    /// while nothing is there, in the folder before it.
     #[must_use]
     pub fn socket(&self, realm: &str) -> PathBuf {
-        self.sockets.join(format!("{realm}.sock"))
+        let name = format!("{realm}.sock");
+        crate::place::found(
+            &self.sockets.join(&name),
+            self.before.as_ref().map(|dir| dir.join(&name)),
+        )
     }
 }
 
@@ -290,6 +299,28 @@ mod tests {
             hosted: false,
             invite: None,
         }
+    }
+
+    #[test]
+    fn a_realms_node_is_found_where_it_serves_else_where_it_served() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let flows = Flows {
+            sockets: dir.path().join("now"),
+            before: Some(dir.path().join("before")),
+            ..Flows::default()
+        };
+        fs::create_dir_all(dir.path().join("before")).expect("the former folder");
+        fs::write(dir.path().join("before/work.sock"), b"").expect("a node of then");
+        assert_eq!(
+            flows.socket("work"),
+            dir.path().join("before/work.sock"),
+            "a node started before the move is found where it serves"
+        );
+        assert_eq!(
+            flows.socket("home"),
+            dir.path().join("now/home.sock"),
+            "a realm with no node anywhere is looked for where it will be"
+        );
     }
 
     #[test]
