@@ -1074,7 +1074,10 @@ run. After a carry it would carry none for half an hour, and it would
 carry at most six in a day. A session moved by anyone stays put for a
 day, by the carries kept here, and nothing goes to a machine a session
 came from within the hour, nor to a Mac whose node doesn't say
-`fences_held` but a session shown unfenced (see The Socket).
+`fences_held` but a session shown unfenced (see The Socket). Nor does
+anything go to a machine whose facts are too old to place by (the
+`stale` flag, past 150 seconds), since it may have filled up since it
+was heard, or its link may be down.
 
 Each choice to sleep or carry, and each change in why it does nothing,
 is a JSON line in the state folder's `eases`, a file each day of at
