@@ -402,12 +402,14 @@ impl Stamp {
 /// second per link on a machine sharing 71 quests, with nothing changed.
 /// Each is shared, so the lock is held only to find it, and copied
 /// outside it, where looks on several links don't wait on each other.
-static READ_BEFORE: LazyLock<Mutex<HashMap<PathBuf, (Stamp, Arc<Ledger>)>>> =
-    LazyLock::new(Mutex::default);
+static READ_BEFORE: LazyLock<Mutex<ReadBefore>> = LazyLock::new(Mutex::default);
+
+/// Each ledger read before, by its path, with the stamp of its file.
+type ReadBefore = HashMap<PathBuf, (Stamp, Arc<Ledger>)>;
 
 /// The ledgers read before, whatever a holder that panicked left: each
 /// entry is written whole, so none is ever half changed.
-fn read_before() -> std::sync::MutexGuard<'static, HashMap<PathBuf, (Stamp, Arc<Ledger>)>> {
+fn read_before() -> std::sync::MutexGuard<'static, ReadBefore> {
     READ_BEFORE.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
