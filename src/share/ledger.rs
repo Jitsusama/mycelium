@@ -351,8 +351,10 @@ impl Held {
         let staged = self.path.with_extension("json.mycelium.tmp");
         let text = serde_json::to_vec_pretty(&self.ledger).map_err(io::Error::other)?;
         fs::write(&staged, text)?;
-        let stamp = Stamp::of(&fs::metadata(&staged)?);
         fs::rename(staged, &self.path)?;
+        // Read after the rename, which moves a file's change time, and
+        // while the ledger is held, so no other writer comes between.
+        let stamp = Stamp::of(&fs::metadata(&self.path)?);
         read_before().insert(self.path.clone(), (stamp, self.ledger.clone()));
         Ok(())
     }
