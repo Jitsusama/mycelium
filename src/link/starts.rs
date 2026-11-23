@@ -36,8 +36,10 @@ const ANSWERED_WITHIN: Duration = Duration::from_secs(30);
 /// had given up on its answer at 30 s, so the carry took it for refused.
 /// A start asked again under its name joins one that landed late, so
 /// waiting longer only trades a refusal for the answer. It stays under
-/// the two minutes the harness waits on a start it asks for.
-const START_ANSWERED_WITHIN: Duration = Duration::from_secs(90);
+/// the two minutes the harness waits on a start it asks for, as the most
+/// a node waits; one that spent some of them first waits less
+/// ([`Asks::ask_within`]).
+pub const START_ANSWERED_WITHIN: Duration = Duration::from_secs(90);
 
 /// The words that join a session on the machine a link reaches, named
 /// first, from this one, given the words that join it there, as
@@ -183,7 +185,22 @@ impl Asks {
     ///
     /// [`Work::asked_there`]: crate::placement::Work::asked_there
     pub async fn ask(&self, machine: &str, start: Start) -> Result<Reply, Unsent> {
-        self.start(machine, start, Asked::Start).await
+        self.ask_within(machine, start, START_ANSWERED_WITHIN).await
+    }
+
+    /// Asks `machine` to start `start` as [`Self::ask`] does, waiting for
+    /// its answer no longer than `within`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::ask`]'s.
+    pub async fn ask_within(
+        &self,
+        machine: &str,
+        start: Start,
+        within: Duration,
+    ) -> Result<Reply, Unsent> {
+        self.start(machine, start, (Asked::Start, within)).await
     }
 
     /// Asks `machine` to reopen a session by `start`, pi's bare resume of
@@ -194,20 +211,36 @@ impl Asks {
     ///
     /// As [`Self::ask`]'s.
     pub async fn reopen(&self, machine: &str, start: Start) -> Result<Reply, Unsent> {
+        self.reopen_within(machine, start, START_ANSWERED_WITHIN)
+            .await
+    }
+
+    /// Asks `machine` to reopen a session by `start` as [`Self::reopen`]
+    /// does, waiting for its answer no longer than `within`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::ask`]'s.
+    pub async fn reopen_within(
+        &self,
+        machine: &str,
+        start: Start,
+        within: Duration,
+    ) -> Result<Reply, Unsent> {
         if self.there(machine).is_none() {
             return Err(Unsent {
                 why: format!("no link reaches {machine} now to judge a reopening"),
                 sent: false,
             });
         }
-        self.start(machine, start, Asked::Reopen).await
+        self.start(machine, start, (Asked::Reopen, within)).await
     }
 
     async fn start(
         &self,
         machine: &str,
         mut start: Start,
-        asked: fn(Start) -> Asked,
+        (asked, within): (fn(Start) -> Asked, Duration),
     ) -> Result<Reply, Unsent> {
         let there = self.there(machine).ok_or_else(|| Unsent {
             why: format!("no link reaches {machine} now"),
@@ -215,10 +248,7 @@ impl Asks {
         })?;
         start.work = start.work.asked_there();
         Ok(
-            match self
-                .send(machine, asked(start), Some(START_ANSWERED_WITHIN))
-                .await?
-            {
+            match self.send(machine, asked(start), Some(within)).await? {
                 // A start relayed there starts there or nowhere, so an
                 // answer naming another machine is refused: its node's
                 // book would keep it as that machine's session's start.
