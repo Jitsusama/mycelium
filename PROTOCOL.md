@@ -837,7 +837,10 @@ session says of itself:
   fenced. Only a `bwrap` reached from the owner through `pi-spawner`,
   `bash` or `sh` alone counts, as the agent fence starts it; one a
   command starts, such as a test suite's, says nothing of the agent's
-  fence. A presence naming a looser fence than that is
+  fence. That chain is the fence's contract with the node: a fence
+  that puts any other program before `bwrap` (`timeout`, `env`,
+  `setsid`) reads its sessions unfenced, which costs placement, never
+  containment. A presence naming a looser fence than that is
   refused, as `HARBOR says it runs unfenced, but its process shows it
   fenced, so where it may land can't be told`; one naming a stricter
   stands, since the strict fence leaves nothing lasting to show. A

@@ -395,6 +395,8 @@ const BWRAP: &str = "bwrap";
 /// command. A bubblewrap reached through anything else, such as a test
 /// suite's own under a command the agent ran, is that command's, and
 /// says nothing of the fence the agent runs in (85PKB2, 23 November).
+/// This is the fence's contract with the node: a fence putting another
+/// program before its bubblewrap reads its sessions unfenced (ISXEG8).
 const FENCED_THROUGH: &[&str] = &["pi-spawner", "bash", "sh"];
 
 /// How many processes are looked through at most for those below a pi,
