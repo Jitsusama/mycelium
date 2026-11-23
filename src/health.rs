@@ -184,11 +184,12 @@ mod tests {
         .expect("a session reads")
     }
 
+    /// A reader of what a store kept of a link, by its machine.
+    type Reads<T> = fn(&str) -> T;
+
     /// What a store kept of links that never dropped, were never refused
     /// and never stood.
-    fn nothing_kept()
-    -> Kept<impl Fn(&str) -> usize, impl Fn(&str) -> Option<String>, impl Fn(&str) -> Option<i64>>
-    {
+    fn nothing_kept() -> Kept<Reads<usize>, Reads<Option<String>>, Reads<Option<i64>>> {
         Kept {
             ended: |_: &str| 0,
             refused: |_: &str| None,
