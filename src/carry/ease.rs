@@ -746,8 +746,10 @@ fn carried(
             why_not.push(format!("{who} moved within {} hours", PIN.as_hours()));
             continue;
         }
-        let (peers, refused) = bringing_back(&peers, cell.fence);
+        let (peers, mut refused) = bringing_back(&peers, cell.fence);
+        let (peers, apart) = alike(here, &peers, cell.fence);
         if peers.is_empty() {
+            refused.extend(apart);
             why_not.push(format!("{who}: {}", refused.join("; ")));
             continue;
         }
@@ -812,6 +814,42 @@ fn bringing_back(peers: &[Machine], kind: Option<Kind>) -> (Vec<Machine>, Vec<St
                 }
                 None => true,
             }
+        })
+        .cloned()
+        .collect();
+    (taken, left_out)
+}
+
+/// Those of `peers` a session in the fence `kind` may be carried to with
+/// nobody asking, and why each other is left out: a strict session goes
+/// only to a machine of `here`'s own system. Each system's strict fence
+/// reads and writes its own way, a Mac's the home folder but what pi's
+/// fence hides, so a session carried across lands looser though both say
+/// strict. A person or an orchestrator may still order such a carry;
+/// easing alone never chooses one, and where either system can't be told
+/// it's taken as another.
+fn alike(here: &Here, peers: &[Machine], kind: Option<Kind>) -> (Vec<Machine>, Vec<String>) {
+    if kind != Some(Kind::Strict) {
+        return (peers.to_vec(), Vec::new());
+    }
+    let ours = here
+        .machines
+        .iter()
+        .find(|machine| machine.name == here.name)
+        .and_then(|machine| machine.system.as_deref());
+    let mut left_out = Vec::new();
+    let taken = peers
+        .iter()
+        .filter(|machine| {
+            let same = ours.is_some() && machine.system.as_deref() == ours;
+            if !same {
+                left_out.push(format!(
+                    "{}'s strict fence is another system's, or it can't say which, so a strict \
+                     session isn't carried there unasked",
+                    machine.name
+                ));
+            }
+            same
         })
         .cloned()
         .collect();
@@ -2028,6 +2066,63 @@ pub(super) mod tests {
             why_not(&chose(&realm, &[unsaid], &history)),
             "S1: the session doesn't say which fence it runs in, so where it lands can't be \
              judged"
+        );
+    }
+
+    // Each system's strict fence reads and writes its own way, a Mac's
+    // more of the home folder, so easing never carries a strict session
+    // across though both say strict.
+    #[test]
+    fn a_strict_session_is_carried_unasked_only_to_its_own_system() {
+        let kinds = [Kind::None, Kind::Fence, Kind::Strict];
+        let mut realm = realm();
+        realm.push(machine("osprey", 20.0));
+        for one in &mut realm {
+            one.declared = Some(declaring(&kinds));
+            one.system = Some("linux".to_owned());
+        }
+        realm[1].system = Some("macos".to_owned());
+        realm[1].fences_held = true;
+        realm[1].room.as_mut().expect("room").pressure.cpu = 0.0;
+        let mut strict = cell("s1");
+        strict.fence = Some(Kind::Strict);
+        let declared = declaring(&kinds);
+        let chosen = |machines: &[Machine], cell: &Cell| {
+            let here = Here {
+                name: "skiff",
+                declared: Some(&declared),
+                machines,
+                loads: &Loads::new(),
+            };
+            let history = hot_for(machines, 11);
+            choose(
+                &here,
+                std::slice::from_ref(cell),
+                &reading(machines, now()),
+                &history,
+                now(),
+            )
+        };
+        assert_eq!(
+            carries(&chosen(&realm, &strict)),
+            Some(("s1", "osprey")),
+            "the Mac has the most room, but the next Linux machine takes it"
+        );
+        assert_eq!(
+            carries(&chosen(&realm, &cell("s2"))),
+            Some(("s2", "tern")),
+            "a fenced session still goes to the Mac that holds its fence"
+        );
+        let apart = "S1: tern's strict fence is another system's, or it can't say which, so a \
+                     strict session isn't carried there unasked";
+        realm.pop();
+        assert_eq!(why_not(&chosen(&realm, &strict)), apart);
+        realm[1].system = Some("linux".to_owned());
+        realm[0].system = None;
+        assert_eq!(
+            why_not(&chosen(&realm, &strict)),
+            apart,
+            "where this machine can't say its system, none is its own"
         );
     }
 

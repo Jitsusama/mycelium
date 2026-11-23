@@ -1089,7 +1089,12 @@ run. After a carry it would carry none for half an hour, and it would
 carry at most six in a day. A session moved by anyone stays put for a
 day, by the carries kept here, and nothing goes to a machine a session
 came from within the hour, nor to a Mac whose node doesn't say
-`fences_held` but a session shown unfenced (see The Socket). Nor does
+`fences_held` but a session shown unfenced (see The Socket). A strict
+session goes only to a machine of its own system, by each machine's
+`system`, since a Mac's strict fence reads more of the home folder
+than Linux's: carried across, it would land looser though both say
+strict. A machine that names no system is taken as another. A person
+or an orchestrator may still order such a carry. Nor does
 anything go to a machine whose facts are too old to place by (the
 `stale` flag, past 150 seconds), since it may have filled up since it
 was heard, or its link may be down.
