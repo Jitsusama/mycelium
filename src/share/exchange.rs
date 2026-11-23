@@ -365,11 +365,15 @@ pub const HANDOVER: &str = "handover";
 /// The most files a scratch folder named for sharing may hold, so a
 /// folder of bulk data isn't named by mistake.
 const MOST_FILES: u64 = 10_000;
-/// The most bytes a scratch folder named for sharing may hold.
-const MOST_BYTES: u64 = 1 << 30;
+/// The most bytes a scratch folder named for sharing may hold: room for a
+/// carry's handover of several long sessions at once.
+const MOST_BYTES: u64 = 4 << 30;
 /// The largest file a scratch folder named for sharing may hold: a file
 /// crosses in pieces, but is held whole once it lands, to be settled.
-const LARGEST_FILE: u64 = 64 << 20;
+/// A session that has run for days writes a file of hundreds of
+/// megabytes, and its quest can't move without it, so this is past the
+/// largest seen (360 MB, on 23 November) with room to grow.
+const LARGEST_FILE: u64 = 512 << 20;
 
 /// How many quests deep a quest may sit under others.
 const MOST_NESTED: usize = 16;
@@ -4265,6 +4269,36 @@ mod tests {
                 .scratch
                 .is_empty(),
             "and none of them is shared"
+        );
+    }
+
+    #[test]
+    fn a_long_sessions_file_is_named_but_one_past_the_largest_is_refused() {
+        let skiff = Machine::new("skiff");
+        // Files of a length with nothing written, so the test writes no
+        // hundreds of megabytes to name them.
+        let put = |path: &str, len: u64| {
+            let path = skiff.places.scratch.join(QUEST).join(path);
+            fs::create_dir_all(path.parent().expect("a file has a folder")).expect("made");
+            fs::File::create(path)
+                .expect("made")
+                .set_len(len)
+                .expect("sized");
+        };
+        put("handover/skiff/session.jsonl", 360 << 20);
+        put("bulk/one.bin", LARGEST_FILE + 1);
+        skiff
+            .places
+            .name_scratch(QUEST, "handover")
+            .expect("a 360 MB session's handover is named");
+        let error = skiff
+            .places
+            .name_scratch(QUEST, "bulk")
+            .expect_err("refused")
+            .to_string();
+        assert!(
+            error.contains("more than the"),
+            "refused as too large: {error}"
         );
     }
 
