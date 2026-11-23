@@ -8113,7 +8113,7 @@ mod tests {
         );
         assert_eq!(
             redial_left(at, at + 10_000),
-            Some(REDIAL_AWAITED_MOST - Duration::from_secs(10)),
+            REDIAL_AWAITED_MOST.checked_sub(Duration::from_secs(10)),
             "a start that waited 10s for room waits that much less"
         );
         assert_eq!(
