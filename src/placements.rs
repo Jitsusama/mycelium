@@ -10,6 +10,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::facts::Machine;
@@ -35,13 +36,115 @@ pub struct Record {
     pub machines: Vec<Machine>,
     /// Every machine's load beyond what its room says.
     pub loads: Loads,
-    /// The machines refused before they were judged, and why: those whose
-    /// ground is looser than the asker's fence, so a replay refuses them
-    /// too.
+    /// The machines refused before they were judged, and why: for an
+    /// agent's work, those whose ground is looser than its fence, those
+    /// whose fence runs no command for its run or held start, and every
+    /// Mac for its held start; so a replay refuses them too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refused: Vec<Miss>,
+    /// The fence placement held the asker's work to, as the node judged
+    /// the asker, so a refusal for looser ground, or its absence, reads
+    /// off the record. None where it was placed unfenced: the person's
+    /// work, and a start relayed here that this node took as the
+    /// person's, on the asking machine's word. A start relayed here that
+    /// this node took as an agent's says the fence it held it to. None
+    /// too in a record kept before it was said; a word this build doesn't
+    /// know, or a `null`, reads as [`Fence::Unknown`], never as unfenced.
+    #[serde(
+        default,
+        deserialize_with = "or_unknown",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub fence: Option<Fence>,
+    /// The screen an agent's work was placed through beside its fence,
+    /// where it was fenced, so a Mac taking an agent's held start reads
+    /// as the run's screen the agent shown unfenced is placed through,
+    /// rather than as a refusal missing. None where `fence` is, as
+    /// placing writes it.
+    #[serde(
+        default,
+        deserialize_with = "or_unknown",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub screen: Option<Screen>,
     /// How each machine was judged, and where the work went.
     pub decision: Decision,
+}
+
+/// The fence a record says placement held an agent's work to, which is
+/// never none, as an agent is never placed unfenced. Its words are
+/// spelled out one by one, so the file's words stay put whatever the
+/// fences are named in the code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Fence {
+    /// The agent fence.
+    #[serde(rename = "fence")]
+    Fence,
+    /// The strict fence.
+    #[serde(rename = "strict")]
+    Strict,
+    /// A word this build doesn't know, as a newer one may write: some
+    /// fence, so never read as unfenced.
+    #[serde(rename = "unknown")]
+    Unknown,
+}
+
+/// An agent's fence as a record says it, no looser than the agent fence,
+/// as placing floors it.
+impl From<crate::declared::Kind> for Fence {
+    fn from(kind: crate::declared::Kind) -> Self {
+        match kind {
+            crate::declared::Kind::None | crate::declared::Kind::Fence => Self::Fence,
+            crate::declared::Kind::Strict => Self::Strict,
+        }
+    }
+}
+
+/// The screen a record says an agent's work was placed through, beside
+/// ground as firm as where it asks, its words spelled out as
+/// [`Fence`]'s are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Screen {
+    /// Firm ground alone, which placing pairs with no fence.
+    #[serde(rename = "ground")]
+    Ground,
+    /// An agent's run: only where its fence runs a command.
+    #[serde(rename = "run")]
+    Run,
+    /// An agent's held start: where its fence runs a command, and on no
+    /// Mac, whose holder would start it outside any fence.
+    #[serde(rename = "held")]
+    Held,
+    /// A word this build doesn't know, as a newer one may write.
+    #[serde(rename = "unknown")]
+    Unknown,
+}
+
+/// A word of a record's whose readers keep one they don't know apart
+/// from one never said.
+trait Unknowable: DeserializeOwned {
+    /// What a word this build doesn't know reads as.
+    const UNKNOWN: Self;
+}
+
+impl Unknowable for Fence {
+    const UNKNOWN: Self = Self::Unknown;
+}
+
+impl Unknowable for Screen {
+    const UNKNOWN: Self = Self::Unknown;
+}
+
+/// A field as said, and unknown where it is in a shape this build doesn't
+/// read, `null` among them, which spoils only that field, never the rest
+/// of the record. A field left out never comes here: `default` makes it
+/// none.
+fn or_unknown<'de, D: serde::Deserializer<'de>, T: Unknowable>(
+    said: D,
+) -> Result<Option<T>, D::Error> {
+    Ok(Some(
+        serde_json::from_value(serde_json::Value::deserialize(said)?).unwrap_or(T::UNKNOWN),
+    ))
 }
 
 /// Where a node keeps its placements: a folder of `<date>.jsonl` files,
@@ -110,6 +213,7 @@ pub(crate) fn let_go_before(folder: &Path, day: jiff::civil::Date) {
 mod tests {
     use super::*;
     use crate::placement::{Judgement, Placement};
+    use serde_json::{Value, json};
 
     fn record(machine: &str) -> Record {
         Record {
@@ -126,6 +230,8 @@ mod tests {
             machines: Vec::new(),
             loads: Loads::new(),
             refused: Vec::new(),
+            fence: None,
+            screen: None,
             decision: Decision {
                 placement: Placement::Placed {
                     machine: machine.to_owned(),
@@ -210,6 +316,98 @@ mod tests {
             read("2026-11-17.jsonl"),
             [record("tern")],
             "the next day's in its own file"
+        );
+    }
+
+    #[test]
+    fn a_record_says_the_askers_fence_and_screen_only_where_the_asker_was_fenced() {
+        let person = serde_json::to_value(record("kestrel")).expect("a record");
+        assert_eq!(
+            (person.get("fence"), person.get("screen")),
+            (None, None),
+            "the person's says neither: {person}"
+        );
+        // The pairs placing writes: an agent's held start, and its run.
+        for (fence, screen, said_as) in [
+            (Fence::Fence, Screen::Held, ("fence", "held")),
+            (Fence::Strict, Screen::Run, ("strict", "run")),
+        ] {
+            let fenced = Record {
+                fence: Some(fence),
+                screen: Some(screen),
+                ..record("kestrel")
+            };
+            let said = serde_json::to_value(&fenced).expect("a record");
+            assert_eq!(
+                (&said["fence"], &said["screen"]),
+                (&json!(said_as.0), &json!(said_as.1))
+            );
+            let kept: Record = serde_json::from_value(said).expect("a record");
+            assert_eq!(kept, fenced, "read back whole");
+        }
+
+        // Without either key, as every line kept before them is.
+        let kept: Record = serde_json::from_value(person.clone()).expect("a record");
+        assert_eq!(
+            (kept.fence, kept.screen),
+            (None, None),
+            "a line saying neither reads as neither"
+        );
+
+        // The file's words, as kept, whatever the code names them.
+        let read = |fence: Value, screen: Value| {
+            let mut line = person.clone();
+            line["fence"] = fence;
+            line["screen"] = screen;
+            let kept: Record = serde_json::from_value(line).expect("the rest still reads");
+            assert_eq!(kept.work, record("kestrel").work, "and the rest is spared");
+            (kept.fence, kept.screen)
+        };
+        assert_eq!(
+            read(json!("fence"), json!("held")),
+            (Some(Fence::Fence), Some(Screen::Held))
+        );
+        assert_eq!(
+            read(json!("strict"), json!("run")),
+            (Some(Fence::Strict), Some(Screen::Run))
+        );
+        assert_eq!(
+            read(json!("porous"), json!({"later": true})),
+            (Some(Fence::Unknown), Some(Screen::Unknown)),
+            "a word this build doesn't know is some fence, never unfenced"
+        );
+        assert_eq!(
+            read(json!("strict"), json!("sideways")),
+            (Some(Fence::Strict), Some(Screen::Unknown)),
+            "and a known fence beside an unknown screen keeps both said"
+        );
+        assert_eq!(
+            read(Value::Null, Value::Null),
+            (Some(Fence::Unknown), Some(Screen::Unknown)),
+            "a null said is no word, and never reads as left out"
+        );
+        assert_eq!(
+            read(json!("none"), json!("ground")),
+            (Some(Fence::Unknown), Some(Screen::Ground)),
+            "no record says an agent unfenced, so none is no word of its"
+        );
+        assert_eq!(
+            [Screen::Ground, Screen::Unknown].map(|screen| serde_json::to_value(screen).ok()),
+            [Some(json!("ground")), Some(json!("unknown"))],
+            "and the other words are spelled as kept"
+        );
+        assert_eq!(
+            serde_json::to_value(Fence::Unknown).ok(),
+            Some(json!("unknown"))
+        );
+    }
+
+    #[test]
+    fn an_agents_fence_is_said_no_looser_than_the_agent_fence() {
+        use crate::declared::Kind;
+        assert_eq!(
+            [Kind::None, Kind::Fence, Kind::Strict].map(Fence::from),
+            [Fence::Fence, Fence::Fence, Fence::Strict]
         );
     }
 }

@@ -1818,8 +1818,10 @@ work was placed and a replay can place it again under other weights:
 `at`, `start` (whether it was a start, or an ask to start answered
 here), the `work`, every machine's facts as placing read them
 (`machines`), each machine's `loads` (`sessions` and `placed` starts
-beyond what its room says), and the `decision`: the `placement`
-answered and, for each machine, how it was `judged` (`machine`,
+beyond what its room says), the machines `refused` before they were
+judged and why, left out where none was, the `fence` and `screen`
+said below, and the `decision`: the `placement` answered and, for each
+machine, how it was `judged` (`machine`,
 `qualifies`, `over`, `unheard`, how many preferences it met as
 `preferred`, its `headroom`, and its `chance` of being the one chosen,
 one in as many as were near the best and none for the rest), and the
@@ -1832,8 +1834,32 @@ the node can't keep is said on its error output and answered all the
 same. When a day's file is
 first written, the files of days more than 14 before it are let go, so
 the log holds about two weeks.
+
 A processor reading that isn't a number counts as none, so every
 `headroom` is a number.
+
+A record's `fence` is the fence placement held the asker's work to, as
+the node judged the asker: `"fence"` or `"strict"`, since an agent is
+never placed unfenced, not even by a node that is handed one so. Its
+`screen` is what that work was placed through beside its fence: `"run"`,
+or `"held"`, which no Mac takes; `"ground"`, firm ground alone, is read
+but no node writes it beside a fence today. Where a `"Start"` or
+`"Takes"` from an agent shown unfenced weighs the realm's machines, it
+places through `"run"`, which a Mac may take: that exemption, not a
+mistake, though a `"Takes"` says it with `start` false, as a `"Place"`
+does. Every other placing of an agent's start holds it to `"held"`
+however it is shown: `"PlaceToStart"`, a start relayed here, and placing
+again on a machine made for a start. So `"held"` on a start never says
+the exemption was refused. Both are left out where the work was placed
+unfenced: the person's work, and a start relayed here from the person's
+end of a link or by this node's own process. Such a start carries no
+asker, so an agent's start relayed that way says its fence only in the
+record of the node that relayed it. A start relayed here from an end
+this node takes as an agent's says its fence, and `"held"`. A word a build
+doesn't know, in either, as does a `null`, reads as `"unknown"`, never
+as unfenced, and spares the rest of the record. Like the rest of the
+log, both are only as trustworthy as the folder that keeps it, which
+any program of the account may write.
 
 `"Takes"` judges each of `starts`, one after another, as `"Start"`
 would: by the asker as its own declared fence makes it, then the book
