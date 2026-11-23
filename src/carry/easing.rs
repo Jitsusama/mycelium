@@ -407,7 +407,9 @@ fn lane_word(here: &str, looked: &Looked, lane: &Session) -> Option<Word> {
             match out.map(SignedDuration::from_millis) {
                 Some(out) if out < OUT_OF_REACH_LEADS => Some(Word::Counts(2, away)),
                 Some(_) => None,
-                None => Some(Word::Untold(format!("{away}, though since when can't be told"))),
+                None => Some(Word::Untold(format!(
+                    "{away}, though since when can't be told"
+                ))),
             }
         }
     }
@@ -1355,7 +1357,10 @@ mod tests {
             session(
                 "s47",
                 "skiff",
-                &with_at(parked("s47", "S46", &json!({"owner": {"bootId": "b1"}})), EARLIER),
+                &with_at(
+                    parked("s47", "S46", &json!({"owner": {"bootId": "b1"}})),
+                    EARLIER,
+                ),
             ),
         ];
         let looked = Looked {
