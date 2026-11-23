@@ -1862,9 +1862,11 @@ by failing its `make`, and nothing is made; it should refuse a `make`
 where the variable is missing too, as it is from a node older than it,
 though `offers`, `link` and `release` never carry it. A machine made
 is booked, before it is dialled, for the asker its make was told: once
-it links, a start or run is placed there only when that asker, or the
-person, asks, so another agent's work goes elsewhere or waits, and a
-machine whose book line names no asker takes only the person's. A
+it links, a start or run is placed there only when that asker asks, so
+another agent's work goes elsewhere or waits, and a machine whose book
+line names no asker takes only the person's. The person's own starts
+go only to a machine booked for the person or for no asker, never to
+one an agent's make booked, whose worker home that agent wrote. A
 preview is held to it as its run would be, and an ordered carry there
 of another's session is refused; only a start pinned to the machine
 made for it is not held to it. The booking is the making node's, kept
