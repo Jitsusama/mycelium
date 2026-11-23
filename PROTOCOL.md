@@ -1784,9 +1784,14 @@ again within seconds, since a link redials two seconds after a drop.
 So work that names such a machine, which misses it only for being out
 of reach, is answered that machine by `"PlaceToStart"`, and a
 `"Start"` naming it, placed first as an ask that starts nothing,
-waits up to 25 seconds for its link where that is all it misses there,
-then is placed as any start is. With a relayed start's 90 seconds,
-that stays under the two minutes the harness waits on a start. The
+waits for its link where that is all it misses there, then is placed
+as any start is. It waits up to 25 seconds from when it was asked, so
+one that already waited for room under its limits waits that much
+less, and none once it waited 25 seconds. With a relayed start's 90
+seconds, that stays under the two minutes the harness waits on a
+start, unless it waited longer than half a minute for room, as such a
+start could before. A link that keeps dropping redials more slowly
+each time, so it may come back only after the wait. The
 node's error output says which program's start waited and whether the
 link came back, and when `"PlaceToStart"` answered a machine its
 placement kept as missed. A machine out of reach longer is judged at

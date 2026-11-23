@@ -3572,16 +3572,22 @@ impl<S: Store> Shared<S> {
     /// reach is all that keeps the start from it ([`awaiting_redial`]),
     /// as placed in `fence` through `screen`, so a start isn't refused,
     /// nor sent to another machine, for a drop the next dial mends, and
-    /// one refused there for something else isn't kept waiting. Said in
-    /// the log either way, with the start's program, since the start
-    /// answers later.
+    /// one refused there for something else isn't kept waiting. The wait
+    /// counts from `at`, when the start was asked, in milliseconds of the
+    /// wall clock, so one that already waited for room under its limits
+    /// waits that much less, and none once it has waited the whole of it.
+    /// Said in the log either way, with the start's program, since the
+    /// start answers later.
     async fn awaits_redial(
         &self,
-        asked: &Start,
+        (asked, at): (&Start, i64),
         fence: Option<crate::declared::Kind>,
         screen: Screen,
     ) {
         let work = &asked.work;
+        let Some(left) = redial_left(at, jiff::Timestamp::now().as_millisecond()) else {
+            return;
+        };
         let since = redial_since();
         let others = self.others();
         let Some(machine) = redial_awaited(work, &self.machine, &others, |name| {
@@ -3597,8 +3603,12 @@ impl<S: Store> Shared<S> {
         ) {
             return;
         }
-        let program = asked.command.first().map_or("", String::as_str);
-        let until = tokio::time::Instant::now() + REDIAL_AWAITED_MOST;
+        let program = asked
+            .command
+            .first()
+            .map_or("", String::as_str)
+            .escape_debug();
+        let until = tokio::time::Instant::now() + left;
         while tokio::time::Instant::now() < until {
             tokio::time::sleep(REDIAL_LOOKED_EVERY).await;
             match link_back(&self.others(), machine) {
@@ -3622,7 +3632,7 @@ impl<S: Store> Shared<S> {
         eprintln!(
             "a start of {program} waited {}s for {machine}'s link, which dropped lately, and \
              it is still out of reach",
-            REDIAL_AWAITED_MOST.as_secs()
+            left.as_secs()
         );
     }
 
@@ -5659,7 +5669,7 @@ impl<S: Store> Shared<S> {
                 self.asked_again(machine, reopened, dropped, reopening, asked, fence)
                     .await
             }
-            (Whither::Placed, None) => self.placed_held(asked, by, dropped).await,
+            (Whither::Placed, None) => self.placed_held(asked, by, dropped, at).await,
             // One relayed here starts here or nowhere, so a name another
             // machine hasn't answered under stays held for asking there.
             (Whither::Here, Some((machine, reopens))) if machine != self.machine => {
@@ -6241,17 +6251,20 @@ impl<S: Store> Shared<S> {
     /// is told in the log, so the fence's next step on a Mac knows which
     /// to move. A reopening let through unfenced (`reopens`) is placed
     /// as a start with no fence is, as [`Self::here`] places one, and
-    /// only on the machine it names ([`Self::placed`]).
-    async fn placed_held(&self, asked: Start, by: By, reopens: bool) -> Reply {
+    /// only on the machine it names ([`Self::placed`]). It was asked at
+    /// `at`, in milliseconds of the wall clock.
+    async fn placed_held(&self, asked: Start, by: By, reopens: bool, at: i64) -> Reply {
         if reopens {
-            return self.placed(asked, None, held_screen(None), true).await;
+            return self
+                .placed((asked, at), None, held_screen(None), true)
+                .await;
         }
         let unfenced = self.unfenced_asking(by, asked.work.fence).await;
         if let Some(above) = &unfenced {
             eprintln!("{}", told_unfenced_held(above, &asked));
         }
         let screen = held_or_run(unfenced.is_some(), by);
-        self.placed(asked, fence_of(by), screen, false).await
+        self.placed((asked, at), fence_of(by), screen, false).await
     }
 
     /// Where each of `asked`'s starts would be placed as
@@ -6409,12 +6422,12 @@ impl<S: Store> Shared<S> {
     /// goes nowhere but the machine it names, never one made for it.
     async fn placed(
         &self,
-        asked: Start,
+        (asked, at): (Start, i64),
         fence: Option<crate::declared::Kind>,
         screen: Screen,
         reopens: bool,
     ) -> Reply {
-        self.awaits_redial(&asked, fence, screen).await;
+        self.awaits_redial((&asked, at), fence, screen).await;
         let admits = self.admits().await;
         let (misses, nowhere) =
             match self.place(&asked.work, Counts::Always, fence, screen, &admits) {
@@ -7582,6 +7595,20 @@ fn redial_since() -> i64 {
         .saturating_sub(i64::try_from(REDIAL_AWAITED_SINCE.as_millis()).unwrap_or(i64::MAX))
 }
 
+/// How much longer a start asked at `at` may wait for a link to redial,
+/// both in milliseconds since the epoch with `now` the time it is: what
+/// is left of [`REDIAL_AWAITED_MOST`] once the time it already spent,
+/// mostly waiting for room under its limits, is taken off, and nothing
+/// once that is gone, so waiting for a link adds nothing to a start that
+/// already waited that long for room. A clock that went back counts as
+/// no time spent.
+fn redial_left(at: i64, now: i64) -> Option<Duration> {
+    let spent = Duration::from_millis(now.saturating_sub(at).max(0).unsigned_abs());
+    REDIAL_AWAITED_MOST
+        .checked_sub(spent)
+        .filter(|left| !left.is_zero())
+}
+
 /// `placement`, an ask to start's, answered as the `awaited` machine where
 /// it missed that machine only for being out of reach: the start that
 /// follows goes through this node, which waits for that machine's link
@@ -8073,6 +8100,36 @@ mod tests {
             redial_awaited(&named("tern"), "tern", &machines, lately),
             None,
             "this node's own machine is never waited for"
+        );
+    }
+
+    #[test]
+    fn a_start_waits_for_a_link_only_what_its_ask_has_left() {
+        let at = 1_700_000_000_000;
+        assert_eq!(
+            redial_left(at, at),
+            Some(REDIAL_AWAITED_MOST),
+            "a start placed as soon as it was asked waits the whole of it"
+        );
+        assert_eq!(
+            redial_left(at, at + 10_000),
+            Some(REDIAL_AWAITED_MOST - Duration::from_secs(10)),
+            "a start that waited 10s for room waits that much less"
+        );
+        assert_eq!(
+            redial_left(at, at + 60_000),
+            None,
+            "a start that waited a minute for room waits for no link"
+        );
+        assert_eq!(
+            redial_left(at, at + 25_000),
+            None,
+            "a start with nothing left waits for no link"
+        );
+        assert_eq!(
+            redial_left(at, at - 5_000),
+            Some(REDIAL_AWAITED_MOST),
+            "a clock that went back counts as no time spent"
         );
     }
 
