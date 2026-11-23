@@ -1272,12 +1272,26 @@ again when the node restarts.
 ## The Socket
 
 Each node serves one unix socket, `<runtime>/mycelium/<realm>.sock`,
-reachable only by its account. The runtime folder is `$XDG_RUNTIME_DIR` on
-Linux, and on macOS, which has none, the account's own temporary folder as
-`getconf DARWIN_USER_TEMP_DIR` names it, not `TMPDIR`, which a session's
-quest may move. The harness's machine queue and the disk guard keep their
-records there too. It speaks as niri's does: a client writes one request as a
-JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
+reachable only by its account. The runtime folder is `$AGENTS_RUNTIME_DIR`
+where that is set, else `$XDG_RUNTIME_DIR`, and on macOS, which has neither,
+the account's cache folder as `getconf DARWIN_USER_CACHE_DIR` names it. The
+harness's machine queue keeps its record there too.
+
+On macOS the runtime folder was the account's temporary folder, `getconf
+DARWIN_USER_TEMP_DIR`, until a fenced command's `TMPDIR` hid it. For one
+release, while a node, a holder or a pi host started before the move may
+still serve there, each side finds the other in either folder. A client
+looks for a socket in the temporary folder when the cache folder has none.
+A node also links its socket in there, unless a live node serves there or
+it was given `--socket`, so a client started before the move reaches it.
+Held sessions stay in the temporary folder for that release, so a node of
+now finds what a holder of then holds. None of this applies where
+`$XDG_RUNTIME_DIR` names the folder, or `$AGENTS_RUNTIME_DIR` names one
+other than the cache folder. The disk guard keeps its status where it
+always has: in `$XDG_RUNTIME_DIR`, or on macOS the temporary folder.
+
+It speaks as niri's does: a client writes one request as a JSON line and
+reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 
 | Request | Reply |
 | --- | --- |
@@ -1419,7 +1433,8 @@ host's holder is none of its own. A part of `hosted` it can't read is
 left out. Its `attach` is `mycelium --realm REALM attach --host HOST
 --session CONVERSATION`, or the dial's words for it elsewhere, which
 joins it through its host's socket in the login's runtime folder,
-`pi-host/HOST.sock`; closing that terminal only leaves, and a frame of
+`pi-host/HOST.sock`, or the folder it moved from while only that has
+one (The Socket); closing that terminal only leaves, and a frame of
 a kind it doesn't know is passed over rather than ending the join. Its
 `presence` goes along whole, as its session wrote it, for a reader that
 shows more of it, such as the launcher; a session elsewhere's has its
@@ -3504,6 +3519,7 @@ then its holder is told; what still runs is killed, and the answer's
 and its presence leaves the sessions as its program's ends.
 
 Each holder serves `<id>.sock` in `<runtime>/mycelium/<realm>.held`,
+on macOS for now in the temporary folder (The Socket),
 reachable only by its account, beside
 `<id>.json`, which says what it holds: `id`, `command`, `folder`, the
 `holder`'s and the program's `pid`, `since`, `parked` while it is, and
