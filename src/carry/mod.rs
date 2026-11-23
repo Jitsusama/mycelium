@@ -109,11 +109,39 @@ pub struct Carried {
     pub machine: String,
     /// Each session started there.
     pub sessions: Vec<Arrived>,
-    /// The addresses of the parked sessions an ordered carry passed
-    /// over, since no quest's record holds them, so who orchestrates
-    /// them can't be told; each stays here as it was.
+    /// Each session of the quest here passed over, by address, each
+    /// staying as it was: the others, where a session carries itself, or
+    /// the parked ones an ordered carry passed over, since no quest's
+    /// record holds them, so who orchestrates them can't be told.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub skipped: Vec<String>,
+}
+
+/// Who asks for a carry, which each session told hears it is from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Asked<'a> {
+    /// The person, at their own login.
+    Person,
+    /// The quest's orchestrator, for the reason it gives.
+    Ordered(&'a str),
+    /// The session going by the id `session`, for the reason `why`: only
+    /// that session goes, the quest's others staying where they run.
+    Itself {
+        /// The session's id, as its own pi names it.
+        session: &'a str,
+        /// Why it carries itself.
+        why: &'a str,
+    },
+}
+
+impl Asked<'_> {
+    /// The reason it was asked for, where one is given.
+    fn why(&self) -> Option<&str> {
+        match self {
+            Self::Person => None,
+            Self::Ordered(why) | Self::Itself { why, .. } => Some(why),
+        }
+    }
 }
 
 /// A carry that went no further than `step`, which said why as it failed.
@@ -304,10 +332,13 @@ pub trait Hands {
 
 /// Carries `quest` from `here` to the machine `to`, saying each step to
 /// `say` as it goes, and its last line once it has gone through, or
-/// `Err` once a step has failed and said why. Given `why`, an
-/// orchestrator orders it: each session is told with `ordered-carry`,
-/// which the node takes only from the session's orchestrator, and each
-/// arrives as carried by it for `why`.
+/// `Err` once a step has failed and said why. Ordered, an orchestrator
+/// orders it: each session is told with `ordered-carry`, which the node
+/// takes only from the session's orchestrator, and each arrives as
+/// carried by it for its reason. Asked by a session itself, only that
+/// session goes, told with `self-carry`, which the node takes only from
+/// that session, and it arrives as carried by itself; the quest's others
+/// are passed over and named, and what none of them held stays with them.
 ///
 /// # Errors
 ///
@@ -317,7 +348,7 @@ pub fn carry(
     quest: &str,
     here: &str,
     to: &str,
-    why: Option<&str>,
+    asked: Asked,
     say: &mut impl FnMut(&Value),
 ) -> Result<Carried, Failed> {
     let mut said = Saying { say };
@@ -327,15 +358,27 @@ pub fn carry(
         format!("finding {quest}'s sessions here"),
     );
     let Found { sessions, skipped } =
-        said.or_failed(Step::Find, find(hands, quest, here, to, why))?;
+        said.or_failed(Step::Find, find(hands, quest, here, to, asked))?;
     let names: Vec<&str> = sessions.iter().map(|one| one.address.as_str()).collect();
     let mut found = if names.is_empty() {
         format!("no session runs {quest} here; what it left goes as it is")
     } else {
         format!("{} for {quest}, going to {to}", names.join(", "))
     };
-    if !skipped.is_empty() {
-        found = format!("{found}; {}", passed_over(&skipped));
+    match (asked, skipped.as_slice()) {
+        (_, []) => {}
+        (Asked::Itself { .. }, [one]) => {
+            found = format!("{found}; {one} stays here, as a session carries only itself");
+        }
+        (Asked::Itself { .. }, many) => {
+            found = format!(
+                "{found}; {} stay here, as a session carries only itself",
+                many.join(", ")
+            );
+        }
+        (Asked::Person | Asked::Ordered(_), _) => {
+            found = format!("{found}; {}", passed_over(&skipped));
+        }
     }
     said.line(Step::Find, Stood::Done, found);
 
@@ -345,7 +388,10 @@ pub fn carry(
         "carrying each session's work".to_owned(),
     );
     said.or_failed(Step::Push, bring_cells(hands, &sessions))?;
-    let (done, ordered) = said.or_failed(Step::Push, push(hands, quest, to, why, &sessions))?;
+    let (done, ordered) = said.or_failed(
+        Step::Push,
+        push(hands, quest, to, asked, &sessions, skipped.is_empty()),
+    )?;
     let count = plural(done.len(), "session");
     said.line(
         Step::Push,
@@ -508,19 +554,22 @@ fn start_each(
 
 /// The quest's sessions on `here` that can carry their own work: those
 /// running, and those parked this boot, which wake for it; or why the
-/// carry can't go to `to`. A carry ordered for `why` needs one at least,
-/// since only the node's taking a session's steer proves who may order
-/// it, and a reason that says something. It passes over a parked
-/// session no quest's record holds, naming it, since the node would
-/// refuse to tell it and so stop the carry over a session asleep: one
-/// running stays, so its refusal is said.
+/// carry can't go to `to`. A carry ordered for a reason needs one at
+/// least, since only the node's taking a session's steer proves who may
+/// order it, and a reason that says something. An orchestrator's carry
+/// passes over a parked session no quest's record holds, naming it,
+/// since the node would refuse to tell it and so stop the carry over a
+/// session asleep: one running stays, so its refusal is said. A
+/// session's carry of itself goes with that session alone, which must
+/// run the quest here, and answers the others' addresses as passed over.
 fn find(
     hands: &mut impl Hands,
     quest: &str,
     here: &str,
     to: &str,
-    why: Option<&str>,
+    asked: Asked,
 ) -> Result<Found, String> {
+    let why = asked.why();
     let ordered = why.is_some();
     if why.is_some_and(|why| why.trim().is_empty()) {
         return Err("an ordered carry says why, and a blank reason says nothing".to_owned());
@@ -547,15 +596,29 @@ fn find(
         .filter(|session| session.machine == here && session.quest.as_deref() == Some(quest))
         .filter(|session| runs(session) || parked(session, boot.as_deref()))
         .collect();
-    let (sessions, skipped): (Vec<Session>, Vec<Session>) = if ordered && !sessions.is_empty() {
-        let quests = hands.quests().map_err(|why| {
-            format!("which quest's record holds each of {quest}'s sessions can't be told: {why}")
-        })?;
-        sessions
-            .into_iter()
-            .partition(|session| runs(session) || ordered::holds(easing::id(session), &quests))
-    } else {
-        (sessions, Vec::new())
+    let (sessions, skipped): (Vec<Session>, Vec<Session>) = match asked {
+        Asked::Itself { session, .. } => {
+            let (own, others): (Vec<Session>, Vec<Session>) = sessions
+                .into_iter()
+                .partition(|one| session_id(one) == Some(session));
+            if own.is_empty() {
+                return Err(format!(
+                    "session {session} doesn't run {quest} here, so it can't carry itself"
+                ));
+            }
+            (own, others)
+        }
+        Asked::Ordered(_) if !sessions.is_empty() => {
+            let quests = hands.quests().map_err(|why| {
+                format!(
+                    "which quest's record holds each of {quest}'s sessions can't be told: {why}"
+                )
+            })?;
+            sessions
+                .into_iter()
+                .partition(|session| runs(session) || ordered::holds(easing::id(session), &quests))
+        }
+        Asked::Person | Asked::Ordered(_) => (sessions, Vec::new()),
     };
     let skipped: Vec<String> = skipped.into_iter().map(|one| one.address).collect();
     if ordered && sessions.is_empty() {
@@ -569,12 +632,13 @@ fn find(
         return Err(why);
     }
     // Each session's arrival and the quest's own trees', as the carry
-    // would start them; an ordered carry's order is proved only as it
-    // is taken, so the node is told it is ordered.
+    // would start them, the quest's own only where every session goes;
+    // an ordered carry's order is proved only as it is taken, so the node
+    // is told it is ordered.
     let starts = sessions
         .iter()
         .filter_map(session_id)
-        .chain([quest])
+        .chain(skipped.is_empty().then_some(quest))
         .map(|session| Done {
             session: session.to_owned(),
             started_before: None,
@@ -593,21 +657,25 @@ fn find(
     Ok(Found { sessions, skipped })
 }
 
-/// Tells each session to carry its work to `to`, as the person or, given
-/// `why`, as its orchestrator, waits until each has, then carries what
-/// none of them held, and answers everything carried, with who ordered
-/// it as the node proved. A session that refuses stops it at once.
+/// Tells each session to carry its work to `to`, as the person, its
+/// orchestrator or itself, as `asked` says, waits until each has, then,
+/// where `whole`, carries what none of them held, and answers everything
+/// carried, with who ordered it as the node proved. A session that
+/// refuses stops it at once.
 fn push(
     hands: &mut impl Hands,
     quest: &str,
     to: &str,
-    why: Option<&str>,
+    asked: Asked,
     sessions: &[Session],
+    whole: bool,
 ) -> Result<(Vec<Done>, Option<Ordered>), String> {
-    let steer = why.map_or_else(
-        || json!({"act": "carry", "to": to, "from": "person"}),
-        |why| json!({"act": ordered::ACT, "to": to, "why": why}),
-    );
+    let steer = match asked {
+        Asked::Person => json!({"act": "carry", "to": to, "from": "person"}),
+        Asked::Ordered(why) => json!({"act": ordered::ACT, "to": to, "why": why}),
+        Asked::Itself { why, .. } => json!({"act": ordered::ITSELF, "to": to, "why": why}),
+    };
+    let why = asked.why();
     let mut by: Option<String> = None;
     for session in sessions {
         let proved = hands
@@ -676,7 +744,10 @@ fn push(
             ));
         }
     }
-    hands.carry_rest(quest, to)?;
+    // What none of them held stays with the sessions that stay.
+    if whole {
+        hands.carry_rest(quest, to)?;
+    }
     let done = hands.done()?;
     if done.is_empty() {
         return Err(format!(
@@ -1052,8 +1123,8 @@ mod tests {
 
     use super::cell::Brought;
     use super::{
-        Carried, Done, Failed, Hands, Ordered, PI_CARRY, Refused, Step, Untaken, carry, runs_on,
-        session_id, unordered_arrival,
+        Asked, Carried, Done, Failed, Hands, Ordered, PI_CARRY, Refused, Step, Untaken, carry,
+        runs_on, session_id, unordered_arrival,
     };
     use crate::placement::Need;
     use crate::record::{Session, State};
@@ -1170,9 +1241,18 @@ mod tests {
             self.boot.clone()
         }
         fn steer(&mut self, address: &str, steer: Value) -> Result<Option<String>, String> {
-            let by = (steer["act"] == "ordered-carry")
-                .then(|| self.by_each.get(address).or(self.by.as_ref()).cloned())
-                .flatten();
+            // A session's carry of itself is proved as its own, by the
+            // address it is put to, as the node proves the asker.
+            let by = if steer["act"] == "self-carry" {
+                self.by_each
+                    .get(address)
+                    .cloned()
+                    .or(Some(address.to_owned()))
+            } else {
+                (steer["act"] == "ordered-carry")
+                    .then(|| self.by_each.get(address).or(self.by.as_ref()).cloned())
+                    .flatten()
+            };
             self.steered.push((address.to_owned(), steer));
             let id = self
                 .sessions
@@ -1370,9 +1450,16 @@ mod tests {
     /// Carries HARBOR from skiff to `to` in `realm`, with each line said.
     fn carried(realm: &mut Realm, to: &str) -> (Result<Carried, Failed>, Vec<Value>) {
         let mut lines = Vec::new();
-        let done = carry(realm, QUEST, "skiff", to, None, &mut |line: &Value| {
-            lines.push(line.clone());
-        });
+        let done = carry(
+            realm,
+            QUEST,
+            "skiff",
+            to,
+            Asked::Person,
+            &mut |line: &Value| {
+                lines.push(line.clone());
+            },
+        );
         (done, lines)
     }
 
@@ -1385,7 +1472,25 @@ mod tests {
             QUEST,
             "skiff",
             "tern",
-            Some("it needs the camera"),
+            Asked::Ordered("it needs the camera"),
+            &mut |line: &Value| lines.push(line.clone()),
+        );
+        (done, lines)
+    }
+
+    /// Carries the session `session` of HARBOR from skiff to tern in
+    /// `realm` as it asks of itself, for load, with each line said.
+    fn itself(realm: &mut Realm, session: &str) -> (Result<Carried, Failed>, Vec<Value>) {
+        let mut lines = Vec::new();
+        let done = carry(
+            realm,
+            QUEST,
+            "skiff",
+            "tern",
+            Asked::Itself {
+                session,
+                why: "skiff is short of memory",
+            },
             &mut |line: &Value| lines.push(line.clone()),
         );
         (done, lines)
@@ -2109,6 +2214,78 @@ mod tests {
     }
 
     #[test]
+    fn a_session_carries_itself_alone_and_arrives_carried_by_itself() {
+        let mut realm = realm();
+        let (done, lines) = itself(&mut realm, "s-busy01");
+        let carried = done.expect("carried");
+        assert_eq!(
+            realm.steered,
+            [(
+                "BUSY01".to_owned(),
+                json!({"act": "self-carry", "to": "tern", "why": "skiff is short of memory"})
+            )],
+            "only the session asking is told, by the act only it may ask: {lines:?}"
+        );
+        assert_eq!(
+            carried.skipped,
+            ["NAPS02"],
+            "the quest's other session here stays"
+        );
+        assert!(
+            lines[1]["said"]
+                .as_str()
+                .is_some_and(|said| said.contains("NAPS02 stays here")),
+            "and the find says so: {}",
+            lines[1]
+        );
+        assert_eq!(
+            realm
+                .started
+                .iter()
+                .map(|start| start.command[8..].to_vec())
+                .collect::<Vec<_>>(),
+            [["BUSY01", "skiff is short of memory"]],
+            "it alone arrives, carried by itself for its reason, and not the quest's own \
+             trees, which stay with the session staying"
+        );
+        assert!(
+            realm
+                .asked_takes
+                .iter()
+                .all(|taking| taking.ordered && taking.starts.len() == 1),
+            "the node is asked about its start alone, as an agent's"
+        );
+    }
+
+    #[test]
+    fn a_session_carries_itself_only_where_it_runs_the_quest_here() {
+        for session in ["s-there3", "s-other4", "s-oldnap"] {
+            let mut realm = realm();
+            let (done, lines) = itself(&mut realm, session);
+            assert_eq!(
+                done,
+                Err(Failed { step: Step::Find }),
+                "{session} doesn't run HARBOR on skiff now: {lines:?}"
+            );
+            assert!(realm.steered.is_empty(), "so no session is told");
+        }
+    }
+
+    #[test]
+    fn a_session_carrying_itself_arrives_as_the_node_proved_it() {
+        let mut realm = Realm {
+            by_each: [("BUSY01".to_owned(), "NAPS02".to_owned())].into(),
+            ..realm()
+        };
+        let (done, _) = itself(&mut realm, "s-busy01");
+        done.expect("the carry goes, as the node said who");
+        assert_eq!(
+            realm.started[0].command[8], "NAPS02",
+            "it arrives as the node proved, never as the client says"
+        );
+    }
+
+    #[test]
     fn a_reason_opening_with_a_dash_reaches_pi_carry_as_the_reason() {
         let dir = tempfile::tempdir().expect("a folder");
         let said = dir.path().join("said");
@@ -2167,7 +2344,7 @@ mod tests {
                 QUEST,
                 "skiff",
                 "tern",
-                Some(why),
+                Asked::Ordered(why),
                 &mut |line: &Value| {
                     lines.push(line.clone());
                 },

@@ -701,8 +701,9 @@ Each step prints `{"step", "state", "said"}` on a line as it begins
 (`doing`) and ends (`done`, `skipped` or `failed`), and the last line is
 `{"step": "carried", "state": "done", "machine", "sessions"}`, each
 session `{"address", "held", "attach"}`, with `skipped`, the addresses
-of the parked sessions an ordered carry passed over, where it passed
-over any. A step that fails says why, the
+of the sessions left where they are, where any were: the parked ones an
+ordered carry passed over, or the others a session carrying itself left.
+A step that fails says why, the
 command exits non-zero, and nothing after it runs; what was done stays
 done, since each step can be taken again. It waits 15 minutes in all for
 the sessions to carry and then to end.
@@ -1001,6 +1002,27 @@ asked it over the link, as it takes any steer a link carries, then
 steers its own sessions through its own socket, where it is the
 person's own login. A steer a link carries to an inbox keeps no line,
 since that end knows no sessions or quests.
+
+### A Session Carrying Itself
+
+A session carries itself with a steer `{"act": "self-carry", "to":
+<machine>, "why": <reason>}` to its own address. The node proves who
+asks as it does for a carry an orchestrator orders, by the client's
+process, never by what the session says, and takes it only where the
+session asking is the session carried; any other is refused, naming
+who asked. It needs no orchestrator and no quest's record to prove it,
+and never speaks as the person. Its ground is judged as an ordered
+carry's, never looser than it stands on, and it is told to the session
+as `ordered-carry` with `by` and `from` its own address, so it arrives
+carried by itself for its reason, answered `Steered` with that `by`.
+It is kept in `carries.jsonl` with `by` its address, `asker` its
+session, `itself` true, and the quest the quests' record holds it in,
+or else the one its presence names, since only its own trees settle.
+`mycelium carry QUEST --to <machine> --itself --why <reason>`, run
+from the session's own pi, asks it for the session `PI_SESSION_ID`
+names: the quest's other sessions here stay and are named in the
+Find line and in `skipped`, and what none of them held stays with
+them, so the quest's own trees aren't carried.
 
 ### A Machine Easing Itself
 
