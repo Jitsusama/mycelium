@@ -200,7 +200,7 @@ same code, each line a JSON value:
    wouldn't: counted, limited and booked here as any agent's is, never
    read for a carry, and logged; it starts there or nowhere, never on
    a machine made for it, and waits for no room, since the asking node
-   stops waiting on its answer within 30 seconds. Where no person
+   stops waiting on its answer within 90 seconds. Where no person
    works, an agent's SSH login can't be told from a link's end, so
    every relay but its own process's is taken so, and a machine made
    from a basin still takes the starts placed on it, where its strict
