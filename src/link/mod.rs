@@ -937,9 +937,11 @@ impl<S: Store> End<S> {
     /// Marks the link left as it ends, however it ended, and its machine
     /// out of reach.
     fn leave(&self, result: &io::Result<Ending>) {
-        // Had the link died outright, the last minute's mark would stand.
         let left = now();
-        let _ = self.store.mark_linked(&self.other, left);
+        // Had the link died outright, the last minute's mark would stand.
+        let _ = self
+            .store
+            .mark_linked(&self.other, self.hearing.linked_until());
         // A handover is the link's work done, so only a drop counts as one.
         if !matches!(result, Ok(Ending::HandedOver)) {
             let _ = self.store.mark_ended(&self.other, left);
@@ -2053,14 +2055,15 @@ impl<S: Store> End<S> {
     }
 
     /// Says again that every session this link carried here still stands,
-    /// and marks the link as standing now.
+    /// and marks the link as standing until the other end was last heard.
     fn keep_carried(&self) -> io::Result<()> {
         for session in &self.carried {
             if let Err(error) = self.store.keep_presence(session, &self.other) {
                 eprintln!("couldn't keep {session} from {}: {error}", self.other);
             }
         }
-        self.store.mark_linked(&self.other, now())
+        self.store
+            .mark_linked(&self.other, self.hearing.linked_until())
     }
 }
 
@@ -2072,7 +2075,8 @@ async fn send(writing: &mut (impl AsyncWrite + Unpin), frame: &Frame) -> io::Res
 }
 
 /// How far back a link to `machine` reaches for messages, in milliseconds
-/// since the epoch: to when the two were last linked, a minute early for a
+/// since the epoch: to when this end last heard `machine` over a link
+/// ([`Hearing::linked_until`]), a minute early for what was in flight or a
 /// mark a link killed outright left late, and never past the mesh's week.
 /// Messages from before two machines were ever linked never cross, since
 /// every session hearing them on the other machine would take a week of
@@ -2113,6 +2117,21 @@ impl Hearing {
     /// Whether the other end is gone by `now`.
     fn gone(&self, now: i64) -> bool {
         self.watched && silent(self.heard, now)
+    }
+
+    /// Until when the link is known to have stood, to mark as the next
+    /// link's reach for messages: when the other end was last heard, not
+    /// now. A link whose other end went silent stands for minutes before
+    /// it is judged gone, and what this end sent in them was written into
+    /// a connection that carried nothing. Marked now, the next link would
+    /// reach back only to a minute before the end. On 22 November,
+    /// messages sent a minute before a Mac left the network didn't cross
+    /// once it came back, which, read from the source, this explains.
+    /// Marked at the last word heard, they are offered again; what the
+    /// other end already holds it mostly names in its Have, and a message
+    /// that comes twice is kept once.
+    fn linked_until(&self) -> i64 {
+        self.heard
     }
 }
 
@@ -4106,6 +4125,28 @@ mod tests {
         until_file(&theirs, "# Shared\n").await;
         std::fs::write(&theirs, "# Changed there\n").expect("changed on the far end");
         until_file(&ours, "# Changed there\n").await;
+    }
+
+    #[test]
+    fn what_was_sent_into_a_silent_link_is_within_the_next_links_reach() {
+        let store = Memory::default();
+        let minute = millis(KEEP_EVERY);
+        let hearing = Hearing {
+            watched: true,
+            heard: now() - 3 * minute,
+        };
+        store
+            .mark_linked("kestrel", hearing.linked_until())
+            .expect("a memory store marks");
+        let sent_into_silence = now() - 2 * minute;
+        assert!(
+            reach_start(&store, "kestrel") <= sent_into_silence,
+            "a message sent after the other end went quiet is offered again"
+        );
+        assert!(
+            reach_start(&store, "kestrel") <= hearing.heard - minute,
+            "and so is one sent the minute before, which may not have crossed"
+        );
     }
 
     #[test]
