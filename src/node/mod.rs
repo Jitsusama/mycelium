@@ -2826,9 +2826,7 @@ impl<S: Store> Shared<S> {
             .iter()
             .any(|one| one.name == machine && one.state != Readiness::Unreachable);
         linked
-            || self
-                .store
-                .linked_until(machine)
+            || store::last_linked(&self.store, machine)
                 .and_then(|at| jiff::Timestamp::from_millisecond(at).ok())
                 .is_some_and(|at| at >= since)
     }

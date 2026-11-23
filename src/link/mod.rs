@@ -694,13 +694,17 @@ fn claimed(store: &impl Store, machine: &str) -> io::Result<Claim> {
 /// already kept stays where it is, since the link's first keep, or its
 /// end, keeps it where the link began until its catch-up has stood
 /// ([`Hearing::linked_until`]), and a node killed before either leaves
-/// it there too, so the next link still reaches back that far. Answers
-/// the mark as it stood before, none for a machine never linked.
+/// it there too, so the next link still reaches back that far. When it
+/// was let in is kept apart, as when the machine was last linked
+/// ([`store::last_linked`]). Answers the mark as it stood before, none
+/// for a machine never linked.
 fn admitted(store: &impl Store, machine: &str) -> io::Result<Option<i64>> {
     let before = store.linked_until(machine);
+    let at = now();
     if before.is_none() {
-        store.mark_linked(machine, now())?;
+        store.mark_linked(machine, at)?;
     }
+    store.mark_admitted(machine, at)?;
     if let Err(error) = store.link_admitted(machine) {
         eprintln!("{machine} linked, but its last refusal stands: {error}");
     }
