@@ -4790,6 +4790,9 @@ mod tests {
                 .expect("written");
         }
         says(&mut far_writing, &[Frame::HandedOver]).await;
+        // Its reading half still holds the pipe open, so only a shutdown
+        // says it has left.
+        far_writing.shutdown().await.expect("shut");
         drop(far_writing);
         let ended = tokio::time::timeout(PATIENCE, skiff_end)
             .await
