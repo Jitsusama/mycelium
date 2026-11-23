@@ -379,6 +379,18 @@ impl Store for Folders {
         write_whole(&self.claims, &file, &Value::from(at))
     }
 
+    fn admitted_at(&self, machine: &str) -> Option<i64> {
+        let file = self
+            .claims
+            .join(format!("{}.admitted", safe(machine).ok()?));
+        fs::read_to_string(file).ok()?.trim().parse().ok()
+    }
+
+    fn mark_admitted(&self, machine: &str, at: i64) -> io::Result<()> {
+        let file = format!("{}.admitted", safe(machine)?);
+        write_whole(&self.claims, &file, &Value::from(at))
+    }
+
     fn mark_ended(&self, machine: &str, at: i64) -> io::Result<()> {
         let file = format!("{}.ended", safe(machine)?);
         // Written whole, the last day's alone, so a link dropping each
@@ -1569,6 +1581,16 @@ mod tests {
             .mark_linked("kestrel", 1_793_046_604_647)
             .expect("the time is kept");
         assert_eq!(store.linked_until("kestrel"), Some(1_793_046_604_647));
+        assert_eq!(store.admitted_at("kestrel"), None, "never let in");
+        store
+            .mark_admitted("kestrel", 1_793_046_664_647)
+            .expect("the admission is kept");
+        assert_eq!(store.admitted_at("kestrel"), Some(1_793_046_664_647));
+        assert_eq!(
+            store.linked_until("kestrel"),
+            Some(1_793_046_604_647),
+            "apart from the mark"
+        );
     }
 
     #[test]

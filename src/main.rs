@@ -2136,7 +2136,7 @@ fn raise_open_files() {
             limit_said(raised.to)
         ),
         Ok(None) => {}
-        Err(error) => tell!("open files: the soft limit stays, as raising it failed: {error}"),
+        Err(error) => tell!("open files: the soft limit stays, as {error}"),
     }
 }
 

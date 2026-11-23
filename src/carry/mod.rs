@@ -377,7 +377,7 @@ pub fn carry(
             );
         }
         (Asked::Person | Asked::Ordered(_), _) => {
-            found = format!("{found}; {}", passed_over(&skipped));
+            found = format!("{found}; {}", passed_over(quest, &skipped));
         }
     }
     said.line(Step::Find, Stood::Done, found);
@@ -463,10 +463,10 @@ struct Found {
 }
 
 /// The parked sessions `skipped` passed over, and why, as said.
-fn passed_over(skipped: &[String]) -> String {
+fn passed_over(quest: &str, skipped: &[String]) -> String {
     format!(
-        "{} parked with no quest's record holding {}, so who orchestrates {} can't be told, \
-         and {} here",
+        "{} parked where {quest}'s record alone doesn't hold {}, so who orchestrates {} can't \
+         be told, and {} here",
         skipped.join(", "),
         if skipped.len() == 1 { "it" } else { "them" },
         if skipped.len() == 1 { "it" } else { "them" },
@@ -614,9 +614,9 @@ fn find(
                     "which quest's record holds each of {quest}'s sessions can't be told: {why}"
                 )
             })?;
-            sessions
-                .into_iter()
-                .partition(|session| runs(session) || ordered::holds(easing::id(session), &quests))
+            sessions.into_iter().partition(|session| {
+                runs(session) || ordered::held_only_by(easing::id(session), quest, &quests)
+            })
         }
         Asked::Person | Asked::Ordered(_) => (sessions, Vec::new()),
     };
@@ -627,7 +627,7 @@ fn find(
              only the person carries what it left"
         );
         if !skipped.is_empty() {
-            why = format!("{why} ({})", passed_over(&skipped));
+            why = format!("{why} ({})", passed_over(quest, &skipped));
         }
         return Err(why);
     }
@@ -1169,6 +1169,8 @@ mod tests {
         /// The sessions, by id, no quest's record holds; the record of
         /// the quest holds every other.
         unheld: BTreeSet<String>,
+        /// Other quests' records, beside the quest's own.
+        other_records: Vec<Value>,
         /// Why the node can't say its quests' records, where it can't.
         unsaid_quests: Option<String>,
         /// The sessions that refuse their carry once told, and why.
@@ -1312,9 +1314,10 @@ mod tests {
                 .filter_map(session_id)
                 .filter(|id| !self.unheld.contains(*id))
                 .collect();
-            Ok(vec![
-                json!({"id": QUEST, "orchestrator": "WCJQSG", "sessions": held}),
-            ])
+            let own = json!({"id": QUEST, "orchestrator": "WCJQSG", "sessions": held});
+            Ok(std::iter::once(own)
+                .chain(self.other_records.iter().cloned())
+                .collect())
         }
         fn formed(&mut self) -> Result<Vec<Value>, String> {
             self.formed_asked += 1;
@@ -2668,8 +2671,9 @@ mod tests {
             .unwrap_or_default();
         assert_eq!(
             found,
-            "BUSY01 for QEST-20261107-HARBOR, going to tern; NAPS02 parked with no quest's \
-             record holding it, so who orchestrates it can't be told, and it stays here",
+            "BUSY01 for QEST-20261107-HARBOR, going to tern; NAPS02 parked where \
+             QEST-20261107-HARBOR's record alone doesn't hold it, so who orchestrates it can't \
+             be told, and it stays here",
             "and so does its find"
         );
 
@@ -2690,12 +2694,46 @@ mod tests {
         assert_eq!(
             last_said(&lines),
             "no session runs QEST-20261107-HARBOR here, so the node can't prove who \
-             orchestrates it: only the person carries what it left (NAPS02 parked with no \
-             quest's record holding it, so who orchestrates it can't be told, and it stays \
-             here)",
+             orchestrates it: only the person carries what it left (NAPS02 parked where \
+             QEST-20261107-HARBOR's record alone doesn't hold it, so who orchestrates it \
+             can't be told, and it stays here)",
             "naming the one passed over"
         );
         assert!(alone.steered.is_empty(), "and nobody told");
+    }
+
+    #[test]
+    fn an_ordered_carry_passes_over_a_parked_session_another_quests_record_holds() {
+        let other = |sessions: &[&str]| {
+            json!({"id": "QEST-20261107-OTHERS", "orchestrator": "WCJQSG",
+                   "sessions": sessions})
+        };
+        // Held by its quest's record and another's, the node's steer can't
+        // tell which orchestrates it; held by another's alone, the steer
+        // would prove that quest's orchestrator, not this one's.
+        for (held, by) in [
+            (BTreeSet::new(), "two records"),
+            (
+                ["s-naps02".to_owned()].into(),
+                "another quest's record alone",
+            ),
+        ] {
+            let mut realm = Realm {
+                by: Some("WCJQSG".to_owned()),
+                unheld: held,
+                other_records: vec![other(&["s-naps02"])],
+                ..realm()
+            };
+            let (done, lines) = ordered(&mut realm);
+            let carried = done.expect("carried");
+            let steered: Vec<&str> = realm.steered.iter().map(|(at, _)| at.as_str()).collect();
+            let skipped: Vec<&str> = carried.skipped.iter().map(String::as_str).collect();
+            assert_eq!(
+                (steered, skipped),
+                (vec!["BUSY01"], vec!["NAPS02"]),
+                "a parked session held by {by} is passed over: {lines:?}"
+            );
+        }
     }
 
     #[test]

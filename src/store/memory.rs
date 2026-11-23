@@ -29,6 +29,8 @@ struct Held {
     holdings: BTreeMap<String, Value>,
     claimed: BTreeSet<String>,
     linked: BTreeMap<String, i64>,
+    /// When a link with each machine was last let in.
+    admitted: BTreeMap<String, i64>,
     /// When each machine's links ended, every one kept.
     links_ended: BTreeMap<String, Vec<i64>>,
     /// Why each machine's last link was refused, until one was admitted.
@@ -261,6 +263,15 @@ impl Store for Memory {
 
     fn mark_linked(&self, machine: &str, at: i64) -> io::Result<()> {
         self.held().linked.insert(machine.to_owned(), at);
+        Ok(())
+    }
+
+    fn admitted_at(&self, machine: &str) -> Option<i64> {
+        self.held().admitted.get(machine).copied()
+    }
+
+    fn mark_admitted(&self, machine: &str, at: i64) -> io::Result<()> {
+        self.held().admitted.insert(machine.to_owned(), at);
         Ok(())
     }
 
