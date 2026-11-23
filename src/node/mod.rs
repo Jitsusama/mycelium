@@ -34,7 +34,7 @@ use crate::hosted_attach;
 use crate::lend::{Lend, Lent};
 use crate::link::dial::{Dial, Program};
 use crate::link::refused::Refusals;
-use crate::link::starts::{Asking, Asks, START_ANSWERED_WITHIN, Starting};
+use crate::link::starts::{Asking, Asks, START_ANSWERED_WITHIN, Starting, Unsent};
 use crate::link::{self, discovery::Discovery, membership::Hello, membership::Membership};
 use crate::made::{self, Book, Made};
 use crate::mesh;
@@ -8454,8 +8454,8 @@ async fn hand_on_lend<S: Store>(
                 Handed::Ended => return,
                 Handed::Unsaid => format!("the link to {lender} ended before its lend did"),
             },
-            Err(crate::link::starts::Unsent { why, sent: false }) => why,
-            Err(crate::link::starts::Unsent { why, sent: true }) => {
+            Err(Unsent { why, sent: false }) => why,
+            Err(Unsent { why, sent: true }) => {
                 let _ = write(&mut writing, &refused(503, why)).await;
                 return;
             }
@@ -8478,7 +8478,7 @@ async fn hand_on_lend<S: Store>(
 /// after something was written, pi hears it refused, since asking again
 /// would start pi's answer over.
 async fn lent_on(
-    mut answers: tokio::sync::mpsc::Receiver<Lent>,
+    mut answers: mpsc::Receiver<Lent>,
     lines: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
     writing: &mut tokio::net::unix::OwnedWriteHalf,
 ) -> Handed {
@@ -16494,7 +16494,7 @@ esac
         assert!(why.contains("osprey"), "{why}");
         assert!(why.contains("stood within"), "{why}");
         assert!(
-            asked.elapsed() >= LENDER_AWAITED_MOST - LENDER_ASKED_EVERY,
+            asked.elapsed() + LENDER_ASKED_EVERY >= LENDER_AWAITED_MOST,
             "it waits for a link to stand first"
         );
     }
@@ -16505,7 +16505,7 @@ esac
         let (near, far) = UnixStream::pair().expect("a pair of sockets");
         let (reading, mut writing) = near.into_split();
         let mut lines = BufReader::new(reading).lines();
-        let (saying, said) = tokio::sync::mpsc::channel(answers.len() + 1);
+        let (saying, said) = mpsc::channel(answers.len() + 1);
         for lent in answers {
             saying.send(lent).await.expect("the answer is held");
         }
@@ -16523,20 +16523,20 @@ esac
 
     #[tokio::test]
     async fn a_lend_whose_link_ends_before_it_says_anything_may_be_asked_again() {
-        let (ended, heard) = handed(Vec::new()).await;
-        assert!(matches!(ended, Handed::Unsaid), "it may be asked again");
+        let (outcome, heard) = handed(Vec::new()).await;
+        assert!(matches!(outcome, Handed::Unsaid), "it may be asked again");
         assert!(heard.is_empty(), "pi hears nothing of it yet: {heard:?}");
     }
 
     #[tokio::test]
     async fn a_lend_whose_link_ends_partway_is_refused_rather_than_asked_again() {
-        let head = Lent::Head {
+        let begun = Lent::Head {
             status: 200,
             headers: Vec::new(),
         };
-        let (ended, heard) = handed(vec![head.clone()]).await;
-        assert!(matches!(ended, Handed::Ended), "pi's answer has begun");
-        assert_eq!(heard.first(), Some(&head), "what was said reaches pi");
+        let (outcome, heard) = handed(vec![begun.clone()]).await;
+        assert!(matches!(outcome, Handed::Ended), "pi's answer has begun");
+        assert_eq!(heard.first(), Some(&begun), "what was said reaches pi");
         assert!(
             matches!(heard.get(1), Some(Lent::Refused { status: 503, .. })),
             "and then its end: {heard:?}"
