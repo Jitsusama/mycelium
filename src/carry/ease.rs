@@ -122,6 +122,8 @@ pub struct Cell {
     pub alone: Option<bool>,
     /// Whether it is on the person's screen.
     pub on_screen: Option<bool>,
+    /// Whether the person has written in it.
+    pub driven: Option<bool>,
     /// Whether it sleeps already: parked, its process ended until it is
     /// started again.
     pub asleep: bool,
@@ -160,14 +162,14 @@ impl Cell {
         // A session the person has written in is theirs, wherever its
         // window is: they come back to it here, and a carry or a sleep they
         // didn't ask for would leave them looking for it.
-        if self
-            .session
-            .presence
-            .get("driven")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-        {
-            return Some(format!("{who} is the person's, who has written in it"));
+        match self.driven {
+            Some(false) => {}
+            Some(true) => return Some(format!("{who} is the person's, who has written in it")),
+            None => {
+                return Some(format!(
+                    "whether the person has written in {who} can't be told"
+                ));
+            }
         }
         match self.orchestrates {
             Some(false) => {}
@@ -1003,6 +1005,7 @@ pub(super) mod tests {
             fence: Some(Kind::Fence),
             alone: Some(true),
             on_screen: Some(false),
+            driven: Some(false),
             asleep: true,
             orchestrates: Some(false),
             busy: Some(Vec::new()),
@@ -1420,6 +1423,34 @@ pub(super) mod tests {
         );
     }
 
+    // The shadow lines that showed these gaps were sleeps, so a sleep is
+    // where each is shown kept.
+    #[test]
+    fn the_persons_and_orchestrators_stay_awake_while_memory_is_short() {
+        let realm = short_realm();
+        let history = minutely(&[&realm[..]; 11]);
+        let theirs = |change: &dyn Fn(&mut Cell)| {
+            let mut one = awake("s2");
+            change(&mut one);
+            chose(&realm, &[awake("s1"), one], &history)
+        };
+        assert_eq!(
+            theirs(&|one| one.driven = Some(true)),
+            sleeps(&["s1"], None),
+            "one the person has written in stays awake"
+        );
+        assert_eq!(
+            theirs(&|one| one.driven = None),
+            sleeps(&["s1"], None),
+            "as does one nobody can say of"
+        );
+        assert_eq!(
+            theirs(&|one| one.orchestrates = Some(true)),
+            sleeps(&["s1"], None),
+            "and one orchestrating others"
+        );
+    }
+
     /// A session of skiff's waiting, awake.
     fn awake(id: &str) -> Cell {
         Cell {
@@ -1613,22 +1644,12 @@ pub(super) mod tests {
             "what S1 is part way through can't be told"
         );
         assert_eq!(
-            with(&|one| {
-                one.session.presence = std::sync::Arc::new(json!({"driven": true}));
-            }),
+            with(&|one| one.driven = Some(true)),
             "S1 is the person's, who has written in it"
         );
-        let untouched = Cell {
-            session: Session {
-                presence: std::sync::Arc::new(json!({"driven": false})),
-                ..cell("s1").session
-            },
-            ..cell("s1")
-        };
         assert_eq!(
-            carries(&chose(&realm, &[untouched], &history)),
-            Some(("s1", "tern")),
-            "one nobody has written in goes"
+            with(&|one| one.driven = None),
+            "whether the person has written in S1 can't be told"
         );
         assert_eq!(
             with(&|one| one.orchestrates = Some(true)),

@@ -106,6 +106,7 @@ pub fn cells(here: &str, looked: &Looked) -> Vec<Cell> {
             fence: looked.fences.get(id(session)).copied(),
             alone: alone(here, looked.sessions, session),
             on_screen: on_screen(session),
+            driven: session.presence.get("driven").and_then(Value::as_bool),
             asleep: super::parked(session, looked.boot),
             orchestrates: looked.orchestrators.map(|named| {
                 named.contains(id(session))
@@ -300,27 +301,28 @@ fn alone(here: &str, sessions: &[Session], session: &Session) -> Option<bool> {
     Some(super::runs_on(sessions, quest).is_ok_and(|on| on == here))
 }
 
-/// Whether any other of `sessions` says, in its presence, that `session`
-/// orchestrates it, by any address `session` goes by and in any case. The
-/// records of who orchestrates name only the quests an orchestrator
-/// claims, so a lane it started for a quest of the lane's own is told
-/// only by the lane. One that has ended still counts, as its orchestrator
-/// is no less one for a lane at rest.
+/// Whether another of `sessions`, running, parked or out of reach, says
+/// in its presence that `session` orchestrates it, by an address
+/// `session` goes by, in any case. The records of who orchestrates name only the quests
+/// an orchestrator claims, so a lane it started for a quest of the lane's
+/// own is told only by the lane. A lane at rest still counts, as its
+/// orchestrator is no less one for it; one that has ended counts no more,
+/// as a claim lapses once its session neither runs nor waits parked.
+///
+/// The lane's word is believed though nothing proves it, where a claim
+/// naming no quest is not, because all it can do is keep a session here:
+/// a lane that names the wrong one costs its machine an easing, never the
+/// session its place.
 fn leads(sessions: &[Session], session: &Session) -> bool {
-    let goes_by = |said: &str| {
-        session.address.eq_ignore_ascii_case(said)
-            || session
-                .presence
-                .get("addresses")
-                .and_then(Value::as_array)
-                .is_some_and(|all| {
-                    all.iter()
-                        .filter_map(Value::as_str)
-                        .any(|one| one.eq_ignore_ascii_case(said))
-                })
-    };
     sessions.iter().any(|other| {
-        other.id != session.id && other.orchestrated_by.as_deref().is_some_and(goes_by)
+        other.id != session.id
+            && (super::runs(other)
+                || other.state == State::Unreachable
+                || super::parked(other, None))
+            && other
+                .orchestrated_by
+                .as_deref()
+                .is_some_and(|said| crate::forage::is_address(said) && session.goes_by(said))
     })
 }
 
@@ -889,7 +891,7 @@ mod tests {
     }
 
     fn told(id: &str) -> Value {
-        json!({"session": id, "leases": {"background": true}})
+        json!({"session": id, "leases": {"background": true}, "driven": false})
     }
 
     #[test]
@@ -936,6 +938,7 @@ mod tests {
                     cell.fence,
                     cell.alone,
                     cell.on_screen,
+                    cell.driven,
                     cell.asleep,
                     cell.busy.clone(),
                     cell.size,
@@ -950,17 +953,19 @@ mod tests {
                     Some(Kind::Fence),
                     Some(true),
                     Some(false),
+                    Some(false),
                     false,
                     Some(vec![Busy::HeavyRun]),
                     None
                 ),
-                ("s2", None, Some(false), None, false, None, Some(512)),
-                ("s5", None, None, None, true, None, None),
+                ("s2", None, Some(false), None, None, false, None, Some(512)),
+                ("s5", None, None, None, None, true, None, None),
                 (
                     "s6",
                     None,
                     None,
                     None,
+                    Some(false),
                     false,
                     Some(vec![Busy::HeavyRun]),
                     None
@@ -1012,19 +1017,32 @@ mod tests {
     #[test]
     fn a_cell_orchestrates_where_another_session_says_it_answers_to_it() {
         let sessions = [
-            session("s1", "skiff", &json!({})),
+            session("s1", "skiff", &json!({"address": "OSPREY"})),
             session(
                 "s2",
                 "skiff",
                 &json!({"presence": {"session": "s2", "addresses": ["S2", "STEWARD"]}}),
             ),
-            session("s3", "skiff", &json!({"orchestrated_by": "s1"})),
+            session("s3", "skiff", &json!({"orchestrated_by": "osprey"})),
             session(
                 "s4",
                 "tern",
-                &json!({"orchestrated_by": "steward", "state": "ended"}),
+                &json!({"orchestrated_by": "steward", "state": "ended",
+                        "presence": {"session": "s4", "state": "parked"}}),
             ),
             session("s5", "skiff", &json!({"orchestrated_by": "S5"})),
+            session("s6", "skiff", &json!({})),
+            session(
+                "s7",
+                "tern",
+                &json!({"orchestrated_by": "S6", "state": "ended"}),
+            ),
+            session("s8", "skiff", &json!({})),
+            session(
+                "s9",
+                "tern",
+                &json!({"orchestrated_by": "S8", "state": "unreachable"}),
+            ),
         ];
         let looked = Looked {
             sessions: &sessions,
@@ -1047,9 +1065,12 @@ mod tests {
                 ("s2".to_owned(), Some(true)),
                 ("s3".to_owned(), Some(false)),
                 ("s5".to_owned(), Some(false)),
+                ("s6".to_owned(), Some(false)),
+                ("s8".to_owned(), Some(true)),
             ],
-            "s1 by its address in any case, s2 by another it goes by, from a lane on \
-             another machine that has ended; s5 naming itself leads nobody"
+            "s1 by its address, not its id, in any case; s2 by another it goes by, from a \
+             lane parked on another machine; s8 by a lane out of reach; s6 by none, its lane \
+             having ended; s5 naming itself leads nobody"
         );
     }
 

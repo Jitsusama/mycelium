@@ -166,6 +166,21 @@ pub struct Session {
     pub presence: Arc<Value>,
 }
 
+impl Session {
+    /// Whether it goes by `name`, in any case: as its address, or as any
+    /// other address its presence says.
+    #[must_use]
+    pub fn goes_by(&self, name: &str) -> bool {
+        self.address.eq_ignore_ascii_case(name)
+            || self.presence["addresses"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .any(|address| address.eq_ignore_ascii_case(name))
+    }
+}
+
 /// Whether a presence held is none at all.
 fn is_null(presence: &Arc<Value>) -> bool {
     presence.is_null()
