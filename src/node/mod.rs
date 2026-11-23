@@ -186,6 +186,14 @@ impl Socket {
 /// once while the clients already served let theirs go.
 const ACCEPT_REST: Duration = Duration::from_millis(250);
 
+/// A clock ticking each `period`, whose tick missed while the node's one
+/// thread was busy comes late rather than in a burst of those it missed.
+fn ticking(period: Duration) -> tokio::time::Interval {
+    let mut every = tokio::time::interval(period);
+    every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    every
+}
+
 /// Whether a client that couldn't be taken leaves the socket able to take
 /// the next: the process or the system out of files, buffers or memory, or
 /// a client that left before it was taken. Each passes as clients end, so
@@ -818,8 +826,7 @@ where
     let mut unread = shared.read_messages_apart();
     let mut links = JoinSet::new();
     let mut found = discovery.found();
-    let mut leaving = tokio::time::interval(LEAVING_EVERY);
-    leaving.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut leaving = ticking(LEAVING_EVERY);
     // What the machine runs on, read with each minute's measure rather
     // than as each session changes: a battery's charge is read from its
     // embedded controller, which blocks the node's one thread on every
@@ -4881,8 +4888,7 @@ impl<S: Store> Shared<S> {
             }
             parking = Some(sleep::Parking::new(folder, left));
         }
-        let mut every = tokio::time::interval(eases.every);
-        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut every = ticking(eases.every);
         loop {
             every.tick().await;
             let now = jiff::Timestamp::now();
