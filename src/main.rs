@@ -3128,7 +3128,8 @@ fn attach(dir: &Path, id: &str) -> io::Result<()> {
 /// when it stayed gone past its patience for a restart, never answered
 /// the first join, isn't running here, or can't be reached, so a holder
 /// keeps the window for it to come back, told so first
-/// ([`hold::say_gone`]).
+/// ([`hold::say_gone`]), and told whether the host was ever here since it
+/// started ([`hold::say_reached`]), so the window says which.
 fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode> {
     let runtime_dir = place::login_runtime().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "this login has no runtime folder")
@@ -3142,8 +3143,14 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
         place::former_runtime().and_then(|dir| hosted_attach::socket(&dir, realm, host).ok()),
     );
     if !socket.exists() {
-        tell!("mycelium: no pi host {host} is running here");
-        hold::say_gone();
+        let how = if hold::reached_before(host) {
+            tell!("mycelium: no pi host {host} is running here");
+            hold::Gone::Away
+        } else {
+            tell!("mycelium: no pi host {host} has run here since this window opened");
+            hold::Gone::Unseen
+        };
+        hold::say_gone(how);
         return Ok(ExitCode::from(hold::holder::GONE));
     }
     let runtime = runtime()?;
@@ -3152,6 +3159,12 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
     // press now.
     runtime.shutdown_background();
     let left = left?;
+    // A socket nobody listens on, as a host that crashed leaves, says no
+    // host ran; any that answered, however late, did.
+    let answered = !matches!(left, hosted_attach::Left::Unreachable);
+    if answered {
+        hold::say_reached(host);
+    }
     match &left {
         hosted_attach::Left::Detached(why) => tell!("mycelium: {why}"),
         hosted_attach::Left::Released => {
@@ -3166,7 +3179,11 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
         hosted_attach::Left::Suspended | hosted_attach::Left::Restarting => {}
     }
     if left.exit_code() == hold::holder::GONE {
-        hold::say_gone();
+        hold::say_gone(if answered || hold::reached_before(host) {
+            hold::Gone::Away
+        } else {
+            hold::Gone::Unseen
+        });
     }
     Ok(ExitCode::from(left.exit_code()))
 }

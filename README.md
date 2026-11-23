@@ -40,7 +40,8 @@ The harness mesh's messages and presence, carried between machines:
   its two minutes for a restart, never answered the join, or couldn't be
   reached at all, telling its holder so first; any other leaving exits
   0. A holder on the pi host's own machine keeps the window on such a
-  69 as it does on 75, saying the host is away, and starts attach
+  69 as it does on 75, saying the host is away, or that none by that
+  name has run here since the window opened, and starts attach
   again at a key, a focus or its wake file, and by itself after a pause
   that doubles from 15 seconds to two minutes while the host stays away.
   A window on another machine's session, through SSH, still closes.

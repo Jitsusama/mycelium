@@ -223,8 +223,9 @@ pub async fn join_here(socket: &Path, session: &str) -> io::Result<Left> {
             left = joining => left,
             () = &mut watching => Ok(Left::Gone),
         } {
-            // A host stopped and not yet back, or one whose connection broke as
-            // it stopped or died, is one to wait for, not a fault.
+            // A host stopped and not yet back, or one that broke the join as
+            // it stopped before answering, is one to wait for, not a fault;
+            // one that broke it after answering has gone already.
             Err(error) if starting(&error) => Ok(Left::Unreachable),
             left => left,
         };
@@ -267,7 +268,9 @@ pub async fn join_again(
         let tried = tokio::time::timeout_at(until, connect(socket, session, size, &*here)).await;
         match tried {
             Err(_elapsed) => return Ok(Left::Gone),
-            Ok(Ok(Some(joined))) => return show(joined, here, output, sizes, patience.hold).await,
+            Ok(Ok(Some(joined))) => {
+                return gone_once_broken(show(joined, here, output, sizes, patience.hold).await);
+            }
             Ok(Err(error)) if !starting(&error) => return Err(error),
             Ok(Ok(None) | Err(_)) => {}
         }
@@ -337,7 +340,17 @@ async fn join_within(
     let Some(joined) = answered? else {
         return Ok(Left::Gone);
     };
-    show(joined, here, output, sizes, RESTART_PATIENCE.hold).await
+    gone_once_broken(show(joined, here, output, sizes, RESTART_PATIENCE.hold).await)
+}
+
+/// What a conversation the host answered left: a connection that broke,
+/// as one does when the host dies with what was typed still unread, is
+/// the host gone, not one never there to join.
+fn gone_once_broken(left: io::Result<Left>) -> io::Result<Left> {
+    match left {
+        Err(error) if starting(&error) => Ok(Left::Gone),
+        left => left,
+    }
 }
 
 /// A connection the host accepted a terminal on.
@@ -938,6 +951,50 @@ mod tests {
                 String::from_utf8_lossy(&shown),
                 "bye",
                 "what it showed before it went"
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_host_that_dies_once_it_has_answered_has_gone() {
+        bounded(async {
+            let dir = tempfile::tempdir().expect("a folder");
+            let path = dir.path().join("work-attended.sock");
+            let listener = UnixListener::bind(&path).expect("a socket");
+            let dying = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.expect("a viewer");
+                // Read byte by byte, so what the viewer types next stays
+                // unread, and the host dying with it there breaks the
+                // connection rather than ending it.
+                let mut byte = [0];
+                while byte[0] != b'\n' {
+                    stream.read_exact(&mut byte).await.expect("the attach");
+                }
+                send(&mut stream, &accepted()).await.expect("answered");
+                // Readiness from the attach is still cached, so it waits on
+                // until a byte of what the viewer typed is read, leaving the
+                // rest of its frame unread.
+                let mut first = [0];
+                loop {
+                    stream.readable().await.expect("the viewer typed");
+                    match stream.try_read(&mut first) {
+                        Ok(1) => break,
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                        other => panic!("the viewer left before typing: {other:?}"),
+                    }
+                }
+            });
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut here = Script::typing(b"x");
+            let left = join(&path, "s-1", SIZE, &mut here, Vec::new(), &mut sizes)
+                .await
+                .map_err(|error| error.kind());
+            dying.await.expect("the host ran");
+            assert_eq!(
+                left,
+                Ok(Left::Gone),
+                "a host that answered, then broke the connection dying, has gone"
             );
         })
         .await;

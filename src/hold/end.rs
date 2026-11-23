@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use rustix::process::{Pid, Signal};
 use serde::{Deserialize, Serialize};
 
-use super::{again, gone, held, next, socket, steers, wake};
+use super::{again, gone, held, next, reached, socket, steers, wake};
 
 /// How long a held program and its holder have, once told to end, to
 /// save what they hold and go before they are killed.
@@ -147,6 +147,7 @@ fn take_away(dir: &Path, id: &str) -> io::Result<()> {
         dir.join(format!(".{id}.next")),
         steers(dir, id),
         gone(dir, id),
+        reached(dir, id),
     ]
     .iter()
     .filter_map(|left| match fs::remove_file(left) {
@@ -346,6 +347,7 @@ mod tests {
             next(dir.path(), "stale"),
             steers(dir.path(), "stale"),
             gone(dir.path(), "stale"),
+            reached(dir.path(), "stale"),
         ];
         for file in &said {
             fs::write(file, b"[]").expect("it is written");
@@ -382,6 +384,7 @@ mod tests {
             dir.path().join(".killed1.next"),
             steers(dir.path(), "killed1"),
             gone(dir.path(), "killed1"),
+            reached(dir.path(), "killed1"),
         ];
         for file in &left[1..] {
             fs::write(file, b"[]").expect("it is written");

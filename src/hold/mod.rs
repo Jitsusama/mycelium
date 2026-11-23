@@ -21,6 +21,9 @@
 //! [`holder::GONE`] having written `<id>.gone` (told in `MYCELIUM_GONE`),
 //! its pi host away, is kept the same way, and also starts again by
 //! itself after a pause, as its host may be back; any other exit ends it.
+//! Whether its host was ever here since the holder started is kept in
+//! `<id>.reached` (told in `MYCELIUM_REACHED`), which the program writes
+//! once it finds its host, so the window can say which.
 //!
 //! - [`holder`]: the holder, keeping the program's terminal
 //! - [`attach`]: a terminal joining a holder
@@ -206,19 +209,64 @@ pub fn steers(dir: &Path, id: &str) -> PathBuf {
 /// The file a program held as `id` in `dir` writes as it exits
 /// [`holder::GONE`], saying its pi host is away, as attach does: a
 /// program exiting so for a reason of its own, as one whose tools are
-/// unavailable may, writes none and ends as any other.
+/// unavailable may, writes none and ends as any other. It holds the
+/// writer's pid and how its host is gone ([`Gone::said`]), so the holder
+/// heeds only the program it started, never a process under it.
 #[must_use]
 pub fn gone(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.gone"))
 }
 
+/// How a held program's pi host is gone, as it says in [`gone`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gone {
+    /// The host was there since the holder started, and has gone, as it
+    /// does as it stops or restarts.
+    Away,
+    /// No host by its name has been here since the holder started, as for
+    /// a mistyped realm or a host taken away, or one not yet started.
+    Unseen,
+}
+
+impl Gone {
+    /// What [`say_gone`] writes for the process `pid`.
+    #[must_use]
+    pub fn said(self, pid: u32) -> String {
+        let how = match self {
+            Self::Away => "away",
+            Self::Unseen => "unseen",
+        };
+        format!("{pid} {how}\n")
+    }
+
+    /// How the gone file `said` says the host is gone, if the process
+    /// `pid` wrote it: one another process wrote says nothing. One
+    /// written as nothing is an older attach's, which named no writer,
+    /// as one still on the path after a rollback writes it, and says the
+    /// host is away, as that attach meant.
+    #[must_use]
+    pub fn heard(said: &str, pid: u32) -> Option<Self> {
+        let mut words = said.split_whitespace();
+        let Some(writer) = words.next() else {
+            return Some(Self::Away);
+        };
+        if writer.parse::<u32>().ok()? != pid {
+            return None;
+        }
+        Some(match words.next() {
+            Some("unseen") => Self::Unseen,
+            _ => Self::Away,
+        })
+    }
+}
+
 /// Says to the holder of the program running this, if any, that its pi
-/// host is away, as it is about to exit [`holder::GONE`].
-pub fn say_gone() {
+/// host is gone, and how, as it is about to exit [`holder::GONE`].
+pub fn say_gone(how: Gone) {
     if let Some(gone) = std::env::var_os(GONE_SAID) {
         // A holder not told ends the window, as it did before it kept one
         // for a pi host away: nothing worse than that follows.
-        let _ = fs::write(gone, b"");
+        let _ = fs::write(gone, how.said(std::process::id()));
     }
 }
 
@@ -236,6 +284,68 @@ pub fn parked(dir: &Path, id: &str) -> PathBuf {
 
 /// What a held program is told the path of [`parked`] in.
 pub const PARKED_SAID: &str = "MYCELIUM_PARKED";
+
+/// The file a program held as `id` in `dir` writes, naming its pi host,
+/// once that host answers it ([`say_reached`]), kept until the holder
+/// ends, so a later run that finds none knows its host was here and is
+/// away, rather than never here at all.
+#[must_use]
+pub fn reached(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.reached"))
+}
+
+/// Says to the holder of the program running this, if any, that its pi
+/// host `host` answered it.
+pub fn say_reached(host: &str) {
+    if let Some(reached) = std::env::var_os(REACHED_SAID) {
+        // Unsaid, a later run finding no socket says its host was never
+        // here, and the window still waits for it.
+        let _ = fs::write(reached, host);
+    }
+}
+
+/// Whether the pi host `host` answered the program running this in an
+/// earlier run since its holder started ([`say_reached`]); one another
+/// host answered says no, and one no holder runs is never told, so says
+/// it was.
+#[must_use]
+pub fn reached_before(host: &str) -> bool {
+    reached_in(
+        std::env::var_os(REACHED_SAID).as_deref().map(Path::new),
+        host,
+    )
+}
+
+/// Whether the file at `reached`, told to the program running this, says
+/// `host` answered it; with none told, no holder runs it, so it was.
+fn reached_in(reached: Option<&Path>, host: &str) -> bool {
+    reached.is_none_or(|reached| read_small(reached).is_some_and(|said| said == host))
+}
+
+/// The few bytes a program under a holder writes to tell it something,
+/// read without following a link and only from a plain file, so that
+/// nothing under the program can make the holder wait on a pipe, read
+/// without end, or take a terminal as its own; none when there's no such
+/// file.
+#[must_use]
+pub fn read_small(path: &Path) -> Option<String> {
+    use rustix::fs::{Mode, OFlags};
+    use std::io::Read as _;
+    // A pid and a word, or a host's name, with room to spare.
+    const SAID_MOST: u64 = 256;
+    let flags =
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
+    let file = fs::File::from(rustix::fs::open(path, flags, Mode::empty()).ok()?);
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut said = String::new();
+    file.take(SAID_MOST).read_to_string(&mut said).ok()?;
+    Some(said)
+}
+
+/// What a held program is told the path of [`reached`] in.
+pub const REACHED_SAID: &str = "MYCELIUM_REACHED";
 
 /// The file a program held as `id` in `dir` may write, as it parks, with
 /// the command that takes it up again where it left off.
@@ -372,6 +482,80 @@ fn runs(pid: u32) -> bool {
 mod tests {
     use super::*;
     use notify::event::{AccessKind, AccessMode, CreateKind, EventKind, ModifyKind};
+
+    #[test]
+    fn a_gone_file_is_heard_only_from_its_writer_and_says_how() {
+        assert_eq!(Gone::heard(&Gone::Away.said(7), 7), Some(Gone::Away));
+        assert_eq!(
+            Gone::heard(&Gone::Unseen.said(7), 7),
+            Some(Gone::Unseen),
+            "a host never here is told apart from one away"
+        );
+        assert_eq!(
+            Gone::heard(&Gone::Away.said(8), 7),
+            None,
+            "one another process wrote says nothing"
+        );
+        assert_eq!(
+            Gone::heard("\n", 7),
+            Some(Gone::Away),
+            "one written as nothing is an older attach's, saying its host is away"
+        );
+        assert_eq!(
+            Gone::heard("7 lost\n", 7),
+            Some(Gone::Away),
+            "and a word it doesn't know says away, as an attach of before did"
+        );
+    }
+
+    #[test]
+    fn what_a_held_program_says_is_read_only_from_a_plain_file_and_only_so_far() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let plain = root.path().join("plain");
+        fs::write(&plain, "4100 away\n").expect("a file written");
+        assert_eq!(read_small(&plain).as_deref(), Some("4100 away\n"));
+        let long = root.path().join("long");
+        fs::write(&long, "7".repeat(100_000)).expect("a file written");
+        assert_eq!(
+            read_small(&long).map(|said| said.len()),
+            Some(256),
+            "one that goes on is read only so far"
+        );
+        let linked = root.path().join("linked");
+        std::os::unix::fs::symlink(&plain, &linked).expect("a link made");
+        assert_eq!(read_small(&linked), None, "a link is never followed");
+        let pipe = root.path().join("pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .expect("mkfifo runs");
+        assert!(made.success(), "a pipe made");
+        assert_eq!(read_small(&pipe), None, "nor is a pipe waited on");
+        assert_eq!(read_small(&root.path().join("none")), None);
+    }
+
+    #[test]
+    fn a_host_was_reached_only_as_the_file_names_it() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let reached = root.path().join("window1.reached");
+        assert!(
+            !reached_in(Some(&reached), "harbour-background"),
+            "none written says no host has answered"
+        );
+        fs::write(&reached, "harbour-background").expect("a file written");
+        assert!(
+            reached_in(Some(&reached), "harbour-background"),
+            "the host it names answered"
+        );
+        assert!(
+            !reached_in(Some(&reached), "harbour-attended"),
+            "another host never did"
+        );
+        assert!(
+            reached_in(None, "harbour-background"),
+            "a program no holder runs is never told, so says it was"
+        );
+    }
 
     #[test]
     fn only_a_records_change_is_told_never_its_reading() {
