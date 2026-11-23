@@ -52,8 +52,7 @@ impl<S: Store + Clone + Send + Sync + 'static> Shared<S> {
         }
         let mut receptors = self.said.receptors.subscribe();
         let mut forages = self.said.forages.subscribe();
-        let mut every = tokio::time::interval(FEED_EVERY);
-        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut every = super::ticking(FEED_EVERY);
         loop {
             tokio::select! {
                 told = receptors.changed() => if told.is_err() { return },
