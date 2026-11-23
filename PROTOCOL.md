@@ -137,7 +137,9 @@ same code, each line a JSON value:
    stands for minutes before it ends, so what was sent into it is
    offered again. A link that drops again before the other end is heard
    a minute after this end sent what it lacked leaves the reach where
-   that link began, so a quick second drop loses nothing either. A
+   that link began, as does one that fails as it opens, or a node
+   stopped or killed in that minute, so a quick second drop loses
+   nothing either. A
    first link reaches back to nothing, since a
    session takes every message that arrives as new, and a week of talk
    from before the machines were linked was never its to hear.

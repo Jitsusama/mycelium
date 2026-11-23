@@ -355,7 +355,8 @@ pub async fn run(
     }
     let claim = claimed(&store, &other.machine)?;
     let reach = reach_start(&store, &other.machine);
-    // Read before it is admitted, which marks it linked as of now.
+    // Read before it is admitted, which marks it linked as of now where
+    // it never was.
     let began = store.linked_until(&other.machine);
     admitted(&store, &other.machine)?;
     let exchange = shares.map(|places| exchange_with(places, &membership.hello(), &other, worker));
@@ -401,7 +402,13 @@ pub async fn run(
         _claim: claim,
     };
 
-    end.open(&mut writing).await?;
+    // Left as any end is, so a link that fails as it opens puts its mark
+    // back where the link began, as one that fails later does.
+    if let Err(error) = end.open(&mut writing).await {
+        let failed = Err(error);
+        end.leave(&failed);
+        return failed;
+    }
 
     let (mut keeping, mut looking) = paces();
     let mut queued = VecDeque::new();
@@ -687,13 +694,16 @@ fn claimed(store: &impl Store, machine: &str) -> io::Result<Claim> {
         .ok_or_else(|| refusal(format!("a link to {machine} already carries it here")))
 }
 
-/// Keeps that this store is linked with `machine` as of now, and forgets
-/// why a link with it was last refused. The link's first keep, or its end,
-/// puts the mark back where the link began until its catch-up has stood
-/// ([`Hearing::linked_until`]); only a node killed before either leaves it
-/// late.
+/// Keeps that this store is linked with `machine`, as of now where it
+/// never was, and forgets why a link with it was last refused. A mark
+/// already kept stays where it is, since the link's first keep, or its
+/// end, keeps it where the link began until its catch-up has stood
+/// ([`Hearing::linked_until`]), and a node killed before either leaves
+/// it there too, so the next link still reaches back that far.
 fn admitted(store: &impl Store, machine: &str) -> io::Result<()> {
-    store.mark_linked(machine, now())?;
+    if store.linked_until(machine).is_none() {
+        store.mark_linked(machine, now())?;
+    }
     if let Err(error) = store.link_admitted(machine) {
         eprintln!("{machine} linked, but its last refusal stands: {error}");
     }
@@ -4204,6 +4214,30 @@ mod tests {
             first.linked_until(),
             first.heard,
             "the first link two machines ever had reaches from when it was last heard"
+        );
+    }
+
+    #[test]
+    fn a_link_admitted_keeps_the_mark_its_reach_comes_from() {
+        let store = Memory::default();
+        admitted(&store, "kestrel").expect("a memory store admits");
+        let first = store
+            .linked_until("kestrel")
+            .expect("a first link is marked");
+        assert!(
+            (0..millis(KEEP_EVERY)).contains(&(now() - first)),
+            "a machine never linked is marked as of now"
+        );
+        let days_ago = now() - 2 * millis(REACH) / 7;
+        store
+            .mark_linked("kestrel", days_ago)
+            .expect("a memory store marks");
+        admitted(&store, "kestrel").expect("a memory store admits");
+        assert_eq!(
+            store.linked_until("kestrel"),
+            Some(days_ago),
+            "a link admitted leaves the mark it reaches from, so a node killed before its \
+             first keep loses nothing"
         );
     }
 
