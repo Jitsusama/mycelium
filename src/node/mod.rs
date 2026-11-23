@@ -155,6 +155,12 @@ const FENCES_SEEN_EVERY: Duration = Duration::from_secs(2);
 /// is held, or it failed and may be asked again.
 const REOPENING_HELD: Duration = Duration::from_secs(2 * 60);
 
+/// How long a carry the node carries on itself waits, all told, for its
+/// session to carry and then to end. Longer than a command's, since no
+/// one waits on it, and a session in a long turn took 18 minutes to carry
+/// on 23 November.
+const CARRIED_ON_WITHIN: Duration = Duration::from_secs(60 * 60);
+
 /// How many events a watch may fall behind by before the node lets it go;
 /// a client that can't keep up connects again and is sent the whole state.
 const WATCH_BACKLOG: usize = 4096;
@@ -4463,7 +4469,11 @@ impl<S: Store> Shared<S> {
         if person {
             self.keep_word(&steer, &machine);
         }
-        Ok(Response::Steered { machine, by: None })
+        Ok(Response::Steered {
+            machine,
+            by: None,
+            carries_on: false,
+        })
     }
 
     /// Ends the session held as `held` for good, on the one machine
@@ -5546,6 +5556,32 @@ impl<S: Store> Shared<S> {
             address: &address,
         };
         let order = self.ordered_by(asking, carried, &sessions)?;
+        // The quests' record holds it in its quest alone, as the order
+        // was proved by, so where no other of the quest's sessions stands
+        // here the node carries the rest on itself, the quest's own trees
+        // with it, as it does a session's carry of itself: the command
+        // that asked then may end, as a timeout ends it, without leaving
+        // the quest carried into the handover and started nowhere. One
+        // of several sessions goes on as before, the command carrying
+        // the rest, since only it knows which of them it told.
+        let carrying_on = match self.shares.clone() {
+            Some(shares)
+                if carries_whole(true, (&order.quest, session, &self.machine), &sessions) =>
+            {
+                // Judged now, while the command that asked runs.
+                let (by, _, charged) = self.judged_charging().await?;
+                let unfenced = self.unfenced_asking(by, None).await;
+                Some((
+                    shares,
+                    Vouched {
+                        by,
+                        charged,
+                        unfenced,
+                    },
+                ))
+            }
+            _ => None,
+        };
         let extra = serde_json::json!({
             "asker": asker,
             "quest": order.quest,
@@ -5555,11 +5591,33 @@ impl<S: Store> Shared<S> {
             })).collect::<Vec<_>>(),
             "source": chain::SOURCE,
         });
+        // Before it is told, so a refusal it writes at once is read as
+        // this carry's, not passed over as an earlier one's.
+        let began = jiff::Timestamp::now();
         self.carry_from_here(target, &address, said, &order.by, extra)
             .await?;
+        let carries_on = carrying_on.is_some();
+        if let Some((shares, vouched)) = carrying_on {
+            let said_of = |field: &str| {
+                said.get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            self.carry_on(
+                (target.clone(), true, began),
+                (order.quest.clone(), said_of("to"), shares),
+                crate::carry::Ordered {
+                    by: order.by.clone(),
+                    why: said_of("why"),
+                },
+                vouched,
+            );
+        }
         Ok(Response::Steered {
             machine: self.machine.clone(),
             by: Some(order.by),
+            carries_on,
         })
     }
 
@@ -5653,13 +5711,16 @@ impl<S: Store> Shared<S> {
         Ok(Response::Steered {
             machine: self.machine.clone(),
             by: Some(address),
+            carries_on: true,
         })
     }
 
-    /// Carries on, in the background, the carry `session` asked of itself
-    /// once told, as [`crate::carry::carry_told`] does, through this node
-    /// answering as `vouched`, who asked as it judged them while they ran.
-    /// Each line goes to the node's log, since no command waits for it.
+    /// Carries on, in the background, the carry of `session` that `ordered`
+    /// names, once told, as [`crate::carry::carry_told`] does, through this
+    /// node answering as `vouched`, who asked as it judged them while they
+    /// ran: a session's of itself, or an orchestrator's of a quest's only
+    /// session here. Each line goes to the node's log, since no command
+    /// waits for it.
     fn carry_on(
         &self,
         (session, whole, began): (Session, bool, jiff::Timestamp),
@@ -5676,6 +5737,7 @@ impl<S: Store> Shared<S> {
             self.machine.clone(),
             self.stopped.clone(),
         );
+        let by = ordered.by.clone();
         let runtime = tokio::runtime::Handle::current();
         let asking: through::Asking = Box::new(move |request| {
             if node.stopped.load(std::sync::atomic::Ordering::Relaxed) {
@@ -5689,7 +5751,7 @@ impl<S: Store> Shared<S> {
         });
         tokio::task::spawn_blocking(move || {
             let mut hands =
-                through::Through::new(socket, (*places).clone(), &quest, through::PATIENCE)
+                through::Through::new(socket, (*places).clone(), &quest, CARRIED_ON_WITHIN)
                     .asking(asking)
                     .stopping(stopped)
                     .since(began);
@@ -5698,10 +5760,10 @@ impl<S: Store> Shared<S> {
                 (&quest, &here, &to),
                 (&session, whole),
                 &ordered,
-                &mut |line| eprintln!("{} carrying itself: {line}", session.address),
+                &mut |line| eprintln!("{} carried by {by}: {line}", session.address),
             );
             if carried.is_err() {
-                eprintln!("{} carrying itself to {to} failed", session.address);
+                eprintln!("{} carried by {by} to {to} failed", session.address);
             }
         });
     }
@@ -9243,6 +9305,7 @@ mod tests {
             Ok(Response::Steered {
                 machine: "kestrel".to_owned(),
                 by: None,
+                carries_on: false,
             }),
             "a session on another machine is steered there"
         );
@@ -13116,6 +13179,7 @@ esac
             Ok(Response::Steered {
                 machine: "skiff".to_owned(),
                 by: Some("HARBOR".to_owned()),
+                carries_on: true,
             }),
             "HARBOR's own session carries itself, needing no quest's record or orchestrator"
         );
@@ -13232,6 +13296,7 @@ esac
             Ok(Response::Steered {
                 machine: "skiff".to_owned(),
                 by: Some("WCJQSG".to_owned()),
+                carries_on: false,
             }),
             "its orchestrator, by the record, orders the carry"
         );
@@ -13303,6 +13368,7 @@ esac
             Ok(Response::Steered {
                 machine: "skiff".to_owned(),
                 by: None,
+                carries_on: false,
             }),
             "the person carries it"
         );
@@ -13355,6 +13421,7 @@ esac
             Ok(Response::Steered {
                 machine: "skiff".to_owned(),
                 by: None,
+                carries_on: false,
             }),
             "the person carries it"
         );

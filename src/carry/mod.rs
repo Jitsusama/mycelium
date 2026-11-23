@@ -189,6 +189,17 @@ pub struct Ordered {
     pub why: String,
 }
 
+/// What the node answered of a session it told to carry.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Told {
+    /// Who the node proved ordered it, for an `ordered-carry`.
+    pub by: Option<String>,
+    /// Whether the node carries the rest on itself once the session has
+    /// carried and ended, so the command that asked has nothing left to
+    /// wait for.
+    pub carries_on: bool,
+}
+
 /// Why a carry's starts weren't found taken.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Untaken {
@@ -217,12 +228,13 @@ pub trait Hands {
     /// in, where the machine says it.
     fn boot(&self) -> Option<String>;
     /// Puts `steer` in the inbox of the session going by `address`, and
-    /// answers who the node proved ordered it, for an `ordered-carry`.
+    /// answers who the node proved ordered it, for an `ordered-carry`,
+    /// and whether it carries the rest on itself.
     ///
     /// # Errors
     ///
     /// When the node refuses it.
-    fn steer(&mut self, address: &str, steer: Value) -> Result<Option<String>, String>;
+    fn steer(&mut self, address: &str, steer: Value) -> Result<Told, String>;
     /// The sessions that refused this carry since it began.
     ///
     /// # Errors
@@ -389,7 +401,16 @@ pub fn carry(
         "carrying each session's work".to_owned(),
     );
     said.or_failed(Step::Push, bring_cells(hands, &sessions))?;
-    let ordered = said.or_failed(Step::Push, tell(hands, to, asked, &sessions))?;
+    let (ordered, carried_on) = said.or_failed(Step::Push, tell(hands, to, asked, &sessions))?;
+    if matches!(asked, Asked::Ordered(_)) && !carried_on.is_empty() {
+        return handed_on(
+            hands,
+            (quest, here, to),
+            (&sessions, &carried_on),
+            ordered.as_ref(),
+            (&mut said, skipped),
+        );
+    }
     if let Asked::Itself { .. } = asked {
         // Its own session can't end while this runs below it, so the
         // node carries on from here, once it has ended.
@@ -416,6 +437,68 @@ pub fn carry(
         (&sessions, whole, false),
         ordered.as_ref(),
         &mut said,
+    )?;
+    Ok(Carried {
+        step: "carried",
+        state: Stood::Done,
+        machine: to.to_owned(),
+        sessions: arrived,
+        skipped,
+    })
+}
+
+/// The rest of an ordered carry once the node said it carries on those
+/// of `sessions` going by an address in `carried_on`. Where it carries
+/// on every one, it finishes the carry whatever becomes of this command,
+/// so this waits for none of it, and two never carry one session on at
+/// once. The node carries on only a quest's one session standing here,
+/// so it carries on some but not all only where another came to stand
+/// since they were found: this carries those others on, leaving the
+/// quest's own trees to the node.
+fn handed_on<F: FnMut(&Value)>(
+    hands: &mut impl Hands,
+    (quest, here, to): (&str, &str, &str),
+    (sessions, carried_on): (&[Session], &BTreeSet<String>),
+    ordered: Option<&Ordered>,
+    (said, skipped): (&mut Saying<'_, F>, Vec<String>),
+) -> Result<Carried, Failed> {
+    let (theirs, ours): (Vec<Session>, Vec<Session>) = sessions
+        .iter()
+        .cloned()
+        .partition(|one| carried_on.contains(&one.address));
+    let told: Vec<&str> = theirs.iter().map(|one| one.address.as_str()).collect();
+    if ours.is_empty() {
+        said.line(
+            Step::Push,
+            Stood::Done,
+            format!(
+                "{} told; this machine's node carries the rest once it has carried and \
+                 ended, and its log says how it goes",
+                told.join(", ")
+            ),
+        );
+        return Ok(Carried {
+            step: "handed",
+            state: Stood::Done,
+            machine: to.to_owned(),
+            sessions: Vec::new(),
+            skipped,
+        });
+    }
+    said.line(
+        Step::Push,
+        Stood::Doing,
+        format!(
+            "{}: this machine's node carries the rest on",
+            told.join(", ")
+        ),
+    );
+    let arrived = rest(
+        hands,
+        (quest, here, to),
+        (&ours, false, true),
+        ordered,
+        said,
     )?;
     Ok(Carried {
         step: "carried",
@@ -473,7 +556,13 @@ fn rest<F: FnMut(&Value)>(
     ordered: Option<&Ordered>,
     said: &mut Saying<'_, F>,
 ) -> Result<Vec<Arrived>, Failed> {
-    let mut done = said.or_failed(Step::Push, gathered(hands, quest, to, sessions, whole))?;
+    let gathering = gathered(
+        hands,
+        (quest, here, to),
+        (sessions, whole),
+        &mut |waiting| said.line(Step::Push, Stood::Doing, waiting),
+    );
+    let mut done = said.or_failed(Step::Push, gathering)?;
     if own {
         let told: BTreeSet<&str> = sessions.iter().filter_map(session_id).collect();
         done.retain(|one| told.contains(one.session.as_str()) || (whole && one.session == quest));
@@ -785,7 +874,7 @@ fn tell(
     to: &str,
     asked: Asked,
     sessions: &[Session],
-) -> Result<Option<Ordered>, String> {
+) -> Result<(Option<Ordered>, BTreeSet<String>), String> {
     let steer = match asked {
         Asked::Person => json!({"act": "carry", "to": to, "from": "person"}),
         Asked::Ordered(why) => json!({"act": ordered::ACT, "to": to, "why": why}),
@@ -793,14 +882,18 @@ fn tell(
     };
     let why = asked.why();
     let mut by: Option<String> = None;
+    let mut carried_on = BTreeSet::new();
     for session in sessions {
-        let proved = hands
+        let told = hands
             .steer(&session.address, steer.clone())
             .map_err(|why| format!("{} wasn't told: {why}", session.address))?;
+        if told.carries_on {
+            carried_on.insert(session.address.clone());
+        }
         if why.is_none() {
             continue;
         }
-        let proved = proved.ok_or_else(|| {
+        let proved = told.by.ok_or_else(|| {
             format!(
                 "the node didn't say who ordered {}'s carry, so it can't arrive as theirs",
                 session.address
@@ -815,10 +908,11 @@ fn tell(
         }
         by = Some(proved);
     }
-    Ok(by.zip(why).map(|(by, why)| Ordered {
+    let ordered = by.zip(why).map(|(by, why)| Ordered {
         by,
         why: why.to_owned(),
-    }))
+    });
+    Ok((ordered, carried_on))
 }
 
 /// Waits until each of `sessions`, told, has carried its work, then,
@@ -826,12 +920,12 @@ fn tell(
 /// carried. A session that refuses stops it at once.
 fn gathered(
     hands: &mut impl Hands,
-    quest: &str,
-    to: &str,
-    sessions: &[Session],
-    whole: bool,
+    (quest, here, to): (&str, &str, &str),
+    (sessions, whole): (&[Session], bool),
+    say_waiting: &mut impl FnMut(String),
 ) -> Result<Vec<Done>, String> {
     let waiting: BTreeSet<&str> = sessions.iter().filter_map(session_id).collect();
+    let mut said_left: Option<Vec<&str>> = None;
     loop {
         let refused = hands.refused()?;
         let refusal = sessions.iter().find_map(|session| {
@@ -856,9 +950,19 @@ fn gathered(
         }
         let done = hands.done()?;
         let carried: BTreeSet<&str> = done.iter().map(|one| one.session.as_str()).collect();
-        let left: Vec<&str> = waiting.difference(&carried).copied().collect();
+        let left: Vec<&str> = waiting
+            .iter()
+            .copied()
+            .filter(|id| !carried.contains(id))
+            .collect();
         if left.is_empty() {
             break;
+        }
+        // Said once, and again as each arrives, so whoever watches a
+        // carry sees what it waits on and where to look for it.
+        if said_left.as_ref() != Some(&left) {
+            say_waiting(waiting_on(sessions, &left, (quest, here)));
+            said_left = Some(left.clone());
         }
         if !hands.wait() {
             let names: Vec<&str> = sessions
@@ -883,6 +987,22 @@ fn gathered(
         ));
     }
     Ok(done)
+}
+
+/// What a carry says it waits on: each of `sessions` whose id is `left`,
+/// by its address and id, and the done file it writes in `quest`'s
+/// handover from `here` once it has carried.
+fn waiting_on(sessions: &[Session], left: &[&str], (quest, here): (&str, &str)) -> String {
+    let each: Vec<String> = sessions
+        .iter()
+        .filter_map(|one| Some((one.address.as_str(), session_id(one)?)))
+        .filter(|(_, id)| left.contains(id))
+        .map(|(address, id)| format!("{address} (handover/{here}/{id}{})", through::DONE))
+        .collect();
+    format!(
+        "waiting for {} to carry into {quest}'s handover",
+        each.join(", ")
+    )
 }
 
 /// Puts in the handover what each session to be carried brings of its
@@ -1256,8 +1376,8 @@ mod tests {
 
     use super::cell::Brought;
     use super::{
-        Asked, Carried, Done, Failed, Hands, Ordered, PI_CARRY, Refused, Step, Untaken, carry,
-        carry_told, runs_on, session_id, unordered_arrival,
+        Asked, Carried, Done, Failed, Hands, Ordered, PI_CARRY, Refused, Step, Told, Untaken,
+        carry, carry_told, runs_on, session_id, unordered_arrival,
     };
     use crate::placement::Need;
     use crate::record::{Session, State};
@@ -1296,6 +1416,9 @@ mod tests {
         by: Option<String>,
         /// Who it proves ordered one session's instead, by its address.
         by_each: BTreeMap<String, String>,
+        /// The sessions, by address, whose ordered carry the node says it
+        /// carries on itself.
+        carrying_on: BTreeSet<String>,
         /// The sessions, by id, no quest's record holds; the record of
         /// the quest holds every other.
         unheld: BTreeSet<String>,
@@ -1377,7 +1500,7 @@ mod tests {
         fn boot(&self) -> Option<String> {
             self.boot.clone()
         }
-        fn steer(&mut self, address: &str, steer: Value) -> Result<Option<String>, String> {
+        fn steer(&mut self, address: &str, steer: Value) -> Result<Told, String> {
             // A session's carry of itself is proved as its own, by the
             // address it is put to, as the node proves the asker.
             let by = if steer["act"] == "self-carry" {
@@ -1390,6 +1513,7 @@ mod tests {
                     .then(|| self.by_each.get(address).or(self.by.as_ref()).cloned())
                     .flatten()
             };
+            let steer_is_ordered = steer["act"] == "ordered-carry";
             self.steered.push((address.to_owned(), steer));
             let id = self
                 .sessions
@@ -1404,7 +1528,8 @@ mod tests {
                 let refusing = self.refusing.iter().find(|one| one.session == id);
                 self.refused.extend(refusing.cloned());
             }
-            Ok(by)
+            let carries_on = steer_is_ordered && self.carrying_on.contains(address);
+            Ok(Told { by, carries_on })
         }
         fn refused(&mut self) -> Result<Vec<Refused>, String> {
             Ok(self.refused.clone())
@@ -2760,6 +2885,75 @@ mod tests {
             "naming both rather than stamping the last: {said}"
         );
         assert!(realm.started.is_empty(), "and nothing arrives as either's");
+    }
+
+    #[test]
+    fn an_ordered_carry_the_node_carries_on_is_handed_to_it() {
+        let mut realm = Realm {
+            by: Some("WCJQSG".to_owned()),
+            carrying_on: ["BUSY01", "NAPS02"].map(str::to_owned).into(),
+            ..realm()
+        };
+        let (done, lines) = ordered(&mut realm);
+        let carried = done.expect("handed");
+        assert_eq!(carried.step, "handed", "its last line says so: {lines:?}");
+        assert_eq!(carried.sessions, [], "none has arrived yet");
+        assert!(
+            realm.started.is_empty() && realm.shared.is_empty(),
+            "nothing is shared or started from the command, whose end can't leave the \
+             quest half carried: {lines:?}"
+        );
+        assert!(
+            last_said(&lines).contains("node carries the rest"),
+            "and the push says who carries on: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn an_ordered_carry_the_node_carries_on_in_part_carries_the_rest_itself() {
+        let mut realm = Realm {
+            by: Some("WCJQSG".to_owned()),
+            carrying_on: ["BUSY01".to_owned()].into(),
+            ..realm()
+        };
+        let (done, lines) = ordered(&mut realm);
+        let carried = done.expect("carried");
+        assert_eq!(carried.step, "carried", "{lines:?}");
+        assert_eq!(
+            arrivals(&realm.started),
+            ["s-naps02"],
+            "only the session the node doesn't carry on is started from here, the one \
+             it carries on never twice, and the quest's trees left to it: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_carry_waiting_names_each_session_and_its_done_file_once() {
+        let mut realm = Realm {
+            by: Some("WCJQSG".to_owned()),
+            // NAPS02 is told and never carries.
+            carries: ["s-busy01".to_owned()].into(),
+            ..realm()
+        };
+        let (done, lines) = ordered(&mut realm);
+        assert_eq!(
+            done,
+            Err(Failed { step: Step::Push }),
+            "it waits out its patience"
+        );
+        let waiting: Vec<&str> = lines
+            .iter()
+            .filter_map(|line| line["said"].as_str())
+            .filter(|said| said.starts_with("waiting for"))
+            .collect();
+        assert_eq!(
+            waiting,
+            [format!(
+                "waiting for NAPS02 (handover/skiff/s-naps02.done.json) to carry into \
+                 {QUEST}'s handover"
+            )],
+            "said once, over every look it waits: {lines:?}"
+        );
     }
 
     #[test]
