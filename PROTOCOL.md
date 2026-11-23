@@ -691,8 +691,11 @@ in order and says each step:
    the person's that no tree brought. That folder is entered as it
    stands, never made. Pi starts with `PI_SANDBOX` set to what
    `pi-carry fence` prints from the done file, so it arrives in the
-   fence it ran in; it doesn't start where that fails, and starts as
-   the node runs where an older done file names none. Its first prompt
+   fence it ran in. Where the node started it with a `PI_SANDBOX` of
+   its own, the tighter of the two holds (strict over fence over any
+   other), so a done file never loosens the fence it was placed in. It
+   doesn't start where that fails, and starts as the node runs where
+   an older done file names none. Its first prompt
    saying where it came from and telling it to carry on where it left
    off, so it never waits to be woken. The quest's own done
    file, `<quest>.done.json`, holds the trees no session held; it
@@ -1492,7 +1495,28 @@ session through the launcher the session's fence declares there, as a
 Mac's node does, since pi lifts its own fence on a Mac. It is absent
 where the node doesn't, as on Linux, where pi fences itself, or where
 the node is too old to say, which starts one through the login shell
-alone.
+alone. A Mac whose `declared` says `pi_fences_itself`, as one whose pi
+lays a sandbox profile round each command it runs does, is started as
+Linux is, since pi can't reach its own state within the launcher. There,
+an agent's held start in a fence that runs the realm's agent program, or
+`pi`, named bare, after at most `env` and only these variables:
+`PI_SANDBOX=strict`, `QUEST_WORKFLOW_AUTOLOAD_ID` and
+`QUEST_WORKFLOW_FIRST_WORDS` (each a plain word), and
+`QUEST_WORKFLOW_FIRST_TEXT` (any text but one starting with `!` or
+`/`, which pi would take for a command). It runs either directly, with
+only `-c`, `--continue`, `--session` and a plain id and a prompt last
+starting with none of `-`, `@`, `!` or `/`, or through `sh -c` and a
+script that is the program alone or the program, `--session` and a
+plain id, word for word. That start, or a carried session's arrival
+word for word, starts with
+`PI_SANDBOX` set to its fence, beside the fence `PI_FENCE_DECLARED=1`,
+so pi fences its commands so. Any other command an agent holds in a
+fence starts within that fence's launcher, as its runs do, or nowhere
+where none is declared, since through the login shell alone it would
+run as the account does. A start relayed as the person's, as a carried
+session is, is held in the fence it was sent declaring, which its
+sender placed it in, whether or not its node fences held starts; the
+person's own declares none and starts as it always has.
 
 A kit is a whole path holding no colon, which the node refuses
 otherwise. Its tools come first for every session and run, an agent's
