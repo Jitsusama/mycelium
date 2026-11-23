@@ -1103,7 +1103,7 @@ mod tests {
     // orchestrators would have been put to sleep in shadow for want of it.
     #[test]
     fn a_cell_orchestrates_where_another_session_says_it_answers_to_it() {
-        let sessions = [
+        let sessions = vec![
             session("s1", "skiff", &json!({"address": "OSPREY"})),
             session(
                 "s2",
@@ -1141,6 +1141,39 @@ mod tests {
             ),
             session("s12", "skiff", &json!({"address": "WREN"})),
             session("s13", "skiff", &json!({"orchestrated_by": "s12"})),
+        ];
+        let looked = Looked {
+            sessions: &sessions,
+            fences: &BTreeMap::new(),
+            holdings: &[],
+            queued: &BTreeSet::new(),
+            sizes: &BTreeMap::new(),
+            orchestrators: Some(&BTreeSet::new()),
+            boot: Some("b2"),
+            began: Some(began()),
+            now: now(),
+        };
+        let lane = |id: &str, said: &str| (id.to_owned(), Some(true), Some(said.to_owned()));
+        assert_eq!(
+            leading(&looked),
+            [
+                lane("s1", "S3"),
+                lane("s2", "S4, parked"),
+                lane("s8", "S9, out of reach on tern"),
+            ],
+            "s1 by its address in any case; s2 by another it goes by, from a lane parked \
+             here this boot; s8 by a lane out of reach lately. None for s6, whose lane \
+             ended, s10, whose lane parked before this boot, s12, named by its id and not \
+             its address, or s5, which names itself"
+        );
+    }
+
+    // A machine closed or retired stays in the realm's records, and a Mac
+    // names no boot, so a lane counts only where it can be told live, and a
+    // running one is named before the rest.
+    #[test]
+    fn a_lane_counts_only_where_it_can_be_told_live() {
+        let sessions = vec![
             session("s14", "skiff", &json!({})),
             session(
                 "s15",
@@ -1192,7 +1225,26 @@ mod tests {
             began: Some(began()),
             now: now(),
         };
-        let orchestrating: Vec<_> = cells("skiff", &looked)
+        let lane = |id: &str, said: &str| (id.to_owned(), Some(true), Some(said.to_owned()));
+        assert_eq!(
+            leading(&looked),
+            [
+                lane("s18", "S19, parked"),
+                lane("s22", "S24"),
+                ("s25".to_owned(), Some(true), None),
+            ],
+            "s18 by a lane parked here, naming no boot, since the boot began; s22 by its \
+             running lane on tern before its lane out of reach; s25 by the record, which \
+             names no lane. None for s14, whose lane was last written two hours since, \
+             s16, whose lane parked on tern names this machine's boot, or s20, whose lane \
+             naming no boot was parked before the boot began"
+        );
+    }
+
+    // Each cell on skiff that orchestrates or can't be told not to, with
+    // the lane its reason line would name.
+    fn leading(looked: &Looked<'_>) -> Vec<(String, Option<bool>, Option<String>)> {
+        cells("skiff", looked)
             .iter()
             .filter(|cell| cell.orchestrates != Some(false))
             .map(|cell| {
@@ -1202,27 +1254,7 @@ mod tests {
                     cell.lane.clone(),
                 )
             })
-            .collect();
-        let lane = |id: &str, said: &str| (id.to_owned(), Some(true), Some(said.to_owned()));
-        assert_eq!(
-            orchestrating,
-            [
-                lane("s1", "S3"),
-                lane("s2", "S4, parked"),
-                lane("s8", "S9, out of reach on tern"),
-                lane("s18", "S19, parked"),
-                lane("s22", "S24"),
-                ("s25".to_owned(), Some(true), None),
-            ],
-            "s1 by its address in any case; s2 by another it goes by, from a lane parked \
-             here this boot; s8 by a lane out of reach lately; s18 by a lane parked here, \
-             naming no boot, since the boot began; s22 by its running lane on tern before \
-             its lane out of reach; s25 by the record, which names no lane. None for s6, \
-             whose lane ended, s10, whose lane parked before this boot, s12, named by its \
-             id and not its address, s5, which names itself, s14, whose lane was last \
-             written two hours since, s16, whose lane parked on tern names this machine's \
-             boot, or s20, whose lane naming no boot was parked before the boot began"
-        );
+            .collect()
     }
 
     #[test]

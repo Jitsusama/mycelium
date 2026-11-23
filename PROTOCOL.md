@@ -1217,11 +1217,11 @@ it counts for nothing. One that has ended counts no more, and a
 session naming itself orchestrates nobody by it. Where only a lane
 says so, the reason line names the lane and where it stands, one
 running before one parked, and that before one out of reach. A lane
-counts even while the record can't be read. Like `driven` and every other reason a presence gives
-to keep a session here, that word is believed unproven, since all it
-can do is keep a session where it is. A claim naming no quest
-orchestrates nobody, since any session may make one of itself, where
-a lane's word is another session's.
+counts even while the record can't be read. Like `driven` and every
+other reason a presence gives to keep a session here, that word is
+believed unproven, since all it can do is keep a session where it is.
+A claim naming no quest orchestrates nobody, since any session may
+make one of itself, where a lane's word is another session's.
 An orchestrator is never put to sleep either, since asleep it steers
 nothing. While the node's record can't be read, or the node serves no
 quests' record, hasn't read it whole or finds its file or folder not
