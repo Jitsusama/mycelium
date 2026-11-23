@@ -34,7 +34,7 @@ use crate::hosted_attach;
 use crate::lend::{Lend, Lent};
 use crate::link::dial::{Dial, Program};
 use crate::link::refused::Refusals;
-use crate::link::starts::{Asking, Asks, Starting};
+use crate::link::starts::{Asking, Asks, START_ANSWERED_WITHIN, Starting};
 use crate::link::{self, discovery::Discovery, membership::Hello, membership::Membership};
 use crate::made::{self, Book, Made};
 use crate::mesh;
@@ -115,12 +115,26 @@ const REDIAL_MOST: Duration = Duration::from_secs(60);
 /// a drop the network mends at once is linked again within the wait,
 /// where refusing would send the start elsewhere for a few seconds' gap;
 /// a machine gone longer is refused at once, as before. The wait and a
-/// relayed start's answer ([`crate::link::starts`], 90 s) together stay
-/// under the two minutes the harness waits on a start it asks for, so
-/// it never gives up and asks again while the first is still going.
+/// relayed start's answer stay within [`START_ANSWERED_ALL`].
 const REDIAL_AWAITED_SINCE: Duration = Duration::from_secs(120);
 const REDIAL_AWAITED_MOST: Duration = Duration::from_secs(25);
 const REDIAL_LOOKED_EVERY: Duration = Duration::from_secs(1);
+
+/// The longest a start placed here takes, from its ask to its answer,
+/// with what it waited for room and for a link and what it waits on
+/// another machine's answer, so it stays under the two minutes the
+/// harness waits on a start it asks for and the harness never gives up
+/// and asks again while the first is still going. A relayed start is
+/// still given [`RELAYED_ANSWERED_LEAST`], so a clock stepped forward
+/// doesn't refuse it unasked.
+const START_ANSWERED_ALL: Duration = Duration::from_secs(115);
+const RELAYED_ANSWERED_LEAST: Duration = Duration::from_secs(30);
+const _: () = assert!(
+    REDIAL_AWAITED_MOST.as_secs() + RELAYED_ANSWERED_LEAST.as_secs()
+        <= START_ANSWERED_ALL.as_secs()
+        && START_ANSWERED_ALL.as_secs() < 120,
+    "a start's waits stay under the two minutes the harness waits on it"
+);
 
 /// How long a link's way in may take to finish saying why it ended, once
 /// the link is over.
@@ -3991,26 +4005,25 @@ impl<S: Store> Shared<S> {
         screen: Screen,
     ) {
         let work = &asked.work;
+        let since = redial_since();
+        let others = self.others();
+        let Some(machine) = redial_awaited(work, &self.machine, &others, |name| {
+            self.store.endings(name, since) > 0
+        }) else {
+            return;
+        };
         let program = asked
             .command
             .first()
             .map_or("", String::as_str)
             .escape_debug();
         let Some(left) = redial_left(at, jiff::Timestamp::now().as_millisecond()) else {
-            // The ask to start may have said it waits, so its end is said
-            // too, or the log would leave the wait it named unfinished.
+            // Said, since `"PlaceToStart"` may have told its asker the
+            // start would wait for this link.
             eprintln!(
-                "a start of {program} waits for no link: the {}s a start waits for a dropped \
-                 link went on its ask",
-                REDIAL_AWAITED_MOST.as_secs()
+                "a start of {program} waited for room as long as it may wait for {machine}'s \
+                 link, which dropped lately, so it is placed without waiting for it"
             );
-            return;
-        };
-        let since = redial_since();
-        let others = self.others();
-        let Some(machine) = redial_awaited(work, &self.machine, &others, |name| {
-            self.store.endings(name, since) > 0
-        }) else {
             return;
         };
         let admits = self.admits().await;
@@ -6231,10 +6244,8 @@ impl<S: Store> Shared<S> {
             // Asked again where it was asked under that name, in the
             // fence its first ask was placed in ([`Self::placed_held`]).
             (Whither::Placed, Some((machine, reopened))) => {
-                let unfenced = self.unfenced_asking(by, asked.work.fence).await;
-                let fence = starts_in(fence_of(by), held_or_run(unfenced.is_some(), by));
                 let reopening = reopening.as_ref();
-                self.asked_again(machine, reopened, dropped, reopening, asked, fence)
+                self.asked_again((machine, by), (reopened, dropped), reopening, asked, at)
                     .await
             }
             (Whither::Placed, None) => self.placed_held(asked, by, dropped, at).await,
@@ -6799,7 +6810,8 @@ impl<S: Store> Shared<S> {
             &admits,
         ) {
             Placement::Placed { machine, .. } if machine == self.machine => {
-                self.start_on(machine, asked, fence).await
+                self.start_on(machine, asked, (fence, START_ANSWERED_WITHIN))
+                    .await
             }
             Placement::Placed { machine, .. } => Err(format!(
                 "a start relayed here starts here or nowhere, and it would go to {machine}"
@@ -6997,14 +7009,15 @@ impl<S: Store> Shared<S> {
     ) -> Reply {
         self.awaits_redial((&asked, at), fence, screen).await;
         let admits = self.admits().await;
+        let within = relayed_within(at, jiff::Timestamp::now().as_millisecond());
         let (misses, nowhere) =
             match self.place(&asked.work, Counts::Always, fence, screen, &admits) {
                 Placement::Placed { machine, .. } if reopens && machine != self.machine => {
-                    return self.asked_there(&machine, asked, true).await;
+                    return self.asked_there(&machine, asked, true, within).await;
                 }
                 Placement::Placed { machine, .. } => {
                     return self
-                        .start_on(machine, asked, starts_in(fence, screen))
+                        .start_on(machine, asked, (starts_in(fence, screen), within))
                         .await;
                 }
                 Placement::Pending { misses } => {
@@ -7219,7 +7232,10 @@ impl<S: Store> Shared<S> {
             held_screen(fence),
             &Admits::All,
         ) {
-            Placement::Placed { machine, .. } => self.start_on(machine, asked, fence).await,
+            Placement::Placed { machine, .. } => {
+                self.start_on(machine, asked, (fence, START_ANSWERED_WITHIN))
+                    .await
+            }
             Placement::Pending { misses } | Placement::Refused { misses } => {
                 let its: Vec<Miss> = misses
                     .into_iter()
@@ -7237,13 +7253,20 @@ impl<S: Store> Shared<S> {
     /// Asks `machine`, another, to start `asked` through the link reaching
     /// it, as a bare reopening where `reopens` says, which only a node that
     /// judges one is asked. One under a name that may have landed there is
-    /// asked there again, as its lead holds it.
-    async fn asked_there(&self, machine: &str, asked: Start, reopens: bool) -> Reply {
+    /// asked there again, as its lead holds it. Its answer is waited on
+    /// no longer than `within` ([`relayed_within`]).
+    async fn asked_there(
+        &self,
+        machine: &str,
+        asked: Start,
+        reopens: bool,
+        within: Duration,
+    ) -> Reply {
         let there = asked.once.clone();
         let answered = if reopens {
-            self.asks.reopen(machine, asked).await
+            self.asks.reopen_within(machine, asked, within).await
         } else {
-            self.asks.ask(machine, asked).await
+            self.asks.ask_within(machine, asked, within).await
         };
         answered.unwrap_or_else(|unsent| {
             if let Some(there) = there {
@@ -7259,20 +7282,25 @@ impl<S: Store> Shared<S> {
     /// such a reopening: one let through without its fence, as `dropped`
     /// says, of a session on that machine, as `reopening` says, so no
     /// other start under its name rides it onto looser ground. Any other
-    /// goes again in `fence`, as [`Self::start_on`] sends it.
+    /// goes again in the fence its first ask was placed in
+    /// ([`Self::placed_held`]) for the asker judged `by`, as
+    /// [`Self::start_on`] sends it. Its answer is waited on no longer
+    /// than what's left of the harness's wait on the ask begun `at`.
     async fn asked_again(
         &self,
-        machine: String,
-        reopened: bool,
-        dropped: bool,
+        (machine, by): (String, By),
+        (reopened, dropped): (bool, bool),
         reopening: Option<&(String, String)>,
         asked: Start,
-        fence: Option<crate::declared::Kind>,
+        at: i64,
     ) -> Reply {
+        let unfenced = self.unfenced_asking(by, asked.work.fence).await;
+        let fence = starts_in(fence_of(by), held_or_run(unfenced.is_some(), by));
+        let within = relayed_within(at, jiff::Timestamp::now().as_millisecond());
         let reopens = dropped && reopening.is_some_and(|(at, _)| *at == machine);
         match (reopened, reopens) {
-            (false, _) => self.start_on(machine, asked, fence).await,
-            (true, true) => self.asked_there(&machine, asked, true).await,
+            (false, _) => self.start_on(machine, asked, (fence, within)).await,
+            (true, true) => self.asked_there(&machine, asked, true, within).await,
             (true, false) => {
                 if let Some(there) = &asked.once {
                     self.onces.unanswered(there, &machine, true, true);
@@ -7294,16 +7322,17 @@ impl<S: Store> Shared<S> {
     /// ([`held_within`]): a declaration only ever raises, so none of it
     /// fences less. Here it starts in `fence` alone, so the person's and
     /// an agent's shown unfenced start as they always have, and an
-    /// agent's in a fence starts in it however pi fences here.
+    /// agent's in a fence starts in it however pi fences here. Another's
+    /// answer is waited on no longer than `within`.
     async fn start_on(
         &self,
         machine: String,
         mut asked: Start,
-        fence: Option<crate::declared::Kind>,
+        (fence, within): (Option<crate::declared::Kind>, Duration),
     ) -> Reply {
         if machine != self.machine {
             asked.work.fence = declaring_at_least(asked.work.fence, fence);
-            return self.asked_there(&machine, asked, false).await;
+            return self.asked_there(&machine, asked, false, within).await;
         }
         // Its launcher first, so a fence whose launcher is refused starts
         // nothing, whatever else this node lacks. The holder runs each
@@ -8212,6 +8241,20 @@ fn redial_left(at: i64, now: i64) -> Option<Duration> {
         .filter(|left| !left.is_zero())
 }
 
+/// How long a start asked at `at` waits on another machine's answer,
+/// both in milliseconds since the epoch with `now` the time it is: what
+/// is left of [`START_ANSWERED_ALL`] once the time it already spent,
+/// waiting for room under its limits or for a link, is taken off, but
+/// never more than a relayed start's own [`START_ANSWERED_WITHIN`] nor
+/// less than [`RELAYED_ANSWERED_LEAST`]. A clock that went back counts
+/// as no time spent.
+fn relayed_within(at: i64, now: i64) -> Duration {
+    let spent = Duration::from_millis(now.saturating_sub(at).max(0).unsigned_abs());
+    START_ANSWERED_ALL
+        .saturating_sub(spent)
+        .clamp(RELAYED_ANSWERED_LEAST, START_ANSWERED_WITHIN)
+}
+
 /// `placement`, an ask to start's, answered as the `awaited` machine where
 /// it missed that machine only for being out of reach: the start that
 /// follows goes through this node, which waits for that machine's link
@@ -8724,8 +8767,9 @@ mod tests {
             None,
             "a start that waited a minute for room waits for no link"
         );
+        let most = i64::try_from(REDIAL_AWAITED_MOST.as_millis()).expect("a short wait");
         assert_eq!(
-            redial_left(at, at + 25_000),
+            redial_left(at, at + most),
             None,
             "a start with nothing left waits for no link"
         );
@@ -8733,6 +8777,51 @@ mod tests {
             redial_left(at, at - 5_000),
             Some(REDIAL_AWAITED_MOST),
             "a clock that went back counts as no time spent"
+        );
+    }
+
+    #[test]
+    fn a_relayed_start_waits_on_its_answer_only_what_its_ask_has_left() {
+        let at = 1_700_000_000_000;
+        let after = |waited: Duration| {
+            relayed_within(
+                at,
+                at + i64::try_from(waited.as_millis()).expect("a short wait"),
+            )
+        };
+        assert_eq!(
+            after(Duration::ZERO),
+            START_ANSWERED_WITHIN,
+            "a start relayed as soon as it was asked waits on it the whole of a relay's most"
+        );
+        assert_eq!(
+            after(REDIAL_AWAITED_MOST),
+            START_ANSWERED_WITHIN,
+            "one that waited the whole of a link's redial still waits the whole of it"
+        );
+        let room = Duration::from_secs(60);
+        assert_eq!(
+            after(room) + room,
+            START_ANSWERED_ALL,
+            "one that waited a minute for room waits only what keeps the start within it all"
+        );
+        assert_eq!(
+            after(START_ANSWERED_ALL),
+            RELAYED_ANSWERED_LEAST,
+            "one that somehow spent it all is still given the least a relay is"
+        );
+        assert_eq!(
+            relayed_within(at, at - 5_000),
+            START_ANSWERED_WITHIN,
+            "a clock that went back counts as no time spent"
+        );
+        assert!(
+            Duration::from_millis(u64::try_from(START_WAITS_MOST).expect("a short wait"))
+                + after(Duration::from_millis(
+                    u64::try_from(START_WAITS_MOST).expect("a short wait")
+                ))
+                < Duration::from_secs(120),
+            "the longest wait for room and the relay's answer stay under the harness's two minutes"
         );
     }
 
