@@ -1205,13 +1205,19 @@ orchestrations holds a claim of its naming a quest, or where the
 quests' record names its quest as another quest's `orchestrator`, or
 where another session says in its presence's `orchestratedBy` an
 address the session goes by, in any case, while that session runs,
-waits parked on this machine this boot, or is out of reach. A lane
-parked elsewhere never reaches this node, since links send only the
-sessions that live; one out of reach holds its orchestrator until a
-link to its machine comes back or the machine leaves. One that has
-ended counts no more, and a session naming itself orchestrates nobody
-by it. Where only a lane says so, the reason line names the lane and
-where it stands. Like `driven` and every other reason a presence gives
+waits parked on this machine this boot, or is out of reach and was
+written by its machine within the hour. A lane parked elsewhere never
+reaches this node, since links send only the sessions that live. A
+machine closed or retired may stay in the realm's records, never
+leaving, so a lane out of reach longer holds its orchestrator no
+more. A lane is parked this boot where its presence names the
+machine's boot; where either names none, as on a Mac, where its
+machine wrote it since the boot began; and where neither can be told
+it counts for nothing. One that has ended counts no more, and a
+session naming itself orchestrates nobody by it. Where only a lane
+says so, the reason line names the lane and where it stands, one
+running before one parked, and that before one out of reach. A lane
+counts even while the record can't be read. Like `driven` and every other reason a presence gives
 to keep a session here, that word is believed unproven, since all it
 can do is keep a session where it is. A claim naming no quest
 orchestrates nobody, since any session may make one of itself, where

@@ -5195,7 +5195,6 @@ impl<S: Store> Shared<S> {
         else {
             return (None, easing::Sampler::default());
         };
-        let boot = store::folders::boot_id();
         let looked = easing::Looked {
             sessions: &sessions,
             fences: &fences,
@@ -5203,7 +5202,8 @@ impl<S: Store> Shared<S> {
             queued: &queued,
             sizes: &sizes,
             orchestrators: orchestrators.as_ref().ok(),
-            boot: boot.as_deref(),
+            boot: self.boot.id.as_deref(),
+            began: self.boot.began,
             now,
         };
         let cells = easing::cells(&self.machine, &looked);

@@ -85,6 +85,10 @@ pub struct Looked<'a> {
     /// The machine's boot, which a session parked in another can't be
     /// started again from.
     pub boot: Option<&'a str>,
+    /// When the machine's boot began, in milliseconds since the epoch,
+    /// where the system says: on a machine naming no boot, as a Mac names
+    /// none, a lane is judged parked this boot by it.
+    pub began: Option<i64>,
     /// When.
     pub now: Timestamp,
 }
@@ -105,10 +109,14 @@ pub fn cells(here: &str, looked: &Looked) -> Vec<Cell> {
             let recorded = looked
                 .orchestrators
                 .map(|named| named.contains(id(session)) || named.contains(&session.id));
+            // The record names who it can, and a lane's word only adds
+            // to it, so a lane where the record can't be read still says
+            // the session orchestrates.
             let lane = match recorded {
                 Some(true) => None,
                 _ => leads(here, looked, session),
             };
+            let orchestrates = if lane.is_some() { Some(true) } else { recorded };
             Cell {
                 session: session.clone(),
                 fence: looked.fences.get(id(session)).copied(),
@@ -116,7 +124,7 @@ pub fn cells(here: &str, looked: &Looked) -> Vec<Cell> {
                 on_screen: on_screen(session),
                 driven: session.presence.get("driven").and_then(Value::as_bool),
                 asleep: super::parked(session, looked.boot),
-                orchestrates: recorded.map(|named| named || lane.is_some()),
+                orchestrates,
                 lane,
                 busy: busy(session, looked),
                 size: looked.sizes.get(id(session)).copied(),
@@ -315,11 +323,19 @@ fn alone(here: &str, sessions: &[Session], session: &Session) -> Option<bool> {
 /// is told only by the lane.
 ///
 /// A lane counts while it runs, while it waits parked here this boot, as
-/// its orchestrator is no less one for a lane at rest, and while its
-/// machine is out of reach, which says nothing of whether it still runs;
-/// that holds until a link to its machine comes back or the machine leaves.
+/// its orchestrator is no less one for a lane at rest, and for
+/// [`OUT_OF_REACH_LEADS`] after its machine last wrote it while that
+/// machine is out of reach, which says nothing of whether it still runs.
 /// A lane parked elsewhere never reaches this node, whose links send only
-/// the sessions that live.
+/// the sessions that live. Of several lanes, one that runs is named
+/// first, then one parked, then one out of reach, as the likeliest to be
+/// so.
+///
+/// Parked this boot is told by the boot its presence names, where both it
+/// and the machine name one; otherwise by whether its machine wrote it
+/// since the boot began, as the node's standing of each session judges a
+/// park on a Mac. Where neither can be told the lane doesn't count, since no holder
+/// is known to be left to wake it.
 ///
 /// The lane's word is believed though nothing proves it, as every reason
 /// a presence gives to keep a session here is, because all it can do is
@@ -338,15 +354,50 @@ fn leads(here: &str, looked: &Looked, session: &Session) -> Option<String> {
                 .as_deref()
                 .is_some_and(|said| session.goes_by(said))
         })
-        .find_map(|other| {
+        .filter_map(|other| {
             let who = &other.address;
             match other.state {
-                State::Busy | State::Idle => Some(who.clone()),
-                State::Unreachable => Some(format!("{who}, out of reach on {}", other.machine)),
-                State::Ended => (other.machine == here && super::parked(other, looked.boot))
-                    .then(|| format!("{who}, parked")),
+                State::Busy | State::Idle => Some((0, who.clone())),
+                State::Ended => (other.machine == here && parked_this_boot(other, looked))
+                    .then(|| (1, format!("{who}, parked"))),
+                State::Unreachable => written(other)
+                    .is_some_and(|at| looked.now.duration_since(at) < OUT_OF_REACH_LEADS)
+                    .then(|| (2, format!("{who}, out of reach on {}", other.machine))),
             }
         })
+        .min_by_key(|(likely, _)| *likely)
+        .map(|(_, lane)| lane)
+}
+
+/// How long after its machine last wrote it a lane out of reach still
+/// says its orchestrator leads it. A link drops for minutes, as a
+/// machine's network moves, and that is what the lane's word is kept
+/// through; a machine gone for longer, closed or retired, may never leave
+/// the realm's records, so without a bound its lane would keep its
+/// orchestrator here for good.
+pub const OUT_OF_REACH_LEADS: SignedDuration = SignedDuration::from_hours(1);
+
+/// Whether `session` is parked and was parked in the machine's present
+/// boot, by the boot its presence names or else by when its machine last
+/// wrote it; false where neither can be told.
+fn parked_this_boot(session: &Session, looked: &Looked) -> bool {
+    let named = session
+        .presence
+        .pointer("/owner/bootId")
+        .and_then(Value::as_str);
+    super::parked(session, None)
+        && match (looked.boot, named) {
+            (Some(now), Some(began)) => now == began,
+            _ => looked.began.is_some_and(|began| {
+                written(session).is_some_and(|at| at.as_millisecond() >= began)
+            }),
+        }
+}
+
+/// When the session's machine last wrote its presence, where its record
+/// says.
+fn written(session: &Session) -> Option<Timestamp> {
+    session.at.parse().ok()
 }
 
 /// Whether the session is on the person's screen: not, where a host runs
@@ -899,6 +950,17 @@ mod tests {
         );
     }
 
+    /// Two hours before [`NOW`], an hour before the boot [`began`].
+    const EARLIER: &str = "2026-11-16T06:00:00Z";
+
+    /// When the machine's boot began: an hour before [`NOW`].
+    fn began() -> i64 {
+        "2026-11-16T07:00:00Z"
+            .parse::<Timestamp>()
+            .expect("a time")
+            .as_millisecond()
+    }
+
     fn session(id: &str, machine: &str, more: &Value) -> Session {
         let mut said = json!({
             "id": id, "address": id.to_uppercase(), "machine": machine,
@@ -950,6 +1012,7 @@ mod tests {
             sizes: &[("s2".to_owned(), 512)].into(),
             orchestrators: None,
             boot: None,
+            began: None,
             now: now(),
         };
         let cells = cells("skiff", &looked);
@@ -1015,6 +1078,7 @@ mod tests {
                 sizes: &BTreeMap::new(),
                 orchestrators,
                 boot: None,
+                began: None,
                 now: now(),
             };
             cells("skiff", &looked)
@@ -1077,15 +1141,55 @@ mod tests {
             ),
             session("s12", "skiff", &json!({"address": "WREN"})),
             session("s13", "skiff", &json!({"orchestrated_by": "s12"})),
+            session("s14", "skiff", &json!({})),
+            session(
+                "s15",
+                "tern",
+                &json!({"orchestrated_by": "S14", "state": "unreachable",
+                        "at": EARLIER}),
+            ),
+            session("s16", "skiff", &json!({})),
+            session(
+                "s17",
+                "tern",
+                &json!({"orchestrated_by": "S16", "state": "ended",
+                        "presence": {"session": "s17", "state": "parked",
+                                     "owner": {"bootId": "b2"}}}),
+            ),
+            session("s18", "skiff", &json!({})),
+            session(
+                "s19",
+                "skiff",
+                &json!({"orchestrated_by": "S18", "state": "ended",
+                        "presence": {"session": "s19", "state": "parked"}}),
+            ),
+            session("s20", "skiff", &json!({})),
+            session(
+                "s21",
+                "skiff",
+                &json!({"orchestrated_by": "S20", "state": "ended", "at": EARLIER,
+                        "presence": {"session": "s21", "state": "parked"}}),
+            ),
+            session("s22", "skiff", &json!({})),
+            session(
+                "s23",
+                "tern",
+                &json!({"orchestrated_by": "S22", "state": "unreachable"}),
+            ),
+            session("s24", "tern", &json!({"orchestrated_by": "S22"})),
+            session("s25", "skiff", &json!({})),
+            session("s26", "skiff", &json!({"orchestrated_by": "S25"})),
         ];
+        let recorded = BTreeSet::from(["s25".to_owned()]);
         let looked = Looked {
             sessions: &sessions,
             fences: &BTreeMap::new(),
             holdings: &[],
             queued: &BTreeSet::new(),
             sizes: &BTreeMap::new(),
-            orchestrators: Some(&BTreeSet::new()),
+            orchestrators: Some(&recorded),
             boot: Some("b2"),
+            began: Some(began()),
             now: now(),
         };
         let orchestrating: Vec<_> = cells("skiff", &looked)
@@ -1106,11 +1210,69 @@ mod tests {
                 lane("s1", "S3"),
                 lane("s2", "S4, parked"),
                 lane("s8", "S9, out of reach on tern"),
+                lane("s18", "S19, parked"),
+                lane("s22", "S24"),
+                ("s25".to_owned(), Some(true), None),
             ],
             "s1 by its address in any case; s2 by another it goes by, from a lane parked \
-             here this boot; s8 by a lane out of reach. None for s6, whose lane ended, s10, \
-             whose lane parked before this boot, s12, named by its id and not its address, \
-             or s5, which names itself"
+             here this boot; s8 by a lane out of reach lately; s18 by a lane parked here, \
+             naming no boot, since the boot began; s22 by its running lane on tern before \
+             its lane out of reach; s25 by the record, which names no lane. None for s6, \
+             whose lane ended, s10, whose lane parked before this boot, s12, named by its \
+             id and not its address, s5, which names itself, s14, whose lane was last \
+             written two hours since, s16, whose lane parked on tern names this machine's \
+             boot, or s20, whose lane naming no boot was parked before the boot began"
+        );
+    }
+
+    #[test]
+    fn a_node_that_cant_tell_its_boot_or_its_record_still_believes_a_lane() {
+        let sessions = [
+            session("s1", "skiff", &json!({})),
+            session("s2", "skiff", &json!({"orchestrated_by": "S1"})),
+            session("s3", "skiff", &json!({})),
+            session(
+                "s4",
+                "skiff",
+                &json!({"orchestrated_by": "S3", "state": "ended",
+                        "presence": {"session": "s4", "state": "parked",
+                                     "owner": {"bootId": "b2"}}}),
+            ),
+            session("s5", "skiff", &json!({})),
+        ];
+        let looked = Looked {
+            sessions: &sessions,
+            fences: &BTreeMap::new(),
+            holdings: &[],
+            queued: &BTreeSet::new(),
+            sizes: &BTreeMap::new(),
+            orchestrators: None,
+            boot: None,
+            began: None,
+            now: now(),
+        };
+        let told: Vec<_> = cells("skiff", &looked)
+            .iter()
+            .map(|cell| {
+                (
+                    cell.session.id.clone(),
+                    cell.orchestrates,
+                    cell.lane.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            told,
+            [
+                ("s1".to_owned(), Some(true), Some("S2".to_owned())),
+                ("s2".to_owned(), None, None),
+                ("s3".to_owned(), None, None),
+                ("s4".to_owned(), None, None),
+                ("s5".to_owned(), None, None),
+            ],
+            "s1 orchestrates by its running lane though the record can't be read; s3's \
+             lane s4 is parked in a boot this machine can't tell, so s3 is as the record \
+             leaves it, which can't be told"
         );
     }
 
@@ -1138,6 +1300,7 @@ mod tests {
             sizes: &BTreeMap::new(),
             orchestrators: Some(&BTreeSet::new()),
             boot: None,
+            began: None,
             now: now(),
         };
         let driven: Vec<_> = cells("skiff", &looked)
