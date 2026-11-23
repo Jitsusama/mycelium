@@ -778,8 +778,9 @@ impl Exchange {
     }
 
     /// How many files this end has asked of the other, or will ask in
-    /// their turn, and not yet taken. Once the other end has said all it holds, none means this end holds
-    /// all of it, as frames cross in the order they are said.
+    /// their turn, and not yet taken. Once the other end has said all it
+    /// holds, none means this end holds all of it, as frames cross in the
+    /// order they are said.
     #[must_use]
     pub fn waiting(&self) -> usize {
         self.wanted.len()
@@ -1512,9 +1513,13 @@ impl Exchange {
             if sight == Sight::Changed {
                 self.unsay(id, &key);
             }
-            // Asked again below if it still should be.
-            self.wanted.remove(&(id.to_owned(), key.clone()));
-            self.unanswered.remove(&(id.to_owned(), key.clone()));
+            // Asked again below if it still should be, but for one asked
+            // already and not yet answered, whose answer is on its way
+            // and holds the file as it stands when the other end reads
+            // the ask.
+            let file = (id.to_owned(), key.clone());
+            let asked = self.wanted.remove(&file);
+            self.unanswered.remove(&file);
             if let Some(queued) = self.to_want.get_mut(id) {
                 queued.remove(&key);
             }
@@ -1544,9 +1549,14 @@ impl Exchange {
                     );
                     held.keep()?;
                 }
-                _ => {
-                    self.to_want.entry(id.to_owned()).or_default().insert(key);
-                }
+                _ => match asked {
+                    Some(at) => {
+                        self.wanted.insert(file, at);
+                    }
+                    None => {
+                        self.to_want.entry(id.to_owned()).or_default().insert(key);
+                    }
+                },
             }
         }
         wants.extend(self.ask_more(id));
@@ -1586,7 +1596,12 @@ impl Exchange {
     /// again only as the other end next says it holds it, as an ask
     /// unanswered always was.
     fn ask_in_turn(&mut self) -> Vec<Say> {
-        let now = Instant::now();
+        self.ask_in_turn_at(Instant::now())
+    }
+
+    /// Gives up the turns of asks unanswered as [`Self::ask_in_turn`]
+    /// does, with `now` the time it is.
+    fn ask_in_turn_at(&mut self, now: Instant) -> Vec<Say> {
         let gone: Vec<(String, String)> = self
             .wanted
             .iter()
@@ -1596,7 +1611,8 @@ impl Exchange {
         if !gone.is_empty() {
             let quests: BTreeSet<&str> = gone.iter().map(|(quest, _)| quest.as_str()).collect();
             eprintln!(
-                "{} files asked of {} went unanswered for {}s, so the next are asked: {}, of {}",
+                "{} files asked of {} went unanswered for {}s, first {}, so the next of {} are \
+                 asked in their place",
                 gone.len(),
                 self.other,
                 ANSWERED_WITHIN.as_secs(),
@@ -1752,6 +1768,11 @@ impl Exchange {
             }
         }
         let taken = self.take_whole(id, key, theirs, body, mode);
+        // One that can't be taken is still waited on, and asked again as
+        // the other end next says it holds it, as an unanswered ask is.
+        if taken.is_err() {
+            self.unanswered.insert(file);
+        }
         let next = self.ask_more(id);
         match taken {
             Ok(mut says) => {
@@ -3609,13 +3630,7 @@ mod tests {
 
         // Unanswered, the asked go once their time is up, and the next are
         // asked in their place.
-        let long_ago = Instant::now()
-            .checked_sub(ANSWERED_WITHIN)
-            .expect("a time before");
-        for asked in far.wanted.values_mut() {
-            *asked = long_ago;
-        }
-        let again = far.look().expect("kestrel looks");
+        let again = far.ask_in_turn_at(Instant::now() + ANSWERED_WITHIN);
         let next = asked(&again);
         assert_eq!(next.len(), ASKED_AT_ONCE, "the next few: {next:?}");
         assert!(
