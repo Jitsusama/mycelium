@@ -61,6 +61,7 @@
 //! - [`client`]: a client of the socket
 //! - [`health`]: how a realm's network stands, for a daily read
 //! - [`place`]: where a node keeps things on its machine
+//! - [`places`]: where work can begin, each by the name it is said by
 //! - [`awake`]: keeping its machine awake while it holds sessions
 //! - [`open_files`]: raising its own limit on open files as far as it goes
 //! - [`install`]: whether the build a process runs is still installed
@@ -104,6 +105,7 @@ pub mod own_health;
 pub mod place;
 pub mod placement;
 pub mod placements;
+pub mod places;
 pub mod reach;
 pub mod receptor;
 pub mod record;

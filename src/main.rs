@@ -37,7 +37,7 @@ use mycelium::ssh::Asked as KeyAsked;
 use mycelium::store::Store as _;
 use mycelium::store::folders::Folders;
 use mycelium::web::Said;
-use mycelium::wire::{Draft, Ran, Reply, Request, Response, Run, Sprout, Start, StartsAct};
+use mycelium::wire::{Answer, Draft, Ran, Reply, Request, Response, Run, Sprout, Start, StartsAct};
 use mycelium::{carry, hold, hosted_attach, install, link, node, place, rejoin, served};
 
 /// What `mycelium starts` is asked to do.
@@ -425,8 +425,9 @@ enum Action {
     Start(Starting),
     /// Starts a pi session on a piece of work: a link or words.
     ///
-    /// It begins in the work's repository: the folder named, else the
-    /// link's repository checked out under ~/src, else this folder where
+    /// It begins in the work's repository: the folder or place named,
+    /// as `places` lists them; else the link's repository checked out
+    /// here, in the zone the link points into; else this folder where
     /// it is in one; never a home folder. The session is told to make the
     /// work a quest at the top of the tree and to own all of it. It runs
     /// held, in no window, and this says how to join it; with --join this
@@ -435,6 +436,17 @@ enum Action {
     /// dash.
     #[command(after_help = "Example:\n  mycelium sprout --in ~/src/repo make the launcher faster")]
     Sprout(Sprouting),
+    /// Lists the places work can begin in here.
+    ///
+    /// Each checkout under ~/src, the trunk's tree of each bare
+    /// repository in home, and each zone a checkout's manifest
+    /// names, as `sprout --in` takes them by name. A zone not checked
+    /// out says the command that checks it out.
+    #[command(after_help = "Example:\n  mycelium places -o json")]
+    Places {
+        #[command(flatten)]
+        output: Output,
+    },
     /// Runs a command on the machine that suits it, and waits on it.
     ///
     /// The node runs it on the machine of the realm placement chooses,
@@ -1211,7 +1223,8 @@ struct Sprouting {
     /// The machine it starts on, by name; this one if none.
     #[arg(long)]
     on: Option<String>,
-    /// The repository's folder it works in.
+    /// The folder it works in, or a place by name, such as
+    /// `//system/reef` or `reef`.
     #[arg(long = "in")]
     folder: Option<PathBuf>,
     /// The cell it comes from, by address, which its quest is tied to on
@@ -1761,6 +1774,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Starts { act } => print_reply(&socket, &Request::Starts { act: act.into() }),
         Action::Start(asked) => start(&socket, asked),
         Action::Sprout(asked) => sprout(&socket, asked),
+        Action::Places { output } => places(&socket, &output),
         Action::Run(asked) => return run_there(&socket, asked),
         Action::Lend {
             act: LendAct::Serve { listen, budget },
@@ -2941,17 +2955,26 @@ fn start(socket: &Path, asked: Starting) -> io::Result<()> {
 fn sprout(socket: &Path, asked: Sprouting) -> io::Result<()> {
     use mycelium::sprout;
     use std::io::IsTerminal as _;
+    let cwd = std::env::current_dir()?;
+    // A place's name goes to the node as said, since made whole it would
+    // name a folder here rather than the place.
+    let folder = match asked.folder {
+        Some(named) if sprout::place_named(&named, &cwd, &sprout::ThisDisk).is_some() => {
+            Some(named)
+        }
+        named => named.map(std::path::absolute).transpose()?,
+    };
     let sprouting = Sprout {
         words: asked.words,
-        folder: asked.folder.map(std::path::absolute).transpose()?,
+        folder,
         from: asked.from,
         on: asked.on,
-        cwd: Some(std::env::current_dir()?),
+        cwd: Some(cwd.clone()),
     };
     // Judged first here, where this process stands and sees the disk as
     // the node will judge it, so a sprout it would refuse is refused at
     // once, with no node needed; the node judges it again for itself.
-    let cwd = std::env::current_dir()?;
+    // With `-o json`, a refusal is printed as the node answers one.
     let home = std::env::home_dir().ok_or_else(|| io::Error::other("no home folder"))?;
     // This machine's name is needed only where no machine is named; one
     // named that can't be told from this one is judged as elsewhere, by
@@ -2962,26 +2985,37 @@ fn sprout(socket: &Path, asked: Sprouting) -> io::Result<()> {
         Some(_) => place::machine(None, &place::state()).unwrap_or_default(),
     };
     let sprout::Sprouted { start, left_out } =
-        sprout::starting(&sprouting, &cwd, &home, &here, &sprout::ThisDisk)
-            .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
-    let mut reply = Client::connect(socket)?.ask(&Request::Sprout(sprouting))?;
+        match sprout::starting(&sprouting, &cwd, &home, &here, &sprout::ThisDisk) {
+            Ok(sprouted) => sprouted,
+            Err(refused) if asked.output.json() => {
+                return print_line(&Answer::Refused(refused));
+            }
+            Err(refused) => {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, refused.why));
+            }
+        };
+    let mut answer = Client::connect(socket)?.answer(&Request::Sprout(sprouting))?;
     // A node from before sprouts were its own to judge is asked for the
     // Start judged here, as it was then. It knows nothing of what the
     // seed left out, so that is said here, once the session started, as
     // a node of now would log it.
-    if matches!(&reply, Err(why) if why.starts_with("not a request") && why.contains("Sprout")) {
-        reply = Client::connect(socket)?.ask(&Request::Start(start.clone()))?;
+    let unknown = |why: &str| why.starts_with("not a request") && why.contains("Sprout");
+    if matches!(&answer, Answer::Err(why) if unknown(why)) {
+        let reply = Client::connect(socket)?.ask(&Request::Start(start.clone()))?;
         for said in left_out.told(&reply) {
             tell!("mycelium sprout: {said}");
         }
+        answer = reply.into();
     }
     if asked.output.json() {
-        return print_line(&reply);
+        return print_line(&answer);
     }
-    let started = match reply {
-        Ok(Response::Started(started)) => started,
-        Ok(other) => return Err(io::Error::other(format!("the node answered {other:?}"))),
-        Err(why) => return Err(io::Error::other(why)),
+    let started = match answer {
+        Answer::Ok(Response::Started(started)) => started,
+        Answer::Ok(other) => return Err(io::Error::other(format!("the node answered {other:?}"))),
+        Answer::Err(why) | Answer::Refused(mycelium::flow::Refusal { why, .. }) => {
+            return Err(io::Error::other(why));
+        }
     };
     let joining = started.attach.join(" ");
     if !start
@@ -3006,6 +3040,30 @@ fn sprout(socket: &Path, asked: Sprouting) -> io::Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// Prints the places work can begin in, as the node lists them for this
+/// process: as its reply with `-o json`, else a line each, its name and
+/// folder, and for a zone not checked out the command that checks it
+/// out.
+fn places(socket: &Path, output: &Output) -> io::Result<()> {
+    let reply = Client::connect(socket)?.ask(&Request::Places {})?;
+    if output.json() {
+        return print_line(&reply);
+    }
+    let places = match reply {
+        Ok(Response::Places(places)) => places,
+        Ok(other) => return Err(io::Error::other(format!("the node answered {other:?}"))),
+        Err(why) => return Err(io::Error::other(why)),
+    };
+    let mut out = io::stdout().lock();
+    for place in places {
+        match &place.check_out {
+            Some(check_out) => writeln!(out, "{}  not checked out: {check_out}", place.name)?,
+            None => writeln!(out, "{}  {}", place.name, place.folder.display())?,
+        }
+    }
+    Ok(())
 }
 
 /// Becomes the words that join a session just started, so this terminal

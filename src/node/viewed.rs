@@ -121,6 +121,37 @@ impl Disk for Viewed {
     fn origin(&self, folder: &Path) -> Option<String> {
         ThisDisk.origin(&self.here(folder)?)
     }
+
+    // Each folder in it is named as the asker named the one it is in,
+    // and counts only where the asker reaches it too, as a bind mount
+    // within its view may hide one the node sees.
+    fn folders(&self, folder: &Path) -> Vec<PathBuf> {
+        let Some(real) = self.here(folder) else {
+            return Vec::new();
+        };
+        ThisDisk
+            .folders(&real)
+            .into_iter()
+            .filter_map(|found| Some(folder.join(found.file_name()?)))
+            .filter(|named| self.is_folder(named))
+            .collect()
+    }
+
+    fn read(&self, file: &Path, most: u64) -> Option<String> {
+        ThisDisk.read(&self.here(file)?, most)
+    }
+
+    fn is_bare(&self, folder: &Path) -> bool {
+        self.here(folder)
+            .is_some_and(|real| ThisDisk.is_bare(&real))
+    }
+
+    // Git names the trunk's tree as the node's disk has it, so it counts
+    // only where the asker reaches that path too.
+    fn trunk(&self, folder: &Path) -> Option<PathBuf> {
+        let trunk = ThisDisk.trunk(&self.here(folder)?)?;
+        self.is_folder(&trunk).then_some(trunk)
+    }
 }
 
 #[cfg(test)]
@@ -144,6 +175,15 @@ mod tests {
         .expect("its stat is written");
         symlink(root, process.join("root")).expect("its root is linked");
         symlink(cwd, process.join("cwd")).expect("its cwd is linked");
+    }
+
+    /// The node's answer to a sprout naming `folder`, which isn't one
+    /// here.
+    fn not_here(folder: &Path) -> crate::wire::Answer {
+        crate::wire::Answer::Refused(crate::flow::Refusal::new(
+            crate::flow::Code::NotHere,
+            format!("{} isn't a folder here", folder.display()),
+        ))
     }
 
     fn checkout(at: &Path) {
@@ -206,6 +246,48 @@ mod tests {
     }
 
     #[test]
+    fn the_places_an_asker_is_shown_are_those_its_view_reaches() {
+        let place = tempfile::tempdir().expect("a place");
+        let home = place.path().canonicalize().expect("real").join("home");
+        let rows = home.join("src/rows");
+        checkout(&rows);
+        fs::create_dir_all(rows.join("system/reef")).expect("a zone");
+        fs::create_dir_all(rows.join(".meta")).expect("its manifest's folder");
+        fs::write(
+            rows.join(crate::places::MANIFEST),
+            r#"{"//system/reef": {}, "//areas/wren": {}}"#,
+        )
+        .expect("a manifest");
+        let procs = place.path().join("proc");
+        asking(&procs, 44, 2, Path::new("/"), &home);
+        let whole = Viewed::of(&procs, 44, 2).expect("the asker is seen");
+        let view = place.path().join("view");
+        fs::create_dir_all(&view).expect("the view is made");
+        asking(&procs, 49, 2, &view, &view);
+        let fenced = Viewed::of(&procs, 49, 2).expect("the asker is seen");
+
+        let seen = crate::places::on(&home, &whole);
+
+        let named: Vec<(&str, bool)> = seen
+            .iter()
+            .map(|place| (place.name.as_str(), place.out))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("~/src/rows", false),
+                ("//areas/wren", true),
+                ("//system/reef", false)
+            ]
+        );
+        assert_eq!(
+            crate::places::on(&home, &fenced),
+            [],
+            "none the view doesn't reach"
+        );
+    }
+
+    #[test]
     fn an_asker_whose_id_another_process_took_is_refused() {
         let place = tempfile::tempdir().expect("a place");
         let procs = place.path().join("proc");
@@ -250,10 +332,7 @@ mod tests {
             "osprey",
         );
 
-        assert_eq!(
-            refused,
-            Err(format!("{} isn't a folder here", persons.display()))
-        );
+        assert_eq!(refused, Err(not_here(&persons)));
     }
 
     #[test]
@@ -385,10 +464,7 @@ mod tests {
         let refused = sprout(&hidden);
         let started = sprout(&seen).expect("it starts where it sees").start;
 
-        assert_eq!(
-            refused,
-            Err(format!("{} isn't a folder here", hidden.display()))
-        );
+        assert_eq!(refused, Err(not_here(&hidden)));
         assert_eq!(started.folder, Some(PathBuf::from("src/rows")));
     }
 

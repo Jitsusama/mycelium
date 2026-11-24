@@ -60,7 +60,8 @@ impl Flows {
     }
 }
 
-/// Why a crossing was refused, in words the sender's harness tells apart.
+/// Why a crossing or a sprout was refused, in words the asker tells
+/// apart: a sender's harness each crossing's, a launcher each sprout's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Code {
@@ -72,9 +73,22 @@ pub enum Code {
     Unheard,
     /// The other realm's node on this machine doesn't answer.
     Unreached,
+    /// A sprout needs a folder named: it was asked from outside any
+    /// repository, or named home.
+    NeedsFolder,
+    /// A sprout says no work.
+    NoWork,
+    /// The cell a sprout says it came from isn't one.
+    NotACell,
+    /// The folder a sprout names isn't one here.
+    NotHere,
+    /// The place a sprout names is none here.
+    NoSuchPlace,
+    /// The place a sprout names is several.
+    SeveralPlaces,
 }
 
-/// A crossing refused, and why, in one line for its sender.
+/// A crossing or a sprout refused, and why, in one line for its asker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Refusal {
     /// Which kind of refusal.
@@ -91,6 +105,12 @@ impl Refusal {
             code,
             why: why.into(),
         }
+    }
+}
+
+impl From<Refusal> for String {
+    fn from(refusal: Refusal) -> Self {
+        refusal.why
     }
 }
 
