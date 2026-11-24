@@ -21575,7 +21575,9 @@ esac
                 }),
                 ..work(vec![Need::Machine("skiff".to_owned())])
             },
-            folder: None,
+            // Its work's folder, never home, since a start within the
+            // strict fence's launcher can't begin where it can't write.
+            folder: Some(dir.path().to_owned()),
             strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
@@ -21905,7 +21907,9 @@ esac
         link.client = Some(1);
         let start = Start {
             work: work(vec![Need::Machine("skiff".to_owned())]),
-            folder: None,
+            // An agent's start runs strictly here, so it names its work's
+            // folder, as the strict fence's launcher needs.
+            folder: Some(dir.path().to_owned()),
             strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
