@@ -1111,7 +1111,7 @@ mod tests {
         fs::write(&file, "not a folder\n").expect("written");
         assert_eq!(
             Logs::scan(&file).map(|_| ()).map_err(|error| error.kind()),
-            Err(io::ErrorKind::NotADirectory),
+            Err(std::io::ErrorKind::NotADirectory),
             "logs that can't be listed can't say what continues what"
         );
     }
