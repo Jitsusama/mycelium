@@ -1551,7 +1551,11 @@ from another realm, carry the node's, and say neither `hosted` nor
 `invite`; one a link carried from another machine carries a process
 there. So a session knows its own by `pid` only beside its `from`, and
 only for what it wrote itself. `invite` is the mesh target as written
-(`#harness`), not a group's name (`harness`).
+(`#harness`), not a group's name (`harness`). Every other field its
+file says, as a hold's `starts` and `ends`, a watch says as the file
+does, beside these, so a field a sender adds reaches those reading
+through a node built before it. None of them crosses into another
+realm, and a link carries a message's file whole, as it always has.
 
 A `Present` connection counts the process at its other end, as the
 kernel names it, present until the connection closes; then every session

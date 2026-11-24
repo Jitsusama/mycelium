@@ -187,6 +187,10 @@ pub fn message(body: &Value) -> Option<Message> {
     }
     // Only an answer ends a hold, as the harness reads it.
     let ends_hold = sent.ends_hold && sent.re.is_some();
+    let mut rest = body.as_object().cloned().unwrap_or_default();
+    for read in READ {
+        rest.remove(*read);
+    }
     Some(Message {
         id: sent.id,
         at: sent.at,
@@ -202,8 +206,31 @@ pub fn message(body: &Value) -> Option<Message> {
         pid: sent.pid,
         hosted: sent.hosted.unwrap_or(false),
         invite: sent.invite,
+        rest,
     })
 }
+
+/// The fields of a message's file that [`Message`] reads into its own,
+/// or names otherwise (`groups`), so none is said twice when it is
+/// written whole.
+const READ: &[&str] = &[
+    "v",
+    "id",
+    "at",
+    "from",
+    "to",
+    "groups",
+    "intent",
+    "text",
+    "re",
+    "supersedes",
+    "fromRealm",
+    "forRealm",
+    "endsHold",
+    "pid",
+    "hosted",
+    "invite",
+];
 
 /// The mesh file of a message that crossed from `from_realm` by a flow,
 /// written by process `pid`: its text alone, under the id it was sent
@@ -711,6 +738,34 @@ mod tests {
         assert_eq!(message.pid, Some(875_563), "the process that wrote it");
         assert!(!message.hosted, "a whole process's own");
         assert_eq!(message.invite, None);
+    }
+
+    #[test]
+    fn a_message_keeps_the_fields_it_doesnt_read() {
+        let body = json!({
+            "v": 1, "id": "1793046604647-16V6F4-7-1", "at": "2026-11-24T17:00:00.000Z",
+            "from": "16V6F4", "to": ["#machine"], "intent": "hold", "text": "switching",
+            "starts": "2026-11-24T17:15:00.000Z", "ends": "2026-11-24T18:10:00.000Z",
+            "pid": "7", "groups": ["#other"],
+        });
+        let hold = message(&body).expect("a hold reads");
+
+        let said = serde_json::to_value(&hold).expect("a message is said");
+        assert_eq!(
+            (&said["starts"], &said["ends"]),
+            (
+                &json!("2026-11-24T17:15:00.000Z"),
+                &json!("2026-11-24T18:10:00.000Z")
+            ),
+            "a watch says them as the file did"
+        );
+        assert_eq!(said["groups"], json!(["machine"]), "its own groups, once");
+        assert!(
+            said.get("pid").is_none(),
+            "a field it reads, read badly, is gone"
+        );
+        let back: Message = serde_json::from_value(said).expect("what it says reads back");
+        assert_eq!(back, hold, "and is the same message");
     }
 
     #[test]
