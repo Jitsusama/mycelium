@@ -8,13 +8,22 @@
 //! to restart says so first, and the terminal keeps its screen and joins
 //! the same conversation again once the host is back.
 //!
+//! A conversation the host runs in a child process of its own is joined
+//! there: the host names the child's socket, and the terminal attaches to
+//! it, so the host's restarts and its one thread leave the terminal be.
+//! A child that can't be joined is joined through the host, as an older
+//! host joins every one, and a child that ends is joined again through
+//! the host, which starts or names it again.
+//!
 //! The host's socket is `pi-host/<key>.sock` in the login's runtime
-//! folder, its key `<realm>-attended` or `<realm>-background`, and its
-//! frames are the harness's host socket's, version 1.
+//! folder, its key `<realm>-attended` or `<realm>-background`, its
+//! children's `pi-host/<key>.d/<slot>.sock`, and its frames are the
+//! harness's host socket's, version 1.
 
 mod here;
 
 use std::io;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -27,7 +36,7 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 
-pub use here::{FEATURES, Here, Tty};
+pub use here::{DIRECT, FEATURES, Here, Tty};
 
 use crate::hold::Size;
 use crate::hold::attach::{SIZE_UNSAID, size_here};
@@ -38,6 +47,10 @@ const LONGEST_FRAME: usize = 1024 * 1024;
 
 /// The most rows or columns the host takes.
 const LARGEST_SIDE: u16 = 1000;
+
+/// The bits of a folder's mode that let its group or anyone else write
+/// in it.
+const WRITABLE_BY_OTHERS: u32 = 0o022;
 
 /// What a terminal is given back as it leaves: its keys, pastes, mouse and
 /// focus reports as a fresh one has them, its cursor shown and its main
@@ -76,6 +89,12 @@ pub const RESTART_PATIENCE: Patience = Patience {
 /// it looks again. A host that takes the connection and never answers would
 /// otherwise hold the window blank for good, as six were for over two hours.
 pub const ANSWER_PATIENCE: Duration = Duration::from_secs(20);
+
+/// How long a child the host has named, and just found answering, has to
+/// answer a terminal joining it directly before the terminal joins through
+/// the host instead, so a child that hangs after the host's look can't use
+/// up the whole join's patience.
+const CHILD_ANSWER_PATIENCE: Duration = Duration::from_secs(2);
 
 /// What the host says as it lets a viewer go because the conversation went
 /// back to plain pi, as a release sends it: its words exactly, as the
@@ -198,6 +217,10 @@ pub async fn join_here(socket: &Path, session: &str) -> io::Result<Left> {
     // says at once it has gone, or leaves once it has waited
     // ANSWER_PATIENCE for an answer.
     let mut restarted = false;
+    // Whether the next join may go straight to a child the host names: not
+    // after a direct join ended as a restart, so a child that dies as it
+    // is joined is joined through the host once, not again and again.
+    let mut direct = true;
     loop {
         // A size from before a suspend is older than the one joined at.
         while sizes.try_recv().is_ok() {}
@@ -205,7 +228,7 @@ pub async fn join_here(socket: &Path, session: &str) -> io::Result<Left> {
         let joining = async {
             if restarted {
                 let patience = RESTART_PATIENCE;
-                join_again(
+                join_again_as(
                     socket,
                     session,
                     size,
@@ -213,16 +236,29 @@ pub async fn join_here(socket: &Path, session: &str) -> io::Result<Left> {
                     &mut output,
                     &mut sizes,
                     patience,
+                    direct,
                 )
                 .await
             } else {
-                join(socket, session, size, &mut here, &mut output, &mut sizes).await
+                join_within(
+                    socket,
+                    session,
+                    size,
+                    &mut here,
+                    &mut output,
+                    &mut sizes,
+                    ANSWER_PATIENCE,
+                    direct,
+                )
+                .await
             }
         };
-        let left = match tokio::select! {
-            left = joining => left,
-            () = &mut watching => Ok(Left::Gone),
-        } {
+        let (left, was_direct) = tokio::select! {
+            ended = joining => ended,
+            () = &mut watching => (Ok(Left::Gone), false),
+        };
+        direct = joins_directly_next(&left, was_direct);
+        let left = match left {
             // A host stopped and not yet back, or one that broke the join as
             // it stopped before answering, is one to wait for, not a fault;
             // one that broke it after answering has gone already.
@@ -263,22 +299,55 @@ pub async fn join_again(
     sizes: &mut mpsc::UnboundedReceiver<Size>,
     patience: Patience,
 ) -> io::Result<Left> {
+    join_again_as(socket, session, size, here, output, sizes, patience, true)
+        .await
+        .0
+}
+
+/// Joins `session` as [`join_again`] does, straight to a child the host
+/// names only when `direct` allows it: what the join left, and whether it
+/// was a child's.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "join_again's own, and whether it may join a child directly"
+)]
+async fn join_again_as(
+    socket: &Path,
+    session: &str,
+    size: Size,
+    here: &mut impl Here,
+    output: impl AsyncWrite + Unpin,
+    sizes: &mut mpsc::UnboundedReceiver<Size>,
+    patience: Patience,
+    direct: bool,
+) -> (io::Result<Left>, bool) {
     let until = tokio::time::Instant::now() + patience.within;
     loop {
-        let tried = tokio::time::timeout_at(until, connect(socket, session, size, &*here)).await;
+        let tried =
+            tokio::time::timeout_at(until, connect(socket, session, size, &*here, direct)).await;
         match tried {
-            Err(_elapsed) => return Ok(Left::Gone),
+            Err(_elapsed) => return (Ok(Left::Gone), false),
             Ok(Ok(Some(joined))) => {
-                return gone_once_broken(show(joined, here, output, sizes, patience.hold).await);
+                let direct = joined.direct;
+                let left = show(joined, here, output, sizes, patience.hold).await;
+                return (again_once_direct(direct, gone_once_broken(left)), direct);
             }
-            Ok(Err(error)) if !starting(&error) => return Err(error),
+            Ok(Err(error)) if !starting(&error) => return (Err(error), false),
             Ok(Ok(None) | Err(_)) => {}
         }
         if tokio::time::Instant::now() >= until {
-            return Ok(Left::Gone);
+            return (Ok(Left::Gone), false);
         }
         tokio::time::sleep(patience.every).await;
     }
+}
+
+/// Whether a terminal may join a child directly next, after a join that
+/// left `left`, a child's when `was_direct`: not after a direct join that
+/// ended as a restart, which the host joins it through once, so a child
+/// that keeps dying as it is joined can't send it round for ever.
+fn joins_directly_next(left: &io::Result<Left>, was_direct: bool) -> bool {
+    !(was_direct && matches!(left, Ok(Left::Restarting)))
 }
 
 /// Whether `error` connecting is a host not listening yet, or still
@@ -317,13 +386,30 @@ pub async fn join(
     output: impl AsyncWrite + Unpin,
     sizes: &mut mpsc::UnboundedReceiver<Size>,
 ) -> io::Result<Left> {
-    join_within(socket, session, size, here, output, sizes, ANSWER_PATIENCE).await
+    join_within(
+        socket,
+        session,
+        size,
+        here,
+        output,
+        sizes,
+        ANSWER_PATIENCE,
+        true,
+    )
+    .await
+    .0
 }
 
 /// Joins `session` as [`join`] does, letting the connection go and
 /// answering [`Left::Unanswered`] when the host hasn't answered within
-/// `within`. Only the answer is bounded: once joined, the screen is
-/// shown for as long as the host keeps it.
+/// `within`, and straight to a child the host names only when `direct`
+/// allows it: what the join left, and whether it was a child's. Only the
+/// answer is bounded: once joined, the screen is shown for as long as the
+/// host keeps it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "join's own, its patience, and whether it may join a child directly"
+)]
 async fn join_within(
     socket: &Path,
     session: &str,
@@ -332,15 +418,33 @@ async fn join_within(
     output: impl AsyncWrite + Unpin,
     sizes: &mut mpsc::UnboundedReceiver<Size>,
     within: Duration,
-) -> io::Result<Left> {
-    let Ok(answered) = tokio::time::timeout(within, connect(socket, session, size, &*here)).await
+    direct: bool,
+) -> (io::Result<Left>, bool) {
+    let Ok(answered) =
+        tokio::time::timeout(within, connect(socket, session, size, &*here, direct)).await
     else {
-        return Ok(Left::Unanswered(within));
+        return (Ok(Left::Unanswered(within)), false);
     };
-    let Some(joined) = answered? else {
-        return Ok(Left::Gone);
+    let joined = match answered {
+        Ok(Some(joined)) => joined,
+        Ok(None) => return (Ok(Left::Gone), false),
+        Err(error) => return (Err(error), false),
     };
-    gone_once_broken(show(joined, here, output, sizes, RESTART_PATIENCE.hold).await)
+    let direct = joined.direct;
+    let left = show(joined, here, output, sizes, RESTART_PATIENCE.hold).await;
+    (again_once_direct(direct, gone_once_broken(left)), direct)
+}
+
+/// What a terminal joined straight to a conversation's child left: a
+/// child gone without a word has parked, rolled onto new code or died,
+/// and the host that named it starts or names one again, so the terminal
+/// joins again through the host, as after a restart. Anything else it
+/// left is left as it is.
+fn again_once_direct(direct: bool, left: io::Result<Left>) -> io::Result<Left> {
+    match left {
+        Ok(Left::Gone) if direct => Ok(Left::Restarting),
+        left => left,
+    }
 }
 
 /// What a conversation the host answered left: a connection that broke,
@@ -353,20 +457,97 @@ fn gone_once_broken(left: io::Result<Left>) -> io::Result<Left> {
     }
 }
 
-/// A connection the host accepted a terminal on.
+/// A connection the host, or a child it named, accepted a terminal on.
 struct Joined {
     from: Frames<BufReader<OwnedReadHalf>>,
     to: OwnedWriteHalf,
+    /// Whether it is a child's the host named, not the host's own.
+    direct: bool,
 }
 
 /// Asks the host serving `socket` to join `session` at `size`, answering
 /// the connection it accepted, or none when it closed before answering.
+/// Unless `direct`, it doesn't say [`DIRECT`], so the host passes the
+/// terminal on itself. A host that names its child's socket instead is
+/// joined there, when [`own_child_socket`] holds it the host's and the
+/// child takes the join; otherwise the host is asked again, without
+/// [`DIRECT`], to pass the terminal on itself.
 async fn connect(
     socket: &Path,
     session: &str,
     size: Size,
     here: &impl Here,
+    direct: bool,
 ) -> io::Result<Option<Joined>> {
+    let through_host: Vec<&str> = here
+        .features()
+        .iter()
+        .copied()
+        .filter(|feature| *feature != DIRECT)
+        .collect();
+    let features = if direct {
+        here.features()
+    } else {
+        &through_host
+    };
+    let Some((answer, joined)) = attach(socket, session, size, features).await? else {
+        return Ok(None);
+    };
+    let Some(named) = answer["result"]["socket"].as_str() else {
+        return Ok(Some(joined));
+    };
+    drop(joined);
+    if let Some(child) = own_child_socket(socket, Path::new(named))
+        && let Ok(Ok(Some((_, mut joined)))) = tokio::time::timeout(
+            CHILD_ANSWER_PATIENCE,
+            attach(&child, session, size, &through_host),
+        )
+        .await
+    {
+        joined.direct = true;
+        return Ok(Some(joined));
+    }
+    Ok(attach(socket, session, size, &through_host)
+        .await?
+        .map(|(_, joined)| joined))
+}
+
+/// The socket `named` by the host serving `host`, when it is one of that
+/// host's children's: a socket straight in the host's own `<key>.d`
+/// folder, named as it is with no `.` or `..`, the folder this login's,
+/// no link and writable by nobody else, and the socket no link either.
+/// Anything else, whatever the host said, is none, and the terminal
+/// joins through the host. The folder above, `pi-host/` in the login's
+/// own runtime folder, is not checked: only someone who can write there
+/// could swap the `.d` folder, so this holds only while that stays the
+/// login's alone; never loosen its mode on the strength of this check.
+fn own_child_socket(host: &Path, named: &Path) -> Option<PathBuf> {
+    let folder = host.with_extension("d");
+    // A trailing `.` or `..` has no file name, or is normalised away and
+    // then fails the comparison below.
+    let name = named.file_name()?;
+    let child = folder.join(name);
+    if child.as_os_str() != named.as_os_str() {
+        return None;
+    }
+    let held = std::fs::symlink_metadata(&folder).ok()?;
+    let own = rustix::process::geteuid().as_raw();
+    if !held.is_dir() || held.uid() != own || held.mode() & WRITABLE_BY_OTHERS != 0 {
+        return None;
+    }
+    let listening = std::fs::symlink_metadata(&child).ok()?;
+    listening.file_type().is_socket().then_some(child)
+}
+
+/// Asks whatever serves `socket` to join `session` at `size`, saying it
+/// can do `features`: its answer and the connection it accepted, or none
+/// when it closed before answering.
+async fn attach(
+    socket: &Path,
+    session: &str,
+    size: Size,
+    features: &[&str],
+) -> io::Result<Option<(Value, Joined)>> {
     let stream = UnixStream::connect(socket).await?;
     let (from, mut to) = stream.into_split();
     let mut from = Frames::new(BufReader::new(from));
@@ -374,7 +555,7 @@ async fn connect(
     let asked = json!({
         "v": 1, "id": "attach", "op": "attach",
         "sessionId": session, "rows": rows, "columns": columns,
-        "features": here.features(),
+        "features": features,
     });
     send(&mut to, &asked).await?;
     let Some(answer) = from.next().await? else {
@@ -389,7 +570,12 @@ async fn connect(
             why.to_owned(),
         ));
     }
-    Ok(Some(Joined { from, to }))
+    let joined = Joined {
+        from,
+        to,
+        direct: false,
+    };
+    Ok(Some((answer, joined)))
 }
 
 /// Shows the conversation `joined` holds until the host lets this
@@ -404,7 +590,9 @@ async fn show(
     sizes: &mut mpsc::UnboundedReceiver<Size>,
     hold: Duration,
 ) -> io::Result<Left> {
-    let Joined { mut from, mut to } = joined;
+    let Joined {
+        mut from, mut to, ..
+    } = joined;
     let mut typing = Typing::default();
     let mut typed = true;
     let mut resized = true;
@@ -729,25 +917,47 @@ mod tests {
     /// A host on `path` that answers one attach as `answer`, then takes its
     /// `steps`, keeping what the viewer said, and closes once done.
     fn serve(path: &Path, answer: Value, steps: Vec<Step>) -> tokio::task::JoinHandle<Vec<Value>> {
+        let serving = serve_each(path, vec![(answer, steps)]);
+        tokio::spawn(async move {
+            let mut heard = serving.await.expect("the host ran");
+            heard.pop().expect("one join")
+        })
+    }
+
+    /// A host on `path` that takes a join for each of `joins` in turn,
+    /// answering it as its answer and then taking its steps, keeping what
+    /// each viewer said.
+    fn serve_each(
+        path: &Path,
+        joins: Vec<(Value, Vec<Step>)>,
+    ) -> tokio::task::JoinHandle<Vec<Vec<Value>>> {
         let listener = UnixListener::bind(path).expect("a socket");
         tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("a viewer");
-            let (from, mut to) = stream.into_split();
-            let mut from = Frames::new(BufReader::new(from));
-            let mut heard = vec![from.next().await.expect("a frame").expect("an attach")];
-            send(&mut to, &answer).await.expect("answered");
-            if answer["ok"] != Value::Bool(true) {
-                return heard;
+            let mut each = Vec::new();
+            for (answer, steps) in joins {
+                let (stream, _) = listener.accept().await.expect("a viewer");
+                each.push(answer_one(stream, answer, steps).await);
             }
-            for step in steps {
-                match step {
-                    Step::Hear => heard.push(from.next().await.expect("a frame").expect("one")),
-                    Step::Say(said) => send(&mut to, &said).await.expect("sent"),
-                    Step::Until(go) => go.await.expect("told to go on"),
-                }
-            }
-            heard
+            each
         })
+    }
+
+    async fn answer_one(stream: UnixStream, answer: Value, steps: Vec<Step>) -> Vec<Value> {
+        let (from, mut to) = stream.into_split();
+        let mut from = Frames::new(BufReader::new(from));
+        let mut heard = vec![from.next().await.expect("a frame").expect("an attach")];
+        send(&mut to, &answer).await.expect("answered");
+        if answer["ok"] != Value::Bool(true) {
+            return heard;
+        }
+        for step in steps {
+            match step {
+                Step::Hear => heard.push(from.next().await.expect("a frame").expect("one")),
+                Step::Say(said) => send(&mut to, &said).await.expect("sent"),
+                Step::Until(go) => go.await.expect("told to go on"),
+            }
+        }
+        heard
     }
 
     /// A terminal in a test: it types its keys, then no more, and its
@@ -815,7 +1025,7 @@ mod tests {
                 serving.await.expect("the host ran"),
                 vec![
                     json!({"v": 1, "id": "attach", "op": "attach", "sessionId": "s-1",
-                       "rows": 40, "columns": 120, "features": ["edit", "suspend"]}),
+                       "rows": 40, "columns": 120, "features": ["edit", "suspend", "direct"]}),
                     json!({"type": "input", "data": "\x1b[13u"}),
                 ],
                 "the attach at its size with what it can do, then the keys as typed"
@@ -1018,6 +1228,303 @@ mod tests {
         .await;
     }
 
+    /// What a viewer that joins children itself says as it attaches to
+    /// the host.
+    fn attach_saying(features: &[&str]) -> Value {
+        json!({"v": 1, "id": "attach", "op": "attach", "sessionId": "s-1",
+               "rows": 40, "columns": 120, "features": features})
+    }
+
+    /// A host's answer naming its child's socket at `child`.
+    fn naming(child: &Path) -> Value {
+        json!({"v": 1, "id": "attach", "ok": true,
+               "result": {"sessionId": "s-1", "socket": child}})
+    }
+
+    /// A host's folder of children beside its socket at `host`, this
+    /// login's and writable by nobody else, as the host makes it.
+    fn children_of(host: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = host.with_extension("d");
+        std::fs::create_dir(&folder).expect("the children's folder");
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700))
+            .expect("its mode");
+        folder
+    }
+
+    #[tokio::test]
+    async fn a_viewer_joins_the_child_its_host_names_and_the_host_hears_no_more() {
+        bounded(async {
+            let dir = tempfile::tempdir().expect("a folder");
+            let path = dir.path().join("work-attended.sock");
+            let child = children_of(&path).join("s1.sock");
+            let hosting = serve(&path, naming(&child), Vec::new());
+            let running = serve(
+                &child,
+                accepted(),
+                vec![
+                    Step::Hear,
+                    Step::Say(json!({"type": "output", "data": "from the child"})),
+                    Step::Say(closed()),
+                ],
+            );
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut shown = Vec::new();
+            let mut here = Script::typing(b"x");
+            let left = join(&path, "s-1", SIZE, &mut here, &mut shown, &mut sizes)
+                .await
+                .expect("joined");
+            assert_eq!(left, Left::Detached("Conversation closed".to_owned()));
+            assert_eq!(String::from_utf8_lossy(&shown), "from the child");
+            assert_eq!(
+                hosting.await.expect("the host ran"),
+                vec![attach_saying(&["edit", "suspend", DIRECT])],
+                "the host hears the attach alone, saying it can join a child"
+            );
+            assert_eq!(
+                running.await.expect("the child ran"),
+                vec![
+                    attach_saying(&["edit", "suspend"]),
+                    json!({"type": "input", "data": "x"}),
+                ],
+                "the child hears the attach, as the host would pass it, and what is typed"
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_child_that_cant_be_joined_is_joined_through_the_host() {
+        bounded(async {
+            let dir = tempfile::tempdir().expect("a folder");
+            let path = dir.path().join("work-attended.sock");
+            // Named, but not there to take the join.
+            let child = children_of(&path).join("s1.sock");
+            let hosting = serve_each(
+                &path,
+                vec![
+                    (naming(&child), Vec::new()),
+                    (
+                        accepted(),
+                        vec![
+                            Step::Say(json!({"type": "output", "data": "passed on"})),
+                            Step::Say(closed()),
+                        ],
+                    ),
+                ],
+            );
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut shown = Vec::new();
+            let mut here = Script::typing(b"");
+            let left = join(&path, "s-1", SIZE, &mut here, &mut shown, &mut sizes)
+                .await
+                .expect("joined, not refused");
+            assert_eq!(left, Left::Detached("Conversation closed".to_owned()));
+            assert_eq!(String::from_utf8_lossy(&shown), "passed on");
+            assert_eq!(
+                hosting.await.expect("the host ran"),
+                vec![
+                    vec![attach_saying(&["edit", "suspend", DIRECT])],
+                    vec![attach_saying(&["edit", "suspend"])],
+                ],
+                "asked again without joining a child, so the host passes it on"
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_child_that_takes_the_join_and_never_answers_is_joined_through_the_host() {
+        bounded(async {
+            let dir = tempfile::tempdir().expect("a folder");
+            let path = dir.path().join("work-attended.sock");
+            let child = children_of(&path).join("s1.sock");
+            let hanging = UnixListener::bind(&child).expect("the child's socket");
+            let (_hung, hung_until) = tokio::sync::oneshot::channel::<()>();
+            let holding = tokio::spawn(async move {
+                let (_stream, _) = hanging.accept().await.expect("a viewer");
+                let _ = hung_until.await;
+            });
+            let hosting = serve_each(
+                &path,
+                vec![
+                    (naming(&child), Vec::new()),
+                    (
+                        accepted(),
+                        vec![
+                            Step::Say(json!({"type": "output", "data": "passed on"})),
+                            Step::Say(closed()),
+                        ],
+                    ),
+                ],
+            );
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut shown = Vec::new();
+            let mut here = Script::typing(b"");
+            let left = join(&path, "s-1", SIZE, &mut here, &mut shown, &mut sizes)
+                .await
+                .expect("joined, not refused");
+            assert_eq!(left, Left::Detached("Conversation closed".to_owned()));
+            assert_eq!(String::from_utf8_lossy(&shown), "passed on");
+            assert_eq!(
+                hosting.await.expect("the host ran").len(),
+                2,
+                "asked the host again once the child kept quiet"
+            );
+            holding.abort();
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_child_that_ends_without_a_word_is_joined_again_through_the_host() {
+        bounded(async {
+            let dir = tempfile::tempdir().expect("a folder");
+            let path = dir.path().join("work-attended.sock");
+            let child = children_of(&path).join("s1.sock");
+            let _hosting = serve(&path, naming(&child), Vec::new());
+            let _running = serve(
+                &child,
+                accepted(),
+                vec![Step::Say(json!({"type": "output", "data": "parked"}))],
+            );
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut here = Script::typing(b"");
+            let left = join(&path, "s-1", SIZE, &mut here, Vec::new(), &mut sizes)
+                .await
+                .expect("joined");
+            assert_eq!(
+                left,
+                Left::Restarting,
+                "joined again through the host, which starts or names a child again"
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_child_that_keeps_ending_without_a_word_is_joined_through_the_host_next() {
+        bounded(async {
+            let dir = tempfile::tempdir().expect("a folder");
+            let path = dir.path().join("work-attended.sock");
+            let child = children_of(&path).join("s1.sock");
+            // A host that names the child to every terminal saying it can
+            // join one, and passes on one that doesn't, which then closes.
+            let hosting = serve_each(
+                &path,
+                vec![
+                    (naming(&child), Vec::new()),
+                    (accepted(), vec![Step::Say(closed())]),
+                ],
+            );
+            // A child that takes each join and ends it without a word.
+            let _running = serve(&child, accepted(), Vec::new());
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut here = Script::typing(b"");
+            let mut direct = true;
+            let mut tries = 0;
+            let left = loop {
+                tries += 1;
+                let (left, was_direct) = join_again_as(
+                    &path,
+                    "s-1",
+                    SIZE,
+                    &mut here,
+                    Vec::new(),
+                    &mut sizes,
+                    PATIENT,
+                    direct,
+                )
+                .await;
+                direct = joins_directly_next(&left, was_direct);
+                if !matches!(left, Ok(Left::Restarting)) || tries > 3 {
+                    break left;
+                }
+            };
+            assert_eq!(
+                left.expect("joined"),
+                Left::Detached("Conversation closed".to_owned())
+            );
+            assert_eq!(
+                tries, 2,
+                "one try straight to the child, then one through the host"
+            );
+            assert_eq!(
+                hosting.await.expect("the host ran"),
+                vec![
+                    vec![attach_saying(&["edit", "suspend", DIRECT])],
+                    vec![attach_saying(&["edit", "suspend"])],
+                ],
+                "after the child ended without a word, the host is asked without joining a child"
+            );
+        })
+        .await;
+    }
+
+    #[test]
+    fn only_a_direct_join_that_restarts_sends_the_next_through_the_host() {
+        assert!(!joins_directly_next(&Ok(Left::Restarting), true));
+        assert!(joins_directly_next(&Ok(Left::Restarting), false));
+        assert!(joins_directly_next(&Ok(Left::Gone), true));
+        assert!(joins_directly_next(&Ok(Left::Suspended), true));
+    }
+
+    #[test]
+    fn only_a_socket_in_the_hosts_own_children_folder_is_joined() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("a folder");
+        let host = dir.path().join("work-attended.sock");
+        let folder = children_of(&host);
+        let child = folder.join("s1.sock");
+        let _listening = std::os::unix::net::UnixListener::bind(&child).expect("a socket");
+        assert_eq!(own_child_socket(&host, &child), Some(child.clone()));
+
+        let elsewhere = dir.path().join("work-background.d");
+        std::fs::create_dir(&elsewhere).expect("another host's folder");
+        let theirs = elsewhere.join("s1.sock");
+        let _theirs = std::os::unix::net::UnixListener::bind(&theirs).expect("a socket");
+        assert_eq!(
+            own_child_socket(&host, &theirs),
+            None,
+            "another host's child"
+        );
+        for named in [
+            folder.join("..").join("work-attended.d").join("s1.sock"),
+            folder.join(".").join("s1.sock"),
+            folder.join("s2.sock"),
+            folder.clone(),
+            dir.path().join("s1.sock"),
+        ] {
+            assert_eq!(own_child_socket(&host, &named), None, "{named:?}");
+        }
+
+        let file = folder.join("plain");
+        std::fs::write(&file, b"").expect("a file");
+        assert_eq!(own_child_socket(&host, &file), None, "a file, not a socket");
+        let linked = folder.join("linked.sock");
+        std::os::unix::fs::symlink(&theirs, &linked).expect("a link");
+        assert_eq!(own_child_socket(&host, &linked), None, "a link to a socket");
+
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o770))
+            .expect("its mode");
+        assert_eq!(
+            own_child_socket(&host, &child),
+            None,
+            "a folder its group can write in"
+        );
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700))
+            .expect("its mode");
+
+        let real = dir.path().join("real.d");
+        std::fs::rename(&folder, &real).expect("moved");
+        std::os::unix::fs::symlink(&real, &folder).expect("the folder as a link");
+        assert_eq!(
+            own_child_socket(&host, &child),
+            None,
+            "a children's folder that is a link"
+        );
+    }
+
     /// Trying often, for longer than any test takes, and less long than
     /// its bound, so a host that never answers is said to have gone.
     const PATIENT: Patience = Patience {
@@ -1111,7 +1618,7 @@ mod tests {
                 second,
                 vec![
                     json!({"v": 1, "id": "attach", "op": "attach", "sessionId": "s-1",
-                       "rows": 40, "columns": 120, "features": ["edit", "suspend"]}),
+                       "rows": 40, "columns": 120, "features": ["edit", "suspend", "direct"]}),
                     json!({"type": "resize", "rows": 30, "columns": 100}),
                 ],
                 "the same conversation, then the size the terminal took while it waited"
@@ -1268,11 +1775,12 @@ mod tests {
             let left = tokio::time::timeout(
                 Duration::from_secs(10),
                 join_within(
-                    &path, "s-1", SIZE, &mut here, &mut shown, &mut sizes, patience,
+                    &path, "s-1", SIZE, &mut here, &mut shown, &mut sizes, patience, true,
                 ),
             )
             .await
             .expect("ended with its patience, not waiting for ever on the answer")
+            .0
             .expect("waited");
             assert_eq!(
                 left,
