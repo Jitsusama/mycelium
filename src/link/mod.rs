@@ -3418,12 +3418,13 @@ mod tests {
             [("kestrel", Readiness::Unreachable)],
             "what it said stays, as of when the link last carried it"
         );
+        let carried = skiff.presences();
         assert!(
-            skiff
-                .presences()
-                .iter()
-                .all(|p| p.body["unreachableSeen"] == json!(p.unreachable_since)),
-            "an end not apart from its node sees the drop as it is"
+            !carried.is_empty()
+                && carried
+                    .iter()
+                    .all(|p| p.body["unreachableSeen"] == json!(p.unreachable_since)),
+            "an end not apart from its node sees the drop as it is: {carried:?}"
         );
         assert_eq!(skiff.endings("kestrel", 0), 1, "and the drop is counted");
     }

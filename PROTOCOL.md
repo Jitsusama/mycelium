@@ -137,7 +137,11 @@ mark with no `unreachableSeen`, left by a stop, a dialled link or an
 older node, gains one as the node starts, and one a dialled link left
 while the node ran is seen, as it stops, from the drop or from when that
 run began, whichever is later; a node killed before its stop loses that
-run's sight of a dialled drop. The next link to that machine settles
+run's sight of a dialled drop. Such a mark, or one the start couldn't
+see afresh, is timed meanwhile from its drop, so its lanes may go, then
+count again from the next start for what is left of the hour. A start
+that can't claim a machine says so and runs on. The next link to that
+machine settles
 them: the far end's `Have`
 names its living sessions, those are carried again and unmarked, and the
 rest are let go. While a link stands it touches each file it carried

@@ -1523,7 +1523,8 @@ mod tests {
         let secret = dir.path().join("secret.json");
         let held = br#"{"session": "planted", "machine": "kestrel", "text": "ours"}"#;
         fs::write(&secret, held).expect("a file of the account's own");
-        // Seen, so a put-away that followed its link would rewrite it.
+        // Seen, so a put-away that read through its link would go on to
+        // rewrite it, or put a file of its own in the link's place.
         let seen = dir.path().join("seen.json");
         let held_seen = br#"{"session": "seen", "machine": "kestrel", "unreachableSeen": 1}"#;
         fs::write(&seen, held_seen).expect("another of the account's own");
@@ -1570,6 +1571,11 @@ mod tests {
             fs::read(&seen).expect("the account's other file stands"),
             held_seen,
             "nor through one put away"
+        );
+        assert!(
+            fs::symlink_metadata(store.presence().join("seen.json"))
+                .is_ok_and(|meta| meta.file_type().is_symlink()),
+            "which stays the link it was"
         );
         assert_eq!(
             fs::metadata(&secret).and_then(|meta| meta.modified()).ok(),

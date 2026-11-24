@@ -19,7 +19,7 @@ pub mod folders;
 #[cfg(test)]
 pub mod memory;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::sync::Arc;
 
@@ -326,9 +326,10 @@ pub fn last_linked(store: &impl Store, machine: &str) -> Option<i64> {
 /// the node began, or from the drop where that is later: it saw none of
 /// the time it was down. A mark an earlier run left keeps what that run
 /// saw, so a node restarted again and again doesn't see a machine gone
-/// afresh each time. A machine whose claim fails is passed over for the
-/// rest, and the first failure said after them; one a link claims is left
-/// to it, and said, since its marks then keep no sight of this run's.
+/// afresh each time. A machine whose claim fails is said and passed over
+/// for the rest, and the first failure returned after them, naming its
+/// machine; one a link claims is left to it, and said where it has marks,
+/// since those then keep no sight of this run's.
 pub fn out_of_reach_of_unclaimed(store: &impl Store, seen: i64) -> io::Result<()> {
     let now = jiff::Timestamp::now().as_millisecond();
     let mut machines: Vec<String> = store
@@ -339,6 +340,12 @@ pub fn out_of_reach_of_unclaimed(store: &impl Store, seen: i64) -> io::Result<()
         .collect();
     machines.sort_unstable();
     machines.dedup();
+    let marked: BTreeSet<String> = store
+        .presences()
+        .into_iter()
+        .filter(|presence| presence.unreachable_since.is_some())
+        .filter_map(|presence| presence.elsewhere)
+        .collect();
     let mut failed = None;
     for machine in machines {
         match store.claim(&machine) {
@@ -346,9 +353,15 @@ pub fn out_of_reach_of_unclaimed(store: &impl Store, seen: i64) -> io::Result<()
                 let since = last_linked(store, &machine).unwrap_or(now);
                 out_of_reach(store, &machine, since, Some(seen));
             }
-            Ok(None) => eprintln!("left {machine} to the link that claims it"),
+            Ok(None) if marked.contains(&machine) => {
+                eprintln!("left {machine}'s marks out of reach to the link that claims it");
+            }
+            Ok(None) => {}
             Err(error) => {
-                failed.get_or_insert(error);
+                eprintln!("couldn't claim {machine} to mark it out of reach: {error}");
+                failed.get_or_insert_with(|| {
+                    io::Error::new(error.kind(), format!("couldn't claim {machine}: {error}"))
+                });
             }
         }
     }
@@ -740,6 +753,36 @@ mod tests {
             ),
             (Some(serde_json::json!(60)), Some(Value::Null)),
             "a machine another link claims is left to it"
+        );
+    }
+
+    /// The store in memory tells nothing of a mark kept as it stands, as the
+    /// folders write nothing for one, and tells a sight that changes it.
+    #[test]
+    fn a_mark_kept_as_it_stands_tells_nothing() {
+        let store = memory::Memory::default();
+        store
+            .put_presence("s1", "kestrel", &serde_json::json!({"session": "s1"}))
+            .expect("carried");
+        store
+            .mark_unreachable("s1", "kestrel", 7, None)
+            .expect("marked apart from the node");
+        let mut changes = store.changes().expect("a memory store tells its changes");
+
+        store
+            .mark_unreachable("s1", "kestrel", 9, None)
+            .expect("marked again");
+        assert!(
+            changes.changes.try_recv().is_err(),
+            "the first drop kept, unsaid"
+        );
+        store
+            .mark_unreachable("s1", "kestrel", 9, Some(10))
+            .expect("seen");
+        assert_eq!(
+            changes.changes.try_recv().ok(),
+            Some(Change::Presence),
+            "a sight is said"
         );
     }
 

@@ -885,7 +885,12 @@ where
     // When this run began, which it sees every machine gone from at the
     // soonest, as it saw none of the time it was down.
     let began = jiff::Timestamp::now().as_millisecond();
-    store::out_of_reach_of_unclaimed(&store, began)?;
+    // One machine it can't claim costs only that machine's sight, said as
+    // it fails: a mark left unseen is timed from its drop, and lets its
+    // lanes go, so the node runs on rather than refusing the realm.
+    if let Err(error) = store::out_of_reach_of_unclaimed(&store, began) {
+        eprintln!("the start's sweep of machines out of reach failed: {error}");
+    }
     // Bound before any task is spawned, so a socket that can't be put
     // in place leaves nothing running.
     let workers = given.worker.take().as_ref().map(worker::bind).transpose()?;
