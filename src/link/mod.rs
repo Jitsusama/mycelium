@@ -395,15 +395,15 @@ pub async fn run(
         declared: declared_of(starting.as_ref()),
         heard_declared: declared_heard::DeclaredHeard::default(),
         lender: lender_of(starting.as_ref()),
-        runs: if matches!(
+        housed: if matches!(
             starting
                 .as_ref()
                 .and_then(|starting| starting.asking.as_ref()),
             Some(Asking::Dialled)
         ) {
-            Runs::ApartFromItsNode
+            Housed::ApartFromItsNode
         } else {
-            Runs::WithItsNode
+            Housed::InItsNode
         },
         node: starting.map(|starting| starting.node),
         starters,
@@ -1102,10 +1102,10 @@ type Sent = (Arc<Value>, Vec<Value>, Option<String>, Option<String>);
 
 /// Where an end runs, which says whether its node sees the link drop.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Runs {
+enum Housed {
     /// In its node, as a link the node keeps, so the node sees the drop as
     /// it is.
-    WithItsNode,
+    InItsNode,
     /// Apart from its node, as a link another machine dialled, in a
     /// process SSH started, which may run on while the node is stopped.
     ApartFromItsNode,
@@ -1151,7 +1151,7 @@ struct End<S> {
     /// The talks this end carries back to the other.
     following: Option<Following>,
     /// Where this end runs, in its node or apart from it.
-    runs: Runs,
+    housed: Housed,
     /// This machine's node's socket, which starts asked of it go to.
     node: Option<PathBuf>,
     /// What answers the lends a worker asks of this machine, if it lends.
@@ -1320,7 +1320,7 @@ impl<S: Store> End<S> {
         // stopped, so it marks when the link went and leaves the seeing
         // to the node: its next start, or its easing, which times a mark
         // it hasn't seen from the drop.
-        let seen = (self.runs == Runs::WithItsNode).then_some(left);
+        let seen = (self.housed == Housed::InItsNode).then_some(left);
         store::out_of_reach(&self.store, &self.other, left, seen);
         result
     }
