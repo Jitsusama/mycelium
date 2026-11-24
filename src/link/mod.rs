@@ -3418,6 +3418,13 @@ mod tests {
             [("kestrel", Readiness::Unreachable)],
             "what it said stays, as of when the link last carried it"
         );
+        assert!(
+            skiff
+                .presences()
+                .iter()
+                .all(|p| p.body["unreachableSeen"] == json!(p.unreachable_since)),
+            "an end not apart from its node sees the drop as it is"
+        );
         assert_eq!(skiff.endings("kestrel", 0), 1, "and the drop is counted");
     }
 
@@ -3779,6 +3786,49 @@ mod tests {
         assert!(
             asked.is_some() && carrying.is_some(),
             "the link still carries the asks, and asks its node again"
+        );
+    }
+
+    // Our council, on #408's fix-forward (2026-11-24): a link another
+    // machine dialled runs apart from the node and may drop while it is
+    // stopped, so its drop must not be marked as seen.
+    #[tokio::test]
+    async fn a_dialled_end_marks_its_drop_unseen_for_its_node_to_see() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (skiff, kestrel) = (Memory::default(), Memory::default());
+        skiff.start_here("walgit", json!({"session": "walgit"}), true);
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let near_end = end(&skiff, "skiff", near);
+        let starting = dialled_starting(dir.path(), dir.path().join("node.sock"));
+        let (reading, writing) = tokio::io::split(far);
+        let kestrel_end = kestrel.clone();
+        let _far = tokio::spawn(async move {
+            run(
+                kestrel_end,
+                &realm("kestrel"),
+                connection(reading, writing),
+                None,
+                Some(starting),
+            )
+            .await
+            .map(|_| ())
+        });
+        until(&kestrel, |store| !store.presences().is_empty()).await;
+
+        near_end.abort();
+        until(&kestrel, |store| {
+            store
+                .presences()
+                .iter()
+                .all(|p| p.unreachable_since.is_some())
+        })
+        .await;
+        let carried = kestrel.presences();
+        assert!(
+            carried
+                .iter()
+                .all(|p| p.body.get("unreachableSeen").is_none()),
+            "marked when the link went, and left for the node to see: {carried:?}"
         );
     }
 

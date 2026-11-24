@@ -322,11 +322,12 @@ pub fn last_linked(store: &impl Store, machine: &str) -> Option<i64> {
 
 /// Marks out of reach the sessions of every machine no link carries now,
 /// as left behind by a link or node that ended without saying so, since
-/// that machine was last linked, and seen so from now, as this node runs:
-/// it saw none of the time it was down. A mark an earlier run left keeps
-/// what that run saw, so a node restarted again and again doesn't see a
-/// machine gone afresh each time.
-pub fn out_of_reach_of_unclaimed(store: &impl Store) -> io::Result<()> {
+/// that machine was last linked, and seen so from `seen`, when this run of
+/// the node began, or from the drop where that is later: it saw none of
+/// the time it was down. A mark an earlier run left keeps what that run
+/// saw, so a node restarted again and again doesn't see a machine gone
+/// afresh each time.
+pub fn out_of_reach_of_unclaimed(store: &impl Store, seen: i64) -> io::Result<()> {
     let now = jiff::Timestamp::now().as_millisecond();
     let mut machines: Vec<String> = store
         .presences()
@@ -339,30 +340,34 @@ pub fn out_of_reach_of_unclaimed(store: &impl Store) -> io::Result<()> {
     for machine in machines {
         if let Some(_claim) = store.claim(&machine)? {
             let since = last_linked(store, &machine).unwrap_or(now);
-            out_of_reach(store, &machine, since, Some(now));
+            out_of_reach(store, &machine, since, Some(seen));
         }
     }
     Ok(())
 }
 
-/// What a node does with its marks out of reach as it stops at `at`: marks
-/// the sessions of every machine no link carries, then puts away what this
-/// run saw of each, so the time it is down isn't counted as seen. In that
-/// order, since a mark put away and then swept would be seen from the stop
-/// and keep that at the next start. The put-away runs whatever the sweep
-/// returns, and a sweep that fails is said after it. A node killed before
-/// it gets here leaves its marks as they stand.
-pub fn stop_seeing_out_of_reach(store: &impl Store, at: i64) -> io::Result<()> {
-    let swept = out_of_reach_of_unclaimed(store);
+/// What a node that `began` this run does with its marks out of reach as
+/// it stops at `at`: marks the sessions of every machine no link carries,
+/// seen from when it began or the drop, whichever is later, as a link
+/// running apart from the node leaves its drops unseen, then puts away
+/// what this run saw of each, so the time it is down isn't counted as
+/// seen. In that order, since a mark put away and then swept would be
+/// seen at the next start from this run. The put-away runs whatever the
+/// sweep returns, and a sweep that fails is said after it. A node killed
+/// before it gets here leaves its marks as they stand.
+pub fn stop_seeing_out_of_reach(store: &impl Store, began: i64, at: i64) -> io::Result<()> {
+    let swept = out_of_reach_of_unclaimed(store, began);
     put_away_out_of_reach(store, at);
     swept
 }
 
 /// Puts away what this run has seen of each session out of reach, as the
 /// node stops at `at`, under its machine's claim, as every mark is made.
-/// A machine a link running apart from the node claims is carried, so its
-/// marks are that link's to clear, and are left; one that can't be claimed
-/// is said and left, its time down then counted as seen.
+/// A machine a link running apart from the node claims is being carried,
+/// so its marks are that link's to clear as it carries each session, and
+/// are left; one that can't be claimed is left too. Either is said, since
+/// a mark left so keeps this run's sight, and the time the node is down
+/// then counts as seen.
 fn put_away_out_of_reach(store: &impl Store, at: i64) {
     let mut marked: Vec<(String, String)> = store
         .presences()
@@ -381,7 +386,10 @@ fn put_away_out_of_reach(store: &impl Store, at: i64) {
                     }
                 }
             }
-            Ok(None) => {}
+            Ok(None) => eprintln!(
+                "left {} of {machine}'s sessions out of reach to the link that claims it",
+                each.len()
+            ),
             Err(error) => {
                 eprintln!("couldn't claim {machine} to put its time out of reach away: {error}");
             }
@@ -463,7 +471,7 @@ mod tests {
         store.mark_linked("kestrel", days_ago).expect("marked");
         store.mark_admitted("kestrel", let_in).expect("let in");
 
-        out_of_reach_of_unclaimed(&store).expect("swept");
+        out_of_reach_of_unclaimed(&store, let_in).expect("swept");
         let since = store
             .presences()
             .into_iter()
@@ -536,7 +544,7 @@ mod tests {
             .expect("linked until it dropped");
 
         let before = jiff::Timestamp::now().as_millisecond();
-        out_of_reach_of_unclaimed(&store).expect("swept");
+        out_of_reach_of_unclaimed(&store, before).expect("swept");
         let after = jiff::Timestamp::now().as_millisecond();
         let seen = |session: &str| {
             store
@@ -596,7 +604,7 @@ mod tests {
             .expect("marked");
 
         // The stop is said a minute on, so what the sweep saw is a minute.
-        stop_seeing_out_of_reach(&store, before + 60_000).expect("stopped");
+        stop_seeing_out_of_reach(&store, before, before + 60_000).expect("stopped");
         let after = jiff::Timestamp::now().as_millisecond();
         assert_eq!(
             (
@@ -629,7 +637,7 @@ mod tests {
         );
 
         let before = jiff::Timestamp::now().as_millisecond();
-        out_of_reach_of_unclaimed(&store).expect("swept at the next start");
+        out_of_reach_of_unclaimed(&store, before).expect("swept at the next start");
         let after = jiff::Timestamp::now().as_millisecond();
         let seen = field("s1", "unreachableSeen")
             .as_ref()
@@ -716,6 +724,37 @@ mod tests {
             ),
             (Some(serde_json::json!(60)), Some(Value::Null)),
             "a machine another link claims is left to it"
+        );
+    }
+
+    /// A link running apart from the node leaves its drop unseen, so the
+    /// stop counts what this run saw of it from the drop, or from when the
+    /// run began where it went before: a node restarted more often than
+    /// hourly still lets such a machine's lanes go.
+    #[test]
+    fn a_stop_counts_a_drop_left_unseen_from_when_this_run_saw_it() {
+        let store = memory::Memory::default();
+        for (session, machine, since) in [("s1", "kestrel", 40), ("s2", "tern", 5)] {
+            store
+                .put_presence(session, machine, &serde_json::json!({"session": session}))
+                .expect("carried");
+            store
+                .mark_unreachable(session, machine, since, None)
+                .expect("marked apart from the node");
+        }
+
+        stop_seeing_out_of_reach(&store, 10, 100).expect("stopped");
+        let seen_for = |session: &str| {
+            store
+                .presences()
+                .into_iter()
+                .find(|one| one.session == session)
+                .map(|one| one.body["unreachableSeenFor"].clone())
+        };
+        assert_eq!(
+            [seen_for("s1"), seen_for("s2")],
+            [Some(serde_json::json!(60)), Some(serde_json::json!(90))],
+            "from the drop at 40, and from the run's start at 10 for one gone at 5"
         );
     }
 }

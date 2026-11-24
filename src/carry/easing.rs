@@ -437,7 +437,8 @@ pub const OUT_OF_REACH_LEADS: SignedDuration = SignedDuration::from_hours(1);
 /// mark this run hasn't seen, as one a link running apart from the node
 /// left, or one its start couldn't mark again, is timed from its
 /// `unreachableSince`, as an older node's is, so a doubt lets the lane go
-/// rather than holding it; one with no time at all can't be told.
+/// rather than holding it, though a drop the clock has since set behind
+/// reads as just now; one with no time at all can't be told.
 fn seen_out_of_reach(presence: &Value, now: i64) -> Option<i64> {
     let earlier = presence.get("unreachableSeenFor").and_then(Value::as_i64);
     match presence.get("unreachableSeen").and_then(Value::as_i64) {
@@ -449,7 +450,7 @@ fn seen_out_of_reach(presence: &Value, now: i64) -> Option<i64> {
         None => presence
             .get("unreachableSince")
             .and_then(Value::as_i64)
-            .map(|since| now.saturating_sub(since))
+            .map(|since| now.saturating_sub(since).max(0))
             .max(earlier),
     }
 }
@@ -1547,10 +1548,14 @@ mod tests {
             leads(lane(300, None, Some(55))).is_empty(),
             "put away by a stop and not seen again by a start: from the drop, so it goes"
         );
+        assert!(
+            leads(lane(70, None, Some(5))).is_empty(),
+            "not seen again after a stop that saw five minutes: an hour since the drop"
+        );
         assert_eq!(
-            leads(lane(30, None, Some(5))),
+            leads(lane(-5, None, None)),
             counts,
-            "marked by a link apart from the node, and within the hour of the drop"
+            "a drop the clock has since set behind reads as just now"
         );
         assert!(
             leads(lane(120, Some(-5), Some(61))).is_empty(),

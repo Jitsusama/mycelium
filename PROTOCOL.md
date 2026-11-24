@@ -133,7 +133,9 @@ what came before kept, and the time it was down unseen; a machine
 another link claims is left to that link. A node killed rather than
 stopped keeps its `unreachableSeen`, so its time down counts as seen. A
 mark with no `unreachableSeen`, left by a stop, a dialled link or an
-older node, gains one as the node starts. The next link to that machine
+older node, gains one as the node starts, and one a dialled link left
+while the node ran is seen, as it stops, from the drop or from when that
+run began, whichever is later. The next link to that machine
 settles them: the far end's `Have`
 names its living sessions, those are carried again and unmarked, and the
 rest are let go. While a link stands it touches each file it carried
