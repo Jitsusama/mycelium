@@ -96,7 +96,8 @@ impl<S: Store> Shared<S> {
             from_realm,
         } = crossing;
         // Said as the file written here says it: by this node's process,
-        // which hosts no conversation and invites no one.
+        // which hosts no conversation and invites no one, and with no
+        // field this node doesn't read, as nothing unread crosses a realm.
         let taken = Message {
             from_realm: Some(from_realm.clone()),
             for_realm: None,
@@ -104,6 +105,7 @@ impl<S: Store> Shared<S> {
             pid: Some(std::process::id()),
             hosted: false,
             invite: None,
+            rest: serde_json::Map::new(),
             ..message
         };
         let verdict = self.may_take(&taken, &from_realm);
@@ -607,6 +609,7 @@ mod tests {
             pid: None,
             hosted: false,
             invite: None,
+            rest: serde_json::Map::new(),
         };
         let crossing = crate::flow::Crossing {
             message: hold.clone(),
@@ -625,6 +628,8 @@ mod tests {
         hold.pid = Some(1);
         hold.hosted = true;
         hold.invite = Some("#harness".to_owned());
+        hold.rest
+            .insert("starts".to_owned(), json!("2026-11-03T21:15:00Z"));
         let crossing = crate::flow::Crossing {
             message: hold.clone(),
             from_realm: "personal".to_owned(),
@@ -642,11 +647,13 @@ mod tests {
             "said and written as the taking node's own"
         );
         assert!(
-            !first.hosted && first.invite.is_none(),
-            "the sender's conversation and invite stay behind: {first:?}"
+            !first.hosted && first.invite.is_none() && first.rest.is_empty(),
+            "the sender's conversation, invite and unread fields stay behind: {first:?}"
         );
         assert!(
-            there.get("hosted").is_none() && there.get("invite").is_none(),
+            there.get("hosted").is_none()
+                && there.get("invite").is_none()
+                && there.get("starts").is_none(),
             "none written: {there}"
         );
         let Answer::Ok(Response::Sent(again)) =
@@ -679,6 +686,7 @@ mod tests {
                     pid: None,
                     hosted: false,
                     invite: None,
+                    rest: serde_json::Map::new(),
                 },
                 from_realm: "personal".to_owned(),
             };

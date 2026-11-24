@@ -63,6 +63,12 @@ pub struct Message {
     /// hearing it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invite: Option<String>,
+    /// Every other field its file says, as it says them, so a field a
+    /// sender adds after this node was built reaches those reading
+    /// through it, as the harness's hold windows (`starts`, `ends`) do.
+    /// Nothing here reads them, and none crosses a realm.
+    #[serde(flatten)]
+    pub rest: serde_json::Map<String, Value>,
 }
 
 /// What a message asks of those who hear it, in the mesh's words.

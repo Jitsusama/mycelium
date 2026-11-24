@@ -561,6 +561,7 @@ mod tests {
             pid: None,
             hosted: false,
             invite: None,
+            rest: serde_json::Map::new(),
         }
     }
 
