@@ -626,8 +626,11 @@ impl Store for Folders {
                 format!("{session:?} is a session another process or machine holds"),
             ));
         }
-        fields.remove(MACHINE);
-        fields.remove(UNREACHABLE);
+        // A worker says none of what the node keeps of a session out of
+        // reach, since only the node judges that.
+        for kept in [MACHINE, UNREACHABLE, UNREACHABLE_SEEN, UNREACHABLE_SEEN_FOR] {
+            fields.remove(kept);
+        }
         fields.insert(
             "owner".to_owned(),
             serde_json::json!({
