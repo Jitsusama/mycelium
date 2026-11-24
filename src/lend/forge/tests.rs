@@ -1,5 +1,10 @@
+use std::fs;
 use std::process::Command;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
+
+use super::push::ran_within;
 use super::*;
 
 /// The fixture's commit before it was signed, as git asks it signed.
@@ -462,12 +467,23 @@ fn lines_of(body: &[u8]) -> Vec<Pushed> {
         .collect()
 }
 
-#[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one push followed from its bundle to its origin and its tidying"
-)]
-async fn a_branch_bundled_is_pushed_to_its_origin_and_tidied_after() {
+/// A branch of two commits on the origin's main, bundled as
+/// `mycelium forge push` bundles it and pushed through a forge in a
+/// folder of its own.
+struct PushedTwo {
+    dir: tempfile::TempDir,
+    forge: Forge,
+    origin: PathBuf,
+    base: String,
+    borrower: PathBuf,
+    first: String,
+    head: String,
+    pushing: Pushing,
+    answered: Vec<Pushed>,
+}
+
+/// Pushes [`PushedTwo`]'s branch, as kestrel's KP0L6A asks it.
+async fn pushed_two() -> PushedTwo {
     let dir = tempfile::tempdir().expect("a temporary folder");
     let (origin, base) = repos_in(dir.path());
     let mut forge = forge_in(dir.path());
@@ -500,26 +516,49 @@ async fn a_branch_bundled_is_pushed_to_its_origin_and_tidied_after() {
         branch: "agents/kestrel-fix".to_owned(),
         bundle: STANDARD.encode(&bundle),
     };
-
     let (status, body) =
         asked_of(&forge, &request("/push", Some("kestrel"), &json!(pushing))).await;
-
     assert_eq!(status, 200, "begun: {}", why(&body));
-    let answered = lines_of(&body);
+    PushedTwo {
+        dir,
+        forge,
+        origin,
+        base,
+        borrower,
+        first,
+        head,
+        pushing,
+        answered: lines_of(&body),
+    }
+}
+
+/// The head a push says it pushed, its commits and each as signed, where
+/// it says it pushed with a bundle back.
+fn said_pushed(answered: &[Pushed]) -> (&String, &[String], &BTreeMap<String, String>) {
     let [
         Pushed::Pushed {
-            head: now,
+            head,
             commits,
             signed,
             bundle: Some(_),
         },
-    ] = answered.as_slice()
+    ] = answered
     else {
         panic!("one line saying it pushed, with a bundle back: {answered:?}");
     };
-    let first_signed = signed.get(&first).expect("the first commit signed").clone();
+    (head, commits, signed)
+}
+
+#[tokio::test]
+async fn a_branch_bundled_is_pushed_to_its_origin_each_commit_signed() {
+    let two = pushed_two().await;
+    let (now, commits, signed) = said_pushed(&two.answered);
+    let first_signed = signed
+        .get(&two.first)
+        .expect("the first commit signed")
+        .clone();
     assert_eq!(
-        (signed.len(), signed.get(&head)),
+        (signed.len(), signed.get(&two.head)),
         (2, Some(now)),
         "each commit past the origin signed"
     );
@@ -528,72 +567,99 @@ async fn a_branch_bundled_is_pushed_to_its_origin_and_tidied_after() {
         &[now.clone(), first_signed.clone()],
         "and said newest first"
     );
-    assert_ne!(now, &head, "signed, the head is another commit");
+    assert_ne!(now, &two.head, "signed, the head is another commit");
     assert_eq!(
-        git(&origin, &["rev-parse", "refs/heads/agents/kestrel-fix"]),
+        git(&two.origin, &["rev-parse", "refs/heads/agents/kestrel-fix"]),
         *now,
         "the signed branch is on the origin"
     );
     assert_eq!(
-        git(&origin, &["rev-parse", &format!("{now}^")]),
+        git(&two.origin, &["rev-parse", &format!("{now}^")]),
         first_signed,
         "each signed commit's parent is its parent as signed"
     );
     assert!(
-        git(&origin, &["cat-file", "commit", now.as_str()])
+        git(&two.origin, &["cat-file", "commit", now.as_str()])
             .contains("\ngpgsig -----BEGIN SSH SIGNATURE"),
         "it holds the forge's signature"
     );
     assert!(
-        fs::read_to_string(dir.path().join("payload"))
+        fs::read_to_string(two.dir.path().join("payload"))
             .expect("what was signed")
             .contains(&format!("\nparent {first_signed}\n")),
         "the key signed the commit as it points at its parent signed"
     );
     assert_eq!(
-        fs::read_to_string(dir.path().join("asked")).expect("what ssh-keygen was asked"),
+        fs::read_to_string(two.dir.path().join("asked")).expect("what ssh-keygen was asked"),
         format!(
             "-Y sign -n git -U -f {}\n{}\nunset\n",
-            forge.key.display(),
-            forge.agent.display()
+            two.forge.key.display(),
+            two.forge.agent.display()
         ),
         "it signs as git with the key's agent alone, and nothing else of this machine's"
     );
+}
+
+#[tokio::test]
+async fn a_branch_pushed_is_taken_back_and_what_it_left_tidied() {
+    let two = pushed_two().await;
+    let (now, _, _) = said_pushed(&two.answered);
     assert_eq!(
-        borrow::arrive(&forge.git, &borrower, "main", &head, &answered[0]).expect("taken back"),
+        borrow::arrive(
+            &two.forge.git,
+            &two.borrower,
+            "main",
+            &two.head,
+            &two.answered[0]
+        )
+        .expect("taken back"),
         Some("refs/heads/main".to_owned()),
         "the borrower's branch moves"
     );
     assert_eq!(
-        git(&borrower, &["rev-parse", "main"]),
+        git(&two.borrower, &["rev-parse", "main"]),
         *now,
         "to the signed head"
     );
     assert_eq!(
-        git(&dir.path().join("forge-repo"), &["for-each-ref", FETCHED]),
+        git(
+            &two.dir.path().join("forge-repo"),
+            &["for-each-ref", FETCHED]
+        ),
         "",
         "what was fetched and signed to push is let go"
     );
     assert_eq!(
-        fs::read_dir(&forge.folder).expect("the folder").count(),
+        fs::read_dir(&two.forge.folder).expect("the folder").count(),
         0,
         "and so is the bundle"
     );
+}
 
+#[tokio::test]
+async fn a_push_that_would_rewrite_a_branch_is_refused() {
+    let two = pushed_two().await;
+    let (now, _, _) = said_pushed(&two.answered);
     // Another change, not on top of the one pushed, would rewrite it.
-    git(&borrower, &["reset", "--quiet", "--hard", base.as_str()]);
     git(
-        &borrower,
+        &two.borrower,
+        &["reset", "--quiet", "--hard", two.base.as_str()],
+    );
+    git(
+        &two.borrower,
         &["commit", "--quiet", "--allow-empty", "-m", "another"],
     );
-    let was = borrow::resolved(&forge.git, &borrower, "HEAD").expect("resolved");
-    let bundle = borrow::bundle(&forge.git, &borrower, &base, &was).expect("bundled");
+    let was = borrow::resolved(&two.forge.git, &two.borrower, "HEAD").expect("resolved");
+    let bundle = borrow::bundle(&two.forge.git, &two.borrower, &two.base, &was).expect("bundled");
     let forcing = Pushing {
         bundle: STANDARD.encode(&bundle),
-        ..pushing
+        ..two.pushing.clone()
     };
-    let (status, body) =
-        asked_of(&forge, &request("/push", Some("kestrel"), &json!(forcing))).await;
+    let (status, body) = asked_of(
+        &two.forge,
+        &request("/push", Some("kestrel"), &json!(forcing)),
+    )
+    .await;
     assert_eq!(status, 200, "begun: {}", why(&body));
     assert!(
         matches!(
@@ -604,7 +670,7 @@ async fn a_branch_bundled_is_pushed_to_its_origin_and_tidied_after() {
         String::from_utf8_lossy(&body)
     );
     assert_eq!(
-        git(&origin, &["rev-parse", "refs/heads/agents/kestrel-fix"]),
+        git(&two.origin, &["rev-parse", "refs/heads/agents/kestrel-fix"]),
         *now,
         "the branch stands as it was"
     );
