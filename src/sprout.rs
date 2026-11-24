@@ -1072,7 +1072,7 @@ pub(crate) mod tests {
         begins(
             asked(Some(Path::new(place)), Path::new("/home/kestrel")),
             &words("x"),
-            &crate::places::tests::home(),
+            &places::tests::home(),
         )
     }
 
@@ -1095,7 +1095,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_plain_name_that_is_a_folder_where_it_was_asked_is_that_folder() {
-        let disk = crate::places::tests::home();
+        let disk = places::tests::home();
         let begun = folder(
             asked(Some(Path::new("skiff")), Path::new("/home/kestrel/src")),
             &words("x"),
@@ -1132,7 +1132,7 @@ pub(crate) mod tests {
             Path::new("/home/kestrel"),
             Path::new("/home/kestrel"),
             "osprey",
-            &crate::places::tests::home(),
+            &places::tests::home(),
         )
         .expect("it starts");
         assert_eq!(
@@ -1170,7 +1170,7 @@ pub(crate) mod tests {
         let refused = folder(
             asked(None, Path::new("/home/kestrel")),
             &thread,
-            &crate::places::tests::home(),
+            &places::tests::home(),
         )
         .unwrap_err();
         assert_eq!(refused.code, Code::NeedsFolder);
@@ -1179,8 +1179,8 @@ pub(crate) mod tests {
 
     #[test]
     fn a_link_into_a_places_checkout_begins_in_the_zone_it_points_into() {
-        let disk = crate::places::tests::home()
-            .fetching(BASIN, "https://mirror.example.org/owner/basin.git");
+        let disk =
+            places::tests::home().fetching(BASIN, "https://mirror.example.org/owner/basin.git");
         let begun =
             |said: &str| folder(asked(None, Path::new("/home/kestrel")), &link(said), &disk);
         assert_eq!(
@@ -1603,7 +1603,13 @@ pub(crate) mod tests {
     // says which sprout the line is about.
     #[test]
     fn a_seed_too_long_is_said_of_the_session_holding_it() {
-        let asked = start("tern", None, &words(&"a".repeat(SEED_MOST + 1)), None, ID);
+        let asked = start(
+            "tern",
+            None,
+            &words(&"a".repeat(SEED_MOST + 1)),
+            (None, None),
+            ID,
+        );
         assert_eq!(seed_given(&asked.start), None, "no seed, so no id sent");
         let said = asked.left_out.told(&Ok(started_as("tern", "5e55")));
         assert_eq!(said.len(), 1);
@@ -1615,7 +1621,7 @@ pub(crate) mod tests {
 
     #[test]
     fn what_a_seed_left_out_is_said_only_once_its_session_started() {
-        let asked = start("tern", None, &words("make tea"), Some("QEST-1"), ID);
+        let asked = start("tern", None, &words("make tea"), (Some("QEST-1"), None), ID);
         assert_eq!(asked.left_out.told(&Ok(started_as("tern", "h"))).len(), 1);
         let refused: Reply = Err("the cell's start limit is reached".to_owned());
         assert!(
@@ -1634,7 +1640,7 @@ pub(crate) mod tests {
     // What is written to a log given the start's answer.
     #[test]
     fn the_log_is_written_what_was_left_out_once_a_session_started() {
-        let asked = start("tern", None, &words("make tea"), Some("QEST-1"), ID);
+        let asked = start("tern", None, &words("make tea"), (Some("QEST-1"), None), ID);
         let mut log = Vec::new();
         asked
             .left_out
@@ -1668,7 +1674,14 @@ pub(crate) mod tests {
 
     #[test]
     fn a_start_carries_its_seed_beside_its_first_words() {
-        let asked = start("kestrel", None, &words("make tea"), Some("HARBOR"), ID).start;
+        let asked = start(
+            "kestrel",
+            None,
+            &words("make tea"),
+            (Some("HARBOR"), None),
+            ID,
+        )
+        .start;
         assert_eq!(
             seed_given(&asked),
             Some(serde_json::json!({ "v": 1, "words": "make tea", "from": "HARBOR", "id": ID }))
@@ -1678,7 +1691,7 @@ pub(crate) mod tests {
     #[test]
     fn a_start_whose_words_run_past_the_most_a_session_reads_carries_no_seed() {
         let said = "a".repeat(SEED_MOST + 1);
-        let asked = start("kestrel", None, &words(&said), Some("HARBOR"), ID).start;
+        let asked = start("kestrel", None, &words(&said), (Some("HARBOR"), None), ID).start;
         assert_eq!(seed_given(&asked), None);
         assert!(asked.command[5].starts_with("QUEST_WORKFLOW_FIRST_TEXT="));
         assert_eq!(asked.command[6], "pi", "the first words alone stand");
@@ -1690,7 +1703,7 @@ pub(crate) mod tests {
         let work = home.path().join("src");
         std::fs::create_dir(&work).expect("a folder");
         let said = "make \"tea\" 'now'\nthen $(id); `id` & rm -rf ~ \\ $HOME";
-        let asked = start("kestrel", None, &words(said), Some("HARBOR"), ID).start;
+        let asked = start("kestrel", None, &words(said), (Some("HARBOR"), None), ID).start;
         let mut command = asked.command.clone();
         // pi's place takes one that says what it was given, and the guard
         // waits for nothing.

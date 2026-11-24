@@ -207,14 +207,14 @@ pub fn found<'a>(places: &'a [Place], name: &str) -> Result<&'a Place, Unfound> 
     if others.is_empty() {
         return Ok(first);
     }
-    let mut names: Vec<String> = std::iter::once(first)
+    let mut several: Vec<String> = std::iter::once(first)
         .chain(others)
         .map(|place| place.name.clone())
         .collect();
-    names.sort_unstable();
-    names.dedup();
-    names.truncate(LISTED_MOST);
-    Err(Unfound::Several(names))
+    several.sort_unstable();
+    several.dedup();
+    several.truncate(LISTED_MOST);
+    Err(Unfound::Several(several))
 }
 
 /// The folder a link into `checkout` begins in: the deepest zone the
