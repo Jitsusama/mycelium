@@ -39,7 +39,8 @@ fn stand_ins(dir: &Path, drops: u32) {
              echo 'Connection to skiff closed.' >&2\n\
              exit 255\n\
              fi\n\
-             shift 3\n\
+             while [ \"$1\" != -- ]; do shift; done\n\
+             shift 2\n\
              exec \"$@\"\n",
             asked = dir.join("asked").display()
         ),
@@ -119,8 +120,10 @@ fn a_join_whose_link_drops_joins_again_and_ends_as_the_join_there_does() {
     );
     assert_eq!(
         asked(dir.path()),
-        "-t -- skiff mycelium --realm work attach 5e55\n".repeat(3),
-        "each try runs the words it was given"
+        "-o ServerAliveInterval=5 -o ServerAliveCountMax=3 -t -- skiff mycelium --realm work \
+         attach 5e55\n"
+            .repeat(3),
+        "each try runs the words it was given, kept alive so a way that dies unsaid drops"
     );
     assert!(
         began.elapsed() < Duration::from_secs(3),
@@ -177,8 +180,9 @@ fn a_join_ends_well_once_the_node_says_the_session_has_ended() {
     );
     assert_eq!(
         asked(dir.path()),
-        "-t -- skiff mycelium --realm work attach 5e55\n",
-        "with no words given, it joins over SSH to the machine by its name"
+        "-t -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -- skiff mycelium --realm work \
+         attach 5e55\n",
+        "with no words given, it joins over SSH to the machine by its name, kept alive"
     );
 }
 

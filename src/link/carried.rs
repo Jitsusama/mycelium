@@ -912,8 +912,21 @@ mod tests {
         assert_eq!(
             asks.way("skiff")("skiff", &words),
             [
-                "mycelium", "attach", "--on", "skiff", "--", "ssh", "-t", "--", "skiff",
-                "mycelium", "attach"
+                "mycelium",
+                "attach",
+                "--on",
+                "skiff",
+                "--",
+                "ssh",
+                "-t",
+                "-o",
+                "ServerAliveInterval=5",
+                "-o",
+                "ServerAliveCountMax=3",
+                "--",
+                "skiff",
+                "mycelium",
+                "attach"
             ],
             "one it never dialled is reached over SSH by its name, joined again as it drops"
         );

@@ -1507,7 +1507,11 @@ link of this node's reaches, and none while no link does. Over SSH,
 those are `mycelium --realm REALM attach --on MACHINE ID -- WORDS`,
 `WORDS` being SSH's to that machine's own: run here, it runs `WORDS`
 and runs them again each time SSH ends 255, as it does when its link
-drops, putting back the terminal modes the program there left set
+drops. SSH's words are given `-o ServerAliveInterval=5 -o
+ServerAliveCountMax=3` after `ssh`, served so and added to words that
+name neither, so a way that dies saying nothing, as a dock's address
+does when it is undocked, ends within 15 seconds rather than never.
+Each time it puts back the terminal modes the program there left set
 (the kitty keyboard flags, the alternate screen, a hidden cursor,
 mouse and focus reports and bracketed paste) when its standard error
 is a terminal, saying `Reconnecting to MACHINE.` and waiting 1
@@ -2093,8 +2097,9 @@ without the tools its work prefers, since a node too old to read one
 may have been preferred and would end the link rather than answer, and
 its `attach` comes back as the words that join it over the dial,
 as a held session's `attach` says, such as `mycelium --realm work
-attach --on kestrel <held> -- ssh -t -- kestrel mycelium --realm work
-attach <held>`. It fails with a reason when no link reaches the machine, its
+attach --on kestrel <held> -- ssh -t -o ServerAliveInterval=5 -o
+ServerAliveCountMax=3 -- kestrel mycelium --realm work attach
+<held>`. It fails with a reason when no link reaches the machine, its
 mycelium is too old to start sessions, or it doesn't answer within 30
 seconds.
 
