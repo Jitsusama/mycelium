@@ -6584,7 +6584,6 @@ impl<S: Store> Shared<S> {
                 lead.ends(at, &Err(refused.clone()));
             }
         })?;
-        let arriving = carried_words(&asked.command);
         let answered = match (whither, again) {
             // Asked again where it was asked under that name, in the
             // fence its first ask was placed in ([`Self::placed_held`]).
@@ -6625,8 +6624,7 @@ impl<S: Store> Shared<S> {
                 .map_err(Clone::clone),
             joined,
         );
-        if let Ok(started) = &started {
-            self.says_carried_to_a_worker(arriving.as_deref(), started);
+        if started.is_ok() {
             // Its session may be judged already, its presence written
             // before its holder answered, so it is judged again now its
             // book's line names its starter, by the node's loop, so no
@@ -7196,7 +7194,8 @@ impl<S: Store> Shared<S> {
     /// to move. A reopening let through unfenced (`reopens`) is placed
     /// as a start with no fence is, as [`Self::here`] places one, and
     /// only on the machine it names ([`Self::placed`]). It was asked at
-    /// `at`, in milliseconds of the wall clock.
+    /// `at`, in milliseconds of the wall clock. A carried session placed
+    /// on a worker is told in the log ([`Self::says_carried_to_a_worker`]).
     async fn placed_held(&self, asked: Start, by: By, reopens: bool, at: i64) -> Reply {
         if reopens {
             return self
@@ -7208,7 +7207,12 @@ impl<S: Store> Shared<S> {
             eprintln!("{}", told_unfenced_held(above, &asked));
         }
         let screen = held_or_run(unfenced.is_some(), by);
-        self.placed((asked, at), fence_of(by), screen, false).await
+        let arriving = carried_words(&asked.command);
+        let placed = self.placed((asked, at), fence_of(by), screen, false).await;
+        if let Ok(Response::Started(started)) = &placed {
+            self.says_carried_to_a_worker(arriving.as_deref(), started);
+        }
+        placed
     }
 
     /// Where each of `asked`'s starts would be placed as
