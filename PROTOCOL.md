@@ -2774,7 +2774,9 @@ header of that name, since only `content-type`, `anthropic-version`,
 NAME=PATH... --branch PREFIX... --folder PATH` serves it, one request
 a connection, each named by `mycelium-borrower` (letters, digits and
 `-`, at most 64) once, or refused 400. A connection that fails as it
-is taken is passed over, so one never ends the forge. It won't start
+is taken is passed over, so one never ends the forge, though a minute
+of failing with none taken ends it, for its service manager to start
+afresh; a run of failures is said once as it begins. It won't start
 unless each `PREFIX` ends in `/`, so `agents/` never allows
 `agents-of-another`, and the folder and each repository, a clone the
 forge keeps for itself, are named from the root. It answers only
@@ -2790,7 +2792,10 @@ SHA-1, in base64, else 400, each refused before git is asked; a
 commit named in capitals is taken as git names it. One push at a
 time holds the forge's turn, from its fetch until it is tidied, so two
 never share a clone's refs at once; one waiting says so each minute
-as any does. It fetches the repository's `origin`, then the bundle,
+as any does. The forge holds at most 8 pushes, the one pushing and
+those waiting, refusing another 503, and tidying gives each ref it
+lets go 30 seconds, so a git that hangs as it tidies ends there. It
+fetches the repository's `origin`, then the bundle,
 kept for its account alone in `--folder`, to a ref below
 `refs/mycelium-forge/MACHINE/`, and signs each commit of it the origin
 doesn't hold, oldest first, each pointing at its parents as signed: at

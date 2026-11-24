@@ -30,7 +30,7 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
@@ -69,6 +69,18 @@ const PUSH_WITHIN: Duration = Duration::from_secs(45 * 60);
 /// How often a push still going says so, well within the five minutes
 /// the lender lets an answer go quiet.
 const STILL_EVERY: Duration = Duration::from_secs(60);
+
+/// How long each ref a push leaves has to be let go, so a git that
+/// hangs as it tidies never holds the forge's turn for good.
+const TIDY_WITHIN: Duration = Duration::from_secs(30);
+
+/// The most pushes the forge holds at once, the one pushing and those
+/// waiting their turn, since each holds its connection and its bundle.
+const MOST_PUSHING: usize = 8;
+
+/// How long taking connections may fail without one taken before the
+/// forge ends, so its service manager starts it afresh.
+const ACCEPTS_FAIL_FOR: Duration = Duration::from_secs(60);
 
 /// Where the forge fetches each bundle to, below the borrower's name.
 const FETCHED: &str = "refs/mycelium-forge";
@@ -198,13 +210,33 @@ fn refused(status: u16, why: impl Into<String>) -> Refusal {
 /// Serves the lender's requests on `socket`, for as long as it runs: a
 /// connection that fails as it is taken, as one does when the account
 /// is out of files, is passed over, so one never ends the forge.
-pub async fn serve(socket: Socket, forge: Forge) {
+///
+/// # Errors
+///
+/// When no connection could be taken for [`ACCEPTS_FAIL_FOR`], since a
+/// socket that fails that long is broken, and only a fresh start mends
+/// it.
+pub async fn serve(socket: Socket, forge: Forge) -> io::Result<()> {
     let forge = Arc::new(forge);
+    let mut failing_since = None;
     loop {
         match socket.accept().await {
-            Ok(stream) => drop(tokio::spawn(connection(stream, forge.clone()))),
+            Ok(stream) => {
+                failing_since = None;
+                drop(tokio::spawn(connection(stream, forge.clone())));
+            }
             Err(error) => {
-                eprintln!("mycelium-forge: a connection couldn't be taken: {error}");
+                // Said once a run of failures begins, not each time.
+                if failing_since.is_none() {
+                    eprintln!("mycelium-forge: a connection couldn't be taken: {error}");
+                }
+                let since = *failing_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= ACCEPTS_FAIL_FOR {
+                    return Err(io::Error::other(format!(
+                        "no connection could be taken for {} seconds: {error}",
+                        ACCEPTS_FAIL_FOR.as_secs()
+                    )));
+                }
                 // Not at once, so a want of files doesn't spin.
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
@@ -575,6 +607,30 @@ static PUSHES: AtomicU64 = AtomicU64::new(0);
 /// and name refs under each other.
 static TURN: LazyLock<Arc<tokio::sync::Mutex<()>>> = LazyLock::new(Arc::default);
 
+/// How many pushes the forge holds now, pushing or waiting their turn.
+static PUSHING: AtomicUsize = AtomicUsize::new(0);
+
+/// One push the forge holds, counted in [`PUSHING`] until it is done.
+struct Held;
+
+impl Held {
+    /// A push held, unless the forge holds [`MOST_PUSHING`] already.
+    fn taken() -> Option<Self> {
+        PUSHING
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |held| {
+                (held < MOST_PUSHING).then_some(held + 1)
+            })
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        PUSHING.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// Pushes what `body` asks for `borrower`, answering as it goes: its
 /// refusal whole where it can be refused at once, else a head, a waiting
 /// line each minute, and how it ended.
@@ -587,9 +643,19 @@ async fn push<W: AsyncWrite + Unpin>(forge: &Forge, borrower: &str, body: &[u8],
         "cell": pushing.as_ref().ok().and_then(|pushing| pushing.cell.clone()),
         "service": "push",
     });
+    let held = Held::taken();
     let checked = pushing
         .map_err(|_| refused(400, "the request isn't a branch to push"))
-        .and_then(|pushing| checked(forge, pushing));
+        .and_then(|pushing| checked(forge, pushing))
+        .and_then(|checked| {
+            if held.is_none() {
+                return Err(refused(
+                    503,
+                    format!("the forge holds {MOST_PUSHING} pushes already; ask again soon"),
+                ));
+            }
+            Ok(checked)
+        });
     let (repo, pushing, bundle, head) = match checked {
         Ok(checked) => checked,
         Err(refusal) => {
@@ -714,14 +780,15 @@ impl Tidy {
             let _ = fs::remove_file(&file);
             for name in &names {
                 // A ref never made is no matter.
-                let _ = std::process::Command::new(&git)
+                let mut deleting = std::process::Command::new(&git);
+                deleting
                     .arg("-C")
                     .arg(&repo)
                     .args(["update-ref", "-d", name])
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
+                    .stderr(Stdio::null());
+                ran_within(&mut deleting, TIDY_WITHIN);
             }
             drop(turn);
         }
@@ -778,6 +845,23 @@ async fn pushed(
         .unwrap_or_else(|why| Pushed::Refused { why });
     tidy.done().await;
     ended
+}
+
+/// Runs `command` to its end, or ends it once it has run `within`,
+/// blocking until either.
+fn ran_within(command: &mut std::process::Command, within: Duration) {
+    let Ok(mut child) = command.spawn() else {
+        return;
+    };
+    let ends = Instant::now() + within;
+    while matches!(child.try_wait(), Ok(None)) {
+        if Instant::now() >= ends {
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// `git` in `repo`, never asking anyone anything.

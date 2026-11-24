@@ -171,6 +171,39 @@ fn only_a_commit_not_yet_signed_is_signed() {
 }
 
 #[test]
+fn what_git_says_goes_back_with_no_credentials_in_its_urls() {
+    assert_eq!(
+        unlocked(
+            "fatal: unable to access 'https://x-access-token:s3cret@example.org/wren/repo.git/': \
+             403, then ssh://git@example.org/wren and https://example.org/kestrel"
+        ),
+        "fatal: unable to access 'https://***@example.org/wren/repo.git/': 403, then \
+         ssh://***@example.org/wren and https://example.org/kestrel",
+        "each URL's credentials go, and a URL with none stays whole"
+    );
+    assert_eq!(
+        unlocked("https://a@b@example.org/x"),
+        "https://***@example.org/x",
+        "up to the host's last @"
+    );
+    assert_eq!(
+        unlocked("see https://example.org/x?by=wren@example.org"),
+        "see https://example.org/x?by=wren@example.org",
+        "an @ past the host's end is the path's"
+    );
+}
+
+#[test]
+fn a_command_running_past_its_time_is_ended() {
+    let began = Instant::now();
+    ran_within(Command::new("sleep").arg("30"), Duration::from_millis(200));
+    assert!(
+        began.elapsed() < Duration::from_secs(10),
+        "ended near its time, not at its own end"
+    );
+}
+
+#[test]
 fn a_branch_is_pushed_only_within_what_the_forge_allows() {
     let allowed = ["agents/".to_owned()];
     assert!(branch_allowed("agents/kestrel/fix-1", &allowed));
