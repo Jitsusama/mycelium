@@ -5501,9 +5501,9 @@ mod tests {
         }
     }
 
-    // 85PKB2 (2026-11-23 18:21): a question carried in from optimus sat ten
-    // minutes in a parked peer's folder on equilibrius, since only a sender
-    // wakes a parked peer, through its own machine's markers.
+    // On 2026-11-23 a question carried in from another machine sat ten
+    // minutes in a parked peer's folder, since only a sender wakes a
+    // parked peer, through its own machine's markers.
     #[tokio::test]
     async fn a_message_carried_in_wakes_the_parked_session_it_gives_a_turn() {
         let dir = tempfile::tempdir().expect("a temporary folder");

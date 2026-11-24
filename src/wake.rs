@@ -5,8 +5,8 @@
 //! the sender writes it, judging whether the message would give the peer a
 //! turn (the harness's `wakeParked`). A message carried in from another
 //! machine has no sender here, so it rested until something local started:
-//! a question from optimus sat ten minutes in a parked peer's folder on
-//! 23 Nov 2026. So a link, having written such a message, wakes each parked
+//! a question from another machine sat ten minutes in a parked peer's
+//! folder on 23 Nov 2026. So a link, having written such a message, wakes each parked
 //! session it gives a turn to, as its sender would have.
 //!
 //! A turn is given, as the harness judges it without its classifier, by a
