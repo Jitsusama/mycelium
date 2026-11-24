@@ -329,8 +329,8 @@ fn alone(here: &str, sessions: &[Session], session: &Session) -> Option<bool> {
 ///
 /// A lane counts while it runs, while it waits parked here this boot, as
 /// its orchestrator is no less one for a lane at rest, and for
-/// [`OUT_OF_REACH_LEADS`] after this node first saw its machine out of
-/// reach, which says nothing of whether it still runs. A lane parked elsewhere
+/// [`OUT_OF_REACH_LEADS`] of this node seeing its machine out of reach,
+/// which says nothing of whether it still runs. A lane parked elsewhere
 /// never reaches this node, whose links send only the sessions that
 /// live. Of several lanes, one that runs is named first, then one parked,
 /// then one out of reach, as the likeliest to be so.
@@ -398,12 +398,7 @@ fn lane_word(here: &str, looked: &Looked, lane: &Session) -> Option<Word> {
         },
         State::Unreachable => {
             let away = format!("{who}, out of reach on {}", lane.machine);
-            let out = lane
-                .presence
-                .get("unreachableSeen")
-                .or_else(|| lane.presence.get("unreachableSince"))
-                .and_then(Value::as_i64)
-                .map(|seen| looked.now.as_millisecond().saturating_sub(seen));
+            let out = seen_out_of_reach(&lane.presence, looked.now.as_millisecond());
             // A drop this node's clock has since set behind it is recent.
             match out.map(SignedDuration::from_millis) {
                 Some(out) if out < OUT_OF_REACH_LEADS => Some(Word::Counts(2, away)),
@@ -423,18 +418,38 @@ fn lane_word(here: &str, looked: &Looked, lane: &Session) -> Option<Word> {
 /// the realm's records, so without a bound its lane would keep its
 /// orchestrator here for good.
 ///
-/// The hour runs from when a running node here first saw the machine
-/// gone, its presence's `unreachableSeen`: the drop, for a link that
-/// drops while the node runs, or the start, for a node that was down as
-/// it dropped, since a node started after longer down marks each machine
-/// no link carries out of reach since it was last linked, hours back,
-/// though it saw none of that. A mark keeps that time across restarts, so
-/// a node restarted again and again still lets a gone machine's lanes go
-/// an hour after it first saw them gone. A mark an older node left with
-/// no such time is timed by `unreachableSince` until this node's start
-/// gives it one. A machine that sleeps while the link is down, though,
-/// counts its sleep as seen.
+/// The hour is of time a running node here has seen the machine gone, as
+/// [`seen_out_of_reach`] reads it, never of time the node was down: a node
+/// started after longer down marks each machine no link carries out of
+/// reach since it was last linked, hours back, though it saw none of that.
+/// What earlier runs saw is kept, so a node restarted again and again
+/// still lets a gone machine's lanes go once it has seen them gone an hour
+/// in all. A node killed rather than stopped can't put its time seen
+/// away, so the time it is down counts as seen, as does a sleep of this
+/// machine while the link is down.
 pub const OUT_OF_REACH_LEADS: SignedDuration = SignedDuration::from_hours(1);
+
+/// How long, in milliseconds, this node has seen a lane's machine out of
+/// reach by `now`, from the marks its store keeps in the lane's presence:
+/// what earlier runs saw, `unreachableSeenFor`, and since when this run has
+/// seen it, `unreachableSeen`. A mark an older node left with neither is
+/// timed by its `unreachableSince`; one with no time at all can't be told.
+/// A time this node's clock has since set behind it reads as recent.
+fn seen_out_of_reach(presence: &Value, now: i64) -> Option<i64> {
+    let earlier = presence.get("unreachableSeenFor").and_then(Value::as_i64);
+    match presence.get("unreachableSeen").and_then(Value::as_i64) {
+        Some(seen) => Some(
+            earlier
+                .unwrap_or(0)
+                .saturating_add(now.saturating_sub(seen)),
+        ),
+        None if earlier.is_some() => earlier,
+        None => presence
+            .get("unreachableSince")
+            .and_then(Value::as_i64)
+            .map(|since| now.saturating_sub(since)),
+    }
+}
 
 /// Whether `session` is parked and was parked in the machine's present
 /// boot, by the boot its presence names or else by when its machine last
@@ -1036,9 +1051,10 @@ mod tests {
     }
 
     /// A presence of `id`'s as this node's store marks it once the link to
-    /// its machine dropped `mins` minutes before [`NOW`].
+    /// its machine dropped `mins` minutes before [`NOW`], while it ran.
     fn dropped(id: &str, mins: i64) -> Value {
-        json!({"session": id, "unreachableSince": ago(mins).as_millisecond()})
+        let at = ago(mins).as_millisecond();
+        json!({"session": id, "unreachableSince": at, "unreachableSeen": at})
     }
 
     fn told(id: &str) -> Value {
@@ -1448,20 +1464,27 @@ mod tests {
         );
     }
 
-    // Our council, on #393's fix-forward and on #401 (2026-11-23): a node
-    // back from long down marks a machine out of reach since it was last
-    // linked, hours back, though it saw that machine gone only from its
-    // start; and a node restarted again and again must not see it gone
-    // afresh each time, or a gone machine's lanes would hold for good.
+    // Our council, on #393's fix-forward and on #401 and #408 (2026-11-23):
+    // a node back from long down marks a machine out of reach since it was
+    // last linked, hours back, though it saw that machine gone only from
+    // its start; a node restarted again and again must not see it gone
+    // afresh each time, or a gone machine's lanes would hold for good; and
+    // the time a node was stopped is not time it saw.
     #[test]
-    fn a_lane_counts_from_when_this_node_first_saw_its_machine_gone() {
-        let lane = |id: &str, since_mins: i64, seen_mins: Option<i64>| {
-            let mut presence = dropped(id, since_mins);
-            if let Some(mins) = seen_mins {
+    fn a_lane_counts_by_how_long_this_node_has_seen_its_machine_gone() {
+        // Out of reach since `since` minutes back, seen so by this run from
+        // `seen` minutes back, and by earlier runs for `earlier` minutes.
+        let lane = |since: i64, seen: Option<i64>, earlier: Option<i64>| {
+            let mut presence = json!({"session": "s2",
+                                      "unreachableSince": ago(since).as_millisecond()});
+            if let Some(mins) = seen {
                 presence["unreachableSeen"] = json!(ago(mins).as_millisecond());
             }
+            if let Some(mins) = earlier {
+                presence["unreachableSeenFor"] = json!(mins * 60_000);
+            }
             session(
-                id,
+                "s2",
                 "tern",
                 &json!({"orchestrated_by": "S1", "state": "unreachable",
                         "presence": presence}),
@@ -1482,26 +1505,44 @@ mod tests {
                 began: Some(began()),
                 now: now(),
             };
-            !leading(&looked).is_empty()
+            leading(&looked)
         };
-        assert!(
-            leads(lane("s2", 120, Some(10))),
+        // Counted as out of reach within the hour, not kept as untold.
+        let counts = [(
+            "s1".to_owned(),
+            Some(true),
+            Some("S2, out of reach on tern".to_owned()),
+        )];
+        assert_eq!(
+            leads(lane(120, Some(10), None)),
+            counts,
             "dropped two hours since, while this node was down, but seen gone ten minutes"
         );
         assert!(
-            !leads(lane("s2", 120, Some(61))),
+            leads(lane(120, Some(61), None)).is_empty(),
             "seen gone over the hour, whatever restarts came after"
         );
-        assert!(
-            leads(lane("s2", 10, Some(10))),
+        assert_eq!(
+            leads(lane(10, Some(10), None)),
+            counts,
             "dropped and seen ten minutes since, while this node ran"
         );
+        assert_eq!(
+            leads(lane(300, Some(2), Some(55))),
+            counts,
+            "seen 55 minutes before a stop and 2 since the start: the stop's hours aren't seen"
+        );
         assert!(
-            leads(lane("s2", 10, None)),
+            leads(lane(300, Some(10), Some(55))).is_empty(),
+            "and 55 before with 10 since is over the hour in all"
+        );
+        assert_eq!(
+            leads(lane(10, None, None)),
+            counts,
             "marked by an older node with no time seen: by when it dropped"
         );
         assert!(
-            !leads(lane("s2", 120, None)),
+            leads(lane(120, None, None)).is_empty(),
             "and over the hour since it dropped, it no longer leads"
         );
     }

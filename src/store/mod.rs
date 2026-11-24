@@ -168,10 +168,10 @@ pub trait Store: Clone + Send + Sync + 'static {
     fn keep_presence(&self, session: &str, machine: &str) -> io::Result<()>;
 
     /// Keeps the presence of a session that runs on `machine` but marks it
-    /// out of reach since `since`, as a running node first saw at `seen`,
-    /// unless it is marked so already; a mark an earlier node left with no
-    /// `seen` gains this one, and no mark's times change after. Carrying it
-    /// again clears the mark.
+    /// out of reach since `since`, as this running node first saw at
+    /// `seen`, unless this run has marked it so already. A mark an earlier
+    /// run or node left keeps its `since` and what earlier runs saw, and
+    /// gains `seen`. Carrying it again clears the mark.
     fn mark_unreachable(
         &self,
         session: &str,
@@ -179,6 +179,13 @@ pub trait Store: Clone + Send + Sync + 'static {
         since: i64,
         seen: i64,
     ) -> io::Result<()>;
+
+    /// Puts away what this run has seen of a session `machine` carries out
+    /// of reach, as the node stops at `at`: the time from its `seen` to
+    /// `at` joins what earlier runs saw, and it keeps no `seen`, so the time
+    /// the node is down isn't seen and the next start gives it a new one. A
+    /// session this run hasn't marked is left as it is.
+    fn put_away_unreachable(&self, session: &str, machine: &str, at: i64) -> io::Result<()>;
 
     /// Lets go of the presence of a session that runs on `machine`, and of
     /// the leases it holds, keeping it among those [`Self::gone`]; this
@@ -299,10 +306,10 @@ pub fn last_linked(store: &impl Store, machine: &str) -> Option<i64> {
 
 /// Marks out of reach the sessions of every machine no link carries now,
 /// as left behind by a link or node that ended without saying so, since
-/// that machine was last linked, and seen so now, when this node runs: it
-/// saw none of the time it was down. A mark an earlier run left keeps when
-/// that run first saw it, so a node restarted again and again doesn't see
-/// a machine gone afresh each time.
+/// that machine was last linked, and seen so from now, as this node runs:
+/// it saw none of the time it was down. A mark an earlier run left keeps
+/// what that run saw, so a node restarted again and again doesn't see a
+/// machine gone afresh each time.
 pub fn out_of_reach_of_unclaimed(store: &impl Store) -> io::Result<()> {
     let now = jiff::Timestamp::now().as_millisecond();
     let mut machines: Vec<String> = store
@@ -320,6 +327,23 @@ pub fn out_of_reach_of_unclaimed(store: &impl Store) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Puts away what this run has seen of each session out of reach, as the
+/// node stops at `at`, so the time it is down isn't counted as seen. A node
+/// killed before it gets here leaves its marks as they stand.
+pub fn put_away_out_of_reach(store: &impl Store, at: i64) {
+    for presence in store.presences() {
+        if let Some(machine) = presence.elsewhere.as_deref()
+            && presence.unreachable_since.is_some()
+            && let Err(error) = store.put_away_unreachable(&presence.session, machine, at)
+        {
+            eprintln!(
+                "couldn't put away {}'s time out of reach: {error}",
+                presence.session
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -449,10 +473,10 @@ mod tests {
         );
     }
 
-    /// A node started again finds the marks its last run left, which say
-    /// when that run first saw each machine gone, and keeps them; a session
-    /// it marks at this start is seen gone from this start, though out of
-    /// reach since its machine was last linked.
+    /// A node killed and started again finds the marks its last run left,
+    /// which say when that run first saw each machine gone, and keeps them;
+    /// a session it marks at this start is seen gone from this start, though
+    /// out of reach since its machine was last linked.
     #[test]
     fn a_restart_keeps_when_a_machine_was_first_seen_gone() {
         let store = memory::Memory::default();
@@ -468,7 +492,9 @@ mod tests {
             .mark_linked("kestrel", 7)
             .expect("linked until it dropped");
 
+        let before = jiff::Timestamp::now().as_millisecond();
         out_of_reach_of_unclaimed(&store).expect("swept");
+        let after = jiff::Timestamp::now().as_millisecond();
         let seen = |session: &str| {
             store
                 .presences()
@@ -485,7 +511,10 @@ mod tests {
             .as_ref()
             .and_then(Value::as_i64)
             .expect("a session marked at this start says when it was seen");
-        assert!(started > 8, "seen gone from this start, not before it");
+        assert!(
+            (before..=after).contains(&started),
+            "seen gone from this start, not before it"
+        );
 
         store
             .mark_unreachable("s1", "kestrel", 3, 4)
@@ -494,6 +523,70 @@ mod tests {
             seen("s1"),
             Some(serde_json::json!(8)),
             "and never seen again"
+        );
+    }
+
+    /// A node stopped puts away what it saw of each machine out of reach,
+    /// so the hours it is down aren't seen: its next start sees the machine
+    /// gone afresh from then, with what it saw before stopping kept.
+    #[test]
+    fn a_stopped_node_sees_none_of_its_time_down() {
+        let store = memory::Memory::default();
+        for session in ["s1", "s2"] {
+            store
+                .put_presence(session, "kestrel", &serde_json::json!({"session": session}))
+                .expect("carried");
+        }
+        store
+            .mark_unreachable("s1", "kestrel", 7, 8)
+            .expect("marked");
+        let field = |session: &str, name: &str| {
+            store
+                .presences()
+                .into_iter()
+                .find(|one| one.session == session)
+                .map(|one| one.body[name].clone())
+        };
+
+        put_away_out_of_reach(&store, 20);
+        assert_eq!(
+            (
+                field("s1", "unreachableSeen"),
+                field("s1", "unreachableSeenFor")
+            ),
+            (Some(Value::Null), Some(serde_json::json!(12))),
+            "seen from 8 to the stop at 20, and no longer seen as the node is down"
+        );
+        assert_eq!(
+            field("s2", "unreachableSeenFor"),
+            Some(Value::Null),
+            "a session never marked has nothing to put away"
+        );
+        put_away_out_of_reach(&store, 30);
+        assert_eq!(
+            field("s1", "unreachableSeenFor"),
+            Some(serde_json::json!(12)),
+            "put away twice, it sees nothing more"
+        );
+
+        let before = jiff::Timestamp::now().as_millisecond();
+        out_of_reach_of_unclaimed(&store).expect("swept at the next start");
+        let after = jiff::Timestamp::now().as_millisecond();
+        let seen = field("s1", "unreachableSeen")
+            .as_ref()
+            .and_then(Value::as_i64)
+            .expect("seen again from the start");
+        assert!(
+            (before..=after).contains(&seen),
+            "seen gone from this start, not from the stop"
+        );
+        assert_eq!(
+            (
+                field("s1", "unreachableSince"),
+                field("s1", "unreachableSeenFor")
+            ),
+            (Some(serde_json::json!(7)), Some(serde_json::json!(12))),
+            "still out of reach since 7, with what was seen before the stop"
         );
     }
 }
