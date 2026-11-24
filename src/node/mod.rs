@@ -12793,7 +12793,8 @@ esac
             .await,
             Err(
                 "WCJQSG's session already orchestrates QEST-20261115-HARBOR by this node's \
-                 record, so OSPHT4 can't: only that session hands it on, or the person"
+                 record, so OSPHT4 can't: only that session hands it on, by letting go or by \
+                 ending once a session continues its log, or the person"
                     .to_owned()
             ),
             "a session taking another's quest is refused"
@@ -12875,6 +12876,17 @@ esac
         .expect("written");
         stops(&store, "s-steward");
         assert_eq!(
+            claims(&socket, 7003, Some("QEST-20261007-WCJQSG"), &quests).await,
+            Err(
+                "OSPHT4's session already heads QEST-20261007-WCJQSG by this node's record, so \
+                 HARBOR can't: only that session hands it on, by letting go or by ending once a \
+                 session continues its log, or the person"
+                    .to_owned()
+            ),
+            "once the steward stops, its claim passes to the session continuing it, not to \
+             whoever asks first"
+        );
+        assert_eq!(
             claims(&socket, 7002, Some("QEST-20261007-WCJQSG"), &quests).await,
             Ok(Response::Orchestrated),
             "one whose log continues it does, once the steward has stopped"
@@ -12918,7 +12930,8 @@ esac
             claims(&socket, 7002, Some("QEST-20261007-WCJQSG"), &quests).await,
             Err(
                 "WCJQSG's session already heads QEST-20261007-WCJQSG by this node's record, so \
-                 OSPHT4 can't: only that session hands it on, or the person"
+                 OSPHT4 can't: only that session hands it on, by letting go or by ending once a \
+                 session continues its log, or the person"
                     .to_owned()
             ),
             "a fork of a steward still running takes nothing of its"

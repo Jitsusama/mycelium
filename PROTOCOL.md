@@ -869,12 +869,14 @@ session says of itself:
   only that session hands it on, by forgetting it, or by ending once
   continued, as a session whose log's first line, `<time>_<id>.jsonl`
   under pi's `sessions` folder, names it as `parentSession`, by its id
-  or, as pi writes it, its log's path, of which only the file name is
-  read. A session continuing one that still runs, as a fork does, takes
-  nothing of its. What a session claimed passes, once it neither runs
-  nor waits parked, to the one session standing whose log continues
-  its own, through at most eight logs; where any other number do, it
-  lapses, as the record is next read or changed, so an
+  or, as pi writes it, its log's path, read for the session its file
+  name names, else whole as an id, and never opened. A session
+  continuing one that still runs or waits parked, as a fork does,
+  takes nothing of its. What a session
+  claimed passes, once it neither runs nor waits parked, to the one
+  session standing whose log continues its own, through at most eight
+  logs, where that session holds no claim of its own; where any other
+  number do, it lapses, as the record is next read or changed, so an
   orchestrator started afresh claims its quests again and one ended
   holds nothing; and the person's
   own login, never an agent's, frees a quest from whichever session
