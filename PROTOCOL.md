@@ -130,13 +130,15 @@ it adds the time from then to the stop to the mark's
 `unreachableSeenFor`, how long earlier runs saw it gone, and drops
 `unreachableSeen`, so its next start sees the machine gone afresh with
 what came before kept, and the time it was down unseen; a machine
-another link claims is left to that link. A node killed rather than
+another link claims is left to that link, and one whose claim fails is
+passed over while the rest are still marked. A node killed rather than
 stopped keeps its `unreachableSeen`, so its time down counts as seen. A
 mark with no `unreachableSeen`, left by a stop, a dialled link or an
 older node, gains one as the node starts, and one a dialled link left
 while the node ran is seen, as it stops, from the drop or from when that
-run began, whichever is later. The next link to that machine
-settles them: the far end's `Have`
+run began, whichever is later; a node killed before its stop loses that
+run's sight of a dialled drop. The next link to that machine settles
+them: the far end's `Have`
 names its living sessions, those are carried again and unmarked, and the
 rest are let go. While a link stands it touches each file it carried
 once a minute, and a mark keeps the file's time, so a copy whose time

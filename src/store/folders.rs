@@ -1844,22 +1844,24 @@ mod tests {
         );
     }
 
-    /// A stop whose sweep fails still puts away what its run saw, then
-    /// says the sweep's failure; a machine it can't claim keeps this run's
-    /// sight, and the others are put away all the same.
+    /// A stop whose sweep fails still sweeps and puts away what its run saw
+    /// of every other machine, then says the sweep's failure; a machine it
+    /// can't claim keeps this run's sight.
     #[test]
     fn a_stop_puts_away_though_its_sweep_fails() {
         let (_dir, store) = store();
-        for (session, machine, seen) in [("s1", "kestrel", 3), ("s2", "wren", 8)] {
+        // wren is left unseen, as a link apart from the node leaves a drop,
+        // so only the stop's sweep gives it a sight to put away.
+        for (session, machine, seen) in [("s1", "kestrel", Some(3)), ("s2", "wren", None)] {
             store
                 .put_presence(session, machine, &json!({"session": session}))
                 .expect("carried");
             store
-                .mark_unreachable(session, machine, 2, Some(seen))
+                .mark_unreachable(session, machine, 8, seen)
                 .expect("marked");
         }
-        // kestrel's claim can't be made, so the sweep fails on it before it
-        // reaches wren, and the put-away can't claim it either.
+        // kestrel's claim can't be made, so the sweep fails on it, sorted
+        // before wren, and the put-away can't claim it either.
         fs::create_dir_all(store.claims.join("kestrel.lock")).expect("in its way");
 
         assert!(
@@ -1880,8 +1882,8 @@ mod tests {
                 s1[UNREACHABLE_SEEN].clone(),
                 s1[UNREACHABLE_SEEN_FOR].clone()
             ),
-            (json!(3), Value::Null),
-            "kestrel, unclaimed, keeps this run's sight"
+            (json!(8), Value::Null),
+            "kestrel, unclaimed, keeps this run's sight, never before its drop"
         );
         assert_eq!(
             (

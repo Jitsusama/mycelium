@@ -364,6 +364,8 @@ impl Store for Memory {
         if held.carries(session, machine)
             && let Some(presence) = held.presences.get_mut(session)
             && presence.body.get("unreachableSeen").is_none()
+            // A mark kept as it stands writes nothing, as in the folders.
+            && (seen.is_some() || presence.unreachable_since.is_none())
         {
             let since = *presence.unreachable_since.get_or_insert(since);
             // As the folders mark it, in the presence too, where easing

@@ -3825,9 +3825,10 @@ mod tests {
         .await;
         let carried = kestrel.presences();
         assert!(
-            carried
-                .iter()
-                .all(|p| p.body.get("unreachableSeen").is_none()),
+            !carried.is_empty()
+                && carried
+                    .iter()
+                    .all(|p| p.body.get("unreachableSeen").is_none()),
             "marked when the link went, and left for the node to see: {carried:?}"
         );
     }

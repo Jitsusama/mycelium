@@ -326,7 +326,9 @@ pub fn last_linked(store: &impl Store, machine: &str) -> Option<i64> {
 /// the node began, or from the drop where that is later: it saw none of
 /// the time it was down. A mark an earlier run left keeps what that run
 /// saw, so a node restarted again and again doesn't see a machine gone
-/// afresh each time.
+/// afresh each time. A machine whose claim fails is passed over for the
+/// rest, and the first failure said after them; one a link claims is left
+/// to it, and said, since its marks then keep no sight of this run's.
 pub fn out_of_reach_of_unclaimed(store: &impl Store, seen: i64) -> io::Result<()> {
     let now = jiff::Timestamp::now().as_millisecond();
     let mut machines: Vec<String> = store
@@ -337,13 +339,20 @@ pub fn out_of_reach_of_unclaimed(store: &impl Store, seen: i64) -> io::Result<()
         .collect();
     machines.sort_unstable();
     machines.dedup();
+    let mut failed = None;
     for machine in machines {
-        if let Some(_claim) = store.claim(&machine)? {
-            let since = last_linked(store, &machine).unwrap_or(now);
-            out_of_reach(store, &machine, since, Some(seen));
+        match store.claim(&machine) {
+            Ok(Some(_claim)) => {
+                let since = last_linked(store, &machine).unwrap_or(now);
+                out_of_reach(store, &machine, since, Some(seen));
+            }
+            Ok(None) => eprintln!("left {machine} to the link that claims it"),
+            Err(error) => {
+                failed.get_or_insert(error);
+            }
         }
     }
-    Ok(())
+    failed.map_or(Ok(()), Err)
 }
 
 /// What a node that `began` this run does with its marks out of reach as
@@ -511,14 +520,21 @@ mod tests {
             "session": "s1",
             "unreachableSince": 3,
             "unreachableSeen": 4,
+            "unreachableSeenFor": 5,
             "owner": {"pid": 1},
         });
         store
             .put_presence("s1", "kestrel", &carried)
             .expect("carried again");
         assert_eq!(
-            ["unreachableSince", "unreachableSeen", "owner"].map(|field| body(&store, field)),
-            [Some(Value::Null), Some(Value::Null), Some(Value::Null)],
+            [
+                "unreachableSince",
+                "unreachableSeen",
+                "unreachableSeenFor",
+                "owner"
+            ]
+            .map(|field| body(&store, field)),
+            [const { Some(Value::Null) }; 4],
             "a link carrying it again says it is in reach, and only its own machine \
              judges its process"
         );
