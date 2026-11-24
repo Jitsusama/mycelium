@@ -77,9 +77,11 @@ impl Kit {
 pub enum Scope {
     /// Beside what started it, where nothing has a service manager.
     None,
-    /// In the slice the person's own programs run in, for a node that is a
+    /// In the slice the machine runs its agents in, for a node that is a
     /// systemd unit, since stopping the unit would stop every session it
-    /// started.
+    /// started. Never the slice of the person's own programs: a session
+    /// held there shared their memory's floor, and a call of theirs froze
+    /// while it was reclaimed (23 November).
     Apart,
     /// In the slice of the terminal that started it. A terminal's own
     /// scope signals nothing when stopped (kitty makes its with
@@ -103,10 +105,10 @@ impl Scope {
     }
 
     /// The words that start `program` in this scope, as the holder `id`.
-    fn command(self, program: &Path, id: &str) -> Command {
+    pub(crate) fn command(self, program: &Path, id: &str) -> Command {
         let slice = match self {
             Self::None => return Command::new(program),
-            Self::Apart => "--slice=app.slice",
+            Self::Apart => "--slice=agents.slice",
             Self::Beside => "--slice-inherit",
         };
         let mut scoped = Command::new("systemd-run");
@@ -478,8 +480,8 @@ mod tests {
         );
         assert_eq!(
             words(Scope::Apart),
-            scoped("--slice=app.slice"),
-            "a node's go apart"
+            scoped("--slice=agents.slice"),
+            "a node's go apart, among the agents"
         );
         assert_eq!(
             words(Scope::Beside),

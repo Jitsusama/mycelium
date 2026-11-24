@@ -1773,6 +1773,30 @@ mod tests {
     }
 
     #[test]
+    fn a_session_a_node_holds_runs_where_agents_are_told() {
+        let command =
+            crate::hold::start::Scope::Apart.command(std::path::Path::new("/bin/mycelium"), "f00d");
+        let words: Vec<String> = command
+            .get_args()
+            .map(|word| word.to_string_lossy().into_owned())
+            .collect();
+        let given = |flag: &str| {
+            words
+                .iter()
+                .find_map(|word| word.strip_prefix(flag))
+                .expect("systemd-run is told it")
+                .to_owned()
+        };
+        let below = format!("{}/{}.scope", given("--slice="), given("--unit="));
+        assert_eq!(
+            agents_unit(&under_manager(&below)).as_deref(),
+            Some("mycelium-pi-f00d.scope"),
+            "{below}, where a node starts a held session, is an agent's, kept off the \
+             person's own programs' floor"
+        );
+    }
+
+    #[test]
     fn the_persons_own_units_are_no_agents() {
         for below in [
             "session.slice/quickshell.service",
