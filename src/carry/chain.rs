@@ -8,7 +8,9 @@
 //! claim in a file of its own. A quest another session already holds by
 //! that record is refused: only its session hands it on, by releasing it
 //! or by being continued, as a session rolled over into a new log that
-//! names it as its `parentSession`. An ordered carry's chain of
+//! names it as its `parentSession`; a claim whose session no longer
+//! stands passes to the one that continues it, whether or not that one
+//! tells the node again. An ordered carry's chain of
 //! orchestrators is walked through this record, so neither a rewritten
 //! quests' index nor an edited quest README moves it.
 //!
@@ -21,7 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -174,11 +176,74 @@ impl Orchestrations {
             })
     }
 
-    /// Forgets what each session claimed that `stands` says no longer
-    /// runs or waits parked, so an orchestrator started afresh, which
-    /// continues no session, may claim its quests again.
-    pub fn lapse(&mut self, stands: impl Fn(&str) -> bool) {
-        self.sessions.retain(|session, _| stands(session));
+    /// Hands on or forgets what each session claimed that no longer runs
+    /// or waits parked, as `standing` names those that do, each with the
+    /// address the node knows it by, where it knows one.
+    ///
+    /// A lapsing claim passes, keeping what it heads and its quests, to
+    /// the one standing session whose log continues the claimer's, as
+    /// `continues` tells what each session's log continues: directly, or
+    /// through logs that claimed nothing and no longer stand, up to
+    /// [`CONTINUED_MOST`] logs back. It takes that session's address
+    /// where the node knows it, else keeps its own. A session that has
+    /// claimed for itself takes nothing, as its own word stands, and a
+    /// claim two standing sessions continue passes to neither, since
+    /// which goes on can't be told. Any other lapses, so an orchestrator
+    /// started afresh, which continues no session, may claim its quests
+    /// again. `continues` is asked only where some claim lapses, so the
+    /// logs are read only then, and once.
+    pub fn lapse<Continues: Fn(&str) -> Option<String>>(
+        &mut self,
+        standing: &BTreeMap<String, Option<String>>,
+        continues: impl FnOnce() -> Continues,
+    ) {
+        let (kept, lapsing): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut self.sessions)
+            .into_iter()
+            .partition(|(session, _)| standing.contains_key(session));
+        self.sessions = kept;
+        if lapsing.is_empty() {
+            return;
+        }
+        let continues = continues();
+        let mut heirs: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for session in standing.keys() {
+            if self.sessions.contains_key(session) {
+                continue;
+            }
+            let mut at = session.clone();
+            for _ in 0..CONTINUED_MOST {
+                let Some(before) = continues(&at) else {
+                    break;
+                };
+                if let Some((claimer, _)) = lapsing.get_key_value(&before) {
+                    heirs.entry(claimer).or_default().push(session);
+                    break;
+                }
+                // A standing session's claim, or its having none, is its
+                // own: what it continues isn't handed past it.
+                if standing.contains_key(&before) {
+                    break;
+                }
+                at = before;
+            }
+        }
+        for (claimer, heirs) in heirs {
+            let ([heir], Some(claim)) = (heirs.as_slice(), lapsing.get(claimer)) else {
+                continue;
+            };
+            let address = standing
+                .get(*heir)
+                .cloned()
+                .flatten()
+                .unwrap_or_else(|| claim.address.clone());
+            self.sessions.insert(
+                (*heir).to_owned(),
+                Claim {
+                    address,
+                    ..claim.clone()
+                },
+            );
+        }
     }
 
     /// The quest the session `session` heads, by this record.
@@ -240,28 +305,75 @@ impl Orchestrations {
 }
 
 /// The session the log of `session` continues, as its own first line
-/// names it, looking among the logs under `logs`, each in a folder of its
-/// working folder's: `<logs>/<folder>/<time>_<session>.jsonl`. None where
-/// no such log is found, or where it continues none.
+/// names it, looking among the logs under `logs`, as [`Logs`] finds
+/// them. None where no such log is found, or where it continues none.
 #[must_use]
 pub fn continues(logs: &Path, session: &str) -> Option<String> {
-    let named = format!("_{session}.jsonl");
-    let log = fs::read_dir(logs)
-        .ok()?
-        .flatten()
-        .filter_map(|folder| fs::read_dir(folder.path()).ok())
-        .flat_map(Iterator::flatten)
-        .find(|file| file.file_name().to_string_lossy().ends_with(&named))?;
-    let mut first = String::new();
-    io::BufRead::read_line(
-        &mut io::BufReader::new(fs::File::open(log.path()).ok()?),
-        &mut first,
-    )
-    .ok()?;
-    let header: serde_json::Value = serde_json::from_str(&first).ok()?;
-    (header.get("id")?.as_str()? == session)
-        .then(|| header.get("parentSession")?.as_str().map(str::to_owned))
-        .flatten()
+    Logs::scan(logs).continues(session)
+}
+
+/// How many logs back a lapsing claim is followed to the session that
+/// goes on: a session rolls over into a new log only now and then, so a
+/// chain longer than this is taken as no continuation.
+pub const CONTINUED_MOST: usize = 8;
+
+/// The sessions' logs under a logs folder, each in a folder of its working
+/// folder's, `<logs>/<folder>/<time>_<session>.jsonl`, found by the
+/// session each keeps in one scan of the folders, opening none: a log is
+/// opened only as what it continues is asked, and only its first line is
+/// read.
+#[derive(Debug, Default)]
+pub struct Logs {
+    /// Each log found, by the session its name says it keeps.
+    found: BTreeMap<String, PathBuf>,
+}
+
+impl Logs {
+    /// The logs under `logs`, as they are now; none where it can't be
+    /// read.
+    #[must_use]
+    pub fn scan(logs: &Path) -> Self {
+        let found = fs::read_dir(logs)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|folder| fs::read_dir(folder.path()).ok())
+            .flat_map(Iterator::flatten)
+            .filter_map(|file| {
+                let name = file.file_name();
+                let (_, session) = name.to_str()?.strip_suffix(".jsonl")?.split_once('_')?;
+                Some((session.to_owned(), file.path()))
+            })
+            .collect();
+        Self { found }
+    }
+
+    /// The session the log of `session` continues, as its own first line
+    /// names it. None where it has no log here, where that line names
+    /// another session, or where it continues none.
+    #[must_use]
+    pub fn continues(&self, session: &str) -> Option<String> {
+        let mut first = String::new();
+        io::BufRead::read_line(
+            &mut io::BufReader::new(fs::File::open(self.found.get(session)?).ok()?),
+            &mut first,
+        )
+        .ok()?;
+        let header: serde_json::Value = serde_json::from_str(&first).ok()?;
+        (header.get("id")?.as_str()? == session)
+            .then(|| header.get("parentSession")?.as_str().map(str::to_owned))
+            .flatten()
+    }
+
+    /// What the log of each of `sessions` continues, as
+    /// [`Self::continues`] tells it, leaving out each that continues none.
+    #[must_use]
+    pub fn continued(&self, sessions: &[&str]) -> BTreeMap<String, String> {
+        sessions
+            .iter()
+            .filter_map(|session| Some(((*session).to_owned(), self.continues(session)?)))
+            .collect()
+    }
 }
 
 /// Whether the chain the quests' record gives agrees with the node's.
@@ -291,10 +403,11 @@ pub fn agrees(node: &Order, record: &Order) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::cell::Cell;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
 
-    use super::{Orchestrations, agrees, continues};
+    use super::{CONTINUED_MOST, Logs, Orchestrations, agrees, continues};
     use crate::carry::ordered::{Known, Link, Order};
 
     const STEWARD: Known = Known {
@@ -469,15 +582,255 @@ mod tests {
             .expect("and another session may take it up");
     }
 
+    /// The sessions that stand, each with the address the node knows it
+    /// by, where it knows one.
+    fn standing(sessions: &[(&str, Option<&str>)]) -> BTreeMap<String, Option<String>> {
+        sessions
+            .iter()
+            .map(|(session, address)| ((*session).to_owned(), address.map(str::to_owned)))
+            .collect()
+    }
+
+    /// What each log continues, as `(session, continued)` pairs say.
+    fn logs(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(session, continued)| ((*session).to_owned(), (*continued).to_owned()))
+            .collect()
+    }
+
+    /// Lapses `record` as `standing` and the logs' `continued` say,
+    /// answering whether any log was read.
+    fn lapsed(
+        record: &mut Orchestrations,
+        standing: &BTreeMap<String, Option<String>>,
+        continued: &BTreeMap<String, String>,
+    ) -> bool {
+        let read = Cell::new(false);
+        record.lapse(standing, || {
+            read.set(true);
+            |session: &str| continued.get(session).cloned()
+        });
+        read.get()
+    }
+
     #[test]
     fn a_claim_lapses_once_its_session_has_ended() {
         let mut record = nested();
-        record.lapse(|session| session == "s-weigh");
+        lapsed(
+            &mut record,
+            &standing(&[("s-weigh", Some("OSPHT4"))]),
+            &BTreeMap::new(),
+        );
         assert_eq!(
             record.sessions.keys().collect::<Vec<_>>(),
             ["s-weigh"],
             "only what a standing session claimed is kept"
         );
+    }
+
+    #[test]
+    fn no_log_is_read_where_no_claim_lapses() {
+        let mut record = nested();
+        let before = record.clone();
+        assert!(
+            !lapsed(
+                &mut record,
+                &standing(&[("s-steward", Some("WCJQSG")), ("s-weigh", Some("OSPHT4"))]),
+                &logs(&[("s-weigh", "s-steward")]),
+            ),
+            "every claim's session stands, so no log is read"
+        );
+        assert_eq!(record, before, "and nothing changes");
+    }
+
+    #[test]
+    fn a_lapsing_claim_passes_to_the_session_whose_log_continues_it() {
+        let mut record = nested();
+        let was = record.sessions.get("s-steward").cloned().expect("claimed");
+        assert!(lapsed(
+            &mut record,
+            &standing(&[("s-steward-2", Some("WCJQSG")), ("s-weigh", Some("OSPHT4"))]),
+            &logs(&[("s-steward-2", "s-steward")]),
+        ));
+        assert!(
+            !record.sessions.contains_key("s-steward"),
+            "the ended session holds nothing"
+        );
+        assert_eq!(
+            record.sessions.get("s-steward-2"),
+            Some(&was),
+            "its continuation holds its quests, what it heads and its address"
+        );
+        let rolled = Known {
+            session: "s-steward-2",
+            address: "WCJQSG",
+        };
+        assert_eq!(
+            record
+                .chain("QEST-20261115-HARBOR", rolled)
+                .map(|order| order.by),
+            Ok("WCJQSG".to_owned()),
+            "so the chain still leads to it"
+        );
+    }
+
+    #[test]
+    fn a_lapsing_claim_passes_through_a_log_that_never_claimed() {
+        let mut record = nested();
+        let was = record.sessions.get("s-steward").cloned().expect("claimed");
+        lapsed(
+            &mut record,
+            &standing(&[("s-steward-3", None), ("s-weigh", Some("OSPHT4"))]),
+            &logs(&[("s-steward-3", "s-steward-2"), ("s-steward-2", "s-steward")]),
+        );
+        assert_eq!(
+            record.sessions.get("s-steward-3"),
+            Some(&was),
+            "the gap, which neither claimed nor stands, passes it on, and where the node \
+             knows no address the claim keeps its own"
+        );
+        assert_eq!(record.sessions.len(), 2, "and none is held twice");
+    }
+
+    #[test]
+    fn a_lapsing_claim_takes_the_address_its_continuation_goes_by() {
+        let mut record = nested();
+        lapsed(
+            &mut record,
+            &standing(&[("s-steward-2", Some("KESTRL")), ("s-weigh", None)]),
+            &logs(&[("s-steward-2", "s-steward")]),
+        );
+        assert_eq!(
+            record
+                .sessions
+                .get("s-steward-2")
+                .map(|claim| claim.address.as_str()),
+            Some("KESTRL")
+        );
+    }
+
+    #[test]
+    fn a_continuation_too_long_takes_nothing() {
+        let mut record = nested();
+        let mut pairs: Vec<(String, String)> = (0..CONTINUED_MOST)
+            .map(|at| (format!("s-roll-{}", at + 1), format!("s-roll-{at}")))
+            .collect();
+        pairs.push(("s-roll-0".to_owned(), "s-steward".to_owned()));
+        let continued: BTreeMap<String, String> = pairs.into_iter().collect();
+        let last = format!("s-roll-{CONTINUED_MOST}");
+        lapsed(
+            &mut record,
+            &standing(&[(&last, None), ("s-weigh", None)]),
+            &continued,
+        );
+        assert_eq!(
+            record.sessions.keys().collect::<Vec<_>>(),
+            ["s-weigh"],
+            "a walk deeper than {CONTINUED_MOST} logs is given up"
+        );
+        let mut record = nested();
+        lapsed(
+            &mut record,
+            &standing(&[("s-roll-1", None), ("s-weigh", None)]),
+            &continued,
+        );
+        assert!(
+            record.sessions.contains_key("s-roll-1"),
+            "though a shorter one is walked"
+        );
+    }
+
+    #[test]
+    fn a_lapsing_claim_passes_to_no_unrelated_standing_session() {
+        let mut record = nested();
+        lapsed(
+            &mut record,
+            &standing(&[
+                ("s-helper", Some("HARBOR")),
+                ("s-fork", Some("WCJQSG")),
+                ("s-weigh", Some("OSPHT4")),
+            ]),
+            &logs(&[("s-helper", "s-elsewhere"), ("s-fork", "s-weigh")]),
+        );
+        assert_eq!(
+            record.sessions.keys().collect::<Vec<_>>(),
+            ["s-weigh"],
+            "neither a session continuing another, nor one forked from a standing one, takes it"
+        );
+    }
+
+    #[test]
+    fn a_lapsing_claim_passes_to_the_nearest_standing_continuation() {
+        let mut record = nested();
+        lapsed(
+            &mut record,
+            &standing(&[
+                ("s-steward-2", None),
+                ("s-steward-2-fork", None),
+                ("s-weigh", None),
+            ]),
+            &logs(&[
+                ("s-steward-2-fork", "s-steward-2"),
+                ("s-steward-2", "s-steward"),
+            ]),
+        );
+        assert_eq!(
+            record.sessions.keys().collect::<Vec<_>>(),
+            ["s-steward-2", "s-weigh"],
+            "a fork of the standing continuation doesn't vie with it"
+        );
+    }
+
+    #[test]
+    fn a_lapsing_claim_two_sessions_continue_passes_to_neither() {
+        let mut record = nested();
+        lapsed(
+            &mut record,
+            &standing(&[
+                ("s-steward-2", None),
+                ("s-steward-fork", None),
+                ("s-weigh", None),
+            ]),
+            &logs(&[
+                ("s-steward-2", "s-steward"),
+                ("s-steward-fork", "s-steward"),
+            ]),
+        );
+        assert_eq!(
+            record.sessions.keys().collect::<Vec<_>>(),
+            ["s-weigh"],
+            "which of the two goes on can't be told, so it lapses"
+        );
+    }
+
+    #[test]
+    fn a_lapsing_claim_passes_over_a_continuation_that_claimed_its_own() {
+        let mut record = nested();
+        record
+            .claim(
+                Known {
+                    session: "s-steward-2",
+                    address: "WCJQSG",
+                },
+                "QEST-20261115-TERNXX",
+                &[],
+                None,
+                at(),
+            )
+            .expect("it claims");
+        let own = record.sessions.get("s-steward-2").cloned();
+        lapsed(
+            &mut record,
+            &standing(&[("s-steward-2", None), ("s-weigh", None)]),
+            &logs(&[("s-steward-2", "s-steward")]),
+        );
+        assert_eq!(
+            record.sessions.get("s-steward-2").cloned(),
+            own,
+            "what a session said itself stands over what it continues"
+        );
+        assert!(!record.sessions.contains_key("s-steward"));
     }
 
     #[test]
@@ -591,6 +944,61 @@ mod tests {
             continues(logs.path(), "s-nobody"),
             None,
             "nor one with no log"
+        );
+    }
+
+    #[test]
+    fn the_logs_are_scanned_once_and_read_only_where_asked() {
+        let logs = tempfile::tempdir().expect("a temporary folder");
+        let (one, other) = (
+            logs.path().join("--home-joel-src-mycelium--"),
+            logs.path().join("--home-joel--"),
+        );
+        for folder in [&one, &other] {
+            fs::create_dir_all(folder).expect("made");
+        }
+        fs::write(
+            one.join("2026-11-23T11-31-00-000Z_s-steward-2.jsonl"),
+            "{\"type\":\"session\",\"id\":\"s-steward-2\",\"parentSession\":\"s-steward\"}\n",
+        )
+        .expect("written");
+        fs::write(
+            other.join("2026-11-23T12-00-00-000Z_s-steward-3.jsonl"),
+            "{\"type\":\"session\",\"id\":\"s-steward-3\",\"parentSession\":\"s-steward-2\"}\n",
+        )
+        .expect("written");
+        fs::write(
+            one.join("2026-11-23T12-00-00-000Z_s-liar.jsonl"),
+            "{\"type\":\"session\",\"id\":\"s-other\",\"parentSession\":\"s-steward\"}\n",
+        )
+        .expect("written");
+        fs::write(one.join("notes.txt"), "not a log\n").expect("written");
+        let found = Logs::scan(logs.path());
+        // Whatever lands after the scan isn't seen, so the folder was read
+        // once, as the scan was made.
+        fs::write(
+            one.join("2026-11-23T13-00-00-000Z_s-later.jsonl"),
+            "{\"type\":\"session\",\"id\":\"s-later\",\"parentSession\":\"s-steward\"}\n",
+        )
+        .expect("written");
+        assert_eq!(
+            found.continues("s-steward-3"),
+            Some("s-steward-2".to_owned())
+        );
+        assert_eq!(found.continues("s-steward-2"), Some("s-steward".to_owned()));
+        assert_eq!(
+            found.continues("s-liar"),
+            None,
+            "a log whose first line names another session continues none"
+        );
+        assert_eq!(found.continues("s-later"), None, "nor one not yet there");
+        assert_eq!(
+            found.continued(&["s-steward-3", "s-steward-2", "s-nobody"]),
+            BTreeMap::from([
+                ("s-steward-2".to_owned(), "s-steward".to_owned()),
+                ("s-steward-3".to_owned(), "s-steward-2".to_owned()),
+            ]),
+            "and a set of sessions reads as one"
         );
     }
 
