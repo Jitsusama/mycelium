@@ -58,7 +58,7 @@ pub(super) fn swarm() -> Swarm {
                 "REEF01",
                 "Reef",
                 None,
-                &json!({"worst": "moving", "members": ["s-reef"],
+                &json!({"worst": "moving", "members": ["s-coral"],
                        "counts": {"needs-you": 0, "stuck": 0, "moving": 1, "quiet": 0}}),
             ),
             team_of(
@@ -90,7 +90,9 @@ pub(super) fn swarm() -> Swarm {
                 busy
             },
             asking,
-            session("s-reef", "Reef's one", "busy"),
+            // Not s-reef: a living session's address takes the short
+            // name it cleans to, and Reef's short name is reef.
+            session("s-coral", "Reef's one", "busy"),
             session("s-alone", "On its own", "busy"),
             session("s-gone", "Gone", "ended"),
         ],
@@ -259,9 +261,11 @@ fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
         ("--names", "a name swarm reads as an option"),
         ("-ojson", "or as its output"),
         ("team", "or as the person saying what follows"),
-        ("pa\u{200B}use", "or as an act once it is cleaned"),
+        // Resume, as no session is addressed by it, so the act is what
+        // refuses it, not the address a cleaned name would take.
+        ("re\u{200B}sume", "or as an act once it is cleaned"),
         (
-            "pa\u{3164}use",
+            "re\u{3164}sume",
             "or once a filler that counts as a letter is",
         ),
     ] {
