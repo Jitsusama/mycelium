@@ -9,10 +9,12 @@
 //! staging it under a name of its own and renaming it into place, which
 //! replaces a link of the same name rather than writing through it.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::fd::OwnedFd;
-use std::path::Path;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
@@ -22,6 +24,9 @@ use rustix::fs::{AtFlags, FileType, Mode, OFlags};
 /// few kilobytes, so one past this was put there to be read, not written by
 /// the mesh.
 const LARGEST_FILE: u64 = 8 << 20;
+
+/// The most links followed on the way to a root, as Linux's own bound.
+const MOST_LINKS: usize = 40;
 
 /// Numbers each staged write of this process, so no two share a file.
 static STAGED: AtomicU64 = AtomicU64::new(0);
@@ -41,11 +46,81 @@ pub enum Kind {
 #[derive(Debug)]
 pub struct Folder(OwnedFd);
 
+/// Refuses `root` where another account could put something else in its
+/// place: where any folder a name on its way is looked up in, links
+/// followed, may be written by a group or by anyone, unless it is sticky
+/// and that name is this account's or the system's; or where the folder
+/// holding `root` itself is neither. The root may be shared, as a worker
+/// machine's is, but the way to it must be this machine's alone, or the
+/// account it is shared with could make it a link to any of the node's
+/// own files. Only the folder holding the root needs an owner, since a
+/// build sandbox's own `/` belongs to no account it knows.
+fn reached_safely(root: &Path) -> io::Result<()> {
+    // The names still to look up, the next last.
+    fn push(ahead: &mut Vec<OsString>, path: &Path) {
+        for part in path.components().rev() {
+            match part {
+                Component::Normal(name) => ahead.push(name.to_owned()),
+                Component::ParentDir => ahead.push("..".into()),
+                Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
+            }
+        }
+    }
+    let me = rustix::process::geteuid().as_raw();
+    let ours = |owner: u32| owner == me || owner == 0;
+    let mut ahead = Vec::new();
+    push(&mut ahead, &std::path::absolute(root)?);
+    let mut at = PathBuf::from("/");
+    let mut links = 0;
+    while let Some(name) = ahead.pop() {
+        if name == ".." {
+            at.pop();
+            continue;
+        }
+        let next = at.join(&name);
+        let holding = fs::symlink_metadata(&at)?;
+        let found = fs::symlink_metadata(&next)?;
+        let open = holding.mode() & 0o022 != 0;
+        let sticky = holding.mode() & 0o1000 != 0;
+        let last = ahead.is_empty();
+        if (open && !(sticky && ours(found.uid()))) || (last && !ours(holding.uid())) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "another account may put something in place of {}, so the mesh at {} \
+                     isn't read",
+                    next.display(),
+                    root.display()
+                ),
+            ));
+        }
+        if found.file_type().is_symlink() {
+            links += 1;
+            if links > MOST_LINKS {
+                return Err(io::Error::other(format!(
+                    "{} goes through more than {MOST_LINKS} links",
+                    root.display()
+                )));
+            }
+            let target = fs::read_link(&next)?;
+            if target.is_absolute() {
+                at = PathBuf::from("/");
+            }
+            push(&mut ahead, &target);
+        } else {
+            at = next;
+        }
+    }
+    Ok(())
+}
+
 impl Folder {
     /// The folder `inside` names under `root`: `root` reached by its path,
-    /// as its own machine set it, and each folder below it opened from the
-    /// one above, never through a link.
+    /// as its own machine set it, so long as no other account can put
+    /// something else in its place ([`reached_safely`]), and each folder
+    /// below it opened from the one above, never through a link.
     pub fn open(root: &Path, inside: &[&str]) -> io::Result<Self> {
+        reached_safely(root)?;
         let mut folder = Self(rustix::fs::open(
             root,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
@@ -223,9 +298,58 @@ fn whole(file: fs::File, name: &str) -> io::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{PermissionsExt, symlink};
 
     use super::*;
+
+    #[test]
+    fn a_root_another_account_could_put_something_in_place_of_is_refused() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let made = |path: &Path, mode: u32| {
+            fs::create_dir_all(path).expect("a folder");
+            fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("its mode");
+        };
+        let refused = |root: &Path| {
+            Folder::open(root, &[])
+                .err()
+                .is_some_and(|error| error.kind() == io::ErrorKind::PermissionDenied)
+        };
+
+        made(&dir.path().join("kept/mesh"), 0o775);
+        assert!(
+            Folder::open(&dir.path().join("kept/mesh"), &[]).is_ok(),
+            "a root shared with a group, in a folder of this account's alone, opens"
+        );
+        made(&dir.path().join("shared"), 0o770);
+        made(&dir.path().join("shared/mesh"), 0o770);
+        assert!(
+            refused(&dir.path().join("shared/mesh")),
+            "a root in a folder a group may write is refused"
+        );
+        made(&dir.path().join("sticky"), 0o1777);
+        made(&dir.path().join("sticky/mesh"), 0o755);
+        assert!(
+            Folder::open(&dir.path().join("sticky/mesh"), &[]).is_ok(),
+            "a root of this account's own in a sticky folder opens"
+        );
+        made(&dir.path().join("open"), 0o777);
+        symlink(dir.path().join("kept/mesh"), dir.path().join("open/mesh")).expect("a link");
+        assert!(
+            refused(&dir.path().join("open/mesh")),
+            "a root reached by a link in a folder anyone may write is refused"
+        );
+        made(&dir.path().join("own"), 0o755);
+        symlink(dir.path().join("shared/mesh"), dir.path().join("own/mesh")).expect("a link");
+        assert!(
+            refused(&dir.path().join("own/mesh")),
+            "a root whose link names one in a folder a group may write is refused"
+        );
+        symlink("../kept/mesh", dir.path().join("own/kept")).expect("a link");
+        assert!(
+            Folder::open(&dir.path().join("own/kept"), &[]).is_ok(),
+            "a root reached by a link of this account's own to a safe place opens"
+        );
+    }
 
     #[test]
     fn a_link_inside_is_never_followed_to_read_or_write_what_it_names() {

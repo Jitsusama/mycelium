@@ -67,7 +67,12 @@ mesh writes its own.
 The mesh's folder may be shared with another account, as a worker
 machine's is with the account its sessions run as, which can then put a
 link anywhere inside it. So only the folder itself is reached by its
-path, through any link its machine made; every folder and file inside is
+path, through any link its machine made, and only where no other
+account can put something in its place: each folder a name on the way
+is looked up in, links followed, may be written by no group nor anyone,
+unless it is sticky and that name is the account's or the system's,
+and the folder holding it is the account's or the system's; else the
+mesh isn't read. Every folder and file inside is
 opened from the one holding it, never through a link nor waiting on a
 pipe, and only a plain file of at most 8 MiB is read. A link in place of
 a message, a presence, a holding or a folder is read as nothing there,
@@ -415,10 +420,12 @@ Three seams shape a link:
   names as its sender a session it holds a presence for now, by an
   address that presence lists or by its id, and no session living here
   or through another link answers to that name, and never when it
-  steers this
-  machine's sessions: a hold, a pivot, the end of a hold, or anything
-  to the machine-wide group or answering what was. One kept opens its
-  `text` with
+  steers this machine's sessions: a hold, a pivot, the end of a hold,
+  or anything to the machine-wide group or answering what was. Nor is
+  one kept unless its `intent` is one of the mesh's five, exactly, and
+  any `to` is a list of words, `endsHold` true or false, and `re` and
+  `supersedes` words, so no reader can take it for a steer where the
+  node didn't. One kept opens its `text` with
   `[said on <worker>, a worker machine]` and a space, and gains
   `"worker"`, the
   machine's name, both from the link's own name for it, never from
