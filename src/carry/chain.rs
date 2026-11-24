@@ -416,7 +416,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
 
-    use super::{CONTINUED_MOST, Logs, Orchestrations, agrees, continues};
+    use super::{CONTINUED_MOST, Logs, Orchestrations, agrees};
     use crate::carry::ordered::{Known, Link, Order};
 
     const STEWARD: Known = Known {
