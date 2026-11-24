@@ -12,6 +12,13 @@
 let
   # A check that runs `script` in a copy of the repository, with `tools` on
   # its path, and passes when the script does.
+  # A UTF-8 locale for the gate's cases, which read a list line opening with
+  # a space outside ASCII under one, as a merger's shell might.
+  utf8 = pkgs.glibcLocales.override {
+    allLocales = false;
+    locales = [ "en_US.UTF-8/UTF-8" ];
+  };
+
   inTree =
     name: tools: script:
     pkgs.runCommand name { nativeBuildInputs = tools; } ''
@@ -29,9 +36,13 @@ let
   gateHolds =
     named:
     inTree "merge-gate-holds" [ pkgs.git pkgs.shellcheck ] ''
+      ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+        export LOCALE_ARCHIVE=${utf8}/lib/locale/locale-archive
+      ''}
       shellcheck --enable=all scripts/merge-gate.sh scripts/merge-gate-test.sh \
         scripts/merge-train.sh
-      bash scripts/merge-gate-test.sh scripts/merge-gate.sh scripts/merge-train.sh
+      bash scripts/merge-gate-test.sh scripts/merge-gate.sh scripts/merge-train.sh \
+        nix/counts.sh
       ${pkgs.lib.optionalString (static != null) ''
         asked=$(sed -n '/^checks=(/,/^)/{/^  /s/^  //p}' scripts/merge-gate.sh | sort)
         has=$(printf '%s\n' ${pkgs.lib.escapeShellArgs named} merge-gate-holds | sort)
@@ -137,6 +148,20 @@ let
           exit 1
         fi
       '';
+
+    # Long files, crowded folders and lints turned off only fall: each one
+    # there before the rule waits in a list beside nix/counts.sh, which only
+    # shrinks, and merge-gate.sh runs main's copy of it over each head.
+    # The cases run under gawk and again under the one true awk, a Mac's
+    # own, since the gate runs the counts with whatever awk its host has.
+    counts-only-fall = inTree "counts-only-fall" [ pkgs.shellcheck pkgs.git ] ''
+      shellcheck --enable=all nix/counts.sh nix/counts-test.sh
+      bash nix/counts.sh
+      bash nix/counts-test.sh nix/counts.sh
+      mkdir "$TMPDIR/bwk"
+      ln -s ${pkgs.nawk}/bin/nawk "$TMPDIR/bwk/awk"
+      PATH="$TMPDIR/bwk:$PATH" bash nix/counts-test.sh nix/counts.sh
+    '';
 
     # Every folder says what it holds, and every file is read by a linter.
     tree-keeps-its-rules = inTree "tree-keeps-its-rules" [ pkgs.shellcheck ] ''

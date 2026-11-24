@@ -26,6 +26,7 @@ system=x86_64-linux
 # and the flake's part ways.
 checks=(
   agents-cargo-goes-through-nix-offload
+  counts-only-fall
   markdown-is-clean
   merge-gate-holds
   mycelium
@@ -56,6 +57,91 @@ if ! git merge-base --is-ancestor "${main}" "${sha}"; then
   echo "merge-gate: ${sha:0:12} doesn't hold main as it is now, ${main:0:12}," \
     "so what it merges into was never built: rebase onto main and run the" \
     "checks again." >&2
+  exit 1
+fi
+
+# The counts that only fall (nix/counts.sh), judged by main's copy of the
+# rule over the head's own tree, each of the head's lists only shrinking
+# against main's, so a head can neither loosen the rule nor list its own
+# new entry. The train lands only as this lets its tip, so a train's merged
+# tree is judged too. A rule main doesn't have yet, as when it first comes
+# in, is the head's, and so are its lists; once main has the rule, a list
+# main lacks is an empty one. The tree is read from an index of the
+# gate's own, its attributes from the empty tree so none of the head's
+# changes a file from its blob, and each link written as a file holding
+# its target, so none reaches outside the copy. A git before 2.42 ignores
+# GIT_ATTR_SOURCE and would apply the head's attributes, so it's refused.
+version=$(git version | sed -n 's/^git version \([0-9]*\.[0-9]*\).*/\1/p')
+if ! printf '%s\n' 2.42 "${version}" | sort -C -t . -k 1,1n -k 2,2n; then
+  echo "merge-gate: git ${version:-of no version} can't read a tree without its" \
+    "own attributes; run the gate with git 2.42 or later." >&2
+  exit 1
+fi
+scratch=$(mktemp -d)
+trap 'rm -rf "${scratch}"' EXIT
+empty_tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+GIT_INDEX_FILE="${scratch}/index" git read-tree "${sha}"
+GIT_INDEX_FILE="${scratch}/index" GIT_ATTR_SOURCE="${empty_tree}" \
+  git -c core.symlinks=false checkout-index -a --prefix="${scratch}/tree/"
+rule=nix/counts.sh
+main_rule=no
+if git cat-file -e "${main}:${rule}" 2> /dev/null; then
+  git show "${main}:${rule}" > "${scratch}/counts.sh"
+  main_rule=yes
+elif [[ -f "${scratch}/tree/${rule}" ]]; then
+  cp "${scratch}/tree/${rule}" "${scratch}/counts.sh"
+else
+  echo "merge-gate: neither main nor ${sha:0:12} has ${rule}, so its counts" \
+    "can't be judged: rebase onto main and run the checks again." >&2
+  exit 1
+fi
+raised=""
+for list in nix/long-files-waiting.txt nix/suppressions-waiting.txt; do
+  main_list=""
+  if git cat-file -e "${main}:${list}" 2> /dev/null; then
+    main_list=$(git show "${main}:${list}")
+  elif [[ ${main_rule} == no ]]; then
+    continue
+  fi
+  head_list=""
+  if [[ -f "${scratch}/tree/${list}" ]]; then
+    head_list=$(< "${scratch}/tree/${list}")
+  fi
+  # Each line against main's, read as counts.sh reads it: the long list's
+  # whole, as one path, and the suppressions' as "path count". One main
+  # lacks, or a count above main's, raises the list, and a suppression line
+  # that isn't a path and a count above 0 is refused as it stands, as is a
+  # line with a space at either end, which counts.sh would read as another
+  # path than the one it's keyed by here.
+  whole=0
+  if [[ ${list} == nix/long-files-waiting.txt ]]; then whole=1; fi
+  # Under LC_ALL=C, as counts.sh reads the lists, so a space outside ASCII
+  # is no space to either.
+  raised+=$(LC_ALL=C awk -v list="${list}" -v whole="${whole}" '
+    { line = $0; sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, "") }
+    /^#/ || $0 == "" { next }
+    whole { key = $0; n = 1 }
+    !whole { key = $1; n = NF > 1 ? $2 : 1 }
+    FNR == NR { main[key] = n; next }
+    $0 != line { print list ": \"" line "\" begins or ends with a space"; next }
+    !whole && (NF != 2 || $2 !~ /^[1-9][0-9]*$/) {
+      print list ": \"" $0 "\" is not a path and a count above 0"
+      next
+    }
+    n + 0 > main[key] + 0 { print list ": " key " " n ", main has " main[key] + 0 }
+  ' <(printf '%s\n' "${main_list}") <(printf '%s\n' "${head_list}"))$'\n'
+done
+raised=$(sed '/^$/d' <<< "${raised}")
+if [[ -n ${raised} ]]; then
+  echo "${raised}" >&2
+  echo "merge-gate: ${sha:0:12} raises a list that only shrinks, above main's:" \
+    "fix the code the line names rather than listing it." >&2
+  exit 1
+fi
+if ! counted=$(cd "${scratch}/tree" \
+  && GIT_DIR="${scratch}/none" bash "${scratch}/counts.sh" 2>&1 < /dev/null); then
+  echo "${counted}" >&2
+  echo "merge-gate: main's nix/counts.sh refuses ${sha:0:12}; above says why." >&2
   exit 1
 fi
 

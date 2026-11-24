@@ -1,0 +1,46 @@
+# Code files past 800 lines and folders past 40 entries that don't say
+# why, there before nix/counts.sh held them: a path a line. The list only
+# shrinks: split one or say why, and take its line off.
+src
+src/carry/ease.rs
+src/carry/easing.rs
+src/carry/ground.rs
+src/carry/kept.rs
+src/carry/mod.rs
+src/carry/ordered.rs
+src/carry/settle.rs
+src/carry/through.rs
+src/daemon/records.rs
+src/declared.rs
+src/facts.rs
+src/feed.rs
+src/forage.rs
+src/hold/holder.rs
+src/hold/start.rs
+src/hosted_attach/mod.rs
+src/lend/forge/mod.rs
+src/lend/lender/mod.rs
+src/lend/lender/tests.rs
+src/link/carried.rs
+src/link/mod.rs
+src/main.rs
+src/mesh.rs
+src/networks/made.rs
+src/networks/shown.rs
+src/networks/tests.rs
+src/node/arrival.rs
+src/node/asker.rs
+src/node/mod.rs
+src/node/starts.rs
+src/placement.rs
+src/receptor.rs
+src/run.rs
+src/served/mod.rs
+src/share/exchange.rs
+src/share/ledger.rs
+src/sprout.rs
+src/steer.rs
+src/store/folders.rs
+src/swarm/mod.rs
+src/unanswered.rs
+src/web.rs

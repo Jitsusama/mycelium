@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # The merge gate's cases, each in a repository of its own made here: a
 # head that holds main merges once every Linux check passed at it, and one
-# that doesn't hold main, or lacks a check there, is refused, saying why.
-# Then the merge train's: heads merged onto main as one, landing only as
-# main's own gate lets the train's tip.
+# that doesn't hold main, or lacks a check there, or raises a count that
+# only falls, is refused, saying why. Then the merge train's: heads merged
+# onto main as one, landing only as main's own gate lets the train's tip.
 #
-#   merge-gate-test.sh GATE TRAIN
+#   merge-gate-test.sh GATE TRAIN COUNTS
 set -euo pipefail
 
-gate=$(realpath "${1:?Name the gate: merge-gate-test.sh GATE TRAIN}")
-train=$(realpath "${2:?Name the train: merge-gate-test.sh GATE TRAIN}")
+usage="merge-gate-test.sh GATE TRAIN COUNTS"
+gate=$(realpath "${1:?Name the gate: ${usage}}")
+train=$(realpath "${2:?Name the train: ${usage}}")
+counts=$(realpath "${3:?Name the counts: ${usage}}")
 work=$(mktemp -d)
 trap 'rm -rf "${work}"' EXIT
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
@@ -28,6 +30,12 @@ commit() {
   git commit -q -m "$1"
   git rev-parse HEAD
 }
+# Main holds the counts' rule and a list with one suppression waiting.
+mkdir nix src
+cp "${counts}" nix/counts.sh
+echo '#[allow(dead_code)]' > src/old.rs
+printf '%s\n' "# Waiting." "src/old.rs 1" > nix/suppressions-waiting.txt
+git add nix src
 first=$(commit first)
 git push -q origin HEAD:main
 head=$(commit head)
@@ -37,7 +45,8 @@ pass() {
   local sha=$1
   shift
   local check
-  for check in agents-cargo-goes-through-nix-offload markdown-is-clean merge-gate-holds \
+  for check in agents-cargo-goes-through-nix-offload counts-only-fall markdown-is-clean \
+    merge-gate-holds \
     mycelium mycelium-needs-no-libraries mycelium-passes-clippy names-stay-out \
     nix-is-clean rust-is-formatted toml-is-clean tree-keeps-its-rules; do
     if [[ " $* " != *" ${check} "* ]]; then
@@ -75,6 +84,167 @@ expect refuses "${head}" "checks.x86_64-linux.mycelium " \
 pass "${first}"
 expect refuses "${head}" "nothing kept says" \
   "what passed at another commit doesn't count"
+
+# A head off main holding each `path=text` named, with every check passed
+# there, so only the counts can refuse it.
+counted() {
+  git checkout -q -B counted "${first}"
+  local pair
+  for pair in "$@"; do
+    mkdir -p "$(dirname "${pair%%=*}")"
+    printf '%s\n' "${pair#*=}" > "${pair%%=*}"
+    git add "${pair%%=*}"
+  done
+  git commit -q -m counted
+  local sha
+  sha=$(git rev-parse HEAD)
+  pass "${sha}"
+  echo "${sha}"
+}
+loose='src/loose.rs=#[allow(dead_code)]'
+sha=$(counted "${loose}")
+expect refuses "${sha}" "src/loose.rs: 1, listed 0" \
+  "a head that turns a lint off is refused by main's counts"
+sha=$(counted "${loose}" "nix/suppressions-waiting.txt=src/loose.rs 1")
+expect refuses "${sha}" "src/loose.rs 1, main has 0" \
+  "a head that lists its own new suppression is refused"
+sha=$(counted "${loose}" "nix/counts.sh=exit 0")
+expect refuses "${sha}" "src/loose.rs: 1, listed 0" \
+  "a head that loosens the counts' rule is judged by main's"
+sha=$(counted "nix/suppressions-waiting.txt=src/main.rs many")
+expect refuses "${sha}" "is not a path and a count above 0" \
+  "a list line whose count isn't a number is refused"
+sha=$(counted "nix/suppressions-waiting.txt=src/old.rs")
+expect refuses "${sha}" "is not a path and a count above 0" \
+  "a suppression line with no count is refused, as the counts refuse it"
+sha=$(counted "nix/suppressions-waiting.txt=src/old.rs 1 2")
+expect refuses "${sha}" "is not a path and a count above 0" \
+  "a suppression line of three fields is refused"
+sha=$(counted $'src/old.rs=#[allow(dead_code)]\n#[allow(unused)]' \
+  "nix/suppressions-waiting.txt=src/old.rs 2")
+expect refuses "${sha}" "src/old.rs 2, main has 1" \
+  "a count raised above main's own is refused"
+sha=$(counted $'nix/suppressions-waiting.txt=src/old.rs 1\n  # It waits on its owner.')
+expect merges "${sha}" "holds main" \
+  "an indented comment in a list is skipped, as the counts skip it"
+sha=$(counted "src/old.rs=fn old() {}" "nix/suppressions-waiting.txt=# Waiting.")
+expect merges "${sha}" "holds main" \
+  "a head that fixes a suppression and takes its line off merges"
+sha=$(counted "${loose}" ".gitattributes=*.rs working-tree-encoding=UTF-16LE")
+expect refuses "${sha}" "src/loose.rs: 1, listed 0" \
+  "a file is read as its blob, whatever encoding the head asks"
+# Under that encoding git takes the file for changed, so it's left by force.
+git checkout -q -f "${first}"
+# A long file its head lists in a list main lacks, which main's counts
+# alone would pass.
+git checkout -q -B counted "${first}"
+mkdir -p src
+awk 'BEGIN { for (n = 1; n <= 801; n++) print "// line " n }' > src/long.rs
+echo src/long.rs > nix/long-files-waiting.txt
+git add src/long.rs nix/long-files-waiting.txt
+git commit -q -m long
+sha=$(git rev-parse HEAD)
+pass "${sha}"
+expect refuses "${sha}" "nix/long-files-waiting.txt: src/long.rs 1, main has 0" \
+  "a list main lacks, once main has the rule, is an empty one"
+echo "src/long.rs 1" > nix/long-files-waiting.txt
+git commit -q -am "long, counted"
+sha=$(git rev-parse HEAD)
+pass "${sha}"
+expect refuses "${sha}" "nix/long-files-waiting.txt: src/long.rs 1 1, main has 0" \
+  "a long-files line is one path, read whole as the counts read it"
+echo "src/long.rs " > nix/long-files-waiting.txt
+git commit -q -am "long, padded"
+sha=$(git rev-parse HEAD)
+pass "${sha}"
+expect refuses "${sha}" "\"src/long.rs \" begins or ends with a space" \
+  "a list line with a space at an end is refused, not keyed as its trim"
+printf 'src/long.rs\t\n' > nix/long-files-waiting.txt
+git commit -q -am "long, ending in a tab"
+sha=$(git rev-parse HEAD)
+pass "${sha}"
+expect refuses "${sha}" "begins or ends with a space" \
+  "a list line ending in a tab is refused, as one ending in a space is"
+# A crowded folder named from a space outside ASCII and a hash, listed so:
+# a comment to an awk reading UTF-8, but an entry to the counts, which
+# would take the folder as listed and let it merge. A Mac's awk reads a
+# no-break space as a space, and gawk an ideographic one. Without the UTF-8
+# locale, the awk on the path would read neither so, and both cases would pass
+# whether or not the gate reads under C, so that fails here first.
+spaced=$(LC_ALL=en_US.UTF-8 awk '/^[[:space:]]+#/ { n++ } END { print n + 0 }' \
+  <<< $'\302\240#\n\343\200\200#')
+if [[ ${spaced} == 0 ]]; then
+  echo "FAIL the crowd cases need a UTF-8 locale: awk reads neither space as one" >&2
+  failed=1
+fi
+for named in no-break=$'\302\240' ideographic=$'\343\200\200'; do
+  git checkout -q -B counted "${first}"
+  crowd="${named#*=}#crowd"
+  mkdir "${crowd}"
+  for n in $(seq 41); do : > "${crowd}/${n}.rs"; done
+  printf '%s\n' "${crowd}" > nix/long-files-waiting.txt
+  git add "${crowd}" nix/long-files-waiting.txt
+  git commit -q -m "crowded, past a space outside ASCII"
+  sha=$(git rev-parse HEAD)
+  pass "${sha}"
+  LC_ALL=en_US.UTF-8 expect refuses "${sha}" "#crowd 1, main has 0" \
+    "a line opening with a space outside ASCII (${named%%=*}) is no comment, as the counts read it"
+  git checkout -q -f "${first}"
+  rm -rf "${crowd}"
+done
+# A list linked to a copy of main's outside the tree, which would merge
+# were the link followed; read as the path it holds, it's no list line.
+outside=$(mktemp -d)
+git show "${first}:nix/suppressions-waiting.txt" > "${outside}/list"
+git checkout -q -B counted "${first}"
+ln -sf "${outside}/list" nix/suppressions-waiting.txt
+git add nix/suppressions-waiting.txt
+git commit -q -m linked
+sha=$(git rev-parse HEAD)
+pass "${sha}"
+expect refuses "${sha}" "is not a path and a count above 0" \
+  "a link is read as the path it holds, not followed"
+rm -r "${outside}"
+git checkout -q -f "${first}"
+
+# A git that can't read a tree without its own attributes is refused.
+mkdir "${work}/old-git"
+real_git=$(command -v git)
+cat > "${work}/old-git/git" << EOF
+#!${BASH}
+if [[ \$1 == version ]]; then echo "git version 2.41.0"; else exec "${real_git}" "\$@"; fi
+EOF
+chmod +x "${work}/old-git/git"
+PATH="${work}/old-git:${PATH}" expect refuses "${head}" "run the gate with git 2.42 or later" \
+  "a git before 2.42 is refused"
+
+# A main without the rule, as before it first comes in: the head's rule
+# and lists judge it, and a head without the rule either is refused.
+git init -q --bare -b main "${work}/bare.git"
+git clone -q "${work}/bare.git" "${work}/bare" 2> /dev/null
+cd "${work}/bare"
+commit bare > /dev/null
+git push -q origin HEAD:main
+ruleless=$(commit ruleless)
+pass "${ruleless}"
+expect refuses "${ruleless}" "neither main nor" "a rule neither has is refused"
+mkdir nix src
+cp "${counts}" nix/counts.sh
+echo '#[allow(dead_code)]' > src/loose.rs
+echo "src/loose.rs 1" > nix/suppressions-waiting.txt
+git add nix src
+git commit -q -m ruled
+ruled=$(git rev-parse HEAD)
+pass "${ruled}"
+expect merges "${ruled}" "holds main" "the rule's first head is judged by its own rule and lists"
+echo '#[allow(unused)]' > src/unlisted.rs
+git add src
+git commit -q -m unlisted
+unlisted=$(git rev-parse HEAD)
+pass "${unlisted}"
+expect refuses "${unlisted}" "src/unlisted.rs: 1, listed 0" \
+  "the rule's first head is refused by its own rule where it doesn't hold"
+cd "${work}/tree"
 
 # Main moves on past the head, as another change merges first.
 git checkout -q -b other "${first}"

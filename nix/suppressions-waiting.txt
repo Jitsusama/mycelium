@@ -1,0 +1,31 @@
+# Files that turn a lint off, there before nix/counts.sh held them, each
+# with how many times: the count only falls. Fix the code so the lint
+# passes it, and lower the count, or take the line off at 0.
+benches/many.rs 1
+benches/unanswered.rs 1
+benches/watched.rs 1
+src/balance/mod.rs 3
+src/busy.rs 1
+src/carry/cell.rs 1
+src/carry/easing.rs 1
+src/disk.rs 1
+src/facts.rs 2
+src/hindsight.rs 2
+src/hold/holder.rs 3
+src/hosted_attach/mod.rs 3
+src/lend/forge/tests.rs 1
+src/link/membership.rs 1
+src/link/mod.rs 2
+src/main.rs 1
+src/node/asker.rs 1
+src/node/mod.rs 6
+src/node/starts.rs 1
+src/open_files.rs 2
+src/place.rs 2
+src/placement.rs 3
+src/receptor.rs 1
+src/room.rs 1
+src/run.rs 1
+src/store/ends.rs 1
+tests/forages.rs 1
+tests/realm/counting.rs 1
