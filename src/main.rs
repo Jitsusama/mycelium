@@ -2163,7 +2163,7 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
         worker: node
             .worker_socket
             .zip(node.worker_uid)
-            .map(|(socket, uid)| mycelium::node::Worker { socket, uid }),
+            .map(|(socket, uid)| node::Worker { socket, uid }),
     };
     tell!(
         "mycelium: {}",
