@@ -329,10 +329,22 @@ pub fn out_of_reach_of_unclaimed(store: &impl Store) -> io::Result<()> {
     Ok(())
 }
 
+/// What a node does with its marks out of reach as it stops at `at`: marks
+/// the sessions of every machine no link carries, then puts away what this
+/// run saw of each, so the time it is down isn't counted as seen. In that
+/// order, since a mark put away and then swept would be seen from the stop
+/// and keep that at the next start. The put-away claims nothing, so it runs
+/// whatever the sweep returns, and a sweep that fails is said after it. A
+/// node killed before it gets here leaves its marks as they stand.
+pub fn stop_seeing_out_of_reach(store: &impl Store, at: i64) -> io::Result<()> {
+    let swept = out_of_reach_of_unclaimed(store);
+    put_away_out_of_reach(store, at);
+    swept
+}
+
 /// Puts away what this run has seen of each session out of reach, as the
-/// node stops at `at`, so the time it is down isn't counted as seen. A node
-/// killed before it gets here leaves its marks as they stand.
-pub fn put_away_out_of_reach(store: &impl Store, at: i64) {
+/// node stops at `at`.
+fn put_away_out_of_reach(store: &impl Store, at: i64) {
     for presence in store.presences() {
         if let Some(machine) = presence.elsewhere.as_deref()
             && presence.unreachable_since.is_some()
@@ -527,8 +539,10 @@ mod tests {
     }
 
     /// A node stopped puts away what it saw of each machine out of reach,
-    /// so the hours it is down aren't seen: its next start sees the machine
-    /// gone afresh from then, with what it saw before stopping kept.
+    /// after sweeping the machines no link carries, so the hours it is down
+    /// aren't seen: its next start sees the machine gone afresh from then,
+    /// with what it saw before stopping kept. Swept after the put-away, a
+    /// mark would be seen from the stop and keep that at the next start.
     #[test]
     fn a_stopped_node_sees_none_of_its_time_down() {
         let store = memory::Memory::default();
@@ -537,9 +551,6 @@ mod tests {
                 .put_presence(session, "kestrel", &serde_json::json!({"session": session}))
                 .expect("carried");
         }
-        store
-            .mark_unreachable("s1", "kestrel", 7, 8)
-            .expect("marked");
         let field = |session: &str, name: &str| {
             store
                 .presences()
@@ -547,26 +558,43 @@ mod tests {
                 .find(|one| one.session == session)
                 .map(|one| one.body[name].clone())
         };
+        let before = jiff::Timestamp::now().as_millisecond();
+        // s1 dropped a minute ago as this node ran; s2 no link left marked.
+        store
+            .mark_unreachable("s1", "kestrel", 7, before - 60_000)
+            .expect("marked");
 
-        put_away_out_of_reach(&store, 20);
+        // The stop is said a minute on, so what the sweep saw is a minute.
+        stop_seeing_out_of_reach(&store, before + 60_000).expect("stopped");
+        let after = jiff::Timestamp::now().as_millisecond();
         assert_eq!(
             (
                 field("s1", "unreachableSeen"),
                 field("s1", "unreachableSeenFor")
             ),
-            (Some(Value::Null), Some(serde_json::json!(12))),
-            "seen from 8 to the stop at 20, and no longer seen as the node is down"
+            (Some(Value::Null), Some(serde_json::json!(120_000))),
+            "seen from its drop to the stop, and no longer seen as the node is down"
+        );
+        let swept = field("s2", "unreachableSeenFor")
+            .as_ref()
+            .and_then(Value::as_i64)
+            .expect("the stop's sweep marks it, and the put-away puts that away");
+        assert!(
+            (60_000 - (after - before)..=60_000).contains(&swept),
+            "seen from the stop's sweep to the stop"
         );
         assert_eq!(
-            field("s2", "unreachableSeenFor"),
+            field("s2", "unreachableSeen"),
             Some(Value::Null),
-            "a session never marked has nothing to put away"
+            "and no longer seen"
         );
-        put_away_out_of_reach(&store, 30);
+        store
+            .put_away_unreachable("s1", "kestrel", before + 600_000)
+            .expect("put away again");
         assert_eq!(
             field("s1", "unreachableSeenFor"),
-            Some(serde_json::json!(12)),
-            "put away twice, it sees nothing more"
+            Some(serde_json::json!(120_000)),
+            "a mark with nothing seen this run has nothing more to put away"
         );
 
         let before = jiff::Timestamp::now().as_millisecond();
@@ -585,7 +613,7 @@ mod tests {
                 field("s1", "unreachableSince"),
                 field("s1", "unreachableSeenFor")
             ),
-            (Some(serde_json::json!(7)), Some(serde_json::json!(12))),
+            (Some(serde_json::json!(7)), Some(serde_json::json!(120_000))),
             "still out of reach since 7, with what was seen before the stop"
         );
     }

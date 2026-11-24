@@ -1536,6 +1536,19 @@ mod tests {
             leads(lane(300, Some(10), Some(55))).is_empty(),
             "and 55 before with 10 since is over the hour in all"
         );
+        assert!(
+            leads(lane(120, Some(60), None)).is_empty(),
+            "seen gone the whole hour is no longer within it"
+        );
+        assert_eq!(
+            leads(lane(300, None, Some(55))),
+            counts,
+            "put away by a stop and not yet seen by a start: what was seen, not since when"
+        );
+        assert!(
+            leads(lane(10, None, Some(61))).is_empty(),
+            "and seen over the hour before the stop, however recent the drop says"
+        );
         assert_eq!(
             leads(lane(10, None, None)),
             counts,

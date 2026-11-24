@@ -980,10 +980,9 @@ where
     links.shutdown().await;
     let ended = stopping.elapsed();
     let letting_go = std::time::Instant::now();
-    store::out_of_reach_of_unclaimed(&store)?;
     // What this run saw of each machine out of reach is put away, so the
     // time the node is down isn't counted as seen at its next start.
-    store::put_away_out_of_reach(&store, jiff::Timestamp::now().as_millisecond());
+    store::stop_seeing_out_of_reach(&store, jiff::Timestamp::now().as_millisecond())?;
     drop(socket);
     // A stop's time is the service manager's to bound, so each is said.
     eprintln!(

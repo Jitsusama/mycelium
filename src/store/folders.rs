@@ -1701,6 +1701,27 @@ mod tests {
             "seen from 8 to the stop at 20, and no longer seen"
         );
         assert_eq!(modified(), Some(vouched), "the file keeps its time");
+        let sweep = || {
+            let before = jiff::Timestamp::now().as_millisecond();
+            crate::store::out_of_reach_of_unclaimed(&store).expect("swept at a start");
+            before..=jiff::Timestamp::now().as_millisecond()
+        };
+        let started = sweep();
+        assert!(
+            body()[UNREACHABLE_SEEN]
+                .as_i64()
+                .is_some_and(|seen| started.contains(&seen)),
+            "the next start sees it gone from then"
+        );
+        assert_eq!(
+            (
+                body()[UNREACHABLE].clone(),
+                body()[UNREACHABLE_SEEN_FOR].clone(),
+                modified()
+            ),
+            (json!(7), json!(12), Some(vouched)),
+            "keeping since when, what the stopped run saw, and the file's time"
+        );
 
         // As an older node left it: out of reach, with no time it was seen.
         let mut older = json!({"session": "there"});
@@ -1712,15 +1733,12 @@ mod tests {
             .open(&file)
             .and_then(|file| file.set_modified(vouched))
             .expect("its time is set");
-        let before = jiff::Timestamp::now().as_millisecond();
-        crate::store::out_of_reach_of_unclaimed(&store).expect("swept at a start");
-        let after = jiff::Timestamp::now().as_millisecond();
-        let seen = body()[UNREACHABLE_SEEN]
-            .as_i64()
-            .expect("seen from the start");
+        let started = sweep();
         assert!(
-            (before..=after).contains(&seen),
-            "the start's sweep sees it from then"
+            body()[UNREACHABLE_SEEN]
+                .as_i64()
+                .is_some_and(|seen| started.contains(&seen)),
+            "the start's sweep sees an older node's mark from then"
         );
         assert_eq!(
             (store.presences()[0].unreachable_since, modified()),
