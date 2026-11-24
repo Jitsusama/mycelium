@@ -13,7 +13,6 @@ src/facts.rs 2
 src/hindsight.rs 2
 src/hold/holder.rs 3
 src/hosted_attach/mod.rs 3
-src/lend/forge/tests.rs 1
 src/link/membership.rs 1
 src/link/mod.rs 2
 src/main.rs 1
