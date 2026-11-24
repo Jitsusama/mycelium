@@ -207,14 +207,15 @@ impl Store for Memory {
         held.messages.get(id).cloned()
     }
 
-    fn put_message(&self, id: &str, body: &Value) -> io::Result<()> {
+    fn put_message(&self, id: &str, body: &Value) -> io::Result<bool> {
         super::folders::safe(id)?;
         let mut held = self.held();
-        if !held.messages.contains_key(id) {
-            held.messages.insert(id.to_owned(), body.clone());
-            held.tell(&Change::Message(id.to_owned()));
+        if held.messages.contains_key(id) {
+            return Ok(false);
         }
-        Ok(())
+        held.messages.insert(id.to_owned(), body.clone());
+        held.tell(&Change::Message(id.to_owned()));
+        Ok(true)
     }
 
     fn presences(&self) -> Vec<Presence> {
@@ -324,11 +325,18 @@ impl Store for Memory {
                 "not that machine's session",
             ));
         }
+        // As the folders do: only the session's own machine can judge its
+        // process, and a link carrying it has reached that machine.
+        let mut body = body.clone();
+        if let Some(fields) = body.as_object_mut() {
+            fields.remove("owner");
+            fields.remove("unreachableSince");
+        }
         held.presences.insert(
             session.to_owned(),
             Presence {
                 session: session.to_owned(),
-                body: Arc::new(body.clone()),
+                body: Arc::new(body),
                 elsewhere: Some(machine.to_owned()),
                 lives: true,
                 unreachable_since: None,

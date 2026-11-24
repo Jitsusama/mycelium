@@ -572,6 +572,10 @@ async fn lent(
         lender.uncount(machine, &day);
         return Ended::Gone;
     }
+    // Named on the line only as it is sent, so a line refused before
+    // then, by its count, a cut or anything else, names no upstream it
+    // never asked.
+    used.upstream = Some(budget.host.clone());
     // Watched while it is sent too, so a relay that stops taking it
     // can't hold the lend past a cut or its borrower letting go.
     let sent = tokio::select! {
@@ -712,7 +716,6 @@ fn allowed(
             format!("the budget {named} isn't in this machine's lend"),
         )
     })?;
-    used.upstream = Some(budget.host.clone());
     used.service = budget.kind;
     if !METHODS.contains(&lend.method.as_str()) {
         return Err(refused(403, format!("a lend may not ask {}", lend.method)));

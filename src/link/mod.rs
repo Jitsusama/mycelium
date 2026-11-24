@@ -75,6 +75,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::carry::kept;
 use crate::facts::{self, Machine, Readiness};
+use crate::forage;
 use crate::handover;
 use crate::hold;
 use crate::lend::lender::{self, Lender};
@@ -325,6 +326,10 @@ fn exchange_with(places: Places, here: &Hello, there: &Hello, worker: bool) -> E
 /// session it carried here out of reach. With `shares`, it carries the
 /// files of the quests this machine shares too, and with `starting`, it
 /// carries starts.
+#[expect(
+    clippy::too_many_lines,
+    reason = "an end's state is built in one literal, each field beside where it comes from"
+)]
 pub async fn run(
     store: impl Store,
     membership: &impl Membership,
@@ -363,7 +368,6 @@ pub async fn run(
     // As it stood before admission, which marks a machine never linked
     // as of now.
     let began = admitted(&store, &other.machine)?;
-    let exchange = shares.map(|places| exchange_with(places, &membership.hello(), &other, worker));
     let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine).await;
     let (answering, mut answered) = mpsc::unbounded_channel();
     let (runs, mut run_said) = Runs::new();
@@ -384,6 +388,8 @@ pub async fn run(
         arrived,
         following: inboxes.clone().map(Following::new),
         inboxes,
+        parked: parked_of(starting.as_ref()),
+        worker_wakes: VecDeque::new(),
         held: starting.as_ref().map(|starting| starting.held.clone()),
         health: health_of(starting.as_ref()),
         declared: declared_of(starting.as_ref()),
@@ -395,13 +401,13 @@ pub async fn run(
         asks: HashMap::new(),
         runs,
         next_ask: 0,
+        exchange: shares.map(|places| exchange_with(places, &membership.hello(), &other, worker)),
         other: other.machine.clone(),
         said: other,
         reach,
         has: HashSet::new(),
         sent: BTreeMap::new(),
         carried: HashSet::new(),
-        exchange,
         _claim: claim,
     };
 
@@ -877,6 +883,12 @@ enum Declaring {
     Node(PathBuf),
 }
 
+/// Where this machine's parked sessions' markers are, and when it booted,
+/// for an end that carries starts. None otherwise.
+fn parked_of(starting: Option<&Starting>) -> Option<(PathBuf, Option<i64>)> {
+    starting.map(|starting| (starting.parked.clone(), crate::node::standing::began()))
+}
+
 /// This machine's own health as a link says it, when the link carries
 /// what this machine is: the node's own, for a link it keeps, or watched
 /// over its socket, for one another machine dialled, which runs apart.
@@ -966,7 +978,15 @@ async fn greet(
         releases,
         ..membership.hello()
     };
-    send(writing, &Frame::Hello(ours)).await?;
+    if let Err(error) = send(writing, &Frame::Hello(ours)).await {
+        // An end whose hello is already here was reached, though it
+        // closed before taking ours, so what its way in says next may be
+        // the far machine's own words.
+        return Err(match frames.try_recv() {
+            Ok(Ok(Frame::Hello(_))) => error,
+            _ => unheard_write(error),
+        });
+    }
     let other = hello(frames, within).await?;
     if let Err(why) = membership.admit(&other) {
         if let Err(error) = store.refuse_link(&other.machine, &why) {
@@ -1019,9 +1039,48 @@ async fn hello(
         // machine it can't find, a key refused, or no mycelium there.
         None => Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
-            "the other end closed before saying hello",
+            ClosedUnheard("the other end closed before saying hello".to_owned()),
         )),
     }
+}
+
+/// The other end closed before it said hello, so no link came up, in
+/// the words that say how.
+#[derive(Debug)]
+struct ClosedUnheard(String);
+
+impl fmt::Display for ClosedUnheard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ClosedUnheard {}
+
+/// Our hello, written to an end that closed before it was taken, which
+/// is a way in that ended before any link came up, as a provider's that
+/// says its machine is gone and exits may.
+fn unheard_write(error: io::Error) -> io::Error {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+    ) {
+        let words = format!("the other end closed before our hello was taken: {error}");
+        io::Error::new(error.kind(), ClosedUnheard(words))
+    } else {
+        error
+    }
+}
+
+/// Whether a link ended in `error` because the other end closed before
+/// it said hello, so no link ever came up. Only then is what the way in
+/// said its own, as a provider says before it dials, rather than what a
+/// machine it reached said once there.
+#[must_use]
+pub fn closed_unheard(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(<dyn std::error::Error + Send + Sync>::is::<ClosedUnheard>)
 }
 
 /// A living session's presence, the leases it holds, the id its holder
@@ -1058,6 +1117,16 @@ struct End<S> {
     arrived: Arc<AtomicI64>,
     /// This machine's sessions' steer inboxes, if this end carries steers.
     inboxes: Option<PathBuf>,
+    /// Where the harness keeps this machine's parked sessions' markers,
+    /// for an end its node keeps or a machine dialled, so a message
+    /// carried in wakes the parked sessions it gives a turn
+    /// ([`crate::wake`]); and when this machine booted, before which a
+    /// marker names a holder that is gone.
+    parked: Option<(PathBuf, Option<i64>)>,
+    /// When, in milliseconds since the epoch, each session this end woke in
+    /// the last minute was woken, kept only for a worker's link, which
+    /// wakes at most [`crate::wake::WORKER_WAKES`] a minute.
+    worker_wakes: VecDeque<i64>,
     /// The talks this end carries back to the other.
     following: Option<Following>,
     /// This machine's node's socket, which starts asked of it go to.
@@ -1320,11 +1389,60 @@ impl<S: Store> End<S> {
             "only its own machine's node speaks as a receptor"
         } else if body.get("id").and_then(Value::as_str) == Some(id) {
             let kept = self.store.put_message(id, body);
-            return self.kept(id, kept);
+            // A message carried again, as after a link drops, woke its
+            // sessions when it first came.
+            if matches!(kept, Ok(true)) {
+                self.wake_parked(id, body);
+            }
+            return self.kept(id, kept.map(drop));
         } else {
             "its body names another id"
         };
         self.kept(id, Err(io::Error::new(io::ErrorKind::InvalidData, refused)));
+    }
+
+    /// Wakes each session parked on this machine that the message `id`,
+    /// carried in saying `body`, gives a turn, as its sender would have
+    /// on its own machine: no sender here sees this machine's markers. A
+    /// worker's link wakes only for a session's own, and only so many a
+    /// minute ([`crate::wake`]).
+    fn wake_parked(&mut self, id: &str, body: &Value) {
+        let Some((park, booted)) = self.parked.clone() else {
+            return;
+        };
+        let at = now();
+        while self
+            .worker_wakes
+            .front()
+            .is_some_and(|woke| at - woke >= 60_000)
+        {
+            self.worker_wakes.pop_front();
+        }
+        let room = self
+            .worker
+            .then(|| crate::wake::WORKER_WAKES.saturating_sub(self.worker_wakes.len()));
+        let presences = self.store.presences();
+        let (woken, left) = crate::wake::wake_for(
+            &park,
+            booted,
+            id,
+            body,
+            &presences,
+            |earlier| self.store.message(earlier),
+            room,
+        );
+        for session in woken {
+            if self.worker {
+                self.worker_wakes.push_back(at);
+            }
+            eprintln!("woke {session}, parked, for {id} from {}", self.other);
+        }
+        if left > 0 {
+            eprintln!(
+                "left {left} parked for {id} from {}, past a worker's wakes a minute",
+                self.other
+            );
+        }
     }
 
     async fn take(
@@ -1451,6 +1569,12 @@ impl<S: Store> End<S> {
                     "{other} spoke for {session}, a session of another machine's, which a worker can't"
                 )))
             }
+            Frame::Presence { session, body, .. } => self.taken_name(session, body).map(|name| {
+                Refused::Dropped(format!(
+                    "{other} spoke for {session} as {name}, which a session living elsewhere \
+                     answers to, so a worker can't"
+                ))
+            }),
             Frame::Replies(replies) if !self.carries(&replies.address) => {
                 Some(Refused::Dropped(format!(
                     "{other} replied in a talk of {}, which isn't a session of its own",
@@ -1464,7 +1588,6 @@ impl<S: Store> End<S> {
             ))),
             Frame::Hello(_)
             | Frame::Have { .. }
-            | Frame::Presence { .. }
             | Frame::Ended { .. }
             | Frame::Share(_)
             | Frame::Machine(_)
@@ -1495,8 +1618,9 @@ impl<S: Store> End<S> {
     }
 
     /// Why a worker's message `id` isn't taken, if it isn't: one this
-    /// machine already holds isn't written over, and only a session the
-    /// worker holds a presence for now speaks through it, so it can put
+    /// machine already holds isn't written over, nothing that steers this
+    /// machine's sessions is taken ([`mesh::steers`]), and only a session
+    /// the worker holds a presence for now speaks through it, so it can put
     /// no words in the mouth of a session another machine holds, nor of
     /// one between presences, nor say what no session said.
     fn message_refused(&self, id: &str, body: &Value) -> Option<Refused> {
@@ -1506,20 +1630,58 @@ impl<S: Store> End<S> {
                 "{other} said {id} again, which a worker can't write over"
             )));
         }
+        if let Some(steers) = mesh::steers(body, |earlier| self.store.message(earlier)) {
+            return Some(Refused::Dropped(format!(
+                "{other} said {id}, {steers}, which a worker can't say here"
+            )));
+        }
         let Some(from) = body.get("from").and_then(Value::as_str) else {
             return Some(Refused::Dropped(format!(
                 "{other} said {id} from no session, which a worker can't"
             )));
         };
-        let its_own = self.store.presences().iter().any(|presence| {
-            presence.session.eq_ignore_ascii_case(from)
-                && presence.elsewhere.as_deref() == Some(other.as_str())
-        });
+        // A sender is named by an address its presence lists, as the
+        // mesh writes it, or by its id.
+        let (mut its_own, mut taken) = (false, false);
+        for presence in self.store.presences() {
+            if !answers_to(&presence, from) {
+                continue;
+            }
+            if presence.elsewhere.as_deref() == Some(other.as_str()) {
+                its_own = true;
+            } else if presence.lives {
+                taken = true;
+            }
+        }
+        if taken {
+            return Some(Refused::Dropped(format!(
+                "{other} said {id} as {from}, which a session living elsewhere answers to, \
+                 so a worker can't"
+            )));
+        }
         (!its_own).then(|| {
             Refused::Dropped(format!(
                 "{other} said {id} as {from}, which holds no presence through it, so a worker can't"
             ))
         })
+    }
+
+    /// The name a worker's presence of `session`, saying `body`, shares
+    /// with a session living here or through another link, if it shares
+    /// one: its id or any address it answers to. A worker writes its
+    /// presence as it likes, so one taking a living session's name would
+    /// let it send as that session, and only the label on its words would
+    /// tell them apart.
+    fn taken_name(&self, session: &str, body: &Value) -> Option<String> {
+        let its = names(session, body);
+        self.store
+            .presences()
+            .into_iter()
+            .filter(|presence| {
+                presence.lives && presence.elsewhere.as_deref() != Some(self.other.as_str())
+            })
+            .flat_map(|presence| names(&presence.session, &presence.body))
+            .find(|name| its.iter().any(|said| said.eq_ignore_ascii_case(name)))
     }
 
     /// Whether `address` is a session of the other end's own that this
@@ -1763,7 +1925,7 @@ impl<S: Store> End<S> {
         // A starter means something only for a hold, and a worker's node is
         // whoever runs on the machine lent, so its word is no book's.
         let started_by =
-            started_by.filter(|by| held.is_some() && !self.worker && crate::forage::is_address(by));
+            started_by.filter(|by| held.is_some() && !self.worker && forage::is_address(by));
         // The held id and the starter are the link's to say, never the
         // presence's.
         if let Some(fields) = body.as_object_mut() {
@@ -2024,7 +2186,8 @@ impl<S: Store> End<S> {
     /// say: a machine named otherwise is refused, and it is ready while
     /// this link carries it, whatever it claims. A worker is withheld the
     /// quests above those shared with it, and so is a machine that declares
-    /// nothing of itself, as a node does for a while as it restarts.
+    /// nothing of itself, as a node does for a while as it restarts, even
+    /// while what it last declared stands in for nothing.
     fn keep_machine(&mut self, mut said: Machine) {
         if said.name != self.other {
             self.kept(
@@ -2040,18 +2203,19 @@ impl<S: Store> End<S> {
         // A node restarting, or too slow to answer its end, has it say its
         // machine with nothing declared; what the machine last declared
         // stands for a while, so a carry isn't refused for ground the
-        // machine still stands on.
+        // machine still stands on. A node that answered declaring nothing
+        // is taken at its word at once.
+        let said_nothing = std::mem::take(&mut said.declares_nothing);
         said.declared = self.heard_declared.heard(
             &self.other,
-            said.declared.take(),
+            (said.declared.take(), said_nothing),
             tokio::time::Instant::now(),
         );
         if let Some(exchange) = self.exchange.as_mut() {
-            exchange.withhold_above(
-                said.declared
-                    .as_ref()
-                    .is_none_or(crate::declared::Declared::is_worker),
-            );
+            exchange.withhold_above(declared_heard::withheld_above(
+                said.declared.as_ref(),
+                self.heard_declared.standing_in(),
+            ));
         }
         self.kept(&said.name, self.store.put_machine(&said));
     }
@@ -2069,18 +2233,28 @@ impl<S: Store> End<S> {
                 (Some(file.clone()), kit.clone(), saturation.clone())
             }
             Declaring::Node(node) => match measured_by(node).await {
-                Some(machine) => return self.say_machine(machine, writing).await,
+                // The node answered, so a machine declaring nothing truly
+                // does, and the far end mustn't keep what it declared.
+                Some(mut machine) => {
+                    machine.declares_nothing = machine.declared.is_none();
+                    return self.say_machine(machine, writing).await;
+                }
                 // Nothing the account's files declare is said for it:
                 // anything running as the account could have written them.
                 None => (None, None, None),
             },
         };
+        // A file read here answers at once, so a machine whose file declares
+        // nothing, or can't be read, truly declares nothing; only a node too
+        // slow to answer leaves the far end keeping what it last declared.
+        let read_its_file = declared.is_some();
         let sources = facts::Sources {
             declared,
             ..facts::Sources::here()
         };
         let machine = tokio::task::spawn_blocking(move || {
             let mut machine = facts::measure_in(&here, &realm, &sources);
+            machine.declares_nothing = read_its_file && machine.declared.is_none();
             if let Some(band) = &saturation {
                 band.say(machine.room.as_mut());
             }
@@ -2245,7 +2419,7 @@ impl<S: Store> End<S> {
         // any message does, the other's.
         for draft in exchange.findings() {
             let (id, body) = mesh::written(&draft, std::process::id());
-            self.kept(&id, self.store.put_message(&id, &body));
+            self.kept(&id, self.store.put_message(&id, &body).map(drop));
         }
         self.exchange = Some(exchange);
         match says {
@@ -2487,6 +2661,21 @@ fn millis(duration: Duration) -> i64 {
     i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
 }
 
+/// What a session `session`, whose presence says `body`, answers to: the
+/// addresses its presence lists and its own id.
+fn names(session: &str, body: &Value) -> Vec<String> {
+    let mut names = forage::addresses(body.get("addresses").unwrap_or(&Value::Null));
+    names.push(session.to_owned());
+    names
+}
+
+/// Whether `presence`'s session answers to `name`, as [`names`] says.
+fn answers_to(presence: &store::Presence, name: &str) -> bool {
+    names(&presence.session, &presence.body)
+        .iter()
+        .any(|its| its.eq_ignore_ascii_case(name))
+}
+
 /// Whether a presence a worker said speaks only for a session of its own
 /// machine, `worker`: one that names no machine, or names that one.
 fn speaks_for(body: &Value, worker: &str) -> bool {
@@ -2691,7 +2880,7 @@ mod tests {
             reading: Box::new(reading),
             writing: Box::new(writing),
             keep: Box::new(()),
-            refused: None,
+            said: None,
             releases: false,
             worker: false,
             hello_within: Some(dial::HELLO_WITHIN),
@@ -2760,6 +2949,75 @@ mod tests {
                 .expect("read"),
             facts(4).expect("a frame"),
             "facts nothing newer waits behind are taken as they come"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_end_that_closes_before_hello_is_told_from_one_that_said_otherwise() {
+        let (_, mut closed) = mpsc::unbounded_channel::<io::Result<Frame>>();
+        let unheard = hello(&mut closed, None)
+            .await
+            .expect_err("nothing was said");
+        assert!(
+            closed_unheard(&unheard),
+            "an end that closed before saying anything brought no link up: {unheard}"
+        );
+        let (said, mut frames) = mpsc::unbounded_channel();
+        said.send(Err(io::Error::other("a frame that can't be read")))
+            .expect("sent");
+        let unreadable = hello(&mut frames, None).await.expect_err("no hello");
+        assert!(
+            !closed_unheard(&unreadable),
+            "an end that said something said more than its way in: {unreadable}"
+        );
+    }
+
+    #[test]
+    fn only_a_hello_written_to_a_closed_end_is_unheard() {
+        for kind in [io::ErrorKind::BrokenPipe, io::ErrorKind::ConnectionReset] {
+            let unheard = unheard_write(io::Error::from(kind));
+            assert!(
+                closed_unheard(&unheard) && unheard.kind() == kind,
+                "an end that closed before our hello was taken brought no link up, \
+                 and says how it closed: {unheard}"
+            );
+        }
+        let full = unheard_write(io::Error::from(io::ErrorKind::StorageFull));
+        assert!(
+            !closed_unheard(&full),
+            "a hello this end couldn't write isn't the other end's to say: {full}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_end_that_said_hello_and_closed_before_taking_ours_was_heard() {
+        let membership = realm("skiff");
+        let greeted = |said: Option<Hello>| {
+            let membership = membership.clone();
+            async move {
+                let (mut near, far) = tokio::io::duplex(64);
+                drop(far);
+                let (saying, mut frames) = mpsc::unbounded_channel();
+                if let Some(said) = said {
+                    saying.send(Ok(Frame::Hello(said))).expect("sent");
+                }
+                drop(saying);
+                let store = Memory::default();
+                greet(&mut near, &mut frames, (&store, &membership), false, None)
+                    .await
+                    .expect_err("the other end closed")
+            }
+        };
+
+        let unheard = greeted(None).await;
+        assert!(
+            closed_unheard(&unheard),
+            "an end that closed having said nothing brought no link up: {unheard}"
+        );
+        let heard = greeted(Some(realm("tern").hello())).await;
+        assert!(
+            !closed_unheard(&heard),
+            "an end whose hello came was reached, so its way in's words aren't taken: {heard}"
         );
     }
 
@@ -3131,6 +3389,7 @@ mod tests {
             held: dir.path().join("held"),
             asking: None,
             steers: dir.path().join("steer"),
+            parked: dir.path().join("parked"),
             health: Some(slot.subscribe()),
             declared: Some(dir.path().join("declared.json")),
             kit: None,
@@ -3293,6 +3552,7 @@ mod tests {
             held: dir.join("held"),
             asking: None,
             steers: dir.join("steer"),
+            parked: dir.join("parked"),
             health: None,
             declared: Some(dir.join("declared.json")),
             kit: None,
@@ -3335,6 +3595,7 @@ mod tests {
             held: dir.join("held"),
             asking: None,
             steers: dir.join("steer"),
+            parked: dir.join("parked"),
             health: None,
             declared: Some(dir.join("declared.json")),
             kit: Some(kit),
@@ -3484,6 +3745,7 @@ mod tests {
             held: dir.join("held"),
             asking: Some(Asking::Dialled),
             steers: dir.join("steer"),
+            parked: dir.join("parked"),
             health: None,
             declared: None,
             kit: None,
@@ -3807,6 +4069,7 @@ mod tests {
             held,
             asking: None,
             steers: dir.join("steer"),
+            parked: dir.join("parked"),
             health: None,
             declared: None,
             kit: None,
@@ -4379,6 +4642,7 @@ mod tests {
             held: dir.path().join("held"),
             asking: None,
             steers: dir.path().join("steer"),
+            parked: dir.path().join("parked"),
             health: None,
             declared: None,
             kit: None,
@@ -5137,6 +5401,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each of a worker's messages is refused or carried for its own reason"
+    )]
     async fn a_worker_puts_no_words_in_another_machines_session_nor_rewrites_a_message() {
         let skiff = Memory::default();
         skiff
@@ -5163,6 +5431,26 @@ mod tests {
             id: id.to_owned(),
             body: json!({"id": id, "from": from, "to": ["@WCJQSG"], "text": text}),
         };
+        // What its own session says to steer skiff's sessions, each with
+        // the fields of `said`.
+        let machines = recent(0, "WCJQSG", 5);
+        skiff.send_here(
+            &machines,
+            json!({"id": machines, "to": ["#machine"], "intent": "hold", "text": "a reboot"}),
+        );
+        let steering = |id: &str, said: Value| {
+            let mut body = json!({"id": id, "from": "SAK9FZ", "to": ["@WCJQSG"], "text": "go"});
+            if let (Some(body), Value::Object(said)) = (body.as_object_mut(), said) {
+                body.extend(said);
+            }
+            Frame::Message {
+                id: id.to_owned(),
+                body,
+            }
+        };
+        let (holding, pivoting) = (recent(0, "SAK9FZ", 6), recent(0, "SAK9FZ", 7));
+        let (ending, to_all) = (recent(0, "SAK9FZ", 8), recent(0, "SAK9FZ", 9));
+        let answering = recent(0, "SAK9FZ", 10);
         says(
             &mut far_writing,
             &[
@@ -5179,6 +5467,14 @@ mod tests {
                     body: json!({"id": nobodys, "to": ["@WCJQSG"], "text": "nobody"}),
                 },
                 message(&held, "SAK9FZ", "theirs"),
+                steering(&holding, json!({"intent": "hold"})),
+                steering(&pivoting, json!({"intent": "pivot"})),
+                steering(
+                    &ending,
+                    json!({"intent": "fyi", "re": held, "endsHold": true}),
+                ),
+                steering(&to_all, json!({"intent": "fyi", "to": ["#machine"]})),
+                steering(&answering, json!({"intent": "fyi", "re": machines})),
                 message(&own, "SAK9FZ", "done"),
             ],
         )
@@ -5193,6 +5489,18 @@ mod tests {
             skiff.message(&between).is_none() && skiff.message(&nobodys).is_none(),
             "nor one from a session it holds no presence for, nor one from no session"
         );
+        for (id, what) in [
+            (&holding, "a hold"),
+            (&pivoting, "a pivot"),
+            (&ending, "the end of a hold"),
+            (&to_all, "anything to the whole machine"),
+            (&answering, "nor an answer to what was"),
+        ] {
+            assert!(
+                skiff.message(id).is_none(),
+                "its own session can't steer skiff's: {what}"
+            );
+        }
         let kept = skiff.message(&own).expect("its own session's message kept");
         assert_eq!(
             (kept["text"].as_str(), kept["worker"].as_str()),
@@ -5205,6 +5513,103 @@ mod tests {
                 .and_then(|body| body["text"].as_str().map(str::to_owned)),
             Some("ours".to_owned()),
             "nor is a message skiff holds written over"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_worker_takes_no_name_a_session_living_elsewhere_answers_to() {
+        let skiff = Memory::default();
+        skiff.start_here(
+            "wcjq01",
+            json!({"session": "wcjq01", "addresses": ["WCJQSG"]}),
+            true,
+        );
+        skiff
+            .put_presence(
+                "ospr01",
+                "osprey",
+                &json!({"session": "ospr01", "addresses": ["OSPREY"]}),
+            )
+            .expect("osprey's session kept");
+        let store = skiff.clone();
+        let (_skiff_end, _far_reading, mut far_writing) = skiff_over(
+            store,
+            |connection| Connection {
+                worker: true,
+                ..connection
+            },
+            None,
+        );
+        let planted = |session: &str, address: &str| Frame::Presence {
+            session: session.to_owned(),
+            body: json!({"session": session, "addresses": [address]}),
+            leases: None,
+            held: None,
+            started_by: None,
+        };
+        let message = |id: &str, from: &str| Frame::Message {
+            id: id.to_owned(),
+            body: json!({"id": id, "from": from, "to": ["@SAK9FZ"], "text": "go"}),
+        };
+        let (as_here, as_osprey) = (recent(0, "WCJQSG", 1), recent(0, "OSPREY", 2));
+        let own = recent(0, "SAK9FZ", 3);
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("tern").hello()),
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(Vec::new()),
+                },
+                planted("posing", "WCJQSG"),
+                planted("posed", "osprey"),
+                planted("early", "HARBR1"),
+                planted("sak9fz", "SAK9FZ"),
+                message(&as_here, "WCJQSG"),
+                message(&as_osprey, "OSPREY"),
+                message(&own, "SAK9FZ"),
+            ],
+        )
+        .await;
+        until(&skiff, |store| store.message(&own).is_some()).await;
+
+        let tern_holds = |store: &Memory| {
+            let mut held: Vec<String> = store
+                .presences()
+                .into_iter()
+                .filter(|presence| presence.elsewhere.as_deref() == Some("tern"))
+                .map(|presence| presence.session)
+                .collect();
+            held.sort();
+            held
+        };
+        assert_eq!(
+            tern_holds(&skiff),
+            ["early", "sak9fz"],
+            "a presence answering to a session living here or on osprey isn't kept"
+        );
+        assert!(
+            skiff.message(&as_here).is_none() && skiff.message(&as_osprey).is_none(),
+            "so nothing is said as either"
+        );
+
+        // A session that comes to live here after the worker took its name
+        // first is still the only one heard as it.
+        skiff.start_here(
+            "harb01",
+            json!({"session": "harb01", "addresses": ["HARBR1"]}),
+            true,
+        );
+        let (as_harbour, after) = (recent(0, "HARBR1", 4), recent(0, "SAK9FZ", 5));
+        says(
+            &mut far_writing,
+            &[message(&as_harbour, "HARBR1"), message(&after, "SAK9FZ")],
+        )
+        .await;
+        until(&skiff, |store| store.message(&after).is_some()).await;
+        assert!(
+            skiff.message(&as_harbour).is_none(),
+            "a name taken before its session lived here speaks for the worker no longer"
         );
     }
 
@@ -5261,12 +5666,97 @@ mod tests {
             held: dir.join("held"),
             asking: None,
             steers: dir.join("inboxes"),
+            parked: dir.join("parked"),
             health: None,
             declared: Some(dir.join("declared.json")),
             kit: None,
             saturation: None,
             lender: None,
         }
+    }
+
+    // On 2026-11-23 a question carried in from another machine sat ten
+    // minutes in a parked peer's folder, since only a sender wakes a
+    // parked peer, through its own machine's markers.
+    #[tokio::test]
+    async fn a_message_carried_in_wakes_the_parked_session_it_gives_a_turn() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let starting = steering(dir.path());
+        let parked = starting.parked.clone();
+        let wakes = dir.path().join("wakes");
+        std::fs::create_dir_all(&parked).expect("the parked folder");
+        std::fs::create_dir_all(&wakes).expect("the wakes' folder");
+        for (session, address) in [("s1", "SAK9FZ"), ("s2", "OSPREY")] {
+            std::fs::write(
+                parked.join(format!("{session}.json")),
+                json!({"session": session, "addresses": [address],
+                       "wake": wakes.join(format!("{session}.wake"))})
+                .to_string(),
+            )
+            .expect("a marker");
+        }
+        let skiff = Memory::default();
+        let store = skiff.clone();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        tokio::spawn(async move {
+            run(
+                store,
+                &realm("skiff"),
+                connection(reading, writing),
+                None,
+                Some(starting),
+            )
+            .await
+        });
+        let (_far_reading, mut far_writing) = tokio::io::split(far);
+        let (asked, news) = (recent(0, "WCJQSG", 1), recent(0, "WCJQSG", 2));
+        let message = |id: &str, intent: &str| Frame::Message {
+            id: id.to_owned(),
+            body: json!({"id": id, "from": "WCJQSG", "to": ["@SAK9FZ", "@OSPREY"],
+                         "intent": intent, "text": "go"}),
+        };
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("tern").hello()),
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(Vec::new()),
+                },
+                message(&asked, "question"),
+                message(&news, "fyi"),
+            ],
+        )
+        .await;
+        until(&skiff, |store| store.message(&news).is_some()).await;
+
+        let said: Value = serde_json::from_slice(
+            &std::fs::read(wakes.join("s1.wake")).expect("the question woke the session asked"),
+        )
+        .expect("json");
+        assert_eq!(said["messageId"].as_str(), Some(asked.as_str()));
+        let said: Value =
+            serde_json::from_slice(&std::fs::read(wakes.join("s2.wake")).expect("and the other"))
+                .expect("json");
+        assert_eq!(
+            said["messageId"].as_str(),
+            Some(asked.as_str()),
+            "the news after it woke neither again"
+        );
+
+        std::fs::remove_file(wakes.join("s1.wake")).expect("its wake taken, as its holder does");
+        let later = recent(0, "WCJQSG", 3);
+        says(
+            &mut far_writing,
+            &[message(&asked, "question"), message(&later, "fyi")],
+        )
+        .await;
+        until(&skiff, |store| store.message(&later).is_some()).await;
+        assert!(
+            !wakes.join("s1.wake").exists(),
+            "the question carried again wakes nobody twice"
+        );
     }
 
     /// Skiff's end of a link a worker dialled, carrying steers into the

@@ -31,19 +31,66 @@ pub fn stays_here(body: &Value, earlier: impl Fn(&str) -> Option<Value>) -> bool
     {
         return true;
     }
-    let to_machine = |body: &Value| {
-        body.get("to").and_then(Value::as_array).is_some_and(|to| {
-            to.iter()
-                .filter_map(Value::as_str)
-                .any(|to| MACHINE_TARGETS.contains(&to))
-        })
-    };
     to_machine(body)
         || body
             .get("re")
             .and_then(Value::as_str)
             .and_then(earlier)
             .is_some_and(|answered| to_machine(&answered))
+}
+
+/// Whether a mesh message is sent to the machine-wide group.
+fn to_machine(body: &Value) -> bool {
+    body.get("to").and_then(Value::as_array).is_some_and(|to| {
+        to.iter().filter_map(Value::as_str).any(|to| {
+            MACHINE_TARGETS
+                .iter()
+                .any(|target| target.eq_ignore_ascii_case(to))
+        })
+    })
+}
+
+/// What a mesh message says that steers the sessions of the machine it
+/// reaches, if it says any: a hold or a pivot, which park or turn every
+/// session it names, the end of a hold, which lets them go on, or
+/// anything to the machine-wide group or answering what was, which every
+/// session of the machine hears. A worker machine, shared with an account
+/// of its own, may say none of these here, as `earlier` finds what a
+/// message answers. Nor may it say a message of a shape the mesh doesn't
+/// know ([`known_shape`]), which a reader of another version might take
+/// for one of these where this one doesn't.
+#[must_use]
+pub fn steers(body: &Value, earlier: impl Fn(&str) -> Option<Value>) -> Option<&'static str> {
+    if !known_shape(body) {
+        return Some("a message of a shape the mesh doesn't know");
+    }
+    match body.get("intent").and_then(Value::as_str) {
+        Some("hold") => return Some("a hold"),
+        Some("pivot") => return Some("a pivot"),
+        _ => {}
+    }
+    if body.get("endsHold").and_then(Value::as_bool) == Some(true) {
+        return Some("the end of a hold");
+    }
+    stays_here(body, earlier).then_some("what is the whole machine's alone")
+}
+
+/// Whether a mesh message is of the shape the mesh writes, in each field
+/// that says whom it reaches or what it asks of them: an intent, if any,
+/// of the mesh's own words, exactly (none reads as news); `to`, if any, a
+/// list of words; `endsHold`, if any, true or false; and `re` and
+/// `supersedes`, if any, words.
+fn known_shape(body: &Value) -> bool {
+    let words = |field: &str| body.get(field).is_none_or(Value::is_string);
+    body.get("intent")
+        .is_none_or(|intent| Intent::deserialize(intent).is_ok())
+        && body.get("to").is_none_or(|to| {
+            to.as_array()
+                .is_some_and(|to| to.iter().all(Value::is_string))
+        })
+        && body.get("endsHold").is_none_or(Value::is_boolean)
+        && words("re")
+        && words("supersedes")
 }
 
 /// The leases of `session`, a session of this machine's, that another
@@ -469,6 +516,57 @@ mod tests {
 
     use super::*;
     use crate::record::EventKind;
+
+    #[test]
+    fn a_message_of_a_shape_the_mesh_doesnt_know_steers() {
+        let nothing = |_: &str| None;
+        let fyi = json!({"intent": "fyi", "to": ["@KESTREL"], "re": "a", "text": "hi"});
+        assert_eq!(steers(&fyi, nothing), None, "a plain fyi steers nothing");
+        assert_eq!(
+            steers(&json!({"to": ["@KESTREL"], "text": "hi"}), nothing),
+            None,
+            "nor does one of no intent, which reads as news"
+        );
+        let changed = |field: &str, value: Value| {
+            let mut body = fyi.clone();
+            body[field] = value;
+            body
+        };
+        for (body, shape) in [
+            (
+                changed("intent", json!("Hold")),
+                "an intent in another case",
+            ),
+            (
+                changed("intent", json!("answer")),
+                "an intent the mesh doesn't know",
+            ),
+            (
+                changed("intent", json!(["hold"])),
+                "an intent that isn't a word",
+            ),
+            (changed("to", json!("#machine")), "a `to` that isn't a list"),
+            (
+                changed("to", json!(["@KESTREL", 1])),
+                "a `to` of more than words",
+            ),
+            (
+                changed("endsHold", json!("true")),
+                "an `endsHold` that isn't true or false",
+            ),
+            (changed("re", json!(["a"])), "a `re` that isn't a word"),
+            (
+                changed("supersedes", json!(7)),
+                "a `supersedes` that isn't a word",
+            ),
+        ] {
+            assert_eq!(
+                steers(&body, nothing),
+                Some("a message of a shape the mesh doesn't know"),
+                "{shape}"
+            );
+        }
+    }
 
     #[test]
     fn only_changes_to_a_repositorys_files_go_to_other_machines() {

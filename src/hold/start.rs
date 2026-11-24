@@ -1,7 +1,7 @@
 //! Starting a holder in a process of its own, as `mycelium hold` does and
 //! as the node does when it is asked to start a session.
 
-use std::io::{self, BufRead, IsTerminal};
+use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -77,9 +77,11 @@ impl Kit {
 pub enum Scope {
     /// Beside what started it, where nothing has a service manager.
     None,
-    /// In the slice the person's own programs run in, for a node that is a
+    /// In the slice the machine runs its agents in, for a node that is a
     /// systemd unit, since stopping the unit would stop every session it
-    /// started.
+    /// started. Never the slice of the person's own programs: a session
+    /// held there shared their memory's floor, and a call of theirs froze
+    /// while it was reclaimed (23 November).
     Apart,
     /// In the slice of the terminal that started it. A terminal's own
     /// scope signals nothing when stopped (kitty makes its with
@@ -103,10 +105,10 @@ impl Scope {
     }
 
     /// The words that start `program` in this scope, as the holder `id`.
-    fn command(self, program: &Path, id: &str) -> Command {
+    pub(crate) fn command(self, program: &Path, id: &str) -> Command {
         let slice = match self {
             Self::None => return Command::new(program),
-            Self::Apart => "--slice=app.slice",
+            Self::Apart => "--slice=agents.slice",
             Self::Beside => "--slice-inherit",
         };
         let mut scoped = Command::new("systemd-run");
@@ -130,17 +132,19 @@ impl Scope {
     }
 }
 
-/// Whether a holder started `in` a scope says what it has to say on its
-/// starter's standard error, `a_terminal` or not. Where there is no
+/// Whether a holder started in `scope`, by a node or not, says what it
+/// has to say on its starter's standard error. Where there is no
 /// journal, as on a Mac, a holder says there how each run of its program
 /// ended ([`super::journal`]), so a node's holder must say it on the
 /// node's log: a carried session that never arrived on a Mac left no
 /// line anywhere, its holder's end gone to nothing (23 November). A
-/// holder a person's terminal started stays silent, since it outlives the
-/// command and would write over whatever runs there next; one in a scope
+/// holder `mycelium hold` started stays silent, a terminal's or a pipe's
+/// alike, since it outlives the command: on a terminal it would write
+/// over whatever runs there next, and holding a pipe open it would keep
+/// whatever reads that pipe waiting until the hold ends. One in a scope
 /// of its own says why the scope couldn't be made.
-fn says_on_its_log(scope: Scope, a_terminal: bool) -> bool {
-    scope == Scope::Apart || !a_terminal
+fn says_on_its_log(scope: Scope, by_a_node: bool) -> bool {
+    scope == Scope::Apart || by_a_node
 }
 
 impl Starter {
@@ -180,7 +184,9 @@ impl Starter {
             .args(command)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(if says_on_its_log(self.scope, io::stderr().is_terminal()) {
+            // Only a node's start runs through the login shell, so
+            // `login` says who started it.
+            .stderr(if says_on_its_log(self.scope, login) {
                 Stdio::inherit()
             } else {
                 Stdio::null()
@@ -254,29 +260,61 @@ fn found(folder: Option<&Path>, home: &Path) -> Option<PathBuf> {
         .filter(|wanted| wanted.is_dir())
 }
 
+/// What a start needs of the folder it begins in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Needs {
+    /// Nothing: home does where it names none here.
+    Nothing,
+    /// The folder it names, where it names one, since the work it's for
+    /// is there; home still does where it names none.
+    ItsFolder,
+    /// A folder it names, and not home, since it runs where home can't
+    /// be written, as within the strict fence's launcher, and begun there
+    /// it would only die.
+    AwayFromHome,
+}
+
 /// The folder a start begins in on `machine`, as [`begins_in`] finds it,
-/// or, where it's `strict`, why it's refused: it names a folder there is
-/// none of there, which the work it's for is in, so home won't do. The
-/// folder is looked at once, so one gone in between can't send a strict
-/// start home; one it can't look at counts as none.
+/// or why it's refused, as it `needs`: it names a folder there is none of
+/// there, which the work it's for is in, so home won't do; or it would
+/// begin at home where it can't write there. The folder is looked at
+/// once, so one gone in between can't send a strict start home; one it
+/// can't look at counts as none.
 ///
 /// # Errors
 ///
-/// A strict start naming a folder `machine` hasn't.
+/// A start needing its folder naming one `machine` hasn't, and one
+/// needing to begin away from home that would begin there.
 pub fn begins_strictly(
     folder: Option<&Path>,
-    strict: bool,
+    needs: Needs,
     home: &Path,
     machine: &str,
 ) -> Result<PathBuf, String> {
+    let at_home = || {
+        Err(format!(
+            "{machine} would begin this start at home, which its strict fence won't let it \
+             write, so the start must name the folder of the work it's for"
+        ))
+    };
     match (found(folder, home), folder) {
+        (Some(wanted), _) if needs == Needs::AwayFromHome && is_home(&wanted, home) => at_home(),
         (Some(wanted), _) => Ok(wanted),
-        (None, Some(named)) if strict => Err(format!(
+        (None, Some(named)) if needs != Needs::Nothing => Err(format!(
             "{machine} has no folder {}, which the start names",
             named.display()
         )),
+        (None, None) if needs == Needs::AwayFromHome => at_home(),
         _ => Ok(home.to_owned()),
     }
+}
+
+/// Whether `folder` is `home` itself, however it's named.
+fn is_home(folder: &Path, home: &Path) -> bool {
+    folder == home
+        || folder
+            .canonicalize()
+            .is_ok_and(|folder| home.canonicalize().is_ok_and(|home| folder == home))
 }
 
 /// The words that run a session on a Mac at Utility quality of service, so
@@ -367,19 +405,19 @@ mod tests {
     #[test]
     fn a_nodes_holder_says_how_its_runs_end_on_the_nodes_log() {
         assert!(
-            says_on_its_log(Scope::None, false),
+            says_on_its_log(Scope::None, true),
             "a Mac's node logs to a file, where its holders' ends must land"
         );
         assert!(
             says_on_its_log(Scope::Apart, false),
-            "a unit's holder says why its scope failed"
+            "a holder in a unit of its own says why its scope failed, whoever started it"
         );
         assert!(
-            !says_on_its_log(Scope::None, true),
-            "a terminal's holder writes nothing over what runs there next"
+            !says_on_its_log(Scope::None, false),
+            "one `mycelium hold` started holds nothing of its caller's open"
         );
         assert!(
-            !says_on_its_log(Scope::Beside, true),
+            !says_on_its_log(Scope::Beside, false),
             "nor does one beside a terminal's slice"
         );
     }
@@ -442,8 +480,8 @@ mod tests {
         );
         assert_eq!(
             words(Scope::Apart),
-            scoped("--slice=app.slice"),
-            "a node's go apart"
+            scoped("--slice=agents.slice"),
+            "a node's go apart, among the agents"
         );
         assert_eq!(
             words(Scope::Beside),
@@ -714,7 +752,14 @@ mod tests {
         let home = home.path();
         let src = home.join("src").join("core.nix");
         fs::create_dir_all(&src).expect("a checkout is made");
-        let begun = |folder: Option<&Path>, strict| begins_strictly(folder, strict, home, "tern");
+        let begun = |folder: Option<&Path>, strict| {
+            let needs = if strict {
+                Needs::ItsFolder
+            } else {
+                Needs::Nothing
+            };
+            begins_strictly(folder, needs, home, "tern")
+        };
         assert_eq!(
             begun(Some(Path::new("src/core.nix")), true),
             Ok(src.clone())
@@ -758,6 +803,30 @@ mod tests {
                 gone.display()
             )),
             "a full path it hasn't, too"
+        );
+    }
+
+    #[test]
+    fn a_start_that_cant_write_home_is_refused_beginning_there() {
+        let home = tempfile::tempdir().expect("a temporary home");
+        let home = home.path();
+        let src = home.join("src").join("core.nix");
+        fs::create_dir_all(&src).expect("a checkout is made");
+        let begun =
+            |folder: Option<&Path>| begins_strictly(folder, Needs::AwayFromHome, home, "tern");
+        let at_home = Err(
+            "tern would begin this start at home, which its strict fence won't let \
+                           it write, so the start must name the folder of the work it's for"
+                .to_owned(),
+        );
+        assert_eq!(begun(Some(Path::new("src/core.nix"))), Ok(src));
+        assert_eq!(begun(None), at_home, "none named would begin at home");
+        assert_eq!(begun(Some(home)), at_home, "so would home named");
+        assert_eq!(begun(Some(Path::new("."))), at_home, "however it's named");
+        assert_eq!(
+            begun(Some(Path::new("src/elsewhere"))),
+            Err("tern has no folder src/elsewhere, which the start names".to_owned()),
+            "and one it hasn't is refused naming it"
         );
     }
 }

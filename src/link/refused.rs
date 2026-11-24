@@ -33,6 +33,24 @@ const TURNED_AWAY: [&str; 4] = [
     "turned this machine away",
 ];
 
+/// What a provider's program says, on its error output, when the machine
+/// it links to no longer exists, as a cloud machine its provider took
+/// back: in mycelium's own words, a line starting `mycelium-gone: WHY`.
+/// Nothing else can tell a machine that is gone from one that is only
+/// out of reach. Only a line that starts with it counts, so a machine
+/// reached can't be let go by quoting it within another line.
+const GONE: &str = "mycelium-gone:";
+
+/// What a way in said of the other machine as it ended, beyond its being
+/// out of reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Said {
+    /// It turned this machine away, in the line that said so.
+    TurnedAway(String),
+    /// Its provider says it no longer exists, in the line that said so.
+    Gone(String),
+}
+
 /// How a node keeps the refusals of its links.
 #[derive(Debug, Clone)]
 pub struct Refusals {
@@ -118,18 +136,21 @@ impl Refusals {
 }
 
 /// Passes on each line `said` holds, as SSH's own error output, answering
-/// the first that says the other machine turned this one away, once all
-/// of it has been said.
-pub async fn turned_away(said: impl AsyncRead + Unpin) -> Option<String> {
+/// the first that says the other machine turned this one away, or else
+/// the first that says it is gone, once all of it has been said. A refusal
+/// wins, since it is the one a person must act on.
+pub async fn turned_away(said: impl AsyncRead + Unpin) -> Option<Said> {
     let mut lines = BufReader::new(said).lines();
-    let mut refused = None;
+    let (mut refused, mut gone) = (None, None);
     while let Ok(Some(line)) = lines.next_line().await {
         eprintln!("{line}");
         if refused.is_none() && TURNED_AWAY.iter().any(|away| line.contains(away)) {
             refused = Some(line);
+        } else if gone.is_none() && line.starts_with(GONE) {
+            gone = Some(line);
         }
     }
-    refused
+    refused.map(Said::TurnedAway).or(gone.map(Said::Gone))
 }
 
 #[cfg(test)]
@@ -148,8 +169,10 @@ mod tests {
         )
         .await;
         assert_eq!(
-            refused.as_deref(),
-            Some("joel@kestrel.local: Permission denied (publickey,password)."),
+            refused,
+            Some(Said::TurnedAway(
+                "joel@kestrel.local: Permission denied (publickey,password).".to_owned()
+            )),
             "a key the other machine doesn't take turns this one away"
         );
         for out_of_reach in [
@@ -163,6 +186,38 @@ mod tests {
                 "a machine out of reach hasn't turned this one away: {out_of_reach}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_provider_says_its_machine_is_gone_apart_from_out_of_reach() {
+        assert_eq!(
+            turned_away(&b"making wren\nmycelium-gone: wren-1 no longer exists\n"[..]).await,
+            Some(Said::Gone(
+                "mycelium-gone: wren-1 no longer exists".to_owned()
+            )),
+            "a provider says a machine it took back is gone"
+        );
+        assert_eq!(
+            turned_away(
+                &b"mycelium-gone: wren-1 no longer exists\n\
+                   the gateway turned this machine away: no login\n"[..]
+            )
+            .await,
+            Some(Said::TurnedAway(
+                "the gateway turned this machine away: no login".to_owned()
+            )),
+            "a refusal, which a person must act on, is said over a machine gone"
+        );
+        assert_eq!(
+            turned_away(&b"wren-1 doesn't answer yet\n"[..]).await,
+            None,
+            "a machine only out of reach isn't gone"
+        );
+        assert_eq!(
+            turned_away(&b"a session said: mycelium-gone: wren-1 no longer exists\n"[..]).await,
+            None,
+            "a line that only quotes the words isn't a provider saying them"
+        );
     }
 
     #[test]
