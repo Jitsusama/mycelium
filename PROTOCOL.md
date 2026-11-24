@@ -964,20 +964,26 @@ has one, `why`, as kept,
 itself, never from what a session or its orchestrator says: `refused`,
 with `refused` saying why, once the session wrote a refusal
 since; `arrived` once it runs on `to`, or, running nowhere, once it
-last ended on `to` or a session of its quest runs or is parked there,
+is seen ended on `to`, though it is seen ended here too, or a session
+of its quest runs or is parked there,
 since a session carried may come back to life under an id of its own;
 `back` once it runs here again after its done file was written since,
 or, running nowhere, once a session of its quest runs here; `carrying`
 once it is gone from here, by its presence ending or running somewhere
 else; and `ordered` until then. A session of its quest counts only
 when it was begun since the carry was kept, as its pi session's id, a
-UUID of version 7, says, so a sibling already running on either side
-says nothing; one whose id says nothing of when, or any session of a
-carry naming no quest, never counts. Where the session ran elsewhere
-and was let go, it last ended there. An `ordered` or `carrying` carry
-kept half an hour ago or more stands `stuck` instead, with `stuck`
-saying why: still running here, running on a machine other than `to`,
-or neither it nor its quest seen on `to`. Stuck is for the person
+UUID of version 7 and of RFC 9562's variant, says, so a sibling
+already running on either side says nothing. Its begun time is its
+machine's clock and the carry's this one's, with no slack, since the
+session a carry brings up begins minutes after it. One whose id says
+nothing of when, or says it begins more than five minutes past this
+node's clock, or any session of a carry naming no quest, never counts.
+Where the session ran elsewhere and was let go, it ended there. A
+carry that settled stands `arrived` while its session runs nowhere,
+as settling took it, until it is seen back. An `ordered` or `carrying`
+carry kept half an hour ago or more stands `stuck` instead, with
+`stuck` saying why: still running here, running on a machine other
+than `to`, or neither it nor its quest seen on `to`. Stuck is for the person
 alone: settling, and a session's end, judge a carry as it stands
 however long it has taken. Its `state`, `refused` and `stuck` are
 live. The chain and asker

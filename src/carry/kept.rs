@@ -31,6 +31,12 @@ pub const SHOWN_FOR: jiff::SignedDuration = jiff::SignedDuration::from_hours(24)
 /// carry takes a few minutes, its trees' bundles most of them.
 pub const STUCK_AFTER: jiff::SignedDuration = jiff::SignedDuration::from_mins(30);
 
+/// How far past this machine's clock a session's begun time may be and
+/// still count: another machine's clock may run a little ahead, but a
+/// time past this says nothing true of when, and would count the session
+/// for every carry of its quest ordered before it.
+pub const BEGUN_AHEAD: jiff::SignedDuration = jiff::SignedDuration::from_mins(5);
+
 /// How a carry stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum State {
@@ -59,8 +65,10 @@ pub struct Seen {
     pub left: bool,
     /// The machine it runs on now, when it runs anywhere.
     pub runs_on: Option<String>,
-    /// The machine it last ran on, when it is seen ended.
-    pub ended_on: Option<String>,
+    /// Each machine it is seen ended on: the record this node keeps of
+    /// it ending here and one another machine's node told of it ending
+    /// there may both say so, and neither masks the other.
+    pub ended_on: BTreeSet<String>,
     /// The machines a session of its quest begun since the carry was
     /// ordered runs on now.
     pub quest_on: BTreeSet<String>,
@@ -71,8 +79,8 @@ pub struct Seen {
 pub struct Sightings {
     /// Where each session seen running, or parked, runs, by its id.
     pub runs_on: HashMap<String, String>,
-    /// Where each session seen ended last ran, by its id.
-    pub ended_on: HashMap<String, String>,
+    /// Each machine each session seen ended last ran on, by its id.
+    pub ended_on: HashMap<String, BTreeSet<String>>,
     /// Each machine a session of each quest runs, or is parked, on, and
     /// when that session was begun ([`begun`]), by the quest's id. A
     /// session not known to have begun when is never one of these.
@@ -83,7 +91,12 @@ impl Sightings {
     /// `seen` of `kept`'s session with where the node sees it, and its
     /// quest, added. Only a session of its quest begun since the carry
     /// was ordered counts, so one already running on either side, or a
-    /// carry naming no quest, says nothing of it.
+    /// carry naming no quest, says nothing of it. Its begun time is the
+    /// clock of the machine it runs on, and the order's this one's, with
+    /// no slack between them: the session a carry brings up begins once
+    /// its trees' bundles land, minutes after the order, so seconds of
+    /// skew never keep it out, and a slack would let in a sibling begun
+    /// just before.
     #[must_use]
     pub fn seen(&self, kept: &Kept, seen: Seen) -> Seen {
         let session = kept.said("session");
@@ -100,7 +113,7 @@ impl Sightings {
             .collect();
         Seen {
             runs_on: self.runs_on.get(session).cloned(),
-            ended_on: self.ended_on.get(session).cloned(),
+            ended_on: self.ended_on.get(session).cloned().unwrap_or_default(),
             quest_on,
             ..seen
         }
@@ -109,12 +122,17 @@ impl Sightings {
 
 /// When the pi session `id` was begun, in milliseconds since the epoch,
 /// where it is a UUID of version 7, as pi names its sessions, whose first
-/// 48 bits are that; none for any other id.
+/// 48 bits are that; none for any other id, one of another variant than
+/// RFC 9562's included, since its first bits needn't be a time.
 #[must_use]
 pub fn begun(id: &str) -> Option<i64> {
     let shaped = id.split('-').map(str::len).eq([8, 4, 4, 4, 12]);
     let hex: String = id.split('-').collect();
-    if !shaped || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) || hex.as_bytes()[12] != b'7' {
+    if !shaped || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let (version, variant) = (hex.as_bytes()[12], hex.as_bytes()[16]);
+    if version != b'7' || !b"89abAB".contains(&variant) {
         return None;
     }
     i64::from_str_radix(&hex[..12], 16).ok()
@@ -227,9 +245,7 @@ pub fn standing(kept: &Kept, seen: &Seen) -> State {
         Some(machine) if machine == to => State::Arrived,
         Some(machine) if machine == from && seen.left => State::Back,
         Some(machine) if machine == from => State::Ordered,
-        None if seen.ended_on.as_deref() == Some(to) || seen.quest_on.contains(to) => {
-            State::Arrived
-        }
+        None if seen.ended_on.contains(to) || seen.quest_on.contains(to) => State::Arrived,
         None if seen.quest_on.contains(from) => State::Back,
         // Gone from here, and not yet seen where it went.
         Some(_) | None => State::Carrying,
@@ -238,10 +254,15 @@ pub fn standing(kept: &Kept, seen: &Seen) -> State {
 
 /// How `kept` stands at `now`, as the person reads it: as
 /// [`standing`] says, but stuck, saying why, where it still stands
-/// ordered or carrying [`STUCK_AFTER`] after it was ordered.
+/// ordered or carrying [`STUCK_AFTER`] after it was ordered. One settled
+/// was judged arrived to settle, so it stands arrived after, as settling
+/// takes it, though its session runs nowhere now, until it is seen back.
 #[must_use]
 pub fn judged(kept: &Kept, seen: &Seen, now: jiff::Timestamp) -> State {
-    let state = standing(kept, seen);
+    let state = match standing(kept, seen) {
+        State::Carrying if kept.line.get("settle").is_some() => State::Arrived,
+        state => state,
+    };
     let waiting = matches!(state, State::Ordered | State::Carrying);
     if !waiting || now.duration_since(kept.at) < STUCK_AFTER {
         return state;
@@ -496,7 +517,7 @@ mod tests {
             ),
             (
                 Seen {
-                    ended_on: Some("tern".to_owned()),
+                    ended_on: ["tern".to_owned()].into(),
                     ..Seen::default()
                 },
                 State::Arrived,
@@ -504,11 +525,19 @@ mod tests {
             ),
             (
                 Seen {
-                    ended_on: Some("skiff".to_owned()),
+                    ended_on: ["skiff".to_owned()].into(),
                     ..Seen::default()
                 },
                 State::Carrying,
                 "it ended here, and nothing of it is seen yet",
+            ),
+            (
+                Seen {
+                    ended_on: ["skiff".to_owned(), "tern".to_owned()].into(),
+                    ..Seen::default()
+                },
+                State::Arrived,
+                "its end here doesn't mask its end where it went",
             ),
             (
                 quest_on(&["kestrel"]),
@@ -580,6 +609,18 @@ mod tests {
                 "what settles a carry holds however long it took: {seen:?}"
             );
         }
+        let mut settled = kept.clone();
+        settled.line["settle"] = json!({"did": "settled", "let": 2});
+        assert_eq!(
+            judged(&settled, &Seen::default(), after(24 * 60)),
+            State::Arrived,
+            "settled, so judged arrived to settle, though it runs nowhere now"
+        );
+        assert_eq!(
+            judged(&settled, &on("skiff", true), after(24 * 60)),
+            State::Back,
+            "until it is seen back"
+        );
         assert_eq!(
             fields(&kept, &State::Stuck("why".to_owned())),
             json!({
@@ -598,8 +639,15 @@ mod tests {
             Some(0x01a1_ecaa_d25a),
             "a UUID of version 7 says when in its first 48 bits"
         );
+        assert_eq!(
+            begun("01A1ECAA-D25A-7132-B3FF-19B26EAC3DA6"),
+            Some(0x01a1_ecaa_d25a),
+            "in capitals too"
+        );
         for id in [
             "01a1ecaa-d25a-4132-83ff-19b26eac3da6",
+            "01a1ecaa-d25a-7132-03ff-19b26eac3da6",
+            "01a1ecaa-d25a-7132-c3ff-19b26eac3da6",
             "01a1ecaad25a7132-83ff-19b26eac3da6",
             "01a1ecaa-d25a-7132-83ff-19b26eac3dag",
             "s-harbour",
@@ -619,6 +667,7 @@ mod tests {
                     ("skiff".to_owned(), ordered - 1),
                     ("tern".to_owned(), ordered - 60_000),
                     ("kestrel".to_owned(), ordered + 60_000),
+                    ("osprey".to_owned(), ordered),
                 ],
             )]
             .into(),
@@ -626,8 +675,9 @@ mod tests {
         };
         assert_eq!(
             sightings.seen(&harbour(), Seen::default()).quest_on,
-            ["kestrel".to_owned()].into(),
-            "a sibling running on either side before it was ordered says nothing"
+            ["kestrel".to_owned(), "osprey".to_owned()].into(),
+            "a sibling running on either side before it was ordered says nothing, though one \
+             begun the moment it was ordered counts"
         );
         let no_quest = Kept {
             line: json!({"session": "s-harbour", "from": "skiff", "to": "tern"}),
@@ -649,7 +699,7 @@ mod tests {
         let later = harbour().at.as_millisecond() + 1;
         let sightings = Sightings {
             runs_on: [("s-harbour".to_owned(), "tern".to_owned())].into(),
-            ended_on: [("s-harbour".to_owned(), "skiff".to_owned())].into(),
+            ended_on: [("s-harbour".to_owned(), ["skiff".to_owned()].into())].into(),
             quest_on: [(
                 "QEST-20261115-HARBOR".to_owned(),
                 vec![("tern".to_owned(), later)],
@@ -665,7 +715,7 @@ mod tests {
             Seen {
                 left: true,
                 runs_on: Some("tern".to_owned()),
-                ended_on: Some("skiff".to_owned()),
+                ended_on: ["skiff".to_owned()].into(),
                 quest_on: ["tern".to_owned()].into(),
                 ..Seen::default()
             }
