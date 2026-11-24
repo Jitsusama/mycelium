@@ -112,6 +112,17 @@ impl Dial for Ssh {
         {
             there.extend(["-o".to_owned(), option.clone()]);
         }
+        // After the machine's own, so an option it gives wins, as SSH
+        // takes the first of each.
+        for option in KEPT_ALIVE {
+            if !self
+                .options
+                .iter()
+                .any(|given| named(given) == named(option))
+            {
+                there.extend(["-o".to_owned(), option.to_owned()]);
+            }
+        }
         there.extend(["--".to_owned(), self.destination.clone()]);
         // SSH hands the other machine one line its shell reads, so each
         // word is quoted for that shell.
@@ -140,17 +151,32 @@ impl Dial for Ssh {
 /// November).
 const THE_LINKS_OWN: [&str; 2] = ["identityagent", "identitiesonly"];
 
+/// The SSH options a person's terminal is joined with, so a way that
+/// dies unsaid, as a dock's address does when it is undocked, leaving
+/// what was sent unanswered and no error, ends within 15 seconds, and
+/// the join is joined again ([`rejoin`]). The link's own SSH waits 45,
+/// since a link dropped costs more than a window redrawn.
+pub const KEPT_ALIVE: [&str; 2] = ["ServerAliveInterval=5", "ServerAliveCountMax=3"];
+
 /// Whether `option`, as `-o` takes it, chooses the link's own key
 /// ([`THE_LINKS_OWN`]).
 fn names_the_links_own(option: &str) -> bool {
-    let name = option
+    let name = named(option);
+    THE_LINKS_OWN
+        .iter()
+        .any(|own| own.eq_ignore_ascii_case(&name))
+}
+
+/// The name `option`, as `-o` takes it, gives, in lower case as SSH
+/// reads names.
+#[must_use]
+pub fn named(option: &str) -> String {
+    option
         .trim_start()
         .split(|at: char| at == '=' || at.is_whitespace())
         .next()
-        .unwrap_or_default();
-    THE_LINKS_OWN
-        .iter()
-        .any(|own| own.eq_ignore_ascii_case(name))
+        .unwrap_or_default()
+        .to_ascii_lowercase()
 }
 
 /// `word` as a shell reads it back whole.
@@ -410,6 +436,10 @@ mod tests {
                 "AddKeysToAgent=no",
                 "-o",
                 "ForwardAgent=no",
+                "-o",
+                "ServerAliveInterval=5",
+                "-o",
+                "ServerAliveCountMax=3",
                 "--",
                 "skiff",
                 "mycelium",
