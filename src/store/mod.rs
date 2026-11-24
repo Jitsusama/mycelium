@@ -14,7 +14,7 @@
 //! its machine. What another machine says it is has that one writer too.
 
 mod ends;
-mod folder;
+pub(crate) mod folder;
 pub mod folders;
 #[cfg(test)]
 pub mod memory;
@@ -112,8 +112,10 @@ pub trait Store: Clone + Send + Sync + 'static {
     /// The message `id` as its sender wrote it.
     fn message(&self, id: &str) -> Option<Value>;
 
-    /// Keeps the message `id`, unless it is already held.
-    fn put_message(&self, id: &str, body: &Value) -> io::Result<()>;
+    /// Keeps the message `id`, unless it is already held; answers whether
+    /// it was kept now, so what follows only a message's first arrival
+    /// (a wake) never follows it again.
+    fn put_message(&self, id: &str, body: &Value) -> io::Result<bool>;
 
     /// Every presence held, this machine's and others'.
     fn presences(&self) -> Vec<Presence>;

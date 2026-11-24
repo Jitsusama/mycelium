@@ -38,7 +38,7 @@ impl Boot {
 /// whole seconds, so a session heard in its first second counts as this
 /// boot's.
 #[cfg(target_os = "linux")]
-fn began() -> Option<i64> {
+pub(crate) fn began() -> Option<i64> {
     btime(&fs::read_to_string("/proc/stat").ok()?)?.checked_mul(1000)
 }
 
@@ -46,7 +46,7 @@ fn began() -> Option<i64> {
 /// says it, in whole seconds as on Linux. Without it a Mac counted no
 /// ended session as this boot's, so none read as closed.
 #[cfg(target_os = "macos")]
-fn began() -> Option<i64> {
+pub(crate) fn began() -> Option<i64> {
     let said = std::process::Command::new("/usr/sbin/sysctl")
         .args(["-n", "kern.boottime"])
         .output()
@@ -56,7 +56,7 @@ fn began() -> Option<i64> {
 
 /// Elsewhere the system says nothing this crate reads of when it booted.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn began() -> Option<i64> {
+pub(crate) fn began() -> Option<i64> {
     None
 }
 

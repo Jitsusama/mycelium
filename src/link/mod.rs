@@ -326,6 +326,10 @@ fn exchange_with(places: Places, here: &Hello, there: &Hello, worker: bool) -> E
 /// session it carried here out of reach. With `shares`, it carries the
 /// files of the quests this machine shares too, and with `starting`, it
 /// carries starts.
+#[expect(
+    clippy::too_many_lines,
+    reason = "an end's state is built in one literal, each field beside where it comes from"
+)]
 pub async fn run(
     store: impl Store,
     membership: &impl Membership,
@@ -364,7 +368,6 @@ pub async fn run(
     // As it stood before admission, which marks a machine never linked
     // as of now.
     let began = admitted(&store, &other.machine)?;
-    let exchange = shares.map(|places| exchange_with(places, &membership.hello(), &other, worker));
     let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine).await;
     let (answering, mut answered) = mpsc::unbounded_channel();
     let (runs, mut run_said) = Runs::new();
@@ -385,6 +388,8 @@ pub async fn run(
         arrived,
         following: inboxes.clone().map(Following::new),
         inboxes,
+        parked: parked_of(starting.as_ref()),
+        worker_wakes: VecDeque::new(),
         held: starting.as_ref().map(|starting| starting.held.clone()),
         health: health_of(starting.as_ref()),
         declared: declared_of(starting.as_ref()),
@@ -396,13 +401,13 @@ pub async fn run(
         asks: HashMap::new(),
         runs,
         next_ask: 0,
+        exchange: shares.map(|places| exchange_with(places, &membership.hello(), &other, worker)),
         other: other.machine.clone(),
         said: other,
         reach,
         has: HashSet::new(),
         sent: BTreeMap::new(),
         carried: HashSet::new(),
-        exchange,
         _claim: claim,
     };
 
@@ -878,6 +883,12 @@ enum Declaring {
     Node(PathBuf),
 }
 
+/// Where this machine's parked sessions' markers are, and when it booted,
+/// for an end that carries starts. None otherwise.
+fn parked_of(starting: Option<&Starting>) -> Option<(PathBuf, Option<i64>)> {
+    starting.map(|starting| (starting.parked.clone(), crate::node::standing::began()))
+}
+
 /// This machine's own health as a link says it, when the link carries
 /// what this machine is: the node's own, for a link it keeps, or watched
 /// over its socket, for one another machine dialled, which runs apart.
@@ -1106,6 +1117,16 @@ struct End<S> {
     arrived: Arc<AtomicI64>,
     /// This machine's sessions' steer inboxes, if this end carries steers.
     inboxes: Option<PathBuf>,
+    /// Where the harness keeps this machine's parked sessions' markers,
+    /// for an end its node keeps or a machine dialled, so a message
+    /// carried in wakes the parked sessions it gives a turn
+    /// ([`crate::wake`]); and when this machine booted, before which a
+    /// marker names a holder that is gone.
+    parked: Option<(PathBuf, Option<i64>)>,
+    /// When, in milliseconds since the epoch, each session this end woke in
+    /// the last minute was woken, kept only for a worker's link, which
+    /// wakes at most [`crate::wake::WORKER_WAKES`] a minute.
+    worker_wakes: VecDeque<i64>,
     /// The talks this end carries back to the other.
     following: Option<Following>,
     /// This machine's node's socket, which starts asked of it go to.
@@ -1368,11 +1389,60 @@ impl<S: Store> End<S> {
             "only its own machine's node speaks as a receptor"
         } else if body.get("id").and_then(Value::as_str) == Some(id) {
             let kept = self.store.put_message(id, body);
-            return self.kept(id, kept);
+            // A message carried again, as after a link drops, woke its
+            // sessions when it first came.
+            if matches!(kept, Ok(true)) {
+                self.wake_parked(id, body);
+            }
+            return self.kept(id, kept.map(drop));
         } else {
             "its body names another id"
         };
         self.kept(id, Err(io::Error::new(io::ErrorKind::InvalidData, refused)));
+    }
+
+    /// Wakes each session parked on this machine that the message `id`,
+    /// carried in saying `body`, gives a turn, as its sender would have
+    /// on its own machine: no sender here sees this machine's markers. A
+    /// worker's link wakes only for a session's own, and only so many a
+    /// minute ([`crate::wake`]).
+    fn wake_parked(&mut self, id: &str, body: &Value) {
+        let Some((park, booted)) = self.parked.clone() else {
+            return;
+        };
+        let at = now();
+        while self
+            .worker_wakes
+            .front()
+            .is_some_and(|woke| at - woke >= 60_000)
+        {
+            self.worker_wakes.pop_front();
+        }
+        let room = self
+            .worker
+            .then(|| crate::wake::WORKER_WAKES.saturating_sub(self.worker_wakes.len()));
+        let presences = self.store.presences();
+        let (woken, left) = crate::wake::wake_for(
+            &park,
+            booted,
+            id,
+            body,
+            &presences,
+            |earlier| self.store.message(earlier),
+            room,
+        );
+        for session in woken {
+            if self.worker {
+                self.worker_wakes.push_back(at);
+            }
+            eprintln!("woke {session}, parked, for {id} from {}", self.other);
+        }
+        if left > 0 {
+            eprintln!(
+                "left {left} parked for {id} from {}, past a worker's wakes a minute",
+                self.other
+            );
+        }
     }
 
     async fn take(
@@ -2349,7 +2419,7 @@ impl<S: Store> End<S> {
         // any message does, the other's.
         for draft in exchange.findings() {
             let (id, body) = mesh::written(&draft, std::process::id());
-            self.kept(&id, self.store.put_message(&id, &body));
+            self.kept(&id, self.store.put_message(&id, &body).map(drop));
         }
         self.exchange = Some(exchange);
         match says {
@@ -3319,6 +3389,7 @@ mod tests {
             held: dir.path().join("held"),
             asking: None,
             steers: dir.path().join("steer"),
+            parked: dir.path().join("parked"),
             health: Some(slot.subscribe()),
             declared: Some(dir.path().join("declared.json")),
             kit: None,
@@ -3481,6 +3552,7 @@ mod tests {
             held: dir.join("held"),
             asking: None,
             steers: dir.join("steer"),
+            parked: dir.join("parked"),
             health: None,
             declared: Some(dir.join("declared.json")),
             kit: None,
@@ -3523,6 +3595,7 @@ mod tests {
             held: dir.join("held"),
             asking: None,
             steers: dir.join("steer"),
+            parked: dir.join("parked"),
             health: None,
             declared: Some(dir.join("declared.json")),
             kit: Some(kit),
@@ -3672,6 +3745,7 @@ mod tests {
             held: dir.join("held"),
             asking: Some(Asking::Dialled),
             steers: dir.join("steer"),
+            parked: dir.join("parked"),
             health: None,
             declared: None,
             kit: None,
@@ -3995,6 +4069,7 @@ mod tests {
             held,
             asking: None,
             steers: dir.join("steer"),
+            parked: dir.join("parked"),
             health: None,
             declared: None,
             kit: None,
@@ -4567,6 +4642,7 @@ mod tests {
             held: dir.path().join("held"),
             asking: None,
             steers: dir.path().join("steer"),
+            parked: dir.path().join("parked"),
             health: None,
             declared: None,
             kit: None,
@@ -5590,12 +5666,97 @@ mod tests {
             held: dir.join("held"),
             asking: None,
             steers: dir.join("inboxes"),
+            parked: dir.join("parked"),
             health: None,
             declared: Some(dir.join("declared.json")),
             kit: None,
             saturation: None,
             lender: None,
         }
+    }
+
+    // On 2026-11-23 a question carried in from another machine sat ten
+    // minutes in a parked peer's folder, since only a sender wakes a
+    // parked peer, through its own machine's markers.
+    #[tokio::test]
+    async fn a_message_carried_in_wakes_the_parked_session_it_gives_a_turn() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let starting = steering(dir.path());
+        let parked = starting.parked.clone();
+        let wakes = dir.path().join("wakes");
+        std::fs::create_dir_all(&parked).expect("the parked folder");
+        std::fs::create_dir_all(&wakes).expect("the wakes' folder");
+        for (session, address) in [("s1", "SAK9FZ"), ("s2", "OSPREY")] {
+            std::fs::write(
+                parked.join(format!("{session}.json")),
+                json!({"session": session, "addresses": [address],
+                       "wake": wakes.join(format!("{session}.wake"))})
+                .to_string(),
+            )
+            .expect("a marker");
+        }
+        let skiff = Memory::default();
+        let store = skiff.clone();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        tokio::spawn(async move {
+            run(
+                store,
+                &realm("skiff"),
+                connection(reading, writing),
+                None,
+                Some(starting),
+            )
+            .await
+        });
+        let (_far_reading, mut far_writing) = tokio::io::split(far);
+        let (asked, news) = (recent(0, "WCJQSG", 1), recent(0, "WCJQSG", 2));
+        let message = |id: &str, intent: &str| Frame::Message {
+            id: id.to_owned(),
+            body: json!({"id": id, "from": "WCJQSG", "to": ["@SAK9FZ", "@OSPREY"],
+                         "intent": intent, "text": "go"}),
+        };
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("tern").hello()),
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(Vec::new()),
+                },
+                message(&asked, "question"),
+                message(&news, "fyi"),
+            ],
+        )
+        .await;
+        until(&skiff, |store| store.message(&news).is_some()).await;
+
+        let said: Value = serde_json::from_slice(
+            &std::fs::read(wakes.join("s1.wake")).expect("the question woke the session asked"),
+        )
+        .expect("json");
+        assert_eq!(said["messageId"].as_str(), Some(asked.as_str()));
+        let said: Value =
+            serde_json::from_slice(&std::fs::read(wakes.join("s2.wake")).expect("and the other"))
+                .expect("json");
+        assert_eq!(
+            said["messageId"].as_str(),
+            Some(asked.as_str()),
+            "the news after it woke neither again"
+        );
+
+        std::fs::remove_file(wakes.join("s1.wake")).expect("its wake taken, as its holder does");
+        let later = recent(0, "WCJQSG", 3);
+        says(
+            &mut far_writing,
+            &[message(&asked, "question"), message(&later, "fyi")],
+        )
+        .await;
+        until(&skiff, |store| store.message(&later).is_some()).await;
+        assert!(
+            !wakes.join("s1.wake").exists(),
+            "the question carried again wakes nobody twice"
+        );
     }
 
     /// Skiff's end of a link a worker dialled, carrying steers into the
