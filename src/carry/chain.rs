@@ -20,6 +20,10 @@
 //! keeps it read-only. Who asks is proved as far as the kernel and pi's
 //! records go: a session's log held open by its process says "this
 //! process says so", which stops a confused helper, not a hostile pi.
+//!
+//! Long because its tests, three fifths of it, walk each way a claim
+//! is made, refused, handed on, continued and forked against the one
+//! record they prove, and read best beside it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
