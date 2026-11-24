@@ -89,7 +89,8 @@ impl Orchestrations {
     /// Records that `asker` heads `heads` and orchestrates `quests`, as of
     /// `at`, in place of what it claimed before. `continues` is the
     /// session the asker's own log says it continues, whose claims it
-    /// takes on. Refused, changing nothing, where another session holds
+    /// takes on; the caller names it only once it no longer stands, since
+    /// a fork of a session still running takes nothing of its. Refused, changing nothing, where another session holds
     /// any of them.
     ///
     /// # Errors
