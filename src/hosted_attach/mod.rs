@@ -90,6 +90,12 @@ pub const RESTART_PATIENCE: Patience = Patience {
 /// otherwise hold the window blank for good, as six were for over two hours.
 pub const ANSWER_PATIENCE: Duration = Duration::from_secs(20);
 
+/// How long a child the host has named, and just found answering, has to
+/// answer a terminal joining it directly before the terminal joins through
+/// the host instead, so a child that hangs after the host's look can't use
+/// up the whole join's patience.
+const CHILD_ANSWER_PATIENCE: Duration = Duration::from_secs(2);
+
 /// What the host says as it lets a viewer go because the conversation went
 /// back to plain pi, as a release sends it: its words exactly, as the
 /// harness's viewer terminal says them, since nothing else marks a release.
@@ -492,7 +498,11 @@ async fn connect(
     };
     drop(joined);
     if let Some(child) = own_child_socket(socket, Path::new(named))
-        && let Ok(Some((_, mut joined))) = attach(&child, session, size, &through_host).await
+        && let Ok(Ok(Some((_, mut joined)))) = tokio::time::timeout(
+            CHILD_ANSWER_PATIENCE,
+            attach(&child, session, size, &through_host),
+        )
+        .await
     {
         joined.direct = true;
         return Ok(Some(joined));
@@ -1319,6 +1329,49 @@ mod tests {
                 ],
                 "asked again without joining a child, so the host passes it on"
             );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_child_that_takes_the_join_and_never_answers_is_joined_through_the_host() {
+        bounded(async {
+            let dir = tempfile::tempdir().expect("a folder");
+            let path = dir.path().join("work-attended.sock");
+            let child = children_of(&path).join("s1.sock");
+            let hanging = UnixListener::bind(&child).expect("the child's socket");
+            let (_hung, hung_until) = tokio::sync::oneshot::channel::<()>();
+            let holding = tokio::spawn(async move {
+                let (_stream, _) = hanging.accept().await.expect("a viewer");
+                let _ = hung_until.await;
+            });
+            let hosting = serve_each(
+                &path,
+                vec![
+                    (naming(&child), Vec::new()),
+                    (
+                        accepted(),
+                        vec![
+                            Step::Say(json!({"type": "output", "data": "passed on"})),
+                            Step::Say(closed()),
+                        ],
+                    ),
+                ],
+            );
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut shown = Vec::new();
+            let mut here = Script::typing(b"");
+            let left = join(&path, "s-1", SIZE, &mut here, &mut shown, &mut sizes)
+                .await
+                .expect("joined, not refused");
+            assert_eq!(left, Left::Detached("Conversation closed".to_owned()));
+            assert_eq!(String::from_utf8_lossy(&shown), "passed on");
+            assert_eq!(
+                hosting.await.expect("the host ran").len(),
+                2,
+                "asked the host again once the child kept quiet"
+            );
+            holding.abort();
         })
         .await;
     }
