@@ -35,7 +35,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
+};
 use tokio::net::UnixStream;
 
 use crate::lend::serve::{MOST_BODY, MOST_HEAD};
@@ -316,7 +318,10 @@ async fn answer<W: AsyncWrite + Unpin>(
 /// however it ends.
 async fn sign(forge: &Forge, borrower: &str, body: &[u8]) -> Result<Signed, Refusal> {
     let signing: Result<Signing, _> = serde_json::from_slice(body);
-    let cell = signing.as_ref().ok().and_then(|signing| signing.cell.clone());
+    let cell = signing
+        .as_ref()
+        .ok()
+        .and_then(|signing| signing.cell.clone());
     let signed = signed(forge, signing).await;
     let mut line = json!({
         "time": format!("{:.3}", jiff::Timestamp::now()),
@@ -336,7 +341,10 @@ async fn sign(forge: &Forge, borrower: &str, body: &[u8]) -> Result<Signed, Refu
 }
 
 /// The signature `signing` asks for, and the commit it makes.
-async fn signed(forge: &Forge, signing: Result<Signing, serde_json::Error>) -> Result<Signed, Refusal> {
+async fn signed(
+    forge: &Forge,
+    signing: Result<Signing, serde_json::Error>,
+) -> Result<Signed, Refusal> {
     let signing = signing.map_err(|_| refused(400, "the request isn't a commit to sign"))?;
     let payload = STANDARD
         .decode(&signing.payload)
@@ -369,6 +377,9 @@ async fn signed(forge: &Forge, signing: Result<Signing, serde_json::Error>) -> R
         .filter(|signature| signature.starts_with("-----BEGIN SSH SIGNATURE-----\n"))
         .ok_or_else(|| refused(502, "the signing key's agent said what isn't a signature"))?;
     let object = with_signature(&payload, &signature);
+    // git hashes it in the forge's own folder, out of any repository.
+    own_folder(&forge.folder)
+        .map_err(|error| refused(500, format!("the forge's folder couldn't be made: {error}")))?;
     let commit = run(
         tokio::process::Command::new(&forge.git)
             .args(["hash-object", "-t", "commit", "--stdin"])
@@ -465,7 +476,11 @@ async fn run(
         .map(str::trim)
         .rfind(|line| !line.is_empty())
         .unwrap_or("it said nothing");
-    Err(format!("{} ({})", last.chars().take(300).collect::<String>(), ran.status))
+    Err(format!(
+        "{} ({})",
+        last.chars().take(300).collect::<String>(),
+        ran.status
+    ))
 }
 
 /// Whether `branch` may be pushed as the forge is started: within one of
@@ -493,10 +508,7 @@ fn bundled(bundle: &[u8]) -> Result<(String, Vec<String>), &'static str> {
         .ok_or("isn't a git bundle")?;
     let header = std::str::from_utf8(&bundle[..end]).map_err(|_| "isn't a git bundle")?;
     let mut lines = header.lines();
-    if !matches!(
-        lines.next(),
-        Some("# v2 git bundle" | "# v3 git bundle")
-    ) {
+    if !matches!(lines.next(), Some("# v2 git bundle" | "# v3 git bundle")) {
         return Err("isn't a git bundle of version 2 or 3");
     }
     let id = |word: &str| word.len() == 40 && word.bytes().all(|byte| byte.is_ascii_hexdigit());
@@ -568,7 +580,15 @@ async fn push<W: AsyncWrite + Unpin>(forge: &Forge, borrower: &str, body: &[u8],
     if begun.is_err() {
         return;
     }
-    let going = pushed(forge, &repo, borrower, &pushing.branch, &bundle, &head, &needs);
+    let going = pushed(
+        forge,
+        &repo,
+        borrower,
+        &pushing.branch,
+        &bundle,
+        &head,
+        &needs,
+    );
     tokio::pin!(going);
     let ended = loop {
         tokio::select! {
@@ -633,7 +653,8 @@ fn checked(forge: &Forge, pushing: Pushing) -> Result<Checked, Refusal> {
     let bundle = STANDARD
         .decode(&pushing.bundle)
         .map_err(|_| refused(400, "the bundle isn't base64"))?;
-    let (head, needs) = bundled(&bundle).map_err(|why| refused(400, format!("the bundle {why}")))?;
+    let (head, needs) =
+        bundled(&bundle).map_err(|why| refused(400, format!("the bundle {why}")))?;
     Ok((repo, pushing, bundle, head, needs))
 }
 
@@ -692,7 +713,8 @@ async fn carried(
     head: &str,
     needs: &[String],
 ) -> Result<Vec<String>, String> {
-    kept(&forge.folder, file, bundle).map_err(|error| format!("the bundle couldn't be kept: {error}"))?;
+    kept(&forge.folder, file, bundle)
+        .map_err(|error| format!("the bundle couldn't be kept: {error}"))?;
     run(
         git(forge, repo)
             .args(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head"])
@@ -733,16 +755,21 @@ async fn carried(
 
 /// Keeps `bundle` at `file` in `folder`, both for this account alone.
 fn kept(folder: &Path, file: &Path, bundle: &[u8]) -> io::Result<()> {
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(folder)?;
+    own_folder(folder)?;
     let mut opened = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(file)?;
     io::Write::write_all(&mut opened, bundle)
+}
+
+/// Makes `folder`, for this account alone, if it isn't there.
+fn own_folder(folder: &Path) -> io::Result<()> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(folder)
 }
 
 /// Writes `pushed` as one line of a chunked answer.

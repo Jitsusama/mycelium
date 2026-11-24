@@ -566,7 +566,9 @@ enum Action {
     ///
     /// The machine lending serves it, holding the only key and token;
     /// a machine borrowing signs and pushes through it, over its lend.
-    #[command(after_help = "Example:\n  mycelium forge push --repo mycelium --branch joel-gerber/fix")]
+    #[command(
+        after_help = "Example:\n  mycelium forge push --repo mycelium --branch agents/kestrel-fix"
+    )]
     Forge {
         #[command(subcommand)]
         act: ForgeAct,
@@ -630,9 +632,11 @@ enum ForgeAct {
     /// agent at `--agent` holds, and pushes to the `origin` of each
     /// `--repo`, only to branches starting with a `--branch`, never
     /// forced. Each sign and push is a `mycelium-forge:` line on stderr.
-    #[command(after_help = "Example:\n  mycelium forge serve --listen forge.sock --key signing.pub \
-                          --agent agent.sock --repo mycelium=src/mycelium --branch joel-gerber/ \
-                          --folder forge")]
+    #[command(
+        after_help = "Example:\n  mycelium forge serve --listen forge.sock --key signing.pub \
+                          --agent agent.sock --repo mycelium=src/mycelium --branch agents/ \
+                          --folder forge"
+    )]
     Serve {
         /// The socket the lender asks, in a folder only this account may
         /// write, made so where it isn't there.
@@ -676,7 +680,9 @@ enum ForgeAct {
     ///
     /// It prints each line the forge answers as it comes, a JSON line,
     /// and ends 0 only once the branch was pushed.
-    #[command(after_help = "Example:\n  mycelium forge push --repo mycelium --branch joel-gerber/fix")]
+    #[command(
+        after_help = "Example:\n  mycelium forge push --repo mycelium --branch agents/kestrel-fix"
+    )]
     Push {
         /// The repository, by the name the forge knows it by.
         #[arg(long)]
@@ -3099,9 +3105,10 @@ fn forge(act: ForgeAct, node: &Path) -> io::Result<ExitCode> {
                 budget: &budget,
                 cell,
             };
-            let pushed = runtime()?.block_on(borrow::push(&asking, &repo, &branch, &bundle, |line| {
-                let _ = writeln!(io::stdout().lock(), "{line}");
-            }));
+            let pushed =
+                runtime()?.block_on(borrow::push(&asking, &repo, &branch, &bundle, |line| {
+                    let _ = writeln!(io::stdout().lock(), "{line}");
+                }));
             match pushed {
                 Ok(Pushed::Pushed { .. }) => Ok(ExitCode::SUCCESS),
                 Ok(_) => Ok(ExitCode::FAILURE),

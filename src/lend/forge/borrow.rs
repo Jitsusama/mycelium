@@ -79,8 +79,9 @@ async fn lent(
             .map_err(|_| "this machine's node said nothing for five minutes".to_owned())?
             .map_err(|error| format!("this machine's node stopped answering: {error}"))?
             .ok_or_else(|| "this machine's node stopped answering".to_owned())?;
-        let heard: Lent = serde_json::from_str(&said)
-            .map_err(|error| format!("this machine's node said what isn't a lend's answer: {error}"))?;
+        let heard: Lent = serde_json::from_str(&said).map_err(|error| {
+            format!("this machine's node said what isn't a lend's answer: {error}")
+        })?;
         match (heard, status) {
             (Lent::Head { status: head, .. }, None) => status = Some(head),
             (Lent::Body(piece), Some(_)) => {
@@ -125,7 +126,8 @@ pub async fn sign(asking: &Asking<'_>, payload: &[u8]) -> Result<Signed, String>
     if status != 200 {
         return Err(why_refused(status, &body));
     }
-    serde_json::from_slice(&body).map_err(|error| format!("the forge's answer isn't a signature: {error}"))
+    serde_json::from_slice(&body)
+        .map_err(|error| format!("the forge's answer isn't a signature: {error}"))
 }
 
 /// What git asks of its signing program, read from its words: to sign
@@ -164,7 +166,10 @@ pub async fn sign_file(asking: &Asking<'_>, file: &Path) -> Result<Signed, Strin
     let mut written = file.as_os_str().to_owned();
     written.push(".sig");
     std::fs::write(&written, &signed.signature).map_err(|error| {
-        format!("the signature couldn't be written to {}: {error}", written.display())
+        format!(
+            "the signature couldn't be written to {}: {error}",
+            written.display()
+        )
     })?;
     Ok(signed)
 }
