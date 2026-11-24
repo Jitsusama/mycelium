@@ -219,4 +219,43 @@ mod tests {
             "kept for a carry, it is withheld them while it says nothing"
         );
     }
+
+    #[test]
+    fn declaring_again_ends_the_stand_in_so_quests_above_are_shared_again() {
+        let mut declaring = DeclaredHeard::default();
+        let began = Instant::now();
+        declaring.heard("tern", (Some(fenced()), false), began);
+        declaring.heard("tern", SILENT, began + Duration::from_secs(30));
+
+        let again = declaring.heard(
+            "tern",
+            (Some(fenced()), false),
+            began + Duration::from_secs(60),
+        );
+
+        assert!(
+            !declaring.standing_in() && !withheld_above(again.as_ref(), declaring.standing_in()),
+            "a peer that declares itself again is no longer withheld quests above"
+        );
+    }
+
+    #[test]
+    fn a_node_answering_nothing_while_a_declaration_stands_in_ends_it() {
+        let mut declaring = DeclaredHeard::default();
+        let began = Instant::now();
+        declaring.heard("tern", (Some(fenced()), false), began);
+        declaring.heard("tern", SILENT, began + Duration::from_secs(30));
+
+        let withdrawn = declaring.heard("tern", (None, true), began + Duration::from_secs(40));
+
+        assert_eq!(
+            (withdrawn, declaring.standing_in()),
+            (None, false),
+            "what stood in for a silence goes once the node answers declaring nothing"
+        );
+        assert!(
+            withheld_above(None, declaring.standing_in()),
+            "declaring nothing, it is still withheld quests above"
+        );
+    }
 }

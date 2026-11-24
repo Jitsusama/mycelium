@@ -2082,12 +2082,17 @@ impl<S: Store> End<S> {
                 None => (None, None, None),
             },
         };
+        // A file read here answers at once, so a machine whose file declares
+        // nothing, or can't be read, truly declares nothing; only a node too
+        // slow to answer leaves the far end keeping what it last declared.
+        let read_its_file = declared.is_some();
         let sources = facts::Sources {
             declared,
             ..facts::Sources::here()
         };
         let machine = tokio::task::spawn_blocking(move || {
             let mut machine = facts::measure_in(&here, &realm, &sources);
+            machine.declares_nothing = read_its_file && machine.declared.is_none();
             if let Some(band) = &saturation {
                 band.say(machine.room.as_mut());
             }

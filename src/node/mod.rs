@@ -2420,21 +2420,26 @@ fn held_within(
     launch(kind)
 }
 
-/// Whether a start, `strict` or not, run in `kind` as [`held_within`]
-/// runs it, must begin in the folder it names, refused where this machine
-/// hasn't it: one strict itself, and one within the strict fence's
-/// launcher, which won't let a command write home, so begun there it
-/// would only die (9R6RA6, 23 November). Where pi fences itself, it
+/// What a start, `strict` or not, run in `kind` as [`held_within`] runs
+/// it, needs of the folder it begins in. One within the strict fence's
+/// launcher, which won't let a command write home, must name a folder
+/// this machine has and that isn't home, since begun at home it would
+/// only die (9R6RA6, 23 November). Otherwise one strict itself needs the
+/// folder it names, where it names one, and where pi fences itself it
 /// begins at home as before.
 fn needs_its_folder(
     strict: bool,
     fences: bool,
     kind: Option<crate::declared::Kind>,
     (command, agent): (&[String], &str),
-) -> bool {
-    strict
-        || (kind == Some(crate::declared::Kind::Strict)
-            && (fences || !fences_itself(command, agent)))
+) -> start::Needs {
+    if kind == Some(crate::declared::Kind::Strict) && (fences || !fences_itself(command, agent)) {
+        start::Needs::AwayFromHome
+    } else if strict {
+        start::Needs::ItsFolder
+    } else {
+        start::Needs::Nothing
+    }
 }
 
 /// The variables a harness hands a pi it starts that keep a start pi
@@ -21274,29 +21279,35 @@ esac
     }
 
     #[test]
-    fn a_start_within_the_strict_launcher_needs_the_folder_it_names() {
+    fn a_start_within_the_strict_launcher_needs_a_folder_away_from_home() {
         use crate::declared::Kind;
+        use start::Needs;
         let pi = vec!["pi".to_owned()];
         let sh = vec!["sh".to_owned()];
-        assert!(
+        assert_eq!(
             needs_its_folder(false, true, Some(Kind::Strict), (&pi, "pi")),
+            Needs::AwayFromHome,
             "where the node fences, a strict start runs in its launcher, which won't write home"
         );
-        assert!(
-            needs_its_folder(false, false, Some(Kind::Strict), (&sh, "pi")),
-            "so does any command but pi's own, wherever it runs"
+        assert_eq!(
+            needs_its_folder(true, false, Some(Kind::Strict), (&sh, "pi")),
+            Needs::AwayFromHome,
+            "so does any command but pi's own, wherever it runs, strict or not"
         );
-        assert!(
-            !needs_its_folder(false, false, Some(Kind::Strict), (&pi, "pi")),
+        assert_eq!(
+            needs_its_folder(false, false, Some(Kind::Strict), (&pi, "pi")),
+            Needs::Nothing,
             "pi fencing itself begins at home, as before"
         );
-        assert!(
-            !needs_its_folder(false, true, Some(Kind::Fence), (&pi, "pi")),
+        assert_eq!(
+            needs_its_folder(false, true, Some(Kind::Fence), (&pi, "pi")),
+            Needs::Nothing,
             "as does one in the ordinary fence"
         );
-        assert!(
+        assert_eq!(
             needs_its_folder(true, false, None, (&pi, "pi")),
-            "and a strict start always needs its folder"
+            Needs::ItsFolder,
+            "and a strict start always needs the folder it names"
         );
     }
 
@@ -21742,7 +21753,9 @@ esac
                 }),
                 ..work(vec![Need::Machine("skiff".to_owned())])
             },
-            folder: None,
+            // Its work's folder, never home, since a start within the
+            // strict fence's launcher can't begin where it can't write.
+            folder: Some(dir.path().to_owned()),
             strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
@@ -22072,7 +22085,9 @@ esac
         link.client = Some(1);
         let start = Start {
             work: work(vec![Need::Machine("skiff".to_owned())]),
-            folder: None,
+            // An agent's start runs strictly here, so it names its work's
+            // folder, as the strict fence's launcher needs.
+            folder: Some(dir.path().to_owned()),
             strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
