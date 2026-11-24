@@ -2495,6 +2495,18 @@ fn keep_forages(
     to_read
 }
 
+/// The carried session `command` starts, in words for the log: its
+/// session, its quest and the machine it left; or none, where it starts
+/// no carried session.
+fn carried_words(command: &[String]) -> Option<String> {
+    crate::carry::arrives(command).map(|arrives| {
+        format!(
+            "session {} of {} from {}",
+            arrives.session, arrives.quest, arrives.from
+        )
+    })
+}
+
 /// Whether a start asked by `by` to run `command` is marked as the
 /// person's carry of a session: only the person's, and only of a carry's
 /// shape. It is marked where it is asked, since who asked is known only
@@ -6676,6 +6688,24 @@ impl<S: Store> Shared<S> {
         started.map(Response::Started)
     }
 
+    /// Says in this node's log a carried session, as `arriving` names it
+    /// ([`carried_words`]), started on a worker, as `started` says, so
+    /// every carry to a lent machine is kept here, on the person's own.
+    fn says_carried_to_a_worker(&self, arriving: Option<&str>, started: &Started) {
+        let Some(arriving) = arriving else {
+            return;
+        };
+        let worker = self.others().into_iter().any(|one| {
+            one.name == started.machine && crate::carry::Lent::of(&one) != crate::carry::Lent::Not
+        });
+        if worker {
+            eprintln!(
+                "mycelium: carried {arriving} to {}, a worker",
+                started.machine
+            );
+        }
+    }
+
     /// Whether a reopening asked `whither` by `by` goes unfenced: asked
     /// here of another machine on looser ground, of a session the asker
     /// may reopen, it goes there unfenced, and costs nothing, for that
@@ -7218,7 +7248,8 @@ impl<S: Store> Shared<S> {
     /// to move. A reopening let through unfenced (`reopens`) is placed
     /// as a start with no fence is, as [`Self::here`] places one, and
     /// only on the machine it names ([`Self::placed`]). It was asked at
-    /// `at`, in milliseconds of the wall clock.
+    /// `at`, in milliseconds of the wall clock. A carried session placed
+    /// on a worker is told in the log ([`Self::says_carried_to_a_worker`]).
     async fn placed_held(&self, asked: Start, by: By, reopens: bool, at: i64) -> Reply {
         if reopens {
             return self
@@ -7230,7 +7261,12 @@ impl<S: Store> Shared<S> {
             eprintln!("{}", told_unfenced_held(above, &asked));
         }
         let screen = held_or_run(unfenced.is_some(), by);
-        self.placed((asked, at), fence_of(by), screen, false).await
+        let arriving = carried_words(&asked.command);
+        let placed = self.placed((asked, at), fence_of(by), screen, false).await;
+        if let Ok(Response::Started(started)) = &placed {
+            self.says_carried_to_a_worker(arriving.as_deref(), started);
+        }
+        placed
     }
 
     /// Where each of `asked`'s starts would be placed as
@@ -22571,6 +22607,7 @@ esac
             .put_machine(&facts::Machine {
                 declared: Some(crate::declared::Declared {
                     pi_fences_itself: false,
+                    takes_carries: false,
                     reach: Vec::new(),
                     probes: BTreeMap::new(),
                     outlives: Vec::new(),
@@ -23217,6 +23254,12 @@ esac
             !marks_a_carry(By::Person, &["pi".to_owned()]),
             "nor the person's other starts"
         );
+        assert_eq!(
+            carried_words(&carry).as_deref(),
+            Some("session s-harbour of QEST-20261013-4UHC5Q from tern"),
+            "the log names what a carry starts"
+        );
+        assert_eq!(carried_words(&["pi".to_owned()]), None, "and nothing else");
     }
 
     /// The strength tie `record` has now, faded as every reader of ties
@@ -23610,6 +23653,7 @@ esac
             .put_machine(&facts::Machine {
                 declared: Some(crate::declared::Declared {
                     pi_fences_itself: false,
+                    takes_carries: false,
                     reach: Vec::new(),
                     probes: BTreeMap::new(),
                     outlives: Vec::new(),

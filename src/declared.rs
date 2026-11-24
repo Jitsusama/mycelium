@@ -80,6 +80,12 @@ pub struct Declared {
     /// within the launcher, where it can't reach its own state.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pi_fences_itself: bool,
+    /// Whether, as a worker, it takes carried sessions: a machine made to
+    /// take load off the person's own, whose configuration lets a carry
+    /// bring a session there with its quest. A worker saying nothing takes
+    /// none, and one of the person's own machines takes them either way.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub takes_carries: bool,
     /// The basin it is one of, as each cell a basin makes says it, so a
     /// map can draw the basin once rather than every cell in it; none
     /// where it is no basin's, or says it in any shape but a name. It is
@@ -1058,6 +1064,7 @@ mod tests {
             read(&file),
             Some(Declared {
                 pi_fences_itself: false,
+                takes_carries: false,
                 reach: vec!["home".to_owned(), "internet".to_owned()],
                 probes: BTreeMap::new(),
                 outlives: vec![Outlives::WindowClose, Outlives::NodeRestart],
@@ -1084,6 +1091,7 @@ mod tests {
     fn a_machine_that_costs_money_leaves_or_reaches_aquifer_is_a_worker() {
         let lasting = Declared {
             pi_fences_itself: false,
+            takes_carries: false,
             reach: vec!["home".to_owned(), "internet".to_owned()],
             probes: BTreeMap::new(),
             outlives: Vec::new(),
