@@ -1088,20 +1088,19 @@ fn is_record_name(name: &str) -> bool {
             .is_some_and(|stem| !stem.is_empty())
 }
 
-/// This boot's id, where the system has one (Linux): read once, since it
-/// can't change under a process, and each pass over the sessions asks it.
+/// This boot's id, where the system has one (Linux and macOS), as
+/// [`crate::facts::boot_id`] reads it: kept once read, since it can't
+/// change under a process and each pass over the sessions asks it, and
+/// asked again while it hasn't been, as a Mac's `sysctl` may not answer
+/// under load.
 #[must_use]
 pub fn boot_id() -> Option<String> {
-    static BOOT: OnceLock<Option<String>> = OnceLock::new();
-    BOOT.get_or_init(|| {
-        Some(
-            fs::read_to_string("/proc/sys/kernel/random/boot_id")
-                .ok()?
-                .trim()
-                .to_owned(),
-        )
-    })
-    .clone()
+    static BOOT: OnceLock<String> = OnceLock::new();
+    if let Some(id) = BOOT.get() {
+        return Some(id.clone());
+    }
+    let id = crate::facts::boot_id()?;
+    Some(BOOT.get_or_init(|| id).clone())
 }
 
 /// What the system says of a process (Linux).
