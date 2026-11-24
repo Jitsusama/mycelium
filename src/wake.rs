@@ -17,6 +17,14 @@
 //! the markers are another account's, as on a worker machine whose
 //! sessions run as their own account, a marker could name any file of this
 //! one's to be written over.
+//!
+//! A worker machine's sessions run as an account of their own, so a
+//! message carried from one wakes less ([`worker_gives_turn`]): only a
+//! question or hold to a session's own address, or an answer to one it
+//! sent, never a pivot nor a group's question, so one session there can't
+//! start a turn in every session of a group here; and a worker's link
+//! wakes at most [`WORKER_WAKES`] a minute, the rest reading theirs at
+//! their next start.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -29,6 +37,9 @@ use crate::store::folder::Folder;
 
 /// The group every peer hears.
 const ALL: &str = "#all";
+
+/// The most sessions a worker machine's link wakes in a minute.
+pub const WORKER_WAKES: usize = 6;
 
 /// A parked session, as its marker says.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,6 +168,45 @@ pub fn gives_turn(
     }
 }
 
+/// Whether `message`, carried from a worker machine, gives `parked` a turn:
+/// as [`gives_turn`] judges, and only as a question or hold to its own
+/// address or an answer to one it sent, never a pivot nor a question to a
+/// group.
+#[must_use]
+pub fn worker_gives_turn(
+    message: &Value,
+    parked: &Parked,
+    groups: &[String],
+    earlier: impl Fn(&str) -> Option<Value>,
+) -> bool {
+    let its = |address: &str| {
+        parked
+            .addresses
+            .iter()
+            .any(|own| own.eq_ignore_ascii_case(address))
+    };
+    let to_it = message
+        .get("to")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .any(|group| group.strip_prefix('@').is_some_and(its));
+    let asks = matches!(
+        message.get("intent").and_then(Value::as_str),
+        Some("question" | "hold")
+    ) && to_it;
+    let answers = || {
+        message
+            .get("re")
+            .and_then(Value::as_str)
+            .and_then(&earlier)
+            .and_then(|answered| answered.get("from")?.as_str().map(its))
+            == Some(true)
+    };
+    (asks || answers()) && gives_turn(message, parked, groups, &earlier)
+}
+
 /// Wakes `parked` for the message `id`, writing its wake file whole as the
 /// harness does, `at` milliseconds since the epoch. Refused where the
 /// file's folder isn't this account's alone.
@@ -184,8 +234,10 @@ pub fn wake(parked: &Parked, id: &str, at: i64) -> io::Result<()> {
 
 /// Wakes every session parked under `park` since `booted` that `message`,
 /// `id`, gives a turn ([`gives_turn`]), each one's groups read from its
-/// presence among `presences`; answers the sessions woken. One that can't
-/// be woken reads the message at its next start all the same.
+/// presence among `presences`; answers the sessions woken and how many it
+/// left. From a worker machine, `worker` says how many more it may wake,
+/// and only those [`worker_gives_turn`] says are woken. One that isn't
+/// woken reads the message at its next start all the same.
 pub fn wake_for(
     park: &Path,
     booted: Option<i64>,
@@ -193,13 +245,14 @@ pub fn wake_for(
     message: &Value,
     presences: &[Presence],
     earlier: impl Fn(&str) -> Option<Value>,
-) -> Vec<String> {
+    worker: Option<usize>,
+) -> (Vec<String>, usize) {
     // Most messages are news, which gives no turn, so no marker is read.
     let intent = message.get("intent").and_then(Value::as_str);
     if !matches!(intent, Some("pivot" | "question" | "hold")) && message.get("re").is_none() {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
-    let mut woken = Vec::new();
+    let (mut woken, mut left) = (Vec::new(), 0);
     for one in parked(park, booted) {
         let groups: Vec<String> = presences
             .iter()
@@ -209,7 +262,15 @@ pub fn wake_for(
             .flatten()
             .filter_map(|group| group.as_str().map(str::to_owned))
             .collect();
-        if !gives_turn(message, &one, &groups, &earlier) {
+        let given = match worker {
+            None => gives_turn(message, &one, &groups, &earlier),
+            Some(_) => worker_gives_turn(message, &one, &groups, &earlier),
+        };
+        if !given {
+            continue;
+        }
+        if worker.is_some_and(|most| woken.len() >= most) {
+            left += 1;
             continue;
         }
         match wake(&one, id, jiff::Timestamp::now().as_millisecond()) {
@@ -217,7 +278,7 @@ pub fn wake_for(
             Err(error) => eprintln!("couldn't wake {} for {id}: {error}", one.session),
         }
     }
-    woken
+    (woken, left)
 }
 
 #[cfg(test)]
@@ -339,9 +400,9 @@ mod tests {
         let message =
             json!({"id": "m2", "from": "WCJQSG", "to": ["@SAK9FZ"], "intent": "question"});
 
-        let woken = wake_for(&park, None, "m2", &message, &[], |_| None);
+        let (woken, left) = wake_for(&park, None, "m2", &message, &[], |_| None, None);
 
-        assert_eq!(woken, ["s1"]);
+        assert_eq!((woken, left), (vec!["s1".to_owned()], 0));
         let said: Value =
             serde_json::from_slice(&fs::read(&wake).expect("its wake written")).expect("json");
         assert_eq!(
@@ -352,6 +413,66 @@ mod tests {
     }
 
     #[test]
+    fn a_worker_wakes_a_session_only_for_its_own_and_only_so_many() {
+        let worker = |message: &Value, groups: &[&str], earlier: Option<&Value>| {
+            let parked = Parked {
+                session: "s1".to_owned(),
+                addresses: vec!["SAK9FZ".to_owned()],
+                wake: PathBuf::from("/nowhere/s1.wake"),
+            };
+            let groups: Vec<String> = groups.iter().map(|group| (*group).to_owned()).collect();
+            worker_gives_turn(message, &parked, &groups, |_| earlier.cloned())
+        };
+        let to_it = |intent: &str| json!({"from": "KESTREL", "to": ["@SAK9FZ"], "intent": intent});
+        assert!(
+            worker(&to_it("question"), &[], None),
+            "a question to its address"
+        );
+        assert!(worker(&to_it("hold"), &[], None), "a hold to its address");
+        assert!(!worker(&to_it("pivot"), &[], None), "never a pivot");
+        assert!(
+            !worker(
+                &json!({"from": "KESTREL", "to": ["#harness"], "intent": "question"}),
+                &["#harness"],
+                None
+            ),
+            "never a question to a group it is in"
+        );
+        assert!(
+            worker(
+                &json!({"from": "KESTREL", "to": ["#harness"], "intent": "fyi", "re": "m1"}),
+                &["#harness"],
+                Some(&json!({"from": "SAK9FZ"}))
+            ),
+            "an answer to one it sent"
+        );
+        assert!(
+            !worker(
+                &json!({"from": "KESTREL", "to": ["#harness"], "intent": "fyi", "re": "m1"}),
+                &["#harness"],
+                Some(&json!({"from": "OSPREY"}))
+            ),
+            "never an answer to another's"
+        );
+
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (park, wakes) = (dir.path().join("park"), dir.path().join("held"));
+        let all: Vec<PathBuf> = ["s1", "s2", "s3"]
+            .into_iter()
+            .map(|session| park_one(&park, &wakes, session, "SAK9FZ"))
+            .collect();
+        let message =
+            json!({"id": "m2", "from": "KESTREL", "to": ["@SAK9FZ"], "intent": "question"});
+        let (woken, left) = wake_for(&park, None, "m2", &message, &[], |_| None, Some(2));
+        assert_eq!(
+            (woken.len(), left),
+            (2, 1),
+            "two woken, one left for its next start"
+        );
+        assert_eq!(all.iter().filter(|wake| wake.exists()).count(), 2);
+    }
+
+    #[test]
     fn a_marker_from_before_the_machine_started_wakes_nothing() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let (park, wakes) = (dir.path().join("park"), dir.path().join("held"));
@@ -359,7 +480,7 @@ mod tests {
         let message = json!({"from": "WCJQSG", "to": ["@SAK9FZ"], "intent": "question"});
         let later = jiff::Timestamp::now().as_millisecond() + 60_000;
 
-        let woken = wake_for(&park, Some(later), "m2", &message, &[], |_| None);
+        let (woken, _) = wake_for(&park, Some(later), "m2", &message, &[], |_| None, None);
         assert_eq!(woken, Vec::<String>::new(), "none is woken before its time");
         assert!(!wake.exists());
     }
@@ -374,7 +495,10 @@ mod tests {
         std::os::unix::fs::symlink(&mine, &wake).expect("a link planted as the wake");
         let message = json!({"from": "WCJQSG", "to": ["@SAK9FZ"], "intent": "question"});
 
-        assert_eq!(wake_for(&park, None, "m2", &message, &[], |_| None), ["s1"]);
+        assert_eq!(
+            wake_for(&park, None, "m2", &message, &[], |_| None, None).0,
+            ["s1"]
+        );
         assert_eq!(
             fs::read(&mine).expect("it stands"),
             b"{}",
@@ -383,7 +507,9 @@ mod tests {
 
         fs::set_permissions(&wakes, fs::Permissions::from_mode(0o777)).expect("opened to all");
         assert!(
-            wake_for(&park, None, "m3", &message, &[], |_| None).is_empty(),
+            wake_for(&park, None, "m3", &message, &[], |_| None, None)
+                .0
+                .is_empty(),
             "a folder another account may write is never written in"
         );
         fs::set_permissions(&wakes, fs::Permissions::from_mode(0o755)).expect("closed again");

@@ -92,6 +92,14 @@ folder no other account may write, is read, and a wake is written only
 in such a folder, so a marker another account wrote can't name a file
 of this one's to be written over.
 
+A worker machine's sessions run as an account of their own, so a
+message a worker's link carries in wakes less: only a question or hold
+to a session's own address, or an answer to a message it sent, never a
+pivot nor a question to a group, so one session there can't start a
+turn in every session of a group here. A worker's link wakes at most 6
+sessions a minute; the rest read theirs at their next start, and the
+node's journal says how many were left and from which machine.
+
 A session's own machine judges whether it lives, from its process, and is
 told the moment it ends: on Linux the node holds each session's process
 by a pidfd, which wakes it as the process exits, so nothing is judged on a

@@ -385,6 +385,7 @@ pub async fn run(
         following: inboxes.clone().map(Following::new),
         inboxes,
         parked: parked_of(starting.as_ref()),
+        worker_wakes: VecDeque::new(),
         held: starting.as_ref().map(|starting| starting.held.clone()),
         health: health_of(starting.as_ref()),
         declared: declared_of(starting.as_ref()),
@@ -1071,6 +1072,10 @@ struct End<S> {
     /// ([`crate::wake`]); and when this machine booted, before which a
     /// marker names a holder that is gone.
     parked: Option<(PathBuf, Option<i64>)>,
+    /// When, in milliseconds since the epoch, each session this end woke in
+    /// the last minute was woken, kept only for a worker's link, which
+    /// wakes at most [`crate::wake::WORKER_WAKES`] a minute.
+    worker_wakes: VecDeque<i64>,
     /// The talks this end carries back to the other.
     following: Option<Following>,
     /// This machine's node's socket, which starts asked of it go to.
@@ -1345,17 +1350,45 @@ impl<S: Store> End<S> {
 
     /// Wakes each session parked on this machine that the message `id`,
     /// carried in saying `body`, gives a turn, as its sender would have
-    /// on its own machine: no sender here sees this machine's markers.
-    fn wake_parked(&self, id: &str, body: &Value) {
-        let Some((park, booted)) = &self.parked else {
+    /// on its own machine: no sender here sees this machine's markers. A
+    /// worker's link wakes only for a session's own, and only so many a
+    /// minute ([`crate::wake`]).
+    fn wake_parked(&mut self, id: &str, body: &Value) {
+        let Some((park, booted)) = self.parked.clone() else {
             return;
         };
+        let at = now();
+        while self
+            .worker_wakes
+            .front()
+            .is_some_and(|woke| at - woke >= 60_000)
+        {
+            self.worker_wakes.pop_front();
+        }
+        let room = self
+            .worker
+            .then(|| crate::wake::WORKER_WAKES.saturating_sub(self.worker_wakes.len()));
         let presences = self.store.presences();
-        let woken = crate::wake::wake_for(park, *booted, id, body, &presences, |earlier| {
-            self.store.message(earlier)
-        });
+        let (woken, left) = crate::wake::wake_for(
+            &park,
+            booted,
+            id,
+            body,
+            &presences,
+            |earlier| self.store.message(earlier),
+            room,
+        );
         for session in woken {
+            if self.worker {
+                self.worker_wakes.push_back(at);
+            }
             eprintln!("woke {session}, parked, for {id} from {}", self.other);
+        }
+        if left > 0 {
+            eprintln!(
+                "left {left} parked for {id} from {}, past a worker's wakes a minute",
+                self.other
+            );
         }
     }
 
