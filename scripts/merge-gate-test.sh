@@ -82,7 +82,7 @@ rm "${MERGE_GATE_PASSED}/${head}"
 expect refuses "${head}" "checks.x86_64-linux.mycelium " \
   "a head nothing passed at is refused"
 pass "${first}"
-expect refuses "${head}" "nothing kept says" \
+expect refuses "${head}" "nothing kept in ${MERGE_GATE_PASSED} says" \
   "what passed at another commit doesn't count"
 
 # A head off main holding each `path=text` named, with every check passed
@@ -137,10 +137,16 @@ sha=$(git rev-parse HEAD)
 pass "${sha}"
 expect refuses "${sha}" "doesn't keep nix/counts.sh as a file" \
   "a head that puts a folder where the counts' rule was is refused"
-# The gate run from a folder below the top reads the rule where it is.
-sha=$(counted 'src/fine.rs=fn fine() {}')
+# The gate run from a folder below the top reads the rule and the whole
+# tree where they are, and the kept checks where it was told.
+fine=$(counted 'src/fine.rs=fn fine() {}')
+elsewhere=$(counted 'tools/loose.rs=#[allow(dead_code)]')
 cd src
-expect merges "${sha}" "holds main" "the gate run from a folder below the top finds the rule"
+expect merges "${fine}" "holds main" "the gate run from a folder below the top finds the rule"
+MERGE_GATE_PASSED=../../passed expect merges "${fine}" "holds main" \
+  "the kept checks named from a folder below the top are read from there"
+expect refuses "${elsewhere}" "tools/loose.rs: 1, listed 0" \
+  "the gate run from a folder below the top counts the whole tree"
 cd ..
 sha=$(counted "nix/suppressions-waiting.txt=src/main.rs many")
 expect refuses "${sha}" "is not a path and a count above 0" \
@@ -252,25 +258,47 @@ chmod +x "${work}/old-git/git"
 PATH="${work}/old-git:${PATH}" expect refuses "${head}" "run the gate with git 2.42 or later" \
   "a git before 2.42 is refused"
 
-# A git that can't read the rule's entry stops the gate with its own
-# status, rather than the gate reading it as a commit holding no rule and
-# refusing with its own. Its words reach the output either way, so the
-# status is what tells them apart.
+# A git that can't read one entry, main's rule, the head's or one of main's
+# lists, stops the gate with its own status and words, rather than the gate
+# reading it as a commit holding no such entry and refusing with its own.
+# Each entry fails alone, so a read of any one put back in a condition
+# shows.
 mkdir "${work}/broken-git"
 cat > "${work}/broken-git/git" << EOF
 #!${BASH}
-if [[ \$1 == ls-tree ]]; then echo "fatal: the tree can't be read" >&2; exit 128; fi
+if [[ "\$*" == "ls-tree \${BROKEN_ENTRY}" ]]; then
+  echo "fatal: the tree can't be read" >&2
+  exit 128
+fi
 exec "${real_git}" "\$@"
 EOF
 chmod +x "${work}/broken-git/git"
 pass "${head}"
+for broken in "${first} -- nix/counts.sh" "${head} -- nix/counts.sh" \
+  "${first} -- nix/long-files-waiting.txt" "${first} -- nix/suppressions-waiting.txt"; do
+  code=0
+  said=$(BROKEN_ENTRY=${broken} PATH="${work}/broken-git:${PATH}" \
+    bash "${gate}" "${head}" 2>&1) || code=$?
+  if ((code != 128)) || [[ ${said} != *"the tree can't be read"* ]]; then
+    echo "FAIL a git error reading ${broken#* -- } at ${broken:0:12} stops the gate" \
+      "with git's status and words: it ended ${code}, saying: ${said}" >&2
+    failed=1
+  fi
+done
+
+# Run outside any checkout, the gate stops with git's status and words.
+# The ceiling keeps git from looking above ${work}, so a checkout holding
+# the temporary folder can't stand in for the one the gate needs.
+mkdir "${work}/outside"
+cd "${work}/outside"
 code=0
-PATH="${work}/broken-git:${PATH}" bash "${gate}" "${head}" > /dev/null 2>&1 || code=$?
-if ((code != 128)); then
-  echo "FAIL a git error reading the rule's entry stops the gate with git's status:" \
-    "it ended ${code}" >&2
+said=$(GIT_CEILING_DIRECTORIES=${work} bash "${gate}" "${head}" 2>&1) || code=$?
+if ((code != 128)) || [[ ${said} != *"not a git repository"* ]]; then
+  echo "FAIL the gate run outside any checkout stops with git's status and words:" \
+    "it ended ${code}, saying: ${said}" >&2
   failed=1
 fi
+cd "${work}/tree"
 
 # A main without the rule, as before it first came in or were it taken
 # off: a head's own rule would judge the head by whatever it brought, so a
@@ -295,6 +323,29 @@ ruled=$(git rev-parse HEAD)
 pass "${ruled}"
 expect refuses "${ruled}" "main has no nix/counts.sh" \
   "a head bringing its own rule is refused where main has none"
+cd "${work}/tree"
+
+# Main keeping a list as a folder, which is no list: git would show the
+# names it holds, and one named as a head's list line would let that line
+# pass.
+git init -q --bare -b main "${work}/folded.git"
+git clone -q "${work}/folded.git" "${work}/folded" 2> /dev/null
+cd "${work}/folded"
+mkdir -p nix/suppressions-waiting.txt
+cp "${counts}" nix/counts.sh
+: > "nix/suppressions-waiting.txt/loose.rs 1"
+git add nix
+commit folded > /dev/null
+git push -q origin HEAD:main
+git rm -q -r nix/suppressions-waiting.txt
+echo '#[allow(dead_code)]' > loose.rs
+echo 'loose.rs 1' > nix/suppressions-waiting.txt
+git add loose.rs nix
+git commit -q -m listed
+listed=$(git rev-parse HEAD)
+pass "${listed}"
+expect refuses "${listed}" "loose.rs 1, main has 0" \
+  "a list main keeps as a folder is no list, not the names it holds"
 cd "${work}/tree"
 
 # Main moves on past the head, as another change merges first.
@@ -522,7 +573,8 @@ if [[ ${other} == "${tip}" || ${said} == *"already made"* ]]; then
 fi
 git push -q origin --delete "train/${other:0:12}"
 
-rode refuses "nothing kept says" "a train nothing passed at doesn't land" land "${tip}"
+rode refuses "nothing kept in ${MERGE_GATE_PASSED} says" \
+  "a train nothing passed at doesn't land" land "${tip}"
 points refs/heads/main "${base}" "a train refused leaves main where it was"
 points "refs/heads/train/${tip:0:12}" "${tip}" \
   "a train refused keeps its branch, to build and land again"

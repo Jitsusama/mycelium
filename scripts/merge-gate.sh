@@ -47,6 +47,10 @@ if [[ -z ${passed} ]]; then
     passed=${XDG_STATE_HOME:-${HOME}/.local/state}/nix-offload/passed
   fi
 fi
+# Named from where the gate was run, before it moves to the checkout's top.
+if [[ ${passed} != /* ]]; then
+  passed=${PWD}/${passed}
+fi
 
 # From the checkout's top, since git reads a path given to it, and checks
 # an index out, from the folder it runs in. Read outside the `cd`, so a
@@ -112,8 +116,11 @@ fi
 git show "${main}:${rule}" > "${scratch}/counts.sh"
 raised=""
 for list in nix/long-files-waiting.txt nix/suppressions-waiting.txt; do
+  # Main's entry read outside any condition, as the rule's is; one that
+  # isn't a file is no list, the strictest reading.
+  main_entry=$(git ls-tree "${main}" -- "${list}")
   main_list=""
-  if git cat-file -e "${main}:${list}" 2> /dev/null; then
+  if [[ ${main_entry} =~ ${as_file} ]]; then
     main_list=$(git show "${main}:${list}")
   fi
   head_list=""
@@ -169,7 +176,7 @@ for check in "${checks[@]}"; do
   fi
 done
 if ((${#missing[@]} > 0)); then
-  echo "merge-gate: nothing kept says these passed at ${sha:0:12}:" \
+  echo "merge-gate: nothing kept in ${passed} says these passed at ${sha:0:12}:" \
     "${missing[*]}. Build them there with nix-offload there . ${missing[*]}" >&2
   exit 1
 fi
