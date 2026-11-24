@@ -3042,7 +3042,7 @@ fn forge(act: ForgeAct, node: &Path) -> io::Result<ExitCode> {
             branches,
             folder,
         } => {
-            let mut named = std::collections::BTreeMap::new();
+            let mut named = BTreeMap::new();
             for repo in repos {
                 let Some((name, path)) = repo.split_once('=') else {
                     return Err(io::Error::other(format!("{repo} isn't NAME=PATH")));
