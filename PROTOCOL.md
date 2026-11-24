@@ -64,6 +64,21 @@ them between machines:
 Every file is written whole, through a dot-file renamed into place, as the
 mesh writes its own.
 
+The mesh's folder may be shared with another account, as a worker
+machine's is with the account its sessions run as, which can then put a
+link anywhere inside it. So only the folder itself is reached by its
+path, through any link its machine made, and only where no other
+account can put something in its place: each folder a name on the way
+is looked up in, links followed, may be written by no group nor anyone,
+unless it is sticky and that name is the account's or the system's,
+and the folder holding it is the account's or the system's; else the
+mesh isn't read. Every folder and file inside is
+opened from the one holding it, never through a link nor waiting on a
+pipe, and only a plain file of at most 8 MiB is read. A link in place of
+a message, a presence, a holding or a folder is read as nothing there,
+and a write takes the link's place by rename rather than writing what it
+names.
+
 A session's own machine judges whether it lives, from its process, and is
 told the moment it ends: on Linux the node holds each session's process
 by a pidfd, which wakes it as the process exits, so nothing is judged on a
@@ -407,14 +422,23 @@ Three seams shape a link:
   A machine reached so is a worker: it is asked and asks
   nothing back. Its end's starts, steers, updates, carries, ends and
   runs are refused, its follows are ignored, and a presence of its
-  naming another machine isn't kept, nor a reply to an ask it wasn't
+  naming another machine isn't kept, nor one answering to an id or
+  address a session living here or through another link answers to,
+  nor a reply to an ask it wasn't
   sent, nor what it tells of carries. It is said and served only the
   quests it was given, each by a `mycelium share --to` naming it,
   which gives that quest alone and none above it, and nothing it says
   of any quest is taken: what it writes to one it was given stays on
   it, as does a quest it began. A message of its is kept only when it
-  names as its sender a session it holds a presence for now, and this
-  machine holds none by that id. One kept opens its `text` with
+  names as its sender a session it holds a presence for now, by an
+  address that presence lists or by its id, and no session living here
+  or through another link answers to that name, and never when it
+  steers this machine's sessions: a hold, a pivot, the end of a hold,
+  or anything to the machine-wide group or answering what was. Nor is
+  one kept unless its `intent` is one of the mesh's five, exactly, and
+  any `to` is a list of words, `endsHold` true or false, and `re` and
+  `supersedes` words, so no reader can take it for a steer where the
+  node didn't. One kept opens its `text` with
   `[said on <worker>, a worker machine]` and a space, and gains
   `"worker"`, the
   machine's name, both from the link's own name for it, never from

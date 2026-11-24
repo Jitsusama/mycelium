@@ -75,6 +75,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::carry::kept;
 use crate::facts::{self, Machine, Readiness};
+use crate::forage;
 use crate::handover;
 use crate::hold;
 use crate::lend::lender::{self, Lender};
@@ -1498,6 +1499,12 @@ impl<S: Store> End<S> {
                     "{other} spoke for {session}, a session of another machine's, which a worker can't"
                 )))
             }
+            Frame::Presence { session, body, .. } => self.taken_name(session, body).map(|name| {
+                Refused::Dropped(format!(
+                    "{other} spoke for {session} as {name}, which a session living elsewhere \
+                     answers to, so a worker can't"
+                ))
+            }),
             Frame::Replies(replies) if !self.carries(&replies.address) => {
                 Some(Refused::Dropped(format!(
                     "{other} replied in a talk of {}, which isn't a session of its own",
@@ -1511,7 +1518,6 @@ impl<S: Store> End<S> {
             ))),
             Frame::Hello(_)
             | Frame::Have { .. }
-            | Frame::Presence { .. }
             | Frame::Ended { .. }
             | Frame::Share(_)
             | Frame::Machine(_)
@@ -1542,8 +1548,9 @@ impl<S: Store> End<S> {
     }
 
     /// Why a worker's message `id` isn't taken, if it isn't: one this
-    /// machine already holds isn't written over, and only a session the
-    /// worker holds a presence for now speaks through it, so it can put
+    /// machine already holds isn't written over, nothing that steers this
+    /// machine's sessions is taken ([`mesh::steers`]), and only a session
+    /// the worker holds a presence for now speaks through it, so it can put
     /// no words in the mouth of a session another machine holds, nor of
     /// one between presences, nor say what no session said.
     fn message_refused(&self, id: &str, body: &Value) -> Option<Refused> {
@@ -1553,20 +1560,58 @@ impl<S: Store> End<S> {
                 "{other} said {id} again, which a worker can't write over"
             )));
         }
+        if let Some(steers) = mesh::steers(body, |earlier| self.store.message(earlier)) {
+            return Some(Refused::Dropped(format!(
+                "{other} said {id}, {steers}, which a worker can't say here"
+            )));
+        }
         let Some(from) = body.get("from").and_then(Value::as_str) else {
             return Some(Refused::Dropped(format!(
                 "{other} said {id} from no session, which a worker can't"
             )));
         };
-        let its_own = self.store.presences().iter().any(|presence| {
-            presence.session.eq_ignore_ascii_case(from)
-                && presence.elsewhere.as_deref() == Some(other.as_str())
-        });
+        // A sender is named by an address its presence lists, as the
+        // mesh writes it, or by its id.
+        let (mut its_own, mut taken) = (false, false);
+        for presence in self.store.presences() {
+            if !answers_to(&presence, from) {
+                continue;
+            }
+            if presence.elsewhere.as_deref() == Some(other.as_str()) {
+                its_own = true;
+            } else if presence.lives {
+                taken = true;
+            }
+        }
+        if taken {
+            return Some(Refused::Dropped(format!(
+                "{other} said {id} as {from}, which a session living elsewhere answers to, \
+                 so a worker can't"
+            )));
+        }
         (!its_own).then(|| {
             Refused::Dropped(format!(
                 "{other} said {id} as {from}, which holds no presence through it, so a worker can't"
             ))
         })
+    }
+
+    /// The name a worker's presence of `session`, saying `body`, shares
+    /// with a session living here or through another link, if it shares
+    /// one: its id or any address it answers to. A worker writes its
+    /// presence as it likes, so one taking a living session's name would
+    /// let it send as that session, and only the label on its words would
+    /// tell them apart.
+    fn taken_name(&self, session: &str, body: &Value) -> Option<String> {
+        let its = names(session, body);
+        self.store
+            .presences()
+            .into_iter()
+            .filter(|presence| {
+                presence.lives && presence.elsewhere.as_deref() != Some(self.other.as_str())
+            })
+            .flat_map(|presence| names(&presence.session, &presence.body))
+            .find(|name| its.iter().any(|said| said.eq_ignore_ascii_case(name)))
     }
 
     /// Whether `address` is a session of the other end's own that this
@@ -1810,7 +1855,7 @@ impl<S: Store> End<S> {
         // A starter means something only for a hold, and a worker's node is
         // whoever runs on the machine lent, so its word is no book's.
         let started_by =
-            started_by.filter(|by| held.is_some() && !self.worker && crate::forage::is_address(by));
+            started_by.filter(|by| held.is_some() && !self.worker && forage::is_address(by));
         // The held id and the starter are the link's to say, never the
         // presence's.
         if let Some(fields) = body.as_object_mut() {
@@ -2544,6 +2589,21 @@ fn silent(heard: i64, now: i64) -> bool {
 
 fn millis(duration: Duration) -> i64 {
     i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+}
+
+/// What a session `session`, whose presence says `body`, answers to: the
+/// addresses its presence lists and its own id.
+fn names(session: &str, body: &Value) -> Vec<String> {
+    let mut names = forage::addresses(body.get("addresses").unwrap_or(&Value::Null));
+    names.push(session.to_owned());
+    names
+}
+
+/// Whether `presence`'s session answers to `name`, as [`names`] says.
+fn answers_to(presence: &store::Presence, name: &str) -> bool {
+    names(&presence.session, &presence.body)
+        .iter()
+        .any(|its| its.eq_ignore_ascii_case(name))
 }
 
 /// Whether a presence a worker said speaks only for a session of its own
@@ -5265,6 +5325,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each of a worker's messages is refused or carried for its own reason"
+    )]
     async fn a_worker_puts_no_words_in_another_machines_session_nor_rewrites_a_message() {
         let skiff = Memory::default();
         skiff
@@ -5291,6 +5355,26 @@ mod tests {
             id: id.to_owned(),
             body: json!({"id": id, "from": from, "to": ["@WCJQSG"], "text": text}),
         };
+        // What its own session says to steer skiff's sessions, each with
+        // the fields of `said`.
+        let machines = recent(0, "WCJQSG", 5);
+        skiff.send_here(
+            &machines,
+            json!({"id": machines, "to": ["#machine"], "intent": "hold", "text": "a reboot"}),
+        );
+        let steering = |id: &str, said: Value| {
+            let mut body = json!({"id": id, "from": "SAK9FZ", "to": ["@WCJQSG"], "text": "go"});
+            if let (Some(body), Value::Object(said)) = (body.as_object_mut(), said) {
+                body.extend(said);
+            }
+            Frame::Message {
+                id: id.to_owned(),
+                body,
+            }
+        };
+        let (holding, pivoting) = (recent(0, "SAK9FZ", 6), recent(0, "SAK9FZ", 7));
+        let (ending, to_all) = (recent(0, "SAK9FZ", 8), recent(0, "SAK9FZ", 9));
+        let answering = recent(0, "SAK9FZ", 10);
         says(
             &mut far_writing,
             &[
@@ -5307,6 +5391,14 @@ mod tests {
                     body: json!({"id": nobodys, "to": ["@WCJQSG"], "text": "nobody"}),
                 },
                 message(&held, "SAK9FZ", "theirs"),
+                steering(&holding, json!({"intent": "hold"})),
+                steering(&pivoting, json!({"intent": "pivot"})),
+                steering(
+                    &ending,
+                    json!({"intent": "fyi", "re": held, "endsHold": true}),
+                ),
+                steering(&to_all, json!({"intent": "fyi", "to": ["#machine"]})),
+                steering(&answering, json!({"intent": "fyi", "re": machines})),
                 message(&own, "SAK9FZ", "done"),
             ],
         )
@@ -5321,6 +5413,18 @@ mod tests {
             skiff.message(&between).is_none() && skiff.message(&nobodys).is_none(),
             "nor one from a session it holds no presence for, nor one from no session"
         );
+        for (id, what) in [
+            (&holding, "a hold"),
+            (&pivoting, "a pivot"),
+            (&ending, "the end of a hold"),
+            (&to_all, "anything to the whole machine"),
+            (&answering, "nor an answer to what was"),
+        ] {
+            assert!(
+                skiff.message(id).is_none(),
+                "its own session can't steer skiff's: {what}"
+            );
+        }
         let kept = skiff.message(&own).expect("its own session's message kept");
         assert_eq!(
             (kept["text"].as_str(), kept["worker"].as_str()),
@@ -5333,6 +5437,103 @@ mod tests {
                 .and_then(|body| body["text"].as_str().map(str::to_owned)),
             Some("ours".to_owned()),
             "nor is a message skiff holds written over"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_worker_takes_no_name_a_session_living_elsewhere_answers_to() {
+        let skiff = Memory::default();
+        skiff.start_here(
+            "wcjq01",
+            json!({"session": "wcjq01", "addresses": ["WCJQSG"]}),
+            true,
+        );
+        skiff
+            .put_presence(
+                "ospr01",
+                "osprey",
+                &json!({"session": "ospr01", "addresses": ["OSPREY"]}),
+            )
+            .expect("osprey's session kept");
+        let store = skiff.clone();
+        let (_skiff_end, _far_reading, mut far_writing) = skiff_over(
+            store,
+            |connection| Connection {
+                worker: true,
+                ..connection
+            },
+            None,
+        );
+        let planted = |session: &str, address: &str| Frame::Presence {
+            session: session.to_owned(),
+            body: json!({"session": session, "addresses": [address]}),
+            leases: None,
+            held: None,
+            started_by: None,
+        };
+        let message = |id: &str, from: &str| Frame::Message {
+            id: id.to_owned(),
+            body: json!({"id": id, "from": from, "to": ["@SAK9FZ"], "text": "go"}),
+        };
+        let (as_here, as_osprey) = (recent(0, "WCJQSG", 1), recent(0, "OSPREY", 2));
+        let own = recent(0, "SAK9FZ", 3);
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("tern").hello()),
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(Vec::new()),
+                },
+                planted("posing", "WCJQSG"),
+                planted("posed", "osprey"),
+                planted("early", "HARBR1"),
+                planted("sak9fz", "SAK9FZ"),
+                message(&as_here, "WCJQSG"),
+                message(&as_osprey, "OSPREY"),
+                message(&own, "SAK9FZ"),
+            ],
+        )
+        .await;
+        until(&skiff, |store| store.message(&own).is_some()).await;
+
+        let tern_holds = |store: &Memory| {
+            let mut held: Vec<String> = store
+                .presences()
+                .into_iter()
+                .filter(|presence| presence.elsewhere.as_deref() == Some("tern"))
+                .map(|presence| presence.session)
+                .collect();
+            held.sort();
+            held
+        };
+        assert_eq!(
+            tern_holds(&skiff),
+            ["early", "sak9fz"],
+            "a presence answering to a session living here or on osprey isn't kept"
+        );
+        assert!(
+            skiff.message(&as_here).is_none() && skiff.message(&as_osprey).is_none(),
+            "so nothing is said as either"
+        );
+
+        // A session that comes to live here after the worker took its name
+        // first is still the only one heard as it.
+        skiff.start_here(
+            "harb01",
+            json!({"session": "harb01", "addresses": ["HARBR1"]}),
+            true,
+        );
+        let (as_harbour, after) = (recent(0, "HARBR1", 4), recent(0, "SAK9FZ", 5));
+        says(
+            &mut far_writing,
+            &[message(&as_harbour, "HARBR1"), message(&after, "SAK9FZ")],
+        )
+        .await;
+        until(&skiff, |store| store.message(&after).is_some()).await;
+        assert!(
+            skiff.message(&as_harbour).is_none(),
+            "a name taken before its session lived here speaks for the worker no longer"
         );
     }
 
