@@ -385,9 +385,7 @@ pub async fn run(
         arrived,
         following: inboxes.clone().map(Following::new),
         inboxes,
-        parked: starting
-            .as_ref()
-            .map(|starting| (starting.parked(), crate::node::standing::began())),
+        parked: parked_of(starting.as_ref()),
         held: starting.as_ref().map(|starting| starting.held.clone()),
         health: health_of(starting.as_ref()),
         declared: declared_of(starting.as_ref()),
@@ -879,6 +877,12 @@ enum Declaring {
     /// machine to be, as a link another machine dialled does, since it
     /// runs apart from the node and is started by whatever SSH runs.
     Node(PathBuf),
+}
+
+/// Where this machine's parked sessions' markers are, and when it booted,
+/// for an end that carries starts. None otherwise.
+fn parked_of(starting: Option<&Starting>) -> Option<(PathBuf, Option<i64>)> {
+    starting.map(|starting| (starting.parked(), crate::node::standing::began()))
 }
 
 /// This machine's own health as a link says it, when the link carries

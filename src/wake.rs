@@ -57,7 +57,9 @@ pub fn parked(park: &Path, booted: Option<i64>) -> Vec<Parked> {
     let names = folder.names().unwrap_or_default();
     names
         .into_iter()
-        .filter(|(name, _)| name.ends_with(".json") && !name.starts_with('.'))
+        // The harness names markers in lower case, so a name ending
+        // otherwise is no marker.
+        .filter(|(name, _)| name.strip_suffix(".json").is_some() && !name.starts_with('.'))
         .filter_map(|(name, _)| marker(&folder, &name, booted))
         .collect()
 }
@@ -114,11 +116,7 @@ pub fn gives_turn(
             .iter()
             .any(|own| own.eq_ignore_ascii_case(address))
     };
-    if message
-        .get("from")
-        .and_then(Value::as_str)
-        .is_some_and(&its)
-    {
+    if message.get("from").and_then(Value::as_str).is_some_and(its) {
         return false;
     }
     let to: Vec<&str> = message
@@ -128,7 +126,7 @@ pub fn gives_turn(
         .flatten()
         .filter_map(Value::as_str)
         .collect();
-    let home = |group: &str| group.strip_prefix('@').is_some_and(|address| its(address));
+    let home = |group: &str| group.strip_prefix('@').is_some_and(its);
     let member = |group: &str| {
         groups
             .iter()
@@ -144,7 +142,7 @@ pub fn gives_turn(
         .get("re")
         .and_then(Value::as_str)
         .and_then(earlier)
-        .and_then(|answered| answered.get("from")?.as_str().map(&its));
+        .and_then(|answered| answered.get("from")?.as_str().map(its));
     match message.get("intent").and_then(Value::as_str) {
         Some("pivot") => true,
         Some("hold") if to.iter().any(|group| home(group)) => true,
