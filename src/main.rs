@@ -844,6 +844,16 @@ struct Node {
     /// limit for five minutes, and all of them as the node starts.
     #[arg(long, requires = "eases")]
     eases_sleep: Option<PathBuf>,
+    /// Where this machine's sessions, running as the account
+    /// `--worker-uid` names, are present and speak on the mesh through
+    /// the node, which judges what each says, as a worker machine's do.
+    /// Its folder must be the node's account's or the system's alone.
+    #[arg(long, requires = "worker_uid")]
+    worker_socket: Option<PathBuf>,
+    /// The account whose sessions `--worker-socket` answers; a process
+    /// of any other is refused.
+    #[arg(long, requires = "worker_socket")]
+    worker_uid: Option<u32>,
 }
 
 /// A machines file of builders to dial, as `--builders` gives it.
@@ -2150,6 +2160,10 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
         }),
         lends_from: node.lends_from,
         lend: node.lend,
+        worker: node
+            .worker_socket
+            .zip(node.worker_uid)
+            .map(|(socket, uid)| mycelium::node::Worker { socket, uid }),
     };
     tell!(
         "mycelium: {}",

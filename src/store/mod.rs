@@ -192,6 +192,19 @@ pub trait Store: Clone + Send + Sync + 'static {
     /// machine's own sessions, and other machines', are never touched.
     fn remove_presence(&self, session: &str, machine: &str) -> io::Result<()>;
 
+    /// Keeps `body` as the presence of `session`, a session of this
+    /// machine's that the node itself speaks for, as it does for one
+    /// present through its worker socket: its owner is the node's own
+    /// process, so it stands while the node runs and is judged ended once
+    /// the node is gone. Refused where the id names another machine's
+    /// session, or one of this machine's another process holds, living or
+    /// parked.
+    fn put_own_presence(&self, session: &str, body: &Value) -> io::Result<()>;
+
+    /// Lets go of the presence of `session` where the node's own process
+    /// owns it, as [`Self::put_own_presence`] wrote it; any other is left.
+    fn remove_own_presence(&self, session: &str) -> io::Result<()>;
+
     /// Each session another machine ran whose presence was let go here in
     /// the last week, as that machine last wrote it and living no more,
     /// so a session that ended there is still known by who ran it. Kept

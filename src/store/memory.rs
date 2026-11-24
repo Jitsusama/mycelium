@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use super::{Change, Changes, Claim, Presence, Store};
@@ -394,6 +394,64 @@ impl Store for Memory {
                 .unwrap_or(0);
             let all = earlier.saturating_add(at.saturating_sub(seen).max(0));
             fields.insert("unreachableSeenFor".to_owned(), Value::from(all));
+            held.tell(&Change::Presence);
+        }
+        Ok(())
+    }
+
+    fn put_own_presence(&self, session: &str, body: &Value) -> io::Result<()> {
+        let mut held = self.held();
+        if body.get("session").and_then(Value::as_str) != Some(session) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the presence names another session",
+            ));
+        }
+        let mine = i64::from(std::process::id());
+        // As the folders judge it: another machine's session, or one of
+        // this machine's another process holds, living or parked.
+        if let Some(was) = held.presences.get(session)
+            && was.body.pointer("/owner/pid").and_then(Value::as_i64) != Some(mine)
+            && (was.elsewhere.is_some()
+                || was.lives
+                || was.body.get("state").and_then(Value::as_str) == Some("parked"))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "a session another process or machine holds",
+            ));
+        }
+        let mut body = body.clone();
+        if let Some(fields) = body.as_object_mut() {
+            fields.remove("machine");
+            for kept in ["unreachableSince", "unreachableSeen", "unreachableSeenFor"] {
+                fields.remove(kept);
+            }
+            fields.insert("owner".to_owned(), json!({"pid": mine}));
+        }
+        held.presences.insert(
+            session.to_owned(),
+            Presence {
+                session: session.to_owned(),
+                body: Arc::new(body),
+                elsewhere: None,
+                lives: true,
+                unreachable_since: None,
+            },
+        );
+        held.tell(&Change::Presence);
+        Ok(())
+    }
+
+    fn remove_own_presence(&self, session: &str) -> io::Result<()> {
+        let mut held = self.held();
+        let mine = i64::from(std::process::id());
+        let owned = held.presences.get(session).is_some_and(|was| {
+            was.elsewhere.is_none()
+                && was.body.pointer("/owner/pid").and_then(Value::as_i64) == Some(mine)
+        });
+        if owned {
+            held.presences.remove(session);
             held.tell(&Change::Presence);
         }
         Ok(())
