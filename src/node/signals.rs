@@ -51,7 +51,7 @@ impl<S: Store + Clone + Send + Sync + 'static> Shared<S> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id.clone());
-        self.store.put_message(&id, &body)
+        self.store.put_message(&id, &body).map(drop)
     }
 
     /// Whether `message` is one the node takes: any but one from a

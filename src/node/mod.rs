@@ -4297,6 +4297,7 @@ impl<S: Store> Shared<S> {
                 Arc::new(move |machine: &str, words: &[String]| dial.joins(machine, words))
             })),
             steers: self.steers.clone(),
+            parked: self.parked.clone(),
             health: Some(self.health.subscribe()),
             declared: Some(self.declared.clone()),
             kit: self.given_kit().cloned(),
@@ -9261,6 +9262,7 @@ mod tests {
                     node,
                     held: held_here,
                     asking,
+                    parked: steers.with_file_name("parked"),
                     steers,
                     health: None,
                     kit: None,
@@ -9538,6 +9540,7 @@ mod tests {
             held: dir.path().join("work.held"),
             asking: None,
             steers: dir.path().join("steer"),
+            parked: dir.path().join("parked"),
             health: None,
             declared: Some(dir.path().join("declared.json")),
             kit: None,

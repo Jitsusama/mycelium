@@ -352,14 +352,14 @@ impl Store for Folders {
         read_in(&messages, &file).or_else(|| read_in(&moved(&messages, id)?, &file))
     }
 
-    fn put_message(&self, id: &str, body: &Value) -> io::Result<()> {
+    fn put_message(&self, id: &str, body: &Value) -> io::Result<bool> {
         let file = format!("{}.json", safe(id)?);
         let messages = self.folder("messages")?;
         let moved = moved(&messages, id).is_some_and(|day| day.holds(&file));
         if moved || messages.holds(&file) {
-            return Ok(());
+            return Ok(false);
         }
-        write_in(&messages, &file, body)
+        write_in(&messages, &file, body).map(|()| true)
     }
 
     fn presences(&self) -> Vec<Presence> {
@@ -1279,12 +1279,18 @@ mod tests {
     fn a_message_is_kept_once_and_found_by_when_it_was_sent() {
         let (_dir, store) = store();
         let id = "1793046604647-0FX11G-875563-952d5879";
-        store
-            .put_message(id, &json!({"text": "first"}))
-            .expect("the message is kept");
-        store
-            .put_message(id, &json!({"text": "again"}))
-            .expect("a repeat is taken quietly");
+        assert!(
+            store
+                .put_message(id, &json!({"text": "first"}))
+                .expect("the message is kept"),
+            "kept now"
+        );
+        assert!(
+            !store
+                .put_message(id, &json!({"text": "again"}))
+                .expect("a repeat is taken quietly"),
+            "a repeat says it was held already"
+        );
         assert_eq!(store.message(id), Some(json!({"text": "first"})));
         assert_eq!(store.message_ids(1_793_046_604_647), [id]);
         assert!(

@@ -52,14 +52,14 @@ pub struct Parked {
     pub wake: PathBuf,
 }
 
-/// Every session parked on this machine as the markers in `park`'s
-/// `parked` folder say, each written since `booted` (milliseconds since
-/// the epoch) where that is known, since a marker from before the machine
-/// started names a holder that is gone. Only a marker this account wrote,
-/// in a folder no other account may write, is read.
+/// Every session parked on this machine as the markers in `park` say,
+/// each written since `booted` (milliseconds since the epoch) where that
+/// is known, since a marker from before the machine started names a
+/// holder that is gone. Only a marker this account wrote, in a folder no
+/// other account may write, is read.
 #[must_use]
 pub fn parked(park: &Path, booted: Option<i64>) -> Vec<Parked> {
-    let Ok(folder) = Folder::open(park, &["parked"]) else {
+    let Ok(folder) = Folder::open(park, &[]) else {
         return Vec::new();
     };
     if !folder.own() {
@@ -291,11 +291,11 @@ mod tests {
     /// A parked session `session`, answering to `address`, waking by a
     /// file in `wakes`, as the harness parks it under `park`.
     fn park_one(park: &Path, wakes: &Path, session: &str, address: &str) -> PathBuf {
-        fs::create_dir_all(park.join("parked")).expect("the parked folder");
+        fs::create_dir_all(park).expect("the parked folder");
         fs::create_dir_all(wakes).expect("the wakes' folder");
         let wake = wakes.join(format!("{session}.wake"));
         fs::write(
-            park.join("parked").join(format!("{session}.json")),
+            park.join(format!("{session}.json")),
             json!({"session": session, "addresses": [address], "wake": wake}).to_string(),
         )
         .expect("a marker");
@@ -513,7 +513,7 @@ mod tests {
             "a folder another account may write is never written in"
         );
         fs::set_permissions(&wakes, fs::Permissions::from_mode(0o755)).expect("closed again");
-        fs::set_permissions(park.join("parked"), fs::Permissions::from_mode(0o777))
+        fs::set_permissions(&park, fs::Permissions::from_mode(0o777))
             .expect("markers opened to all");
         assert!(
             parked(&park, None).is_empty(),

@@ -882,7 +882,7 @@ enum Declaring {
 /// Where this machine's parked sessions' markers are, and when it booted,
 /// for an end that carries starts. None otherwise.
 fn parked_of(starting: Option<&Starting>) -> Option<(PathBuf, Option<i64>)> {
-    starting.map(|starting| (starting.parked(), crate::node::standing::began()))
+    starting.map(|starting| (starting.parked.clone(), crate::node::standing::began()))
 }
 
 /// This machine's own health as a link says it, when the link carries
@@ -1338,10 +1338,12 @@ impl<S: Store> End<S> {
             "only its own machine's node speaks as a receptor"
         } else if body.get("id").and_then(Value::as_str) == Some(id) {
             let kept = self.store.put_message(id, body);
-            if kept.is_ok() {
+            // A message carried again, as after a link drops, woke its
+            // sessions when it first came.
+            if matches!(kept, Ok(true)) {
                 self.wake_parked(id, body);
             }
-            return self.kept(id, kept);
+            return self.kept(id, kept.map(drop));
         } else {
             "its body names another id"
         };
@@ -2354,7 +2356,7 @@ impl<S: Store> End<S> {
         // any message does, the other's.
         for draft in exchange.findings() {
             let (id, body) = mesh::written(&draft, std::process::id());
-            self.kept(&id, self.store.put_message(&id, &body));
+            self.kept(&id, self.store.put_message(&id, &body).map(drop));
         }
         self.exchange = Some(exchange);
         match says {
@@ -3255,6 +3257,7 @@ mod tests {
             held: dir.path().join("held"),
             asking: None,
             steers: dir.path().join("steer"),
+            parked: dir.path().join("parked"),
             health: Some(slot.subscribe()),
             declared: Some(dir.path().join("declared.json")),
             kit: None,
@@ -3417,6 +3420,7 @@ mod tests {
             held: dir.join("held"),
             asking: None,
             steers: dir.join("steer"),
+            parked: dir.join("parked"),
             health: None,
             declared: Some(dir.join("declared.json")),
             kit: None,
@@ -3459,6 +3463,7 @@ mod tests {
             held: dir.join("held"),
             asking: None,
             steers: dir.join("steer"),
+            parked: dir.join("parked"),
             health: None,
             declared: Some(dir.join("declared.json")),
             kit: Some(kit),
@@ -3608,6 +3613,7 @@ mod tests {
             held: dir.join("held"),
             asking: Some(Asking::Dialled),
             steers: dir.join("steer"),
+            parked: dir.join("parked"),
             health: None,
             declared: None,
             kit: None,
@@ -3931,6 +3937,7 @@ mod tests {
             held,
             asking: None,
             steers: dir.join("steer"),
+            parked: dir.join("parked"),
             health: None,
             declared: None,
             kit: None,
@@ -4503,6 +4510,7 @@ mod tests {
             held: dir.path().join("held"),
             asking: None,
             steers: dir.path().join("steer"),
+            parked: dir.path().join("parked"),
             health: None,
             declared: None,
             kit: None,
@@ -5526,6 +5534,7 @@ mod tests {
             held: dir.join("held"),
             asking: None,
             steers: dir.join("inboxes"),
+            parked: dir.join("parked"),
             health: None,
             declared: Some(dir.join("declared.json")),
             kit: None,
@@ -5541,7 +5550,7 @@ mod tests {
     async fn a_message_carried_in_wakes_the_parked_session_it_gives_a_turn() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let starting = steering(dir.path());
-        let parked = starting.parked().join("parked");
+        let parked = starting.parked.clone();
         let wakes = dir.path().join("wakes");
         std::fs::create_dir_all(&parked).expect("the parked folder");
         std::fs::create_dir_all(&wakes).expect("the wakes' folder");
@@ -5602,6 +5611,19 @@ mod tests {
             said["messageId"].as_str(),
             Some(asked.as_str()),
             "the news after it woke neither again"
+        );
+
+        std::fs::remove_file(wakes.join("s1.wake")).expect("its wake taken, as its holder does");
+        let later = recent(0, "WCJQSG", 3);
+        says(
+            &mut far_writing,
+            &[message(&asked, "question"), message(&later, "fyi")],
+        )
+        .await;
+        until(&skiff, |store| store.message(&later).is_some()).await;
+        assert!(
+            !wakes.join("s1.wake").exists(),
+            "the question carried again wakes nobody twice"
         );
     }
 

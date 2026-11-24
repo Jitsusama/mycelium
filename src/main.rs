@@ -2138,6 +2138,7 @@ fn run_link(here: Here, realm: String, socket: PathBuf, far: Option<String>) -> 
         held,
         asking: Some(link::starts::Asking::Dialled),
         steers,
+        parked: place::parked(),
         // A dialled link runs apart from the node, so asks it.
         health: None,
         declared: None,
