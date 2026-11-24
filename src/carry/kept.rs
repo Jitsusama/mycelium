@@ -6,10 +6,14 @@
 //! A carry stands refused once its session writes a refusal since it was
 //! ordered; carrying once the session leaves here, by a done file written
 //! since or by ending; arrived once it runs on the machine it was carried
-//! to; and back once it runs here again after leaving. Until any of
-//! those, it stands ordered. The node keeps no state of its own for it,
-//! so a node started afresh judges each as it did before.
+//! to, or ended there, or its quest goes on there in another session;
+//! and back once it runs here again after leaving, or its quest goes on
+//! here alone in another session. Until any of those, it stands ordered,
+//! and one that stands ordered or carrying [`STUCK_AFTER`] after it was
+//! ordered stands stuck, saying why. The node keeps no state of its own
+//! for it, so a node started afresh judges each as it did before.
 
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -21,6 +25,10 @@ pub const KIND: &str = "carry";
 
 /// How long a carry is shown after it was ordered.
 pub const SHOWN_FOR: jiff::SignedDuration = jiff::SignedDuration::from_hours(24);
+
+/// How long a carry may go without arriving before it stands stuck: a
+/// carry takes a few minutes, its trees' bundles most of them.
+pub const STUCK_AFTER: jiff::SignedDuration = jiff::SignedDuration::from_mins(30);
 
 /// How a carry stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +43,9 @@ pub enum State {
     Arrived,
     /// Running here again, after it left.
     Back,
+    /// Neither arrived nor back [`STUCK_AFTER`] after it was ordered,
+    /// saying how it stands instead.
+    Stuck(String),
 }
 
 /// What the node sees of a carry's session since the carry was ordered.
@@ -47,6 +58,41 @@ pub struct Seen {
     pub left: bool,
     /// The machine it runs on now, when it runs anywhere.
     pub runs_on: Option<String>,
+    /// The machine it last ran on, when it is seen ended.
+    pub ended_on: Option<String>,
+    /// The machines a session of its quest runs on now.
+    pub quest_on: BTreeSet<String>,
+}
+
+/// Where the node sees sessions, by its own state, for judging carries.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Sightings {
+    /// Where each session seen running, or parked, runs, by its id.
+    pub runs_on: HashMap<String, String>,
+    /// Where each session seen ended last ran, by its id.
+    pub ended_on: HashMap<String, String>,
+    /// The machines each quest has a session running, or parked, on, by
+    /// the quest's id.
+    pub quest_on: HashMap<String, BTreeSet<String>>,
+}
+
+impl Sightings {
+    /// `seen` of `kept`'s session with where the node sees it, and its
+    /// quest, added.
+    #[must_use]
+    pub fn seen(&self, kept: &Kept, seen: Seen) -> Seen {
+        let session = kept.said("session");
+        Seen {
+            runs_on: self.runs_on.get(session).cloned(),
+            ended_on: self.ended_on.get(session).cloned(),
+            quest_on: self
+                .quest_on
+                .get(kept.said("quest"))
+                .cloned()
+                .unwrap_or_default(),
+            ..seen
+        }
+    }
 }
 
 /// A carry as kept: its id, when it was ordered, and its line.
@@ -140,24 +186,43 @@ pub fn shown(kept: &Kept, since: jiff::Timestamp) -> bool {
     kept.at >= since || settled.is_some_and(|at| at >= since)
 }
 
-/// How `kept` stands, by what was `seen` of its session. A refusal says
-/// it whatever else is seen, since the session stayed to write it.
+/// How `kept` stands at `now`, by what was `seen` of its session. A
+/// refusal says it whatever else is seen, since the session stayed to
+/// write it. Where its session runs says it next; where it runs nowhere,
+/// its quest does, since a carry may bring its quest up in a session of
+/// another id, or the quest go on here in a new one.
 #[must_use]
-pub fn judged(kept: &Kept, seen: &Seen) -> State {
+pub fn judged(kept: &Kept, seen: &Seen, now: jiff::Timestamp) -> State {
     if let Some(why) = &seen.refused {
         return State::Refused(why.clone());
     }
-    match seen.runs_on.as_deref() {
-        Some(machine) if machine == kept.said("to") => State::Arrived,
-        Some(machine) if machine == kept.said("from") => {
-            if seen.left {
-                State::Back
-            } else {
-                State::Ordered
-            }
+    let (from, to) = (kept.said("from"), kept.said("to"));
+    let state = match seen.runs_on.as_deref() {
+        Some(machine) if machine == to => return State::Arrived,
+        Some(machine) if machine == from && seen.left => return State::Back,
+        Some(machine) if machine == from => State::Ordered,
+        Some(_) => State::Carrying,
+        None if seen.ended_on.as_deref() == Some(to) || seen.quest_on.contains(to) => {
+            return State::Arrived;
         }
-        _ => State::Carrying,
+        None if seen.quest_on.contains(from) => return State::Back,
+        None => State::Carrying,
+    };
+    let waited = now.duration_since(kept.at) >= STUCK_AFTER;
+    if !waited {
+        return state;
     }
+    let minutes = STUCK_AFTER.as_mins();
+    State::Stuck(match seen.runs_on.as_deref() {
+        Some(machine) if machine == from => {
+            format!("still running on {from} {minutes} minutes after it was ordered")
+        }
+        Some(machine) => format!("running on {machine}, not on {to}, where it was carried"),
+        None => format!(
+            "neither it nor its quest seen running on {to} {minutes} minutes after it was \
+             ordered"
+        ),
+    })
 }
 
 /// The fields of a kept line the person reads, with what settling its
@@ -184,6 +249,10 @@ pub fn fields(kept: &Kept, state: &State) -> Value {
         State::Carrying => "carrying",
         State::Arrived => "arrived",
         State::Back => "back",
+        State::Stuck(why) => {
+            fields.insert("stuck".to_owned(), Value::from(why.as_str()));
+            "stuck"
+        }
     };
     fields.insert("state".to_owned(), Value::from(stands));
     Value::Object(fields)
@@ -263,7 +332,7 @@ pub fn heard(told: &Value) -> Option<(Kept, Seen)> {
             .and_then(Value::as_str)
             .map(str::to_owned),
         left: told.get("left").and_then(Value::as_bool).unwrap_or(false),
-        runs_on: None,
+        ..Seen::default()
     };
     let kept = Kept {
         id: format!("{session}:{said}"),
@@ -280,8 +349,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        Kept, MOST_TOLD, MOST_TOLD_BYTES, Seen, State, bounded, fields, fits, heard, judged, read,
-        shown, told,
+        Kept, MOST_TOLD, MOST_TOLD_BYTES, STUCK_AFTER, Seen, Sightings, State, bounded, fields,
+        fits, heard, judged, read, shown, told,
     };
 
     /// HARBOR's carry from skiff to tern, ordered at `at`.
@@ -306,15 +375,33 @@ mod tests {
 
     fn on(machine: &str, left: bool) -> Seen {
         Seen {
-            refused: None,
             left,
             runs_on: Some(machine.to_owned()),
+            ..Seen::default()
+        }
+    }
+
+    /// A moment `minutes` after [`harbour`] was ordered.
+    fn after(minutes: i64) -> jiff::Timestamp {
+        harbour().at + jiff::SignedDuration::from_mins(minutes)
+    }
+
+    /// What is seen of a session running nowhere, whose quest runs on
+    /// `machines`.
+    fn quest_on(machines: &[&str]) -> Seen {
+        Seen {
+            quest_on: machines
+                .iter()
+                .map(|machine| (*machine).to_owned())
+                .collect(),
+            ..Seen::default()
         }
     }
 
     #[test]
     fn a_carry_stands_as_its_session_is_seen() {
         let kept = harbour();
+        let now = after(5);
         for (seen, state, said) in [
             (on("skiff", false), State::Ordered, "still here, never gone"),
             (
@@ -347,8 +434,152 @@ mod tests {
                 "somewhere it wasn't carried, so not arrived",
             ),
         ] {
-            assert_eq!(judged(&kept, &seen), state, "{said}: {seen:?}");
+            assert_eq!(judged(&kept, &seen, now), state, "{said}: {seen:?}");
         }
+    }
+
+    #[test]
+    fn a_carry_whose_session_runs_nowhere_stands_as_its_quest_is_seen() {
+        let kept = harbour();
+        let now = after(5);
+        for (seen, state, said) in [
+            (
+                quest_on(&["tern"]),
+                State::Arrived,
+                "its quest came up there in a session of another id",
+            ),
+            (
+                quest_on(&["skiff", "tern"]),
+                State::Arrived,
+                "there, though it goes on here too",
+            ),
+            (
+                quest_on(&["skiff"]),
+                State::Back,
+                "its quest goes on here alone, in a new session",
+            ),
+            (
+                Seen {
+                    ended_on: Some("tern".to_owned()),
+                    ..Seen::default()
+                },
+                State::Arrived,
+                "it ended where it went",
+            ),
+            (
+                Seen {
+                    ended_on: Some("skiff".to_owned()),
+                    ..Seen::default()
+                },
+                State::Carrying,
+                "it ended here, and nothing of it is seen yet",
+            ),
+            (
+                quest_on(&["kestrel"]),
+                State::Carrying,
+                "its quest runs only somewhere it wasn't carried",
+            ),
+            (
+                Seen {
+                    quest_on: ["tern".to_owned()].into(),
+                    ..on("skiff", false)
+                },
+                State::Ordered,
+                "its own session, still here, says it first",
+            ),
+        ] {
+            assert_eq!(judged(&kept, &seen, now), state, "{said}: {seen:?}");
+        }
+    }
+
+    #[test]
+    fn a_carry_neither_arrived_nor_back_in_half_an_hour_stands_stuck_saying_why() {
+        let kept = harbour();
+        let minutes = STUCK_AFTER.as_mins();
+        assert_eq!(
+            judged(&kept, &Seen::default(), after(minutes - 1)),
+            State::Carrying,
+            "within its half hour"
+        );
+        for (seen, why) in [
+            (
+                Seen::default(),
+                "neither it nor its quest seen running on tern 30 minutes after it was ordered",
+            ),
+            (
+                on("skiff", false),
+                "still running on skiff 30 minutes after it was ordered",
+            ),
+            (
+                on("kestrel", true),
+                "running on kestrel, not on tern, where it was carried",
+            ),
+        ] {
+            assert_eq!(
+                judged(&kept, &seen, after(minutes)),
+                State::Stuck(why.to_owned()),
+                "{seen:?}"
+            );
+        }
+        for (seen, state) in [
+            (on("tern", false), State::Arrived),
+            (on("skiff", true), State::Back),
+            (quest_on(&["tern"]), State::Arrived),
+            (
+                Seen {
+                    refused: Some("it holds a lease".to_owned()),
+                    ..Seen::default()
+                },
+                State::Refused("it holds a lease".to_owned()),
+            ),
+        ] {
+            assert_eq!(
+                judged(&kept, &seen, after(24 * 60)),
+                state,
+                "what settles a carry holds however long it took: {seen:?}"
+            );
+        }
+        assert_eq!(
+            fields(&kept, &State::Stuck("why".to_owned())),
+            json!({
+                "at": "2026-11-15T20:00:00Z", "by": "WCJQSG", "session": "s-harbour",
+                "address": "HARBOR", "quest": "QEST-20261115-HARBOR", "from": "skiff",
+                "to": "tern", "why": "it needs the camera", "state": "stuck", "stuck": "why",
+            }),
+            "its record says why it is stuck"
+        );
+    }
+
+    #[test]
+    fn what_the_node_sees_is_added_to_what_its_handover_says() {
+        let sightings = Sightings {
+            runs_on: [("s-harbour".to_owned(), "tern".to_owned())].into(),
+            ended_on: [("s-harbour".to_owned(), "skiff".to_owned())].into(),
+            quest_on: [(
+                "QEST-20261115-HARBOR".to_owned(),
+                ["tern".to_owned()].into(),
+            )]
+            .into(),
+        };
+        let handed = Seen {
+            left: true,
+            ..Seen::default()
+        };
+        assert_eq!(
+            sightings.seen(&harbour(), handed),
+            Seen {
+                left: true,
+                runs_on: Some("tern".to_owned()),
+                ended_on: Some("skiff".to_owned()),
+                quest_on: ["tern".to_owned()].into(),
+                ..Seen::default()
+            }
+        );
+        assert_eq!(
+            Sightings::default().seen(&harbour(), Seen::default()),
+            Seen::default(),
+            "nothing seen"
+        );
     }
 
     #[test]
@@ -373,6 +604,7 @@ mod tests {
             (State::Refused(String::new()), "refused"),
             (State::Carrying, "carrying"),
             (State::Back, "back"),
+            (State::Stuck(String::new()), "stuck"),
         ] {
             assert_eq!(fields(&kept, &state)["state"], json!(name), "{state:?}");
         }
@@ -484,7 +716,7 @@ mod tests {
                 &Seen {
                     refused: Some("it holds a lease".to_owned()),
                     left: true,
-                    runs_on: None,
+                    ..Seen::default()
                 }
             ),
             "heard as told, where it runs left for the hearer to see"

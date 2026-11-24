@@ -963,10 +963,17 @@ has one, `why`, as kept,
 `settle` once it settled, and `state`, judged from what the node sees
 itself, never from what a session or its orchestrator says: `refused`,
 with `refused` saying why, once the session wrote a refusal
-since; `arrived` once it runs on `to`; `back` once it runs here again
-after its done file was written since; `carrying` once it is gone from
-here, by its presence ending or running somewhere else; and `ordered`
-until then. Its `state` and `refused` are live. The chain and asker
+since; `arrived` once it runs on `to`, or, running nowhere, once it
+last ended on `to` or a session of its quest runs or is parked there,
+since a session carried may come back to life under an id of its own;
+`back` once it runs here again after its done file was written since,
+or, running nowhere, once a session of its quest runs here; `carrying`
+once it is gone from here, by its presence ending or running somewhere
+else; and `ordered` until then. An `ordered` or `carrying` carry kept
+half an hour ago or more stands `stuck` instead, with `stuck` saying
+why: still running here, running on a machine other than `to`, or
+neither it nor its quest seen on `to`. Its `state`, `refused` and
+`stuck` are live. The chain and asker
 stay in the file, which proves them. Each node serves the carries it
 kept, and those each linked machine's node told of in a `Carries`
 frame while a link carried it within the last day. Of those, `refused`
@@ -991,7 +998,9 @@ started afresh has seen none arrive, but takes one with a line in
 it stood `arrived` when asked. It looks as presences
 change and each minute, at the newest carry of each session kept
 within the week; never at one standing `refused`, `ordered`,
-`carrying` or `back`. Settling lets go of each tree holding
+`carrying`, `stuck` or `back`. Settling goes by the carried session
+alone, never its quest, since another session of the quest on `to`
+doesn't show the trees this one left were taken. Settling lets go of each tree holding
 nothing the carry didn't take, and otherwise keeps every one, saying
 why. `pi-carry` itself settles nothing of a session its own session
 record says runs here again, and keeps each tree the work broker's

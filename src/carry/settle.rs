@@ -364,7 +364,7 @@ impl Settler {
                     back.remove(&carry.id);
                     (State::Arrived, false)
                 }
-                State::Carrying
+                State::Carrying | State::Stuck(_)
                     if arrived.contains(&carry.id)
                         || (said.is_some() && !back.contains(&carry.id)) =>
                 {

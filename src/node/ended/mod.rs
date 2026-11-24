@@ -218,13 +218,19 @@ fn address_told(said: &str) -> Option<String> {
 
 /// The sessions whose end here is a carry rather than their work
 /// stopping: each of `carries` ordered within [`CARRIED_WITHIN`] of `now`
-/// that `judge` says neither refused nor came back. Only those carries
-/// are judged, as judging reads their handovers.
+/// that `judge` says neither refused, came back nor stuck, since a
+/// session whose carry stuck ended here with nothing of it running on.
+/// Only those carries are judged, as judging reads their handovers.
 pub fn carried(carries: &[Kept], judge: impl Fn(&Kept) -> CarryState, now: i64) -> HashSet<String> {
     carries
         .iter()
         .filter(|carry| now - carry.at.as_millisecond() <= CARRIED_WITHIN)
-        .filter(|carry| !matches!(judge(carry), CarryState::Refused(_) | CarryState::Back))
+        .filter(|carry| {
+            !matches!(
+                judge(carry),
+                CarryState::Refused(_) | CarryState::Back | CarryState::Stuck(_)
+            )
+        })
         .map(|carry| carry.said("session").to_owned())
         .collect()
 }
