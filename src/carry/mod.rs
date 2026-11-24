@@ -2455,14 +2455,14 @@ mod tests {
 
     #[test]
     fn a_worker_that_takes_carries_is_given_the_quest_as_it_is_shared() {
-        let mut realm = Realm {
+        let mut worker = Realm {
             lent: [("tern".to_owned(), Lent::TakesCarries)].into(),
             ..realm()
         };
-        let (done, _) = carried(&mut realm, "tern");
+        let (done, _) = carried(&mut worker, "tern");
         done.expect("carried");
-        assert_eq!(realm.shared, [QUEST], "shared once");
-        assert_eq!(realm.given, ["tern"], "and given to the worker alone");
+        assert_eq!(worker.shared, [QUEST], "shared once");
+        assert_eq!(worker.given, ["tern"], "and given to the worker alone");
         let mut own = realm();
         carried(&mut own, "tern").0.expect("carried");
         assert!(

@@ -70,7 +70,12 @@ pub fn names_a_secret(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     let private_ssh = ["id_rsa", "id_ecdsa", "id_ed25519", "id_dsa"]
         .iter()
-        .any(|key| lower.starts_with(key) && !lower.ends_with(".pub"));
+        .any(|key| {
+            lower.starts_with(key)
+                && !Path::new(&lower)
+                    .extension()
+                    .is_some_and(|public| public == "pub")
+        });
     let ends = [".pem", ".key", ".p12", ".pfx", ".tpm"]
         .iter()
         .any(|end| lower.ends_with(end));
