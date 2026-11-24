@@ -674,7 +674,7 @@ mod tests {
         );
         assert_eq!(
             addresses(&aim(&swarm, Act::Pause, "harbor").expect("its own case reaches it")),
-            ["REEF"],
+            ["CORAL"],
             "the other was hidden in turn"
         );
     }
