@@ -2122,7 +2122,9 @@ ground no looser go as any start. A start relayed from
 another machine's node is pinned to this one, which is never looser
 than itself. A node run as a systemd unit
 starts each holder in a scope of its own, `mycelium-pi-<held>.scope` in
-`app.slice`, so the session outlives the node. A start placed on
+`agents.slice`, so the session outlives the node and is weighed as an
+agent's, never on the floor kept for the person's own programs. A
+start placed on
 another machine is asked of it through the link this node keeps to it,
 without the tools its work prefers, since a node too old to read one
 may have been preferred and would end the link rather than answer, and
