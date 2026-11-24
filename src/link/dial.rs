@@ -22,9 +22,10 @@ pub struct Connection {
     pub writing: Box<dyn AsyncWrite + Unpin + Send>,
     /// Kept until the link is over, such as the process carrying it.
     pub keep: Box<dyn Send>,
-    /// Why the way in turned this machine away, if it did, known once it
-    /// has ended; none for a way in that never refuses.
-    pub refused: Option<JoinHandle<Option<String>>>,
+    /// What the way in said of the other machine, known once it has
+    /// ended: that it turned this machine away, or that its provider says
+    /// it is gone; none for a way in that never says either.
+    pub said: Option<JoinHandle<Option<refused::Said>>>,
     /// Whether the way in can release the machine it reaches once that
     /// machine hands over ([`Dial::release`]).
     pub releases: bool,
@@ -111,6 +112,17 @@ impl Dial for Ssh {
         {
             there.extend(["-o".to_owned(), option.clone()]);
         }
+        // After the machine's own, so an option it gives wins, as SSH
+        // takes the first of each.
+        for option in KEPT_ALIVE {
+            if !self
+                .options
+                .iter()
+                .any(|given| named(given) == named(option))
+            {
+                there.extend(["-o".to_owned(), option.to_owned()]);
+            }
+        }
         there.extend(["--".to_owned(), self.destination.clone()]);
         // SSH hands the other machine one line its shell reads, so each
         // word is quoted for that shell.
@@ -139,17 +151,32 @@ impl Dial for Ssh {
 /// November).
 const THE_LINKS_OWN: [&str; 2] = ["identityagent", "identitiesonly"];
 
+/// The SSH options a person's terminal is joined with, so a way that
+/// dies unsaid, as a dock's address does when it is undocked, leaving
+/// what was sent unanswered and no error, ends within 15 seconds, and
+/// the join is joined again ([`rejoin`]). The link's own SSH waits 45,
+/// since a link dropped costs more than a window redrawn.
+pub const KEPT_ALIVE: [&str; 2] = ["ServerAliveInterval=5", "ServerAliveCountMax=3"];
+
 /// Whether `option`, as `-o` takes it, chooses the link's own key
 /// ([`THE_LINKS_OWN`]).
 fn names_the_links_own(option: &str) -> bool {
-    let name = option
+    let name = named(option);
+    THE_LINKS_OWN
+        .iter()
+        .any(|own| own.eq_ignore_ascii_case(&name))
+}
+
+/// The name `option`, as `-o` takes it, gives, in lower case as SSH
+/// reads names.
+#[must_use]
+pub fn named(option: &str) -> String {
+    option
         .trim_start()
         .split(|at: char| at == '=' || at.is_whitespace())
         .next()
-        .unwrap_or_default();
-    THE_LINKS_OWN
-        .iter()
-        .any(|own| own.eq_ignore_ascii_case(name))
+        .unwrap_or_default()
+        .to_ascii_lowercase()
 }
 
 /// `word` as a shell reads it back whole.
@@ -237,6 +264,9 @@ impl Dial for Program {
         let ran = tokio::process::Command::new(&self.program)
             .args(["release", self.place.as_str()])
             .stdin(Stdio::null())
+            // A release given up on ends with its asker, rather than
+            // running on beside the one asked after it.
+            .kill_on_drop(true)
             .status()
             .await;
         Some(ran.and_then(|status| {
@@ -310,7 +340,7 @@ fn carried(mut command: tokio::process::Command) -> io::Result<Connection> {
     let (Some(writing), Some(reading)) = (child.stdin.take(), child.stdout.take()) else {
         return Err(io::Error::other("the link's program gave no pipes"));
     };
-    let refused = child
+    let said = child
         .stderr
         .take()
         .map(|said| tokio::spawn(refused::turned_away(said)));
@@ -318,7 +348,7 @@ fn carried(mut command: tokio::process::Command) -> io::Result<Connection> {
         reading: Box::new(reading),
         writing: Box::new(writing),
         keep: Box::new(child),
-        refused,
+        said,
         releases: false,
         worker: false,
         named: None,
@@ -406,6 +436,10 @@ mod tests {
                 "AddKeysToAgent=no",
                 "-o",
                 "ForwardAgent=no",
+                "-o",
+                "ServerAliveInterval=5",
+                "-o",
+                "ServerAliveCountMax=3",
                 "--",
                 "skiff",
                 "mycelium",
@@ -473,14 +507,16 @@ mod tests {
             heard, "hello\n",
             "the link runs over the program's own pipes"
         );
-        let refused = connection
-            .refused
+        let said = connection
+            .said
             .expect("a program's error output is read")
             .await
             .expect("the reading ends");
         assert_eq!(
-            refused.as_deref(),
-            Some("the gateway turned this machine away: no login"),
+            said,
+            Some(refused::Said::TurnedAway(
+                "the gateway turned this machine away: no login".to_owned()
+            )),
             "a program says a refusal as SSH does"
         );
         assert_eq!(

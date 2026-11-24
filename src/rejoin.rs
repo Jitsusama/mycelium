@@ -6,12 +6,13 @@
 
 use std::io::{self, IsTerminal as _, Write as _};
 use std::os::unix::process::ExitStatusExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::client::Client;
+use crate::link::dial::{KEPT_ALIVE, named};
 use crate::record::{Session, State};
 use crate::wire::{Request, Response};
 
@@ -54,6 +55,40 @@ pub fn served(on: &str, joins: &[String], there: Vec<String>) -> Vec<String> {
         .chain(["--".to_owned()])
         .chain(there)
         .collect()
+}
+
+/// `words` that join over SSH, with [`KEPT_ALIVE`]'s options given
+/// after `ssh` where the words give none of that name, so a way that
+/// dies unsaid ends within seconds and is joined again, even by words a
+/// node served before it gave them itself. Words that run anything but
+/// `ssh` are as they are.
+#[must_use]
+pub fn kept_alive(mut words: Vec<String>) -> Vec<String> {
+    let ssh = words.first().is_some_and(|program| {
+        Path::new(program)
+            .file_name()
+            .is_some_and(|name| name == "ssh")
+    });
+    if !ssh {
+        return words;
+    }
+    // SSH reads options up to its destination; `--` before it ends them.
+    let options = words
+        .iter()
+        .skip(1)
+        .position(|word| word == "--")
+        .map_or(words.len(), |at| at + 1);
+    let given: Vec<String> = words[1..options]
+        .iter()
+        .map(|word| named(word.strip_prefix("-o").unwrap_or(word)))
+        .collect();
+    let adding: Vec<String> = KEPT_ALIVE
+        .iter()
+        .filter(|option| !given.contains(&named(option)))
+        .flat_map(|option| ["-o".to_owned(), (*option).to_owned()])
+        .collect();
+    words.splice(1..1, adding);
+    words
 }
 
 /// How long a join waits before each try again.
@@ -454,6 +489,73 @@ mod tests {
 
     fn words(words: &[&str]) -> Vec<String> {
         words.iter().map(|&word| word.to_owned()).collect()
+    }
+
+    // WCJQSG (2026-11-23): a window joined over a dock's address froze
+    // when the dock was taken away, SSH waiting on what it had sent with
+    // no error, so it was never joined again.
+    #[test]
+    fn words_over_ssh_are_kept_alive_unless_they_say_otherwise() {
+        assert_eq!(
+            kept_alive(words(&[
+                "ssh", "-t", "--", "skiff", "mycelium", "attach", "5e55"
+            ])),
+            words(&[
+                "ssh",
+                "-o",
+                "ServerAliveInterval=5",
+                "-o",
+                "ServerAliveCountMax=3",
+                "-t",
+                "--",
+                "skiff",
+                "mycelium",
+                "attach",
+                "5e55"
+            ]),
+            "words a node served before it gave them itself"
+        );
+        assert_eq!(
+            kept_alive(words(&[
+                "/usr/bin/ssh",
+                "-oserveraliveinterval=30",
+                "-o",
+                "ServerAliveCountMax 9",
+                "skiff"
+            ])),
+            words(&[
+                "/usr/bin/ssh",
+                "-oserveraliveinterval=30",
+                "-o",
+                "ServerAliveCountMax 9",
+                "skiff"
+            ]),
+            "its own, in whatever case or form, are kept"
+        );
+        let served = words(&[
+            "ssh",
+            "-t",
+            "-o",
+            "ServerAliveInterval=5",
+            "-o",
+            "ServerAliveCountMax=3",
+            "--",
+            "skiff",
+            "mycelium",
+        ]);
+        assert_eq!(kept_alive(served.clone()), served, "none given twice");
+        let after = words(&["ssh", "--", "skiff", "ssh", "-o", "ServerAliveInterval=1"]);
+        assert_eq!(
+            kept_alive(after)[1..5],
+            words(&["-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3"]),
+            "words after the destination are the command's, not SSH's"
+        );
+        let program = words(&["aquifer-link", "run", "sandbox-1", "--", "ssh"]);
+        assert_eq!(
+            kept_alive(program.clone()),
+            program,
+            "nor any program but SSH"
+        );
     }
 
     #[test]

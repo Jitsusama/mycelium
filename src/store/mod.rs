@@ -392,4 +392,38 @@ mod tests {
             .and_then(|one| one.unreachable_since);
         assert_eq!(since, Some(let_in), "out of reach since it was let in");
     }
+
+    /// Easing times a lane out of reach by the `unreachableSince` in its
+    /// presence, so the store in memory marks it there, as the folders do,
+    /// once and no later, and a link carrying the session again clears it,
+    /// even where the body it carries names a time of its own.
+    #[test]
+    fn a_session_out_of_reach_says_since_when_in_its_presence() {
+        let store = memory::Memory::default();
+        let said = serde_json::json!({"session": "s1"});
+        store.put_presence("s1", "kestrel", &said).expect("carried");
+        let body = |store: &memory::Memory| {
+            store
+                .presences()
+                .into_iter()
+                .find(|one| one.session == "s1")
+                .map(|one| one.body["unreachableSince"].clone())
+        };
+        out_of_reach(&store, "kestrel", 7);
+        out_of_reach(&store, "kestrel", 9);
+        assert_eq!(
+            body(&store),
+            Some(serde_json::json!(7)),
+            "since the first drop"
+        );
+        let carried = serde_json::json!({"session": "s1", "unreachableSince": 3});
+        store
+            .put_presence("s1", "kestrel", &carried)
+            .expect("carried again");
+        assert_eq!(
+            body(&store),
+            Some(Value::Null),
+            "a link carrying it again says it is in reach"
+        );
+    }
 }

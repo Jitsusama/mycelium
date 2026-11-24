@@ -325,11 +325,18 @@ impl Store for Memory {
                 "not that machine's session",
             ));
         }
+        // As the folders do: only the session's own machine can judge its
+        // process, and a link carrying it has reached that machine.
+        let mut body = body.clone();
+        if let Some(fields) = body.as_object_mut() {
+            fields.remove("owner");
+            fields.remove("unreachableSince");
+        }
         held.presences.insert(
             session.to_owned(),
             Presence {
                 session: session.to_owned(),
-                body: Arc::new(body.clone()),
+                body: Arc::new(body),
                 elsewhere: Some(machine.to_owned()),
                 lives: true,
                 unreachable_since: None,

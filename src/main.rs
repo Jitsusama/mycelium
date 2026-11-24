@@ -2195,7 +2195,7 @@ fn serve_link(
             reading: Box::new(tokio::io::stdin()),
             writing: Box::new(tokio::io::stdout()),
             keep: Box::new(()),
-            refused: None,
+            said: None,
             releases: false,
             worker: false,
             named: None,
@@ -3248,7 +3248,9 @@ fn attach_on(
         };
         ssh.there(&joins)
     } else {
-        words
+        // Words a node served before it kept SSH alive itself are kept
+        // alive here, so an open window needs no new words.
+        rejoin::kept_alive(words)
     };
     let mut over = rejoin::Over {
         words,

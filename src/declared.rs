@@ -131,8 +131,9 @@ pub struct Doors {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runs: Vec<String>,
     /// The doors another machine, by its name, may open beyond these for
-    /// a session carried from here in this fence, each allowed by the
-    /// person; none where every door there must be no wider than here.
+    /// a session in this fence carried from here, or started there by an
+    /// agent here, each allowed by the person; none where every door there
+    /// must be no wider than here.
     /// The machine there still declares each door it opens, so what is
     /// allowed is said, never hidden by a narrower declaration.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
