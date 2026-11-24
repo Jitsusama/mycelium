@@ -30,8 +30,8 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -195,16 +195,20 @@ fn refused(status: u16, why: impl Into<String>) -> Refusal {
     }
 }
 
-/// Serves the lender's requests on `socket` until it fails to accept.
-///
-/// # Errors
-///
-/// When the socket stops accepting.
-pub async fn serve(socket: Socket, forge: Forge) -> io::Result<()> {
+/// Serves the lender's requests on `socket`, for as long as it runs: a
+/// connection that fails as it is taken, as one does when the account
+/// is out of files, is passed over, so one never ends the forge.
+pub async fn serve(socket: Socket, forge: Forge) {
     let forge = Arc::new(forge);
     loop {
-        let stream = socket.accept().await?;
-        tokio::spawn(connection(stream, forge.clone()));
+        match socket.accept().await {
+            Ok(stream) => drop(tokio::spawn(connection(stream, forge.clone()))),
+            Err(error) => {
+                eprintln!("mycelium-forge: a connection couldn't be taken: {error}");
+                // Not at once, so a want of files doesn't spin.
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
     }
 }
 
@@ -274,7 +278,10 @@ async fn read<R: AsyncBufRead + Unpin>(reading: &mut R) -> Result<Asked, Refusal
                 .parse()
                 .map_err(|_| refused(400, "the length isn't one"))?;
         } else if name == BORROWER {
-            borrower = Some(value.to_owned());
+            // Named twice, neither can be taken as the one the lender said.
+            if borrower.replace(value.to_owned()).is_some() {
+                return Err(refused(400, "the machine asking is named twice"));
+            }
         } else if name == "transfer-encoding" {
             return Err(refused(501, "the forge takes a body of a length alone"));
         }
@@ -541,13 +548,14 @@ fn bundled(bundle: &[u8]) -> Result<(String, Vec<String>), &'static str> {
             if !id(needed) {
                 return Err("needs what isn't a commit");
             }
-            needs.push(needed.to_owned());
+            // As git names objects, so each is found as git lists it.
+            needs.push(needed.to_ascii_lowercase());
         } else {
             let head = line.split(' ').next().unwrap_or_default();
             if !id(head) {
                 return Err("holds a ref that isn't a commit");
             }
-            heads.push(head.to_owned());
+            heads.push(head.to_ascii_lowercase());
         }
     }
     heads.dedup();
@@ -558,8 +566,14 @@ fn bundled(bundle: &[u8]) -> Result<(String, Vec<String>), &'static str> {
     }
 }
 
-/// A push, asked once at a time across the forge by its count.
+/// Each push's number, so the bundles and refs of two never share a
+/// name.
 static PUSHES: AtomicU64 = AtomicU64::new(0);
+
+/// The forge's turn to push, which one push holds at a time, from its
+/// fetch until it is tidied: two in a clone at once would fetch, prune
+/// and name refs under each other.
+static TURN: LazyLock<Arc<tokio::sync::Mutex<()>>> = LazyLock::new(Arc::default);
 
 /// Pushes what `body` asks for `borrower`, answering as it goes: its
 /// refusal whole where it can be refused at once, else a head, a waiting
@@ -607,7 +621,10 @@ async fn push<W: AsyncWrite + Unpin>(forge: &Forge, borrower: &str, body: &[u8],
                 if said(writing, &Pushed::Waiting { seconds }).await.is_err() {
                     // The lender let go, so the push is dropped, and git
                     // with it.
-                    line["outcome"] = json!("let go: its borrower stopped reading");
+                    line["outcome"] = json!(
+                        "let go: its borrower stopped reading, so a push git had begun \
+                         may still have landed"
+                    );
                     eprintln!("mycelium-forge: {line}");
                     return;
                 }
@@ -675,27 +692,59 @@ fn checked(forge: &Forge, pushing: Pushing) -> Result<Checked, Refusal> {
 
 /// What a push leaves to let go however it ends, the borrower letting go
 /// partway included: its bundle, and the refs it fetched and signed to.
-struct Tidy<'a> {
-    git: &'a Path,
-    repo: &'a Path,
+/// It holds the forge's turn until they are let go.
+struct Tidy {
+    git: PathBuf,
+    repo: PathBuf,
     file: PathBuf,
     fetched: String,
     signed: String,
+    /// The forge's turn, until tidying takes it.
+    turn: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
 
-impl Drop for Tidy<'_> {
+impl Tidy {
+    /// The tidying, to run where blocking holds up no other push, which
+    /// gives the turn back once it is done.
+    fn tidying(&mut self) -> impl FnOnce() + Send + 'static {
+        let (git, repo, file) = (self.git.clone(), self.repo.clone(), self.file.clone());
+        let names = [self.fetched.clone(), self.signed.clone()];
+        let turn = self.turn.take();
+        move || {
+            let _ = fs::remove_file(&file);
+            for name in &names {
+                // A ref never made is no matter.
+                let _ = std::process::Command::new(&git)
+                    .arg("-C")
+                    .arg(&repo)
+                    .args(["update-ref", "-d", name])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+            drop(turn);
+        }
+    }
+
+    /// Tidies, waiting until it is done, as a push that ended does
+    /// before it answers.
+    async fn done(mut self) {
+        let _ = tokio::task::spawn_blocking(self.tidying()).await;
+    }
+}
+
+impl Drop for Tidy {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.file);
-        for name in [&self.fetched, &self.signed] {
-            // A ref never made is no matter.
-            let _ = std::process::Command::new(self.git)
-                .arg("-C")
-                .arg(self.repo)
-                .args(["update-ref", "-d", name])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+        // Tidied already, as a push that ended is.
+        if self.turn.is_none() {
+            return;
+        }
+        // A push let go partway is tidied after, off the async workers.
+        let tidying = self.tidying();
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => drop(runtime.spawn_blocking(tidying)),
+            Err(_) => tidying(),
         }
     }
 }
@@ -711,20 +760,24 @@ async fn pushed(
     bundle: &[u8],
     head: &str,
 ) -> Pushed {
+    let turn = Arc::clone(&TURN).lock_owned().await;
     let count = PUSHES.fetch_add(1, Ordering::Relaxed);
     let named = format!("{borrower}/{}-{count}", std::process::id());
     let tidy = Tidy {
-        git: &forge.git,
-        repo,
+        git: forge.git.clone(),
+        repo: repo.to_owned(),
         file: forge
             .folder
             .join(format!("{borrower}-{}-{count}.bundle", std::process::id())),
         fetched: format!("{FETCHED}/{named}"),
         signed: format!("{FETCHED}/{named}-signed"),
+        turn: Some(turn),
     };
-    carried(forge, &tidy, branch, bundle, head)
+    let ended = carried(forge, &tidy, branch, bundle, head)
         .await
-        .unwrap_or_else(|why| Pushed::Refused { why })
+        .unwrap_or_else(|why| Pushed::Refused { why });
+    tidy.done().await;
+    ended
 }
 
 /// `git` in `repo`, never asking anyone anything.
@@ -748,12 +801,12 @@ fn listed(listed: &[u8]) -> Vec<String> {
 /// The steps of [`pushed`], up to its tidying, which `tidy` does.
 async fn carried(
     forge: &Forge,
-    tidy: &Tidy<'_>,
+    tidy: &Tidy,
     branch: &str,
     bundle: &[u8],
     head: &str,
 ) -> Result<Pushed, String> {
-    let repo = tidy.repo;
+    let repo = tidy.repo.as_path();
     kept(&forge.folder, &tidy.file, bundle)
         .map_err(|error| format!("the bundle couldn't be kept: {error}"))?;
     // What its origin holds now is what the forge needn't sign.
@@ -788,6 +841,18 @@ async fn carried(
     )
     .await
     .map_err(|why| format!("the bundle couldn't be fetched: {why}"))?;
+    // Only a commit is pushed, so nothing is signed for a head that would
+    // be refused at the push, such as a tag's.
+    let kind = run(
+        git(forge, repo).args(["cat-file", "-t", head]),
+        None,
+        FETCH_WITHIN,
+    )
+    .await
+    .map_err(|why| format!("the bundle's head couldn't be read: {why}"))?;
+    if kind.trim_ascii() != b"commit" {
+        return Err("the bundle's head isn't a commit".to_owned());
+    }
     let mut listing = git(forge, repo);
     listing
         .args(["rev-list", "--reverse", "--topo-order"])

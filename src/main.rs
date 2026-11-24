@@ -3056,7 +3056,7 @@ fn forge(act: ForgeAct, node: &Path) -> io::Result<ExitCode> {
                 let bound = node::bind(&listen)?;
                 tell!("mycelium: serving the forge at {}", listen.display());
                 tokio::select! {
-                    served = forge::serve(bound, served) => served,
+                    () = forge::serve(bound, served) => Ok::<(), io::Error>(()),
                     () = stopped() => Ok(()),
                 }
             })?;

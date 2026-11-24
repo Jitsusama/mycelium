@@ -212,6 +212,15 @@ fn a_bundle_is_read_for_its_one_commit_and_what_it_needs() {
         ))),
         Ok((head.clone(), Vec::new())),
     );
+    assert_eq!(
+        bundled(&bundle(&format!(
+            "# v2 git bundle\n-{} the base\n{} HEAD",
+            need.to_ascii_uppercase(),
+            head.to_ascii_uppercase()
+        ))),
+        Ok((head.clone(), vec![need.clone()])),
+        "each named as git names it, so a head in capitals is still the one signed"
+    );
     for (header, why) in [
         (
             format!("# v3 git bundle\n@object-format=sha256\n{head} HEAD"),
@@ -336,6 +345,21 @@ async fn what_the_forge_wont_answer_is_refused_saying_why() {
             "a body of a length alone",
         ),
         (b"POST /push\r\n\r\n".to_vec(), 400, "isn't HTTP"),
+        (
+            {
+                let mut twice = request("/push", Some("kestrel"), &pushing);
+                let named = format!("{BORROWER}: osprey\r\n");
+                let at = twice
+                    .windows(2)
+                    .position(|pair| pair == b"\r\n")
+                    .expect("a line")
+                    + 2;
+                twice.splice(at..at, named.into_bytes());
+                twice
+            },
+            400,
+            "the machine asking is named twice",
+        ),
     ] {
         let (answered, body) = asked_of(&forge, &request).await;
         assert_eq!(
@@ -424,7 +448,15 @@ async fn a_branch_bundled_is_pushed_to_its_origin_and_tidied_after() {
         git(&borrower, &["rev-parse", "HEAD^"]),
         git(&borrower, &["rev-parse", "HEAD"]),
     );
-    let bundle = borrow::bundle(&forge.git, &borrower, &base, "HEAD").expect("bundled");
+    // As `mycelium forge push` bundles it: the commit its head names.
+    let was = borrow::resolved(&forge.git, &borrower, "HEAD").expect("resolved");
+    assert_eq!(was, head, "the head named by its commit");
+    let bundle = borrow::bundle(&forge.git, &borrower, &base, &was).expect("bundled");
+    assert_eq!(
+        git(&borrower, &["for-each-ref", borrow::BUNDLED]),
+        "",
+        "what named it to bundle is let go"
+    );
     let pushing = Pushing {
         cell: Some("KP0L6A".to_owned()),
         repo: "core".to_owned(),
@@ -517,7 +549,8 @@ async fn a_branch_bundled_is_pushed_to_its_origin_and_tidied_after() {
         &borrower,
         &["commit", "--quiet", "--allow-empty", "-m", "another"],
     );
-    let bundle = borrow::bundle(&forge.git, &borrower, &base, "HEAD").expect("bundled");
+    let was = borrow::resolved(&forge.git, &borrower, "HEAD").expect("resolved");
+    let bundle = borrow::bundle(&forge.git, &borrower, &base, &was).expect("bundled");
     let forcing = Pushing {
         bundle: STANDARD.encode(&bundle),
         ..pushing
@@ -537,6 +570,63 @@ async fn a_branch_bundled_is_pushed_to_its_origin_and_tidied_after() {
         git(&origin, &["rev-parse", "refs/heads/agents/kestrel-fix"]),
         *now,
         "the branch stands as it was"
+    );
+}
+
+#[tokio::test]
+async fn a_bundle_whose_head_isnt_a_commit_is_refused_before_anything_is_signed() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let (origin, base) = repos_in(dir.path());
+    let mut forge = forge_in(dir.path());
+    forge
+        .repos
+        .insert("core".to_owned(), dir.path().join("forge-repo"));
+    let borrower = dir.path().join("borrower");
+    git(
+        &borrower,
+        &["commit", "--quiet", "--allow-empty", "-m", "tagged"],
+    );
+    git(
+        &borrower,
+        &["-c", "tag.gpgSign=false", "tag", "-a", "-m", "a tag", "v1"],
+    );
+    let file = dir.path().join("tag.bundle");
+    git(
+        &borrower,
+        &[
+            "bundle",
+            "create",
+            "--quiet",
+            file.to_str().expect("utf-8"),
+            "v1",
+            &format!("^{base}"),
+        ],
+    );
+    let pushing = Pushing {
+        cell: None,
+        repo: "core".to_owned(),
+        branch: "agents/kestrel-fix".to_owned(),
+        bundle: STANDARD.encode(fs::read(&file).expect("the bundle")),
+    };
+    let (status, body) =
+        asked_of(&forge, &request("/push", Some("kestrel"), &json!(pushing))).await;
+    assert_eq!(status, 200, "begun: {}", why(&body));
+    assert!(
+        matches!(
+            lines_of(&body).as_slice(),
+            [Pushed::Refused { why }] if why == "the bundle's head isn't a commit"
+        ),
+        "a tag's head is refused: {}",
+        String::from_utf8_lossy(&body)
+    );
+    assert!(
+        !dir.path().join("payload").exists(),
+        "and nothing was signed for it"
+    );
+    assert_eq!(
+        git(&origin, &["for-each-ref", "refs/heads/agents"]),
+        "",
+        "nor pushed"
     );
 }
 

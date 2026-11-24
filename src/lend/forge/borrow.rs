@@ -20,6 +20,10 @@ use crate::lend::serve::MOST_BODY;
 use crate::lend::{Lend, Lent};
 use crate::wire::Request;
 
+/// Where a commit is named while it is bundled, by the bundling
+/// process's id, so two bundling at once never share one.
+pub const BUNDLED: &str = "refs/mycelium-bundled/";
+
 /// The budget a forge's lends are counted against unless one is named.
 pub const BUDGET: &str = "forge";
 
@@ -157,12 +161,20 @@ pub async fn push(
 ///
 /// When git can't make it, saying what git said.
 pub fn bundle(git: &Path, repo: &Path, base: &str, head: &str) -> io::Result<Vec<u8>> {
+    // Git bundles only what refs name: a commit named by its id alone
+    // leaves it a bundle of nothing, which it refuses. So the commit is
+    // named by a ref of its own while it is bundled, and let go after.
+    let commit = resolved(git, repo, head)?;
+    let named = format!("{BUNDLED}{}", std::process::id());
+    said(git, repo, &["update-ref", &named, &commit])?;
     let made = std::process::Command::new(git)
         .arg("-C")
         .arg(repo)
         .args(["bundle", "create", "--quiet", "-"])
-        .arg(format!("{base}..{head}"))
-        .output()?;
+        .arg(format!("{base}..{named}"))
+        .output();
+    let _ = said(git, repo, &["update-ref", "-d", &named, &commit]);
+    let made = made?;
     if made.status.success() {
         Ok(made.stdout)
     } else {
