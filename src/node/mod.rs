@@ -448,6 +448,13 @@ fn plain_quest(quest: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
+/// What each log under `logs` continues, the folder scanned once, as a
+/// lapse of the record of orchestrations asks only where a claim lapses.
+fn continuing(logs: &Path) -> impl Fn(&str) -> Option<String> + use<> {
+    let found = chain::Logs::scan(logs);
+    move |session| found.continues(session)
+}
+
 /// Whether `session` stands where a carry reaches it: running, or parked
 /// to read its inbox as it wakes.
 fn stands(session: &Session) -> bool {
@@ -5487,36 +5494,54 @@ impl<S: Store> Shared<S> {
     /// The address the session `asker` goes by here, or its id where none
     /// is known.
     fn address_of<'a>(&self, sessions: &'a [Session], asker: &'a str) -> &'a str {
+        self.known_address(sessions, asker).unwrap_or(asker)
+    }
+
+    /// The address the session `session` goes by here, where one is known.
+    fn known_address<'a>(&self, sessions: &'a [Session], session: &str) -> Option<&'a str> {
         sessions
             .iter()
-            .find(|session| {
-                session.machine == self.machine
-                    && session
+            .find(|known| {
+                known.machine == self.machine
+                    && known
                         .presence
                         .get("session")
                         .and_then(serde_json::Value::as_str)
-                        == Some(asker)
+                        == Some(session)
             })
-            .map_or(asker, |session| session.address.as_str())
+            .map(|known| known.address.as_str())
+    }
+
+    /// This machine's sessions that run or wait parked, each with the
+    /// address it goes by here where one is known, as a lapse of the
+    /// record of orchestrations hands their claims on
+    /// ([`chain::Orchestrations::lapse`]).
+    fn standing_addressed(&self, sessions: &[Session]) -> BTreeMap<String, Option<String>> {
+        self.standing()
+            .into_iter()
+            .map(|presence| {
+                let address = self
+                    .known_address(sessions, &presence.session)
+                    .map(str::to_owned);
+                (presence.session, address)
+            })
+            .collect()
     }
 
     /// Records what the session asking orchestrates, as the kernel and
     /// pi's records prove which session asks, or forgets it, where it
-    /// names nothing (`carry::chain`). A session its own log says it
-    /// continues hands it what it held, and what a session claimed lapses
-    /// once it neither runs nor waits parked.
+    /// names nothing (`carry::chain`). What a session claimed lapses once
+    /// it neither runs nor waits parked, passing to the standing session
+    /// whose log continues it ([`chain::Orchestrations::lapse`]); one that
+    /// still stands keeps it, so a fork of it takes nothing of its.
     async fn orchestrates(&self, heads: Option<String>, quests: Vec<String>) -> Reply {
         let asker = self.asking_session().await?;
         let sessions = self.lock().state.sessions();
         let address = self.address_of(&sessions, &asker).to_owned();
-        let standing: std::collections::BTreeSet<String> = self
-            .standing()
-            .into_iter()
-            .map(|presence| presence.session)
-            .collect();
+        let standing = self.standing_addressed(&sessions);
         let logs = self.logs.clone();
         self.rerecord(move |record| {
-            record.lapse(|session| standing.contains(session));
+            record.lapse(&standing, || continuing(&logs));
             match heads {
                 None if quests.is_empty() => {
                     record.release(&asker);
@@ -5528,14 +5553,7 @@ impl<S: Store> Shared<S> {
                         session: &asker,
                         address: &address,
                     };
-                    let continued = chain::continues(&logs, &asker);
-                    record.claim(
-                        known,
-                        &heads,
-                        &quests,
-                        continued.as_deref(),
-                        jiff::Timestamp::now(),
-                    )
+                    record.claim(known, &heads, &quests, jiff::Timestamp::now())
                 }
             }
         })
@@ -5545,21 +5563,22 @@ impl<S: Store> Shared<S> {
     /// What the session asking orchestrates by this node's record, as
     /// the kernel and pi's records prove which session asks, changing
     /// nothing. A claim lapsed as [`Self::orchestrates`] would lapse it
-    /// is shown as none, though the record keeps it until the next
+    /// is shown as none, and one it would hand on is shown as its new
+    /// session's, though the record keeps it as it was until the next
     /// change.
     async fn orchestrating(&self) -> Reply {
         let asker = self.asking_session().await?;
-        let standing: std::collections::BTreeSet<String> = self
-            .standing()
-            .into_iter()
-            .map(|presence| presence.session)
-            .collect();
-        let file = self.orchestrations.clone();
-        let mut record = tokio::task::spawn_blocking(move || chain::Orchestrations::read(&file))
-            .await
-            .map_err(|error| format!("the record of orchestrations couldn't be read: {error}"))?
-            .map_err(|error| format!("the record of orchestrations can't be read: {error}"))?;
-        record.lapse(|session| standing.contains(session));
+        let sessions = self.lock().state.sessions();
+        let standing = self.standing_addressed(&sessions);
+        let (file, logs) = (self.orchestrations.clone(), self.logs.clone());
+        let record = tokio::task::spawn_blocking(move || {
+            let mut record = chain::Orchestrations::read(&file)?;
+            record.lapse(&standing, || continuing(&logs));
+            io::Result::Ok(record)
+        })
+        .await
+        .map_err(|error| format!("the record of orchestrations couldn't be read: {error}"))?
+        .map_err(|error| format!("the record of orchestrations can't be read: {error}"))?;
         let claim = record.sessions.get(&asker);
         Ok(Response::Orchestrating {
             heads: claim.map(|claim| claim.heads.clone()),
@@ -5624,7 +5643,7 @@ impl<S: Store> Shared<S> {
             .into_values()
             .collect();
         let quest = ordered::quest_of(carried, &quests)?;
-        let record = self.orchestrations_standing()?;
+        let record = self.orchestrations_standing(sessions)?;
         let order = record.chain(&quest, asking)?;
         chain::agrees(&order, &ordered::ordered_by(asking, carried, &quests)?)?;
         ordered::agreed(&order, asking, &quests, &grouped(sessions, &self.machine))?;
@@ -5640,17 +5659,18 @@ impl<S: Store> Shared<S> {
     }
 
     /// This node's record of orchestrations, each session that no longer
-    /// stands let go of.
-    fn orchestrations_standing(&self) -> Result<chain::Orchestrations, String> {
+    /// stands let go of, its claim handed to the standing session whose
+    /// log continues it, as `sessions` name that one's address.
+    fn orchestrations_standing(
+        &self,
+        sessions: &[Session],
+    ) -> Result<chain::Orchestrations, String> {
         let mut record = chain::Orchestrations::read(&self.orchestrations).map_err(|error| {
             format!("this node's record of orchestrations can't be read, so no carry is ordered: {error}")
         })?;
-        let standing: std::collections::BTreeSet<String> = self
-            .standing()
-            .into_iter()
-            .map(|presence| presence.session)
-            .collect();
-        record.lapse(|session| standing.contains(session));
+        record.lapse(&self.standing_addressed(sessions), || {
+            continuing(&self.logs)
+        });
         Ok(record)
     }
 
@@ -5680,7 +5700,7 @@ impl<S: Store> Shared<S> {
         let heading = ordered::going_by(&orchestrator, open).map_err(|why| {
             format!("{quest} ended orchestrated by {orchestrator}, but {why}, so only the person ends its sessions")
         })?;
-        let record = self.orchestrations_standing()?;
+        let record = self.orchestrations_standing(sessions)?;
         // The node's own record must say the asker goes by the ended
         // quest's orchestrator's address, as it claimed when it began to
         // orchestrate: a quest id is the claimer's own word, so a sibling
@@ -12807,10 +12827,12 @@ esac
     }
 
     #[tokio::test]
-    async fn a_session_whose_log_continues_an_orchestrator_takes_on_its_quests() {
+    async fn a_session_whose_log_continues_a_stopped_orchestrator_takes_on_its_quests() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
-        let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
         steward_claims(&socket).await;
         let quests = ["QEST-20261108-OSPHT4", "QEST-20261115-HARBOR"];
         assert!(
@@ -12826,10 +12848,143 @@ esac
             "{\"type\":\"session\",\"id\":\"s-weigh\",\"parentSession\":\"s-steward\"}\n",
         )
         .expect("written");
+        stops(&store, "s-steward");
         assert_eq!(
             claims(&socket, 7002, Some("QEST-20261007-WCJQSG"), &quests).await,
             Ok(Response::Orchestrated),
-            "one whose log continues it does"
+            "one whose log continues it does, once the steward has stopped"
+        );
+    }
+
+    /// Marks `session`'s presence in `store` as no longer living, as its
+    /// pi stopping would.
+    fn stops(store: &Memory, session: &str) {
+        let presence = store
+            .presences()
+            .into_iter()
+            .find(|presence| presence.session == session)
+            .expect("its presence is here");
+        store.start_here(session, (*presence.body).clone(), false);
+    }
+
+    #[tokio::test]
+    async fn a_fork_of_a_standing_orchestrator_takes_nothing_of_its() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        steward_claims(&socket).await;
+        // A fork of the steward in another pi, as pi writes it: its parent
+        // is the steward's log, whose pi still runs.
+        let logs = socket.with_file_name("sessions").join("--home-joel--");
+        fs::create_dir_all(&logs).expect("made");
+        let parent = logs.join("2026-11-15T14-00-00-000Z_s-steward.jsonl");
+        fs::write(
+            logs.join("2026-11-15T17-00-00-000Z_s-weigh.jsonl"),
+            format!(
+                "{{\"type\":\"session\",\"id\":\"s-weigh\",\"parentSession\":{}}}\n",
+                json!(parent.to_str().expect("a path in words"))
+            ),
+        )
+        .expect("written");
+        let quests = ["QEST-20261108-OSPHT4", "QEST-20261115-HARBOR"];
+        assert_eq!(
+            claims(&socket, 7002, Some("QEST-20261007-WCJQSG"), &quests).await,
+            Err(
+                "WCJQSG's session already heads QEST-20261007-WCJQSG by this node's record, so \
+                 OSPHT4 can't: only that session hands it on, or the person"
+                    .to_owned()
+            ),
+            "a fork of a steward still running takes nothing of its"
+        );
+        let kept = chain::Orchestrations::read(&socket.with_file_name("orchestrations.json"))
+            .expect("the record reads");
+        assert_eq!(
+            kept.sessions.keys().collect::<Vec<_>>(),
+            ["s-steward"],
+            "and the steward keeps what it claimed"
+        );
+    }
+
+    // A2VLJN's finding (2026-11-23): WCJQSG's session rolled into a new
+    // log at 11:31 and never said `mycelium orchestrates` again, so its
+    // claim lapsed and at 11:50 its ordered carry was refused.
+    #[tokio::test]
+    async fn an_ordered_carrys_chain_is_found_after_its_orchestrator_continues_in_a_new_log() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let mut quests = orchestrations();
+        quests["quests"][0]["sessions"] = json!(["s-steward", "s-steward-2"]);
+        let (_stop, _node, _client) = orchestrated_in(&store, &socket, &quests, &[]).await;
+        steward_claims(&socket).await;
+        // The steward's pi rolls over into a new log, which names the old
+        // one's file as its parent, as pi writes it, and holds that log
+        // open in place of the old.
+        let logs = socket.with_file_name("sessions").join("--home-joel--");
+        let log = logs.join("2026-11-23T11-31-00-000Z_s-steward-2.jsonl");
+        let parent = logs.join("2026-11-23T09-00-00-000Z_s-steward.jsonl");
+        fs::write(
+            &log,
+            format!(
+                "{{\"type\":\"session\",\"id\":\"s-steward-2\",\"parentSession\":{}}}\n",
+                json!(parent.to_str().expect("a path in words"))
+            ),
+        )
+        .expect("written");
+        let held = procs_of(&socket).join("7001").join("fd").join("3");
+        fs::remove_file(&held).expect("the old log is let go");
+        std::os::unix::fs::symlink(&log, &held).expect("linked");
+        let at = jiff::Timestamp::now().to_string();
+        let presence = |session: &str| {
+            json!({"session": session, "addresses": ["WCJQSG"],
+                   "groups": ["#orchestration/wcjqsg"], "busy": false,
+                   "state": "listening", "at": at, "quest": "QEST-20261007-WCJQSG",
+                   "orchestratedBy": "WCJQSG", "fence": "strict",
+                   "owner": {"pid": 7001, "startTicks": started_at(7001)}})
+        };
+        store.start_here("s-steward", presence("s-steward"), false);
+        store.start_here("s-steward-2", presence("s-steward-2"), true);
+        let read = || {
+            asks_below(&socket, 7001);
+            ask(socket.clone(), Request::Orchestrating)
+        };
+        assert_eq!(
+            read().await,
+            Ok(Response::Orchestrating {
+                heads: Some("QEST-20261007-WCJQSG".to_owned()),
+                quests: vec![
+                    "QEST-20261108-OSPHT4".to_owned(),
+                    "QEST-20261115-HARBOR".to_owned(),
+                ],
+            }),
+            "the new session holds what the old one claimed, though it never claimed it"
+        );
+        assert!(
+            matches!(
+                orders_harbour(&socket, 7001).await,
+                Ok(Response::Steered { .. })
+            ),
+            "so the chain of its ordered carry is still found"
+        );
+        assert!(
+            claims(&socket, 7003, Some("QEST-20261007-WCJQSG"), &[])
+                .await
+                .is_err(),
+            "and the quests aren't free for a helper to race for"
+        );
+        assert_eq!(
+            claims(&socket, 7002, Some("QEST-20261108-OSPHT4"), &[]).await,
+            Ok(Response::Orchestrated),
+            "OSPHT4 heads its own quest"
+        );
+        let kept = chain::Orchestrations::read(&socket.with_file_name("orchestrations.json"))
+            .expect("the record reads");
+        assert_eq!(
+            kept.sessions.keys().collect::<Vec<_>>(),
+            ["s-steward-2", "s-weigh"],
+            "the record keeps the claim under the session that goes on"
         );
     }
 

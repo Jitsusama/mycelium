@@ -182,10 +182,7 @@ fn left_out_lines(said: &str) -> Vec<&str> {
 fn a_node_from_before_sprout_is_asked_to_start_and_what_the_seed_left_out_is_said() {
     let (home, rows) = checkout_on_tern();
     let socket = home.path().join("old.sock");
-    let asked = node_answering(
-        &socket,
-        vec![as_a_node_before_sprout(), started_in(&rows)],
-    );
+    let asked = node_answering(&socket, vec![as_a_node_before_sprout(), started_in(&rows)]);
 
     let (ran, said) = sprout_asking(
         home.path(),
