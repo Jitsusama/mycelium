@@ -1471,7 +1471,6 @@ impl<S: Store> End<S> {
             ))),
             Frame::Hello(_)
             | Frame::Have { .. }
-            | Frame::Presence { .. }
             | Frame::Ended { .. }
             | Frame::Share(_)
             | Frame::Machine(_)
@@ -1809,7 +1808,7 @@ impl<S: Store> End<S> {
         // A starter means something only for a hold, and a worker's node is
         // whoever runs on the machine lent, so its word is no book's.
         let started_by =
-            started_by.filter(|by| held.is_some() && !self.worker && crate::forage::is_address(by));
+            started_by.filter(|by| held.is_some() && !self.worker && forage::is_address(by));
         // The held id and the starter are the link's to say, never the
         // presence's.
         if let Some(fields) = body.as_object_mut() {

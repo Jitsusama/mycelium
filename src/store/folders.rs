@@ -946,7 +946,9 @@ fn is_record(path: &Path) -> bool {
 
 /// Whether `name` is a record's, not a read marker's or a staged write's.
 fn is_record_name(name: &str) -> bool {
-    !name.starts_with('.') && name.len() > ".json".len() && name.ends_with(".json")
+    // Only this store names records, always in lower case, so a name
+    // ending otherwise is no record of its.
+    !name.starts_with('.') && name.strip_suffix(".json").is_some_and(|stem| !stem.is_empty())
 }
 
 /// This boot's id, where the system has one (Linux): read once, since it
