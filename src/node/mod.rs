@@ -9738,6 +9738,7 @@ mod tests {
             held: dir.join("work.held"),
             asking: None,
             steers: dir.join("steer"),
+            parked: dir.join("parked"),
             health: None,
             declared: Some(dir.join("declared.json")),
             kit: None,
