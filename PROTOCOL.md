@@ -1582,7 +1582,8 @@ A session's `state` is `busy`, `idle`, `ended`, or `unreachable` while no
 link reaches its machine. Beside its `id`, `address`, `machine` and
 `groups`, it carries what its presence says of it: its `quest` by id (or,
 from an older presence, the quest among what it owns), what it `wants` of
-its person (`kind`, `since`, `said`) while it waits, the `landings` it
+its person (`kind`, `since`, `said` and, where it says more, the
+whole text it `asked` in) while it waits, the `landings` it
 says it made lately, newest first (each `at`, `ref`, a one-line `what`
 and, when it means something to its person, `person`; any it can't read is
 left out), what its plan is `doing` (its `plan` by id, the `item` it works
@@ -3272,9 +3273,11 @@ such as `slack@kestrel`. Each is the very cell that
 same records as the `network` kind, less its `kind`: its `type`
 (`session`, `machine` or `receptor`), and where it says them its
 `title`, a session's `id`, `window`, `standing` (`needs-you`, `stuck`,
-`moving`, `quiet` or `dormant`), `doing`, `asks`, `repo`, the
-`subjects` its presence declares (the first 12 strings of at most 120
-characters a terminal draws as plain text), `usage`, the networks it
+`moving`, `quiet` or `dormant`), `doing`, `asks`, `asked` (the whole
+text its want asks in, where the session says one: its lines and
+paragraphs kept, nothing else that steers a terminal, cut past 4096
+characters to end in ` [...]`), `repo`, the `subjects` its presence
+declares (the first 12 strings of at most 120 characters a terminal draws as plain text), `usage`, the networks it
 `leads`, `machine`, `since`, `quest`, `started_by` (the cell its
 session's record says a book of starts names, else the orchestrator it
 names, each only as an address other than its own) with

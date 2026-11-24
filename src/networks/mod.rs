@@ -49,6 +49,10 @@ pub const SHARE_FOR_MOST: usize = 120;
 /// How long a share's folder may be, in bytes.
 pub const SHARE_FOLDER_MOST: usize = 1024;
 
+/// The most characters of a cell's `asked`: what the harness sends, with
+/// room for its own mark where it cut.
+pub const ASKED_MOST: usize = 4096;
+
 /// The name of each network that forms where two cells meet, which the
 /// trees and shares `presence` holds would make: a tree's, such as
 /// `tree.github:harbour/oars:jsama/tides`, and a shared folder's, such
@@ -339,6 +343,11 @@ pub struct Cell {
     /// both.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asks: Option<String>,
+    /// The whole text a session asks its person in, where its want says
+    /// more than `asks`' one line: its paragraphs and lines kept, at most
+    /// [`ASKED_MOST`] characters, so a reader can show the question whole.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asked: Option<String>,
     /// The repository a session works in, where it says.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
