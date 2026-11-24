@@ -326,6 +326,10 @@ fn exchange_with(places: Places, here: &Hello, there: &Hello, worker: bool) -> E
 /// session it carried here out of reach. With `shares`, it carries the
 /// files of the quests this machine shares too, and with `starting`, it
 /// carries starts.
+#[expect(
+    clippy::too_many_lines,
+    reason = "an end's state is built in one literal, each field beside where it comes from"
+)]
 pub async fn run(
     store: impl Store,
     membership: &impl Membership,
