@@ -7,10 +7,11 @@
 //! session asks, from the kernel and pi's own records, and keeps each
 //! claim in a file of its own. A quest another session already holds by
 //! that record is refused: only its session hands it on, by releasing it
-//! or by being continued, as a session rolled over into a new log that
-//! names it as its `parentSession`; a claim whose session no longer
+//! or by ending once continued, as a session rolled over into a new log
+//! that names it as its `parentSession`; a claim whose session no longer
 //! stands passes to the one that continues it, whether or not that one
-//! tells the node again. An ordered carry's chain of
+//! tells the node again, and a fork of a session still running takes
+//! nothing of its. An ordered carry's chain of
 //! orchestrators is walked through this record, so neither a rewritten
 //! quests' index nor an edited quest README moves it.
 //!
@@ -87,10 +88,7 @@ impl Orchestrations {
     }
 
     /// Records that `asker` heads `heads` and orchestrates `quests`, as of
-    /// `at`, in place of what it claimed before. `continues` is the
-    /// session the asker's own log says it continues, whose claims it
-    /// takes on; the caller names it only once it no longer stands, since
-    /// a fork of a session still running takes nothing of its. Refused, changing nothing, where another session holds
+    /// `at`, in place of what it claimed before. Refused, changing nothing, where another session holds
     /// any of them.
     ///
     /// # Errors
@@ -101,10 +99,13 @@ impl Orchestrations {
         asker: Known,
         heads: &str,
         quests: &[String],
-        continues: Option<&str>,
         at: jiff::Timestamp,
     ) -> Result<(), String> {
-        let own = |session: &str| session == asker.session || Some(session) == continues;
+        // What the asker's log continues is never its own here: a claim
+        // passes to its continuer only once its session no longer stands
+        // (`lapse`), so a fork of a session still running takes nothing
+        // of its.
+        let own = |session: &str| session == asker.session;
         let held = |quest: &str, heading: bool| {
             self.sessions.iter().find(|(session, claim)| {
                 !own(session)
@@ -126,9 +127,6 @@ impl Orchestrations {
                     holder.address, asker.address
                 ));
             }
-        }
-        if let Some(continued) = continues {
-            self.sessions.remove(continued);
         }
         self.sessions.insert(
             asker.session.to_owned(),
@@ -454,7 +452,6 @@ mod tests {
                 STEWARD,
                 "QEST-20261007-WCJQSG",
                 &quests(&["QEST-20261111-OSPHT4"]),
-                None,
                 at(),
             )
             .expect("the steward claims");
@@ -463,7 +460,6 @@ mod tests {
                 WEIGH,
                 "QEST-20261111-OSPHT4",
                 &quests(&["QEST-20261115-HARBOR"]),
-                None,
                 at(),
             )
             .expect("OSPHT4 claims");
@@ -538,7 +534,6 @@ mod tests {
                 helper,
                 "QEST-20261115-HARBOR",
                 &quests(&["QEST-20261111-OSPHT4"]),
-                None,
                 at(),
             ),
             Err(
@@ -549,7 +544,7 @@ mod tests {
             "a session claiming its own orchestrator's quest is refused"
         );
         assert_eq!(
-            record.claim(helper, "QEST-20261007-WCJQSG", &[], None, at(),),
+            record.claim(helper, "QEST-20261007-WCJQSG", &[], at()),
             Err(
                 "WCJQSG's session already heads QEST-20261007-WCJQSG by this node's record, so \
                  HARBOR can't: only that session hands it on, or the person"
@@ -568,7 +563,6 @@ mod tests {
                 STEWARD,
                 "QEST-20261007-WCJQSG",
                 &quests(&["QEST-20261111-OSPHT4", "QEST-20261115-5HJZ8Z"]),
-                None,
                 at(),
             )
             .expect("the steward says its quests again");
@@ -594,7 +588,6 @@ mod tests {
                 helper,
                 "QEST-20261111-OSPHT4",
                 &quests(&["QEST-20261115-HARBOR"]),
-                None,
                 at(),
             )
             .expect("and another session may take it up");
@@ -833,7 +826,6 @@ mod tests {
                 },
                 "QEST-20261115-TERNXX",
                 &[],
-                None,
                 at(),
             )
             .expect("it claims");
@@ -883,34 +875,6 @@ mod tests {
                  freed"
                     .to_owned()
             ),
-        );
-    }
-
-    #[test]
-    fn a_continued_session_takes_on_its_claims() {
-        let mut record = nested();
-        let rolled = Known {
-            session: "s-weigh-2",
-            address: "OSPHT4",
-        };
-        record
-            .claim(
-                rolled,
-                "QEST-20261111-OSPHT4",
-                &quests(&["QEST-20261115-HARBOR"]),
-                Some("s-weigh"),
-                at(),
-            )
-            .expect("the session its log continues hands them on");
-        assert!(
-            !record.sessions.contains_key("s-weigh"),
-            "the old one holds nothing"
-        );
-        assert_eq!(
-            record
-                .chain("QEST-20261115-HARBOR", rolled)
-                .map(|order| order.by),
-            Ok("OSPHT4".to_owned()),
         );
     }
 

@@ -5530,10 +5530,10 @@ impl<S: Store> Shared<S> {
 
     /// Records what the session asking orchestrates, as the kernel and
     /// pi's records prove which session asks, or forgets it, where it
-    /// names nothing (`carry::chain`). A session its own log says it
-    /// continues hands it what it held, and what a session claimed lapses
-    /// once it neither runs nor waits parked, passing to the standing
-    /// session whose log continues it ([`chain::Orchestrations::lapse`]).
+    /// names nothing (`carry::chain`). What a session claimed lapses once
+    /// it neither runs nor waits parked, passing to the standing session
+    /// whose log continues it ([`chain::Orchestrations::lapse`]); one that
+    /// still stands keeps it, so a fork of it takes nothing of its.
     async fn orchestrates(&self, heads: Option<String>, quests: Vec<String>) -> Reply {
         let asker = self.asking_session().await?;
         let sessions = self.lock().state.sessions();
@@ -5553,18 +5553,7 @@ impl<S: Store> Shared<S> {
                         session: &asker,
                         address: &address,
                     };
-                    // Only a session that no longer stands hands on what
-                    // it held: one still running was forked, not rolled
-                    // over, and keeps its own.
-                    let continued = chain::continues(&logs, &asker)
-                        .filter(|continued| !standing.contains_key(continued));
-                    record.claim(
-                        known,
-                        &heads,
-                        &quests,
-                        continued.as_deref(),
-                        jiff::Timestamp::now(),
-                    )
+                    record.claim(known, &heads, &quests, jiff::Timestamp::now())
                 }
             }
         })
@@ -12838,10 +12827,12 @@ esac
     }
 
     #[tokio::test]
-    async fn a_session_whose_log_continues_an_orchestrator_takes_on_its_quests() {
+    async fn a_session_whose_log_continues_a_stopped_orchestrator_takes_on_its_quests() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
-        let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
         steward_claims(&socket).await;
         let quests = ["QEST-20261108-OSPHT4", "QEST-20261115-HARBOR"];
         assert!(
@@ -12857,11 +12848,23 @@ esac
             "{\"type\":\"session\",\"id\":\"s-weigh\",\"parentSession\":\"s-steward\"}\n",
         )
         .expect("written");
+        stops(&store, "s-steward");
         assert_eq!(
             claims(&socket, 7002, Some("QEST-20261007-WCJQSG"), &quests).await,
             Ok(Response::Orchestrated),
-            "one whose log continues it does"
+            "one whose log continues it does, once the steward has stopped"
         );
+    }
+
+    /// Marks `session`'s presence in `store` as no longer living, as its
+    /// pi stopping would.
+    fn stops(store: &Memory, session: &str) {
+        let presence = store
+            .presences()
+            .into_iter()
+            .find(|presence| presence.session == session)
+            .expect("its presence is here");
+        store.start_here(session, (*presence.body).clone(), false);
     }
 
     #[tokio::test]
@@ -12872,18 +12875,8 @@ esac
         let (_stop, _node, _client) =
             orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
         steward_claims(&socket).await;
-        let at = jiff::Timestamp::now().to_string();
-        store.start_here(
-            "s-steward",
-            json!({"session": "s-steward", "addresses": ["WCJQSG"],
-                   "groups": ["#orchestration/wcjqsg"], "busy": false,
-                   "state": "listening", "at": at, "quest": "QEST-20261007-WCJQSG",
-                   "orchestratedBy": "WCJQSG", "fence": "strict",
-                   "owner": {"pid": 7001, "startTicks": started_at(7001)}}),
-            true,
-        );
-        // A /fork of the steward, as pi writes it: its parent is the
-        // steward's log, which still runs.
+        // A fork of the steward in another pi, as pi writes it: its parent
+        // is the steward's log, whose pi still runs.
         let logs = socket.with_file_name("sessions").join("--home-joel--");
         fs::create_dir_all(&logs).expect("made");
         let parent = logs.join("2026-11-15T14-00-00-000Z_s-steward.jsonl");
@@ -12896,10 +12889,13 @@ esac
         )
         .expect("written");
         let quests = ["QEST-20261108-OSPHT4", "QEST-20261115-HARBOR"];
-        assert!(
-            claims(&socket, 7002, Some("QEST-20261007-WCJQSG"), &quests)
-                .await
-                .is_err_and(|why| why.contains("already heads QEST-20261007-WCJQSG")),
+        assert_eq!(
+            claims(&socket, 7002, Some("QEST-20261007-WCJQSG"), &quests).await,
+            Err(
+                "WCJQSG's session already heads QEST-20261007-WCJQSG by this node's record, so \
+                 OSPHT4 can't: only that session hands it on, or the person"
+                    .to_owned()
+            ),
             "a fork of a steward still running takes nothing of its"
         );
         let kept = chain::Orchestrations::read(&socket.with_file_name("orchestrations.json"))
