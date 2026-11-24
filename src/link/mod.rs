@@ -1650,7 +1650,7 @@ impl<S: Store> End<S> {
             }
             if presence.elsewhere.as_deref() == Some(other.as_str()) {
                 its_own = true;
-            } else if presence.lives {
+            } else if stands(&presence) {
                 taken = true;
             }
         }
@@ -1668,18 +1668,19 @@ impl<S: Store> End<S> {
     }
 
     /// The name a worker's presence of `session`, saying `body`, shares
-    /// with a session living here or through another link, if it shares
-    /// one: its id or any address it answers to. A worker writes its
+    /// with a session living or parked here or through another link, if it
+    /// shares one: its id or any address it answers to. A worker writes its
     /// presence as it likes, so one taking a living session's name would
     /// let it send as that session, and only the label on its words would
-    /// tell them apart.
+    /// tell them apart; a parked one is woken by what is sent it, so its
+    /// name is as taken.
     fn taken_name(&self, session: &str, body: &Value) -> Option<String> {
         let its = names(session, body);
         self.store
             .presences()
             .into_iter()
             .filter(|presence| {
-                presence.lives && presence.elsewhere.as_deref() != Some(self.other.as_str())
+                stands(presence) && presence.elsewhere.as_deref() != Some(self.other.as_str())
             })
             .flat_map(|presence| names(&presence.session, &presence.body))
             .find(|name| its.iter().any(|said| said.eq_ignore_ascii_case(name)))
@@ -2527,13 +2528,23 @@ impl<S: Store> End<S> {
     }
 
     /// This machine's living sessions, as their presences say, with the id
-    /// a holder here keeps each by, if one does.
+    /// a holder here keeps each by, if one does. To an end that keeps a
+    /// parked session as parked, those parked this boot count too: each
+    /// is started again for what is sent to it, so its address stands on
+    /// every machine, not only this one, while it waits.
     fn living(&self) -> BTreeMap<String, (Arc<Value>, Option<String>)> {
         let held = self.held.as_deref().map(hold::held).unwrap_or_default();
+        let boot = self.said.parks.then(store::folders::boot_id);
         self.store
             .presences()
             .into_iter()
-            .filter(|presence| presence.elsewhere.is_none() && presence.lives)
+            .filter(|presence| {
+                presence.elsewhere.is_none()
+                    && (presence.lives
+                        || boot
+                            .as_ref()
+                            .is_some_and(|boot| parked_in(&presence.body, boot.as_deref())))
+            })
             .map(|presence| {
                 let id = mesh::held_by(&presence, &held).map(|one| one.id.clone());
                 (presence.session, (presence.body, id))
@@ -2552,6 +2563,24 @@ impl<S: Store> End<S> {
         self.store
             .mark_linked(&self.other, self.hearing.linked_until())
     }
+}
+
+/// Whether `presence` stands for a session: one living, or one parked this
+/// boot, here or, as its machine says, on another.
+fn stands(presence: &store::Presence) -> bool {
+    presence.lives || parked_in(&presence.body, store::folders::boot_id().as_deref())
+}
+
+/// Whether a presence saying `body` was parked in this machine's `boot`,
+/// for its holder to start again. A park of an earlier boot has no holder
+/// left to start it; where the machine names no boot, or the presence
+/// none, any park is taken as this boot's, as a carry takes it.
+fn parked_in(body: &Value, boot: Option<&str>) -> bool {
+    body.get("state").and_then(Value::as_str) == Some("parked")
+        && match (boot, body.pointer("/owner/bootId").and_then(Value::as_str)) {
+            (Some(boot), Some(began)) => boot == began,
+            _ => true,
+        }
 }
 
 async fn send(writing: &mut (impl AsyncWrite + Unpin), frame: &Frame) -> io::Result<()> {
@@ -4211,6 +4240,68 @@ mod tests {
         );
     }
 
+    /// What skiff's end says of its sessions to an end saying `parks` in
+    /// its hello, while one runs, one is parked this boot, one was parked
+    /// in an earlier boot and one has ended: each presence it sends, up to
+    /// the running one, which sorts last.
+    async fn presences_said(parks: bool) -> Vec<String> {
+        let skiff = Memory::default();
+        let boot = store::folders::boot_id().unwrap_or_default();
+        let parked = |session: &str, boot: &str| {
+            json!({"session": session, "state": "parked",
+                   "owner": {"pid": 1, "bootId": boot}})
+        };
+        skiff.start_here("parked", parked("parked", &boot), false);
+        skiff.start_here("rebooted", parked("rebooted", "an-earlier-boot"), false);
+        skiff.start_here("ended", json!({"session": "ended", "state": "idle"}), false);
+        skiff.start_here("running", json!({"session": "running"}), true);
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let _skiff_end = end(&skiff, "skiff", near);
+        let (far_reading, mut far_writing) = tokio::io::split(far);
+        let hello = Hello {
+            parks,
+            ..realm("tern").hello()
+        };
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(hello),
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(Vec::new()),
+                },
+            ],
+        )
+        .await;
+        let mut lines = BufReader::new(far_reading).lines();
+        heard_until(
+            &mut lines,
+            |frame| matches!(frame, Frame::Presence { session, .. } if session == "running"),
+        )
+        .await
+        .into_iter()
+        .filter_map(|frame| match frame {
+            Frame::Presence { session, .. } => Some(session),
+            _ => None,
+        })
+        .collect()
+    }
+
+    #[tokio::test]
+    async fn a_session_parked_this_boot_stands_for_an_end_that_keeps_it_parked() {
+        assert_eq!(
+            presences_said(true).await,
+            ["parked", "running"],
+            "a session parked to be woken for what is sent it is still there to send to, \
+             though one parked before the machine restarted, or ended, is not"
+        );
+        assert_eq!(
+            presences_said(false).await,
+            ["running"],
+            "an older end, which would take a parked session as running, hears only those that run"
+        );
+    }
+
     /// The carries skiff's node ordered, as it tells them.
     fn skiffs_carries(why: &str) -> Vec<Value> {
         vec![json!({
@@ -4523,6 +4614,7 @@ mod tests {
             ends: true,
             reopens: true,
             lends: true,
+            parks: true,
         };
         send(&mut far_writing, &Frame::Hello(personal))
             .await

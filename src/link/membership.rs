@@ -87,6 +87,11 @@ pub struct Hello {
     /// would end a link that asked.
     #[serde(default)]
     pub lends: bool,
+    /// Whether it keeps a session the other end parked as parked, its
+    /// process gone and its address still there to send to, so it hears
+    /// of one; an end older than this would take one as running.
+    #[serde(default)]
+    pub parks: bool,
 }
 
 /// Which machines a node links with.
@@ -132,6 +137,7 @@ impl Membership for Realm {
             ends: true,
             reopens: true,
             lends: true,
+            parks: true,
         }
     }
 
