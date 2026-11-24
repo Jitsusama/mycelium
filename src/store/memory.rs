@@ -207,14 +207,15 @@ impl Store for Memory {
         held.messages.get(id).cloned()
     }
 
-    fn put_message(&self, id: &str, body: &Value) -> io::Result<()> {
+    fn put_message(&self, id: &str, body: &Value) -> io::Result<bool> {
         super::folders::safe(id)?;
         let mut held = self.held();
-        if !held.messages.contains_key(id) {
-            held.messages.insert(id.to_owned(), body.clone());
-            held.tell(&Change::Message(id.to_owned()));
+        if held.messages.contains_key(id) {
+            return Ok(false);
         }
-        Ok(())
+        held.messages.insert(id.to_owned(), body.clone());
+        held.tell(&Change::Message(id.to_owned()));
+        Ok(true)
     }
 
     fn presences(&self) -> Vec<Presence> {

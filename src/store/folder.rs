@@ -180,6 +180,16 @@ impl Folder {
         }
     }
 
+    /// Whether this folder is this account's own, and no other account
+    /// may write in it: what a file in it names can then be trusted as
+    /// much as this account's own word.
+    pub fn own(&self) -> bool {
+        rustix::fs::fstat(&self.0).is_ok_and(|found| {
+            found.st_uid == rustix::process::geteuid().as_raw()
+                && !Mode::from_raw_mode(found.st_mode).intersects(Mode::WGRP | Mode::WOTH)
+        })
+    }
+
     /// Whether `name` is a plain file in this folder.
     pub fn holds(&self, name: &str) -> bool {
         self.kind(name) == Kind::File
