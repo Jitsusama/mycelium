@@ -3276,8 +3276,9 @@ same records as the `network` kind, less its `kind`: its `type`
 `moving`, `quiet` or `dormant`), `doing`, `asks`, `asked` (the whole
 text its want asks in, where the session says one: its lines and
 paragraphs kept, nothing else that steers a terminal, cut past 4096
-characters to end in ` [...]`), `repo`, the `subjects` its presence
-declares (the first 12 strings of at most 120 characters a terminal draws as plain text), `usage`, the networks it
+characters to end in a space and `[...]`), `repo`,
+the `subjects` its presence declares (the first 12 strings of at most
+120 characters a terminal draws as plain text), `usage`, the networks it
 `leads`, `machine`, `since`, `quest`, `started_by` (the cell its
 session's record says a book of starts names, else the orchestrator it
 names, each only as an address other than its own) with
