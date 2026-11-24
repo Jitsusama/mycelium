@@ -966,9 +966,15 @@ async fn greet(
         releases,
         ..membership.hello()
     };
-    send(writing, &Frame::Hello(ours))
-        .await
-        .map_err(unheard_write)?;
+    if let Err(error) = send(writing, &Frame::Hello(ours)).await {
+        // An end whose hello is already here was reached, though it
+        // closed before taking ours, so what its way in says next may be
+        // the far machine's own words.
+        return Err(match frames.try_recv() {
+            Ok(Ok(Frame::Hello(_))) => error,
+            _ => unheard_write(error),
+        });
+    }
     let other = hello(frames, within).await?;
     if let Err(why) = membership.admit(&other) {
         if let Err(error) = store.refuse_link(&other.machine, &why) {
@@ -2821,6 +2827,55 @@ mod tests {
         assert!(
             !closed_unheard(&unreadable),
             "an end that said something said more than its way in: {unreadable}"
+        );
+    }
+
+    #[test]
+    fn only_a_hello_written_to_a_closed_end_is_unheard() {
+        for kind in [io::ErrorKind::BrokenPipe, io::ErrorKind::ConnectionReset] {
+            let unheard = unheard_write(io::Error::from(kind));
+            assert!(
+                closed_unheard(&unheard) && unheard.kind() == kind,
+                "an end that closed before our hello was taken brought no link up, \
+                 and says how it closed: {unheard}"
+            );
+        }
+        let full = unheard_write(io::Error::from(io::ErrorKind::StorageFull));
+        assert!(
+            !closed_unheard(&full),
+            "a hello this end couldn't write isn't the other end's to say: {full}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_end_that_said_hello_and_closed_before_taking_ours_was_heard() {
+        let membership = realm("skiff");
+        let greeted = |said: Option<Hello>| {
+            let membership = membership.clone();
+            async move {
+                let (mut near, far) = tokio::io::duplex(64);
+                drop(far);
+                let (saying, mut frames) = mpsc::unbounded_channel();
+                if let Some(said) = said {
+                    saying.send(Ok(Frame::Hello(said))).expect("sent");
+                }
+                drop(saying);
+                let store = Memory::default();
+                greet(&mut near, &mut frames, (&store, &membership), false, None)
+                    .await
+                    .expect_err("the other end closed")
+            }
+        };
+
+        let unheard = greeted(None).await;
+        assert!(
+            closed_unheard(&unheard),
+            "an end that closed having said nothing brought no link up: {unheard}"
+        );
+        let heard = greeted(Some(realm("tern").hello())).await;
+        assert!(
+            !closed_unheard(&heard),
+            "an end whose hello came was reached, so its way in's words aren't taken: {heard}"
         );
     }
 

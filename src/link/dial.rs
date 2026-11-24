@@ -238,6 +238,9 @@ impl Dial for Program {
         let ran = tokio::process::Command::new(&self.program)
             .args(["release", self.place.as_str()])
             .stdin(Stdio::null())
+            // A release given up on ends with its asker, rather than
+            // running on beside the one asked after it.
+            .kill_on_drop(true)
             .status()
             .await;
         Some(ran.and_then(|status| {

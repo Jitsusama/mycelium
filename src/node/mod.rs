@@ -1167,9 +1167,9 @@ fn past_the_hash(path: &str) -> Option<&str> {
 
 /// How long a release that failed waits before each time it is asked
 /// again, as a provider whose machine has just gone may still be clearing
-/// it away. Together they end within [`ENDED_LET_GO_AFTER`], so a machine
-/// whose time was up is booked by what keeps it, not by
-/// [`let_go_ended`] too.
+/// it away. The asks and their waits end within [`RELEASED_WITHIN`], and
+/// so within [`ENDED_LET_GO_AFTER`], so a machine whose time was up is
+/// booked by what keeps it, not by [`let_go_ended`] too.
 const RELEASE_AGAIN_AFTER: [Duration; 3] = if cfg!(test) {
     [Duration::from_millis(10); 3]
 } else {
@@ -1241,9 +1241,36 @@ async fn keep_made(
     }
 }
 
+/// How long releasing a machine is given in all, its asks again and their
+/// waits included: a provider's release that never answers would
+/// otherwise leave what keeps the machine waiting for good, and its book
+/// never saying it was let go. It is under [`ENDED_LET_GO_AFTER`], with
+/// time to spare for writing the book.
+const RELEASED_WITHIN: Duration = if cfg!(test) {
+    Duration::from_secs(2)
+} else {
+    Duration::from_secs(9 * 60)
+};
+
 /// What `dial` says of releasing its machine, asked again after each
-/// wait of [`RELEASE_AGAIN_AFTER`] while it fails, and its last answer.
+/// wait of [`RELEASE_AGAIN_AFTER`] while it fails, and its last answer;
+/// a failure once [`RELEASED_WITHIN`] has passed, the ask under way let
+/// go.
 async fn released(dial: &impl Dial) -> Option<io::Result<()>> {
+    tokio::time::timeout(RELEASED_WITHIN, releasing(dial))
+        .await
+        .unwrap_or_else(|_| {
+            Some(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("no release answered within {} s", RELEASED_WITHIN.as_secs()),
+            )))
+        })
+}
+
+/// What `dial` says of releasing its machine, asked again after each
+/// wait of [`RELEASE_AGAIN_AFTER`] while it fails, and its last answer,
+/// however long that takes.
+async fn releasing(dial: &impl Dial) -> Option<io::Result<()>> {
     let mut answer = dial.release().await;
     for wait in RELEASE_AGAIN_AFTER {
         let Some(Err(error)) = &answer else {
@@ -9634,10 +9661,24 @@ mod tests {
             let came_up = self.came_up;
             tokio::spawn(async move {
                 if came_up {
-                    // It takes our hello, so what ends the link is what
-                    // it said, not a hello it never read.
-                    let _ = far.write_all(b"the far end's own words\n").await;
-                    let _ = tokio::io::copy(&mut far, &mut tokio::io::sink()).await;
+                    // It takes our hello and says its own, so the link
+                    // comes up before the far end closes.
+                    let mut taken = Vec::new();
+                    let mut chunk = [0; 64];
+                    while !taken.contains(&b'\n') {
+                        match tokio::io::AsyncReadExt::read(&mut far, &mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(read) => taken.extend_from_slice(&chunk[..read]),
+                        }
+                    }
+                    let wren = Realm {
+                        name: "work".to_owned(),
+                        machine: "wren".to_owned(),
+                    };
+                    let mut hello = serde_json::to_vec(&crate::link::Frame::Hello(wren.hello()))
+                        .expect("a hello is written");
+                    hello.push(b'\n');
+                    let _ = far.write_all(&hello).await;
                 }
             });
             let mut connection = piped(near);
@@ -9708,12 +9749,13 @@ mod tests {
             name: "work".to_owned(),
             machine: "skiff".to_owned(),
         };
+        let store = Memory::default();
         let keeping = tokio::spawn(keep_linked(
             Arc::new(Gone {
                 dialled,
                 came_up: true,
             }),
-            Memory::default(),
+            store.clone(),
             membership,
             (None, starting, Refusals::default()),
             true,
@@ -9725,6 +9767,10 @@ mod tests {
             .expect("what a machine reached says can't let it go, so it is dialled again")
             .expect("the link is kept");
         keeping.abort();
+        assert!(
+            store.admitted_at("wren").is_some(),
+            "the link came up before the far end closed"
+        );
     }
 
     #[tokio::test]
@@ -23107,17 +23153,21 @@ esac
             to_dial,
         );
         let (released, failed) = (dir.path().join("released"), dir.path().join("failed"));
+        let go = dir.path().join("go");
         let provider = dir.path().join("provider");
-        // Its first release fails, as one of a machine just gone may.
+        // Its first release fails, as one of a machine just gone may, once
+        // the test has seen what stands while it is asked.
         crate::stand_in::program(
             &provider,
             &format!(
                 "#!/bin/sh\ncase \"$1\" in\n\
                  link) echo 'mycelium-gone: wren-place no longer exists' >&2; exit 1 ;;\n\
-                 release) [ -e '{failed}' ] || {{ : > '{failed}'; exit 1; }}\n\
+                 release) [ -e '{failed}' ] || {{ : > '{failed}'; \
+                 while [ ! -e '{go}' ]; do sleep 0.05; done; exit 1; }}\n\
                  printf '%s\\n' \"$2\" > '{released}' ;;\n\
                  esac\n",
                 failed = failed.display(),
+                go = go.display(),
                 released = released.display()
             ),
         );
@@ -23133,13 +23183,41 @@ esac
             true,
         );
         let keeping = shared.keeping(&made);
+        let leaves = || {
+            store.machines()[0]
+                .declared
+                .as_ref()
+                .and_then(|declared| declared.leaves_at)
+        };
+        // While its first release is still being asked, it has already
+        // left and nothing is held to it.
+        let asked = async {
+            while !failed.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let (left, admits) = (leaves(), shared.admits().await);
+            fs::write(&go, "").expect("the release is let answer");
+            (left, admits)
+        };
 
-        tokio::time::timeout(
-            PATIENCE,
-            keep_made(dial, made, keeping, Arc::new(Notify::new()), linked),
-        )
+        let ((), (left, admits)) = tokio::time::timeout(PATIENCE, async {
+            tokio::join!(
+                keep_made(dial, made, keeping, Arc::new(Notify::new()), linked),
+                asked
+            )
+        })
         .await
         .expect("a machine gone is let go long before its time, not redialled");
+
+        assert!(
+            left.is_some_and(|at| at <= jiff::Timestamp::now()),
+            "a machine gone leaves before its release is answered: {left:?}"
+        );
+        assert_eq!(
+            admits,
+            Admits::All,
+            "nothing is held to a machine gone while its release is asked"
+        );
 
         assert!(
             book.standing().expect("the book reads").made.is_empty(),
@@ -23151,18 +23229,100 @@ esac
             "what it left behind, such as a stopped machine's disk, is released too, \
              though its first release failed"
         );
-        let leaves = store.machines()[0]
-            .declared
-            .as_ref()
-            .and_then(|declared| declared.leaves_at);
         assert!(
-            leaves.is_some_and(|at| at <= jiff::Timestamp::now()),
-            "a machine gone leaves the realm's machines at once: {leaves:?}"
+            leaves().is_some_and(|at| at <= jiff::Timestamp::now()),
+            "a machine gone stays out of the realm's machines"
         );
         assert_eq!(
             shared.admits().await,
             Admits::All,
             "nothing is held to a machine that is gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_release_that_always_fails_is_still_booked_as_let_go() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let book = Book::at(dir.path().join("made.jsonl")).of_realm("work");
+        let given = Given {
+            book: book.clone(),
+            ..bare("/nowhere/steer".into(), None)
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            given,
+            to_dial,
+        );
+        let asked = dir.path().join("asked");
+        let provider = dir.path().join("provider");
+        crate::stand_in::program(
+            &provider,
+            &format!(
+                "#!/bin/sh\necho \"$1\" >> '{asked}'\nexit 1\n",
+                asked = asked.display()
+            ),
+        );
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let made = made_by(&provider.display().to_string(), "osprey", later);
+        book.made(&made).expect("the make is booked");
+        let dial = shared.book_for(&made);
+        let keeping = shared.keeping(&made);
+        let unwanted = Arc::new(Notify::new());
+        unwanted.notify_one();
+
+        tokio::time::timeout(
+            PATIENCE,
+            keep_made(dial, made, keeping, unwanted, std::future::pending()),
+        )
+        .await
+        .expect("a release that keeps failing is given up on");
+
+        assert_eq!(
+            fs::read_to_string(&asked).expect("its provider was asked"),
+            "release\n".repeat(RELEASE_AGAIN_AFTER.len() + 1),
+            "it is asked once and then once after each wait"
+        );
+        assert!(
+            book.standing().expect("the book reads").made.is_empty(),
+            "the book says it was let go, so a node started again doesn't dial it"
+        );
+        let kept = fs::read_to_string(dir.path().join("made.jsonl")).expect("the book reads");
+        assert!(
+            kept.contains("nothing started on it once it was made, but it wasn't released")
+                && kept.contains("so it ends at its time"),
+            "the book says why it was let go, and that its release failed: {kept}"
+        );
+        assert_eq!(
+            shared.admits().await,
+            Admits::All,
+            "nothing is held to a machine let go, released or not"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_release_that_never_answers_is_given_up_on_in_time() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let provider = dir.path().join("provider");
+        crate::stand_in::program(&provider, "#!/bin/sh\nexec sleep 60\n");
+        let dial = Program {
+            program: provider.display().to_string(),
+            place: "wren-place".to_owned(),
+            named: Arc::default(),
+        };
+
+        let answer = tokio::time::timeout(PATIENCE, released(&dial))
+            .await
+            .expect("a release that never answers doesn't keep its asker waiting");
+
+        assert!(
+            matches!(&answer, Some(Err(error)) if error.kind() == io::ErrorKind::TimedOut),
+            "it fails as not answered in time: {answer:?}"
         );
     }
 
