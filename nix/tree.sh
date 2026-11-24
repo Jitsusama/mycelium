@@ -43,6 +43,8 @@ for file in "${files[@]}"; do
     flake.lock) ;;   # written by nix
     LICENSE) ;;      # the licence's own text
     .gitignore) ;;   # a list of paths, read by git
+    nix/long-files-waiting.txt) ;;    # a list of paths, read by counts.sh
+    nix/suppressions-waiting.txt) ;;  # paths and counts, read by counts.sh
     *)
       echo "${file} is read by no linter: add one, or list it here with the reason" >&2
       failed=1
