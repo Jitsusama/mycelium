@@ -444,6 +444,64 @@ async fn a_machine_past_its_days_count_is_refused_while_another_still_borrows() 
 }
 
 #[tokio::test]
+async fn a_lends_line_names_its_upstream_only_once_it_was_asked() {
+    let mut lending = Lending::new();
+    let (sending, _answers) = mpsc::channel(BACKLOG);
+    let carrying = {
+        let lender = lending.lender.clone();
+        let sending = sending.clone();
+        tokio::spawn(async move {
+            let mut used = Used::default();
+            lent(
+                &lender,
+                "agents-1",
+                lend("/v1/messages"),
+                &sending,
+                &mut used,
+            )
+            .await;
+            used.upstream
+        })
+    };
+    lending
+        .relay
+        .asked()
+        .await
+        .answer
+        .send(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n".to_vec())
+        .expect("the relay answers");
+    assert_eq!(
+        carrying.await.expect("it was carried").as_deref(),
+        Some("models.example"),
+        "one carried names the host it was asked of"
+    );
+
+    fs::write(
+        lending.state().join(format!(
+            "counts-{}.json",
+            jiff::Timestamp::now().strftime("%Y-%m-%d")
+        )),
+        json!({"agents-1": 3}).to_string(),
+    )
+    .expect("the day is spent");
+    let mut used = Used::default();
+    let ended = lent(
+        &lending.lender,
+        "agents-1",
+        lend("/v1/messages"),
+        &sending,
+        &mut used,
+    )
+    .await;
+    assert!(matches!(ended, Ended::Refused(Refusal { status: 429, .. })));
+    assert_eq!(
+        used.upstream, None,
+        "one refused by its count asked no upstream"
+    );
+    assert!(!lending.relay.was_asked(), "and none was asked");
+}
+
+#[tokio::test]
 async fn a_machine_cut_off_is_refused_by_name_or_with_every_other_until_let_back() {
     let mut lending = Lending::new();
     let state = lending.state();

@@ -2763,7 +2763,8 @@ refused or not, is written to the node's log as one line,
 `mycelium-lend:`, a space and JSON of its `time`, `lender`, `vm`,
 `service`, `budget`, `model`, `upstream` host, `request_bytes`,
 `response_bytes`, `status`, `duration_ms` and `outcome`, and never its
-body, headers or key.
+body, headers or key. `upstream` is null where the lend was refused
+before it was sent there, so a line naming one is one that was.
 
 ### A Hosted Session's Spawner
 
