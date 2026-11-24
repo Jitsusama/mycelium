@@ -495,7 +495,9 @@ fn branch_allowed(branch: &str, allowed: &[String]) -> bool {
         && !branch.contains("..")
         && !branch.contains("//")
         && !branch.ends_with('/')
-        && !branch.ends_with(".lock")
+        && !Path::new(branch)
+            .extension()
+            .is_some_and(|ending| ending.eq_ignore_ascii_case("lock"))
         && !branch.split('/').any(|part| part.starts_with('.'))
 }
 
@@ -571,13 +573,13 @@ async fn push<W: AsyncWrite + Unpin>(forge: &Forge, borrower: &str, body: &[u8],
     line["repo"] = json!(pushing.repo);
     line["branch"] = json!(pushing.branch);
     line["head"] = json!(head);
-    let begun = writing
+    let headed = writing
         .write_all(
             b"HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\n\
               transfer-encoding: chunked\r\nconnection: close\r\n\r\n",
         )
         .await;
-    if begun.is_err() {
+    if headed.is_err() {
         return;
     }
     let going = pushed(

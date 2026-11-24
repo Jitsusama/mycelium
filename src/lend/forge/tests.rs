@@ -131,7 +131,7 @@ fn a_signature_goes_in_as_git_puts_one() {
     let object = with_signature(UNSIGNED.as_bytes(), SIGNATURE);
     let expected = format!(
         "{}gpgsig {}\n{}",
-        &UNSIGNED[..UNSIGNED.find("\n\n").expect("a message") + 1],
+        &UNSIGNED[..=UNSIGNED.find("\n\n").expect("a message")],
         SIGNATURE.trim_end().replace('\n', "\n "),
         &UNSIGNED[UNSIGNED.find("\n\n").expect("a message") + 1..],
     );

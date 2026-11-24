@@ -83,7 +83,7 @@ async fn lent(
             format!("this machine's node said what isn't a lend's answer: {error}")
         })?;
         match (heard, status) {
-            (Lent::Head { status: head, .. }, None) => status = Some(head),
+            (Lent::Head { status: code, .. }, None) => status = Some(code),
             (Lent::Body(piece), Some(_)) => {
                 let piece = STANDARD
                     .decode(piece)
