@@ -124,6 +124,7 @@ pub mod store;
 pub mod swarm;
 pub mod unanswered;
 pub mod update;
+pub(crate) mod wake;
 pub mod watching;
 pub mod web;
 pub mod wire;

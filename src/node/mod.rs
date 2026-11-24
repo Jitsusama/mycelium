@@ -83,7 +83,7 @@ pub use network::{Holding, Standing, records as network_records};
 mod signals;
 mod spares;
 pub use spares::Trees;
-mod standing;
+pub(crate) mod standing;
 mod starts;
 mod team;
 mod tie;

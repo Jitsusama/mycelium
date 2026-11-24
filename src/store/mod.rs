@@ -14,7 +14,7 @@
 //! its machine. What another machine says it is has that one writer too.
 
 mod ends;
-mod folder;
+pub(crate) mod folder;
 pub mod folders;
 #[cfg(test)]
 pub mod memory;

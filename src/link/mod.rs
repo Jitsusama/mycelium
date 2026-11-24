@@ -385,6 +385,9 @@ pub async fn run(
         arrived,
         following: inboxes.clone().map(Following::new),
         inboxes,
+        parked: starting
+            .as_ref()
+            .map(|starting| (starting.parked(), crate::node::standing::began())),
         held: starting.as_ref().map(|starting| starting.held.clone()),
         health: health_of(starting.as_ref()),
         declared: declared_of(starting.as_ref()),
@@ -1059,6 +1062,12 @@ struct End<S> {
     arrived: Arc<AtomicI64>,
     /// This machine's sessions' steer inboxes, if this end carries steers.
     inboxes: Option<PathBuf>,
+    /// Where the harness keeps this machine's parked sessions' markers,
+    /// for an end its node keeps or a machine dialled, so a message
+    /// carried in wakes the parked sessions it gives a turn
+    /// ([`crate::wake`]); and when this machine booted, before which a
+    /// marker names a holder that is gone.
+    parked: Option<(PathBuf, Option<i64>)>,
     /// The talks this end carries back to the other.
     following: Option<Following>,
     /// This machine's node's socket, which starts asked of it go to.
@@ -1321,11 +1330,30 @@ impl<S: Store> End<S> {
             "only its own machine's node speaks as a receptor"
         } else if body.get("id").and_then(Value::as_str) == Some(id) {
             let kept = self.store.put_message(id, body);
+            if kept.is_ok() {
+                self.wake_parked(id, body);
+            }
             return self.kept(id, kept);
         } else {
             "its body names another id"
         };
         self.kept(id, Err(io::Error::new(io::ErrorKind::InvalidData, refused)));
+    }
+
+    /// Wakes each session parked on this machine that the message `id`,
+    /// carried in saying `body`, gives a turn, as its sender would have
+    /// on its own machine: no sender here sees this machine's markers.
+    fn wake_parked(&self, id: &str, body: &Value) {
+        let Some((park, booted)) = &self.parked else {
+            return;
+        };
+        let presences = self.store.presences();
+        let woken = crate::wake::wake_for(park, *booted, id, body, &presences, |earlier| {
+            self.store.message(earlier)
+        });
+        for session in woken {
+            eprintln!("woke {session}, parked, for {id} from {}", self.other);
+        }
     }
 
     async fn take(
@@ -5468,6 +5496,77 @@ mod tests {
             saturation: None,
             lender: None,
         }
+    }
+
+    // 85PKB2 (2026-11-23 18:21): a question carried in from optimus sat ten
+    // minutes in a parked peer's folder on equilibrius, since only a sender
+    // wakes a parked peer, through its own machine's markers.
+    #[tokio::test]
+    async fn a_message_carried_in_wakes_the_parked_session_it_gives_a_turn() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let starting = steering(dir.path());
+        let parked = starting.parked().join("parked");
+        let wakes = dir.path().join("wakes");
+        std::fs::create_dir_all(&parked).expect("the parked folder");
+        std::fs::create_dir_all(&wakes).expect("the wakes' folder");
+        for (session, address) in [("s1", "SAK9FZ"), ("s2", "OSPREY")] {
+            std::fs::write(
+                parked.join(format!("{session}.json")),
+                json!({"session": session, "addresses": [address],
+                       "wake": wakes.join(format!("{session}.wake"))})
+                .to_string(),
+            )
+            .expect("a marker");
+        }
+        let skiff = Memory::default();
+        let store = skiff.clone();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        tokio::spawn(async move {
+            run(
+                store,
+                &realm("skiff"),
+                connection(reading, writing),
+                None,
+                Some(starting),
+            )
+            .await
+        });
+        let (_far_reading, mut far_writing) = tokio::io::split(far);
+        let (asked, news) = (recent(0, "WCJQSG", 1), recent(0, "WCJQSG", 2));
+        let message = |id: &str, intent: &str| Frame::Message {
+            id: id.to_owned(),
+            body: json!({"id": id, "from": "WCJQSG", "to": ["@SAK9FZ", "@OSPREY"],
+                         "intent": intent, "text": "go"}),
+        };
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("tern").hello()),
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(Vec::new()),
+                },
+                message(&asked, "question"),
+                message(&news, "fyi"),
+            ],
+        )
+        .await;
+        until(&skiff, |store| store.message(&news).is_some()).await;
+
+        let said: Value = serde_json::from_slice(
+            &std::fs::read(wakes.join("s1.wake")).expect("the question woke the session asked"),
+        )
+        .expect("json");
+        assert_eq!(said["messageId"].as_str(), Some(asked.as_str()));
+        let said: Value =
+            serde_json::from_slice(&std::fs::read(wakes.join("s2.wake")).expect("and the other"))
+                .expect("json");
+        assert_eq!(
+            said["messageId"].as_str(),
+            Some(asked.as_str()),
+            "the news after it woke neither again"
+        );
     }
 
     /// Skiff's end of a link a worker dialled, carrying steers into the

@@ -87,6 +87,15 @@ pub struct Starting {
     pub lender: Option<Arc<crate::lend::lender::Lender>>,
 }
 
+impl Starting {
+    /// Where the harness keeps this machine's parked sessions' markers:
+    /// beside its steer inboxes, in its own state folder.
+    #[must_use]
+    pub fn parked(&self) -> PathBuf {
+        self.steers.with_file_name("park-workflow")
+    }
+}
+
 /// How a link carries what this machine's node asks of the other machine.
 #[derive(Clone)]
 pub enum Asking {

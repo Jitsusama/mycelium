@@ -79,6 +79,19 @@ a message, a presence, a holding or a folder is read as nothing there,
 and a write takes the link's place by rename rather than writing what it
 names.
 
+A message a link carries in wakes each session parked on this machine
+that it gives a turn, as its sender would on its own machine: a pivot
+reaching it, a question or hold to its own address, a question to a
+named group it is in, or an answer to a message it sent, never one it
+sent itself. The parked sessions are those whose markers in
+`~/.local/state/pi/agentic-harness.pi/park-workflow/parked/` were
+written this boot, beside the steer inboxes; each is woken by writing
+`{"session", "messageId", "at"}` whole as the file its marker names as
+`wake`, as the harness does. Only a marker this account wrote, in a
+folder no other account may write, is read, and a wake is written only
+in such a folder, so a marker another account wrote can't name a file
+of this one's to be written over.
+
 A session's own machine judges whether it lives, from its process, and is
 told the moment it ends: on Linux the node holds each session's process
 by a pidfd, which wakes it as the process exits, so nothing is judged on a
