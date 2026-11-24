@@ -3011,6 +3011,35 @@ one the node doesn't hold starts from its time. The watch ends at
 its next event once the session's presence has, or when the client
 says anything more.
 
+### A Worker's Gate
+
+A worker may ask one start of the machine that made it: a merge
+gate, which checks a commit the worker made against its forge's main
+before it is pushed. A node given `--answers-with PROGRAM`, by an
+absolute path, and `--answers-for FILE` answers one; with neither, a
+worker's start is refused as every other is. `FILE` names a worker
+on each line and is read again at each ask, so emptying it or taking
+it away stops them all.
+
+The start's command is exactly `nix-offload answer QUEST COMMIT`,
+with a quest given to that worker and a commit of forty lowercase hex
+digits, no folder and no carry. Two run at once at most, one for each
+worker. The node runs `PROGRAM answer QUEST COMMIT` with its own
+environment, reading nothing and saying nothing back, and answers
+`Started` at once, held as `gate-` and the commit's first twelve
+digits; how the run ended goes to the node's log alone. Anything
+else is refused, saying why and a word for it, such as `unlisted`.
+
+The gate's files are in the quest's scratch, in
+`handover/gates/COMMIT/`. Of a worker the node answers, it asks for
+`request.json`, at most 16 KiB, and `gate.bundle`, at most 64 MiB,
+once the worker says it holds them and only where none is here. Each
+is written as a new file, 0600, by a hidden name then a link to its
+own, through no link on the way; one already there is never written
+over. Nothing else a worker sends is taken. The worker is served
+`result.json`, and no other file under `gates/`, even asked by name,
+so a run's log stays on the machine that ran it.
+
 ### A Hosted Session's Spawner
 
 A pi host runs many sessions in one process, so its process alone

@@ -784,6 +784,9 @@ pub struct Given {
     /// present and speak on the mesh through the node, if they do, as a
     /// worker machine's do (`worker`).
     pub worker: Option<Worker>,
+    /// The gates this machine answers for the workers it names, the one
+    /// start a worker may ask of it, if it answers any (`gate`).
+    pub gates: Option<Arc<crate::gate::Gates>>,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -1745,6 +1748,8 @@ struct Shared<S> {
     lends_from: Option<Arc<str>>,
     /// What this machine lends the machines it made, if it lends any.
     lender: Option<Arc<crate::lend::lender::Lender>>,
+    /// The gates this machine answers its workers, if it answers any.
+    gates: Option<Arc<crate::gate::Gates>>,
     /// The ids of the signals this node said as its receptors this run,
     /// the only messages from a receptor's name it takes (`signals`).
     spoken: Arc<Mutex<HashSet<String>>>,
@@ -1913,6 +1918,7 @@ impl<S: Clone> Clone for Shared<S> {
             stimuli: self.stimuli.clone(),
             lends_from: self.lends_from.clone(),
             lender: self.lender.clone(),
+            gates: self.gates.clone(),
             spoken: Arc::clone(&self.spoken),
             refused: Arc::clone(&self.refused),
             receptors_at: self.receptors_at.clone(),
@@ -3030,6 +3036,7 @@ impl<S: Store> Shared<S> {
             lend,
             // Bound and served by `run` alone.
             worker: _,
+            gates,
         } = given;
         let lender = lend.map(|file| {
             Arc::new(crate::lend::lender::Lender::from_file(
@@ -3108,6 +3115,7 @@ impl<S: Store> Shared<S> {
             stimuli,
             lends_from: lends_from.map(Into::into),
             lender,
+            gates,
             spoken: Arc::default(),
             refused: Arc::default(),
             receptors_at: receptors,
@@ -4534,6 +4542,7 @@ impl<S: Store> Shared<S> {
             kit: self.given_kit().cloned(),
             saturation: Some(self.saturation.clone()),
             lender: self.lender.clone(),
+            gates: self.gates.clone(),
         }
     }
 
@@ -9092,6 +9101,7 @@ mod tests {
             lends_from: None,
             lend: None,
             worker: None,
+            gates: None,
         }
     }
 
@@ -9438,6 +9448,7 @@ mod tests {
             lends_from: None,
             lend: None,
             worker: None,
+            gates: None,
         }
     }
 
@@ -9518,6 +9529,7 @@ mod tests {
                     kit: None,
                     saturation: None,
                     lender: None,
+                    gates: None,
                 };
                 // The test judges the link by what crosses it.
                 let _ = if proven {
@@ -9846,6 +9858,7 @@ mod tests {
             kit: None,
             saturation: None,
             lender: None,
+            gates: None,
         }
     }
 
@@ -9929,6 +9942,7 @@ mod tests {
             kit: None,
             saturation: None,
             lender: None,
+            gates: None,
         };
         let membership = Realm {
             name: "work".to_owned(),

@@ -379,6 +379,7 @@ mod tests {
             lends_from: None,
             lend: None,
             worker: None,
+            gates: None,
         };
         let membership = Realm {
             name: realm.to_owned(),

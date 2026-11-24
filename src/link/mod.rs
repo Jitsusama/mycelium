@@ -76,6 +76,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::carry::kept;
 use crate::facts::{self, Machine, Readiness};
 use crate::forage;
+use crate::gate::Gates;
 use crate::handover;
 use crate::hold;
 use crate::lend::lender::{self, Lender};
@@ -85,7 +86,7 @@ use crate::own_health;
 use crate::share::exchange::{Exchange, Places, Say};
 use crate::stimuli;
 use crate::store::{self, Change, Claim, Store};
-use crate::wire::{Ran, Reply, Response, Run, Start};
+use crate::wire::{Ran, Reply, Response, Run, Start, Started};
 use dial::Connection;
 use membership::{Hello, Membership};
 use starts::{Ask, Asked, Asking, RunSaid, RunningHere, Starting};
@@ -373,6 +374,7 @@ pub async fn run(
     let (runs, mut run_said) = Runs::new();
     let (starters, mut learned) = started::Starters::new();
     let inboxes = starting.as_ref().map(|starting| starting.steers.clone());
+    let gates = gates_of(starting.as_ref());
     let mut end = End {
         store,
         here: membership.hello().machine,
@@ -401,7 +403,15 @@ pub async fn run(
         asks: HashMap::new(),
         runs,
         next_ask: 0,
-        exchange: shares.map(|places| exchange_with(places, &membership.hello(), &other, worker)),
+        exchange: shares.map(|places| {
+            let exchange = exchange_with(places, &membership.hello(), &other, worker);
+            if worker {
+                exchange.gating(gates.clone())
+            } else {
+                exchange
+            }
+        }),
+        gates,
         other: other.machine.clone(),
         said: other,
         reach,
@@ -915,6 +925,11 @@ fn lender_of(starting: Option<&Starting>) -> Option<Arc<Lender>> {
     starting.and_then(|starting| starting.lender.clone())
 }
 
+/// The gates this machine answers its workers, if its node names any.
+fn gates_of(starting: Option<&Starting>) -> Option<Arc<Gates>> {
+    starting.and_then(|starting| starting.gates.clone())
+}
+
 /// Holds the other end to the name its way in pinned, `named`, if it pins
 /// one, pinning the first it says where none was yet, so a machine dialled
 /// as one can't say hello as another; one that does is refused, and why is
@@ -1133,6 +1148,9 @@ struct End<S> {
     node: Option<PathBuf>,
     /// What answers the lends a worker asks of this machine, if it lends.
     lender: Option<Arc<Lender>>,
+    /// The gates this machine answers for the workers it names, which
+    /// are the one start a worker may ask of it ([`crate::gate`]).
+    gates: Option<Arc<Gates>>,
     /// Who started this machine's held sessions, as its node's book says,
     /// said beside their presences.
     starters: started::Starters,
@@ -1496,6 +1514,7 @@ impl<S: Store> End<S> {
             }
             Frame::Machine(said) => self.keep_machine(*said),
             Frame::Carries { carries } => self.keep_carries(&carries),
+            Frame::Start { ask, start } if self.worker => self.answer_gate(ask, &start),
             Frame::Start { ask, start } => self.answer(ask, start),
             Frame::Steer {
                 ask,
@@ -1551,6 +1570,9 @@ impl<S: Store> End<S> {
     fn refused_of_worker(&self, frame: &Frame) -> Option<Refused> {
         let other = &self.other;
         match frame {
+            // The one start a worker may ask, a gate, is judged as it's
+            // answered ([`Self::answer_gate`]).
+            Frame::Start { .. } if self.gates.is_some() => None,
             Frame::Start { ask, .. } => Some(self.refused(*ask, "starts nothing for")),
             Frame::Steer { ask, .. } => Some(self.refused(*ask, "takes no steers from")),
             Frame::Update { ask } => Some(self.refused(*ask, "updates nothing for")),
@@ -2014,6 +2036,79 @@ impl<S: Store> End<S> {
             // A link that dropped meanwhile has nobody to answer.
             let _ = answering.send((ask, reply));
         });
+    }
+
+    /// Answers the one start a worker may ask, a gate this machine names
+    /// it for ([`Gates::admit`]) of a quest given to it: run here by the
+    /// gate's own path, with its quest and commit alone, and answered as
+    /// started, since the
+    /// gate's result crosses back as a file of the quest. How the run
+    /// ended is said here, never to the worker. Any other start is
+    /// refused, and why is said both here and to the worker.
+    fn answer_gate(&self, ask: u64, start: &Start) {
+        let worker = self.other.clone();
+        let admitted = self
+            .gates
+            .as_ref()
+            .ok_or(crate::gate::Refused::Unlisted)
+            .and_then(|gates| gates.admit(&worker, start))
+            .and_then(|answer| {
+                let given = self
+                    .exchange
+                    .as_ref()
+                    .is_some_and(|exchange| exchange.gives(answer.quest()));
+                // Refused, the answer's place is freed as it drops.
+                if given {
+                    Ok(answer)
+                } else {
+                    Err(crate::gate::Refused::NotGiven)
+                }
+            });
+        let reply = match admitted {
+            Err(why) => {
+                eprintln!("gate: refused a start from {worker}, a worker: {why}");
+                Err(format!(
+                    "{} starts nothing for a worker but a gate it answers: {why}",
+                    self.here
+                ))
+            }
+            Ok(answer) => match answer.command().spawn() {
+                Err(error) => {
+                    eprintln!("gate: couldn't start {worker}'s gate: {error}");
+                    Err(format!("{} couldn't start the gate", self.here))
+                }
+                Ok(mut running) => {
+                    eprintln!(
+                        "gate: answering {worker}'s gate of {} in {}",
+                        answer.commit(),
+                        answer.quest()
+                    );
+                    let started = Started {
+                        machine: self.here.clone(),
+                        held: format!("gate-{}", &answer.commit()[..12]),
+                        folder: PathBuf::new(),
+                        attach: Vec::new(),
+                    };
+                    // Its place is held until it ends.
+                    tokio::spawn(async move {
+                        let ended = running.wait().await;
+                        eprintln!(
+                            "gate: {}'s gate of {} in {} ended: {}",
+                            answer.worker(),
+                            answer.commit(),
+                            answer.quest(),
+                            ended.map_or_else(
+                                |error| error.to_string(),
+                                |status| status.to_string()
+                            )
+                        );
+                    });
+                    Ok(Response::Started(started))
+                }
+            },
+        };
+        // The link outlives this call, so its loop is there to send it.
+        let _ = self.answering.send((ask, reply));
     }
 
     /// Delivers a steer the other end carries to the session it names here,
@@ -3425,6 +3520,7 @@ mod tests {
             kit: None,
             saturation: None,
             lender: None,
+            gates: None,
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();
@@ -3588,6 +3684,7 @@ mod tests {
             kit: None,
             saturation,
             lender: None,
+            gates: None,
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();
@@ -3631,6 +3728,7 @@ mod tests {
             kit: Some(kit),
             saturation: None,
             lender: None,
+            gates: None,
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();
@@ -3781,6 +3879,7 @@ mod tests {
             kit: None,
             saturation: None,
             lender: None,
+            gates: None,
         }
     }
 
@@ -4105,6 +4204,7 @@ mod tests {
             kit: None,
             saturation: None,
             lender: None,
+            gates: None,
         };
         let (reading, writing) = tokio::io::split(far);
         let far = tokio::spawn(async move {
@@ -4741,6 +4841,7 @@ mod tests {
             kit: None,
             saturation: None,
             lender: None,
+            gates: None,
         };
         let skiff_end = tokio::spawn(async move {
             run(
@@ -5765,6 +5866,7 @@ mod tests {
             kit: None,
             saturation: None,
             lender: None,
+            gates: None,
         }
     }
 
@@ -5938,6 +6040,139 @@ mod tests {
         })
         .await
         .expect("skiff answers the lend")
+    }
+
+    /// What skiff answers each start tern, its worker, asks of it over a
+    /// link, skiff answering the gates of the workers `listed` names, by
+    /// a program that runs and fails at once, and having given tern the
+    /// quest `QEST-20261124-SKIFF1`.
+    async fn starts_of_tern(listed: Option<&str>, starts: Vec<Start>) -> Vec<Reply> {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let here = Places {
+            quests: dir.path().join("quests"),
+            scratch: dir.path().join("scratch"),
+            home: dir.path().join("home"),
+            state: dir.path().join("state"),
+        };
+        let quest = "QEST-20261124-SKIFF1";
+        std::fs::create_dir_all(here.quests.join(quest)).expect("the quest made");
+        std::fs::write(here.quests.join(quest).join("README.md"), "# Given\n")
+            .expect("its README written");
+        here.ledgers()
+            .hold(quest)
+            .expect("its ledger held")
+            .keep()
+            .expect("the quest shared");
+        here.give("tern", quest).expect("the quest given");
+        let gates = listed.map(|listed| {
+            let file = dir.path().join("answers-for");
+            std::fs::write(&file, listed).expect("the list written");
+            // The shell, asked to run a script named `answer` that isn't
+            // there, starts and ends at once.
+            Arc::new(Gates::new(PathBuf::from("/bin/sh"), file).expect("the gates"))
+        });
+        let starting = Starting {
+            gates,
+            ..steering(dir.path())
+        };
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        tokio::spawn(async move {
+            run(
+                Memory::default(),
+                &realm("skiff"),
+                Connection {
+                    worker: true,
+                    ..connection(reading, writing)
+                },
+                Some(here),
+                Some(starting),
+            )
+            .await
+        });
+        let (far_reading, mut far_writing) = tokio::io::split(far);
+        let asked = starts.len();
+        let mut frames = vec![
+            Frame::Hello(realm("tern").hello()),
+            Frame::Have {
+                messages: Vec::new(),
+                living: Some(Vec::new()),
+            },
+        ];
+        frames.extend(
+            (1..)
+                .zip(starts)
+                .map(|(ask, start)| Frame::Start { ask, start }),
+        );
+        says(&mut far_writing, &frames).await;
+        let mut lines = BufReader::new(far_reading).lines();
+        let mut answers = BTreeMap::new();
+        tokio::time::timeout(PATIENCE, async {
+            while answers.len() < asked {
+                let line = lines
+                    .next_line()
+                    .await
+                    .expect("the pipe reads")
+                    .expect("skiff answers");
+                if let Frame::Started { ask, reply } =
+                    serde_json::from_str::<Frame>(&line).expect("a frame")
+                {
+                    answers.insert(ask, reply);
+                }
+            }
+        })
+        .await
+        .expect("skiff answers each start");
+        answers.into_values().collect()
+    }
+
+    fn gate_start(quest: &str, commit: &str) -> Start {
+        serde_json::from_value(json!({
+            "work": {},
+            "command": ["nix-offload", "answer", quest, commit],
+        }))
+        .expect("a start")
+    }
+
+    #[tokio::test]
+    async fn a_worker_s_gate_is_started_only_where_this_machine_answers_it() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let given = || gate_start("QEST-20261124-SKIFF1", commit);
+        let answers = starts_of_tern(Some("tern\n"), vec![given()]).await;
+        let [Ok(Response::Started(started))] = answers.as_slice() else {
+            panic!("a listed worker's gate of a quest given it is started: {answers:?}");
+        };
+        assert_eq!(
+            (started.machine.as_str(), started.held.as_str()),
+            ("skiff", "gate-0123456789ab"),
+            "named for its commit, on skiff"
+        );
+
+        assert_eq!(
+            starts_of_tern(Some("wren\n"), vec![given()]).await,
+            vec![Err(
+                "skiff starts nothing for a worker but a gate it answers: this machine answers \
+                 no gate for it (unlisted)"
+                    .to_owned()
+            )],
+            "a worker the list doesn't name is refused"
+        );
+        assert_eq!(
+            starts_of_tern(None, vec![given()]).await,
+            vec![Err("skiff starts nothing for a worker".to_owned())],
+            "as is every worker where skiff answers none"
+        );
+        let pi: Start =
+            serde_json::from_value(json!({"work": {}, "command": ["pi"]})).expect("a start");
+        let answers = starts_of_tern(
+            Some("tern\n"),
+            vec![pi, gate_start("QEST-20261124-TERN22", commit)],
+        )
+        .await;
+        assert!(
+            answers.iter().all(Result::is_err),
+            "anything but a gate, or a gate of a quest never given, is refused: {answers:?}"
+        );
     }
 
     #[tokio::test]
