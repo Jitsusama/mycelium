@@ -72,9 +72,9 @@ pub fn names_a_secret(name: &str) -> bool {
         .iter()
         .any(|key| {
             lower.starts_with(key)
-                && !Path::new(&lower)
+                && Path::new(&lower)
                     .extension()
-                    .is_some_and(|public| public == "pub")
+                    .is_none_or(|public| public != "pub")
         });
     let ends = [".pem", ".key", ".p12", ".pfx", ".tpm"]
         .iter()
