@@ -12873,12 +12873,17 @@ esac
         let (_stop, _node, _client) = orchestrated_in(&store, &socket, &quests, &[]).await;
         steward_claims(&socket).await;
         // The steward's pi rolls over into a new log, which names the old
-        // one as its parent, and holds that log open in place of the old.
+        // one's file as its parent, as pi writes it, and holds that log
+        // open in place of the old.
         let logs = socket.with_file_name("sessions").join("--home-joel--");
         let log = logs.join("2026-11-23T11-31-00-000Z_s-steward-2.jsonl");
+        let parent = logs.join("2026-11-23T09-00-00-000Z_s-steward.jsonl");
         fs::write(
             &log,
-            "{\"type\":\"session\",\"id\":\"s-steward-2\",\"parentSession\":\"s-steward\"}\n",
+            format!(
+                "{{\"type\":\"session\",\"id\":\"s-steward-2\",\"parentSession\":{}}}\n",
+                json!(parent.to_str().expect("a path in words"))
+            ),
         )
         .expect("written");
         let held = procs_of(&socket).join("7001").join("fd").join("3");

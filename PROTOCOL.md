@@ -860,10 +860,13 @@ session says of itself:
   none. A quest another session holds is refused:
   only that session hands it on, by forgetting it, or by being
   continued, as a session whose log's first line, `<time>_<id>.jsonl`
-  under pi's `sessions` folder, names it as `parentSession`. What a
-  session claimed lapses once it neither runs nor waits parked, as the
-  record is next read or changed, so an orchestrator started afresh
-  claims its quests again and one ended holds nothing; and the person's
+  under pi's `sessions` folder, names it as `parentSession`, by its id
+  or, as pi writes it, its log's path. What a session claimed passes,
+  once it neither runs nor waits parked, to the one session standing
+  whose log continues its own, through at most eight logs; where none
+  or two do, it lapses, as the record is next read or changed, so an
+  orchestrator started afresh claims its quests again and one ended
+  holds nothing; and the person's
   own login, never an agent's, frees a quest from whichever session
   holds it with `{"Free": {"quest"}}`, whole where that session heads
   it. The file is the node's state, never written by hand; a fenced

@@ -340,9 +340,8 @@ impl Logs {
             .filter_map(|folder| fs::read_dir(folder.path()).ok())
             .flat_map(Iterator::flatten)
             .filter_map(|file| {
-                let name = file.file_name();
-                let (_, session) = name.to_str()?.strip_suffix(".jsonl")?.split_once('_')?;
-                Some((session.to_owned(), file.path()))
+                let session = session_of_log(file.file_name().to_str()?)?.to_owned();
+                Some((session, file.path()))
             })
             .collect();
         Self { found }
@@ -361,7 +360,7 @@ impl Logs {
         .ok()?;
         let header: serde_json::Value = serde_json::from_str(&first).ok()?;
         (header.get("id")?.as_str()? == session)
-            .then(|| header.get("parentSession")?.as_str().map(str::to_owned))
+            .then(|| header.get("parentSession")?.as_str().map(parent_of))
             .flatten()
     }
 
@@ -374,6 +373,24 @@ impl Logs {
             .filter_map(|session| Some(((*session).to_owned(), self.continues(session)?)))
             .collect()
     }
+}
+
+/// The session a log file named `name` holds, as pi names it:
+/// `<time>_<session>.jsonl`.
+fn session_of_log(name: &str) -> Option<&str> {
+    let (_, session) = name.strip_suffix(".jsonl")?.split_once('_')?;
+    Some(session)
+}
+
+/// The session a log's `parentSession` names. pi writes the parent's log
+/// as a path, whose file name holds its session; a bare session is taken
+/// as it is.
+fn parent_of(named: &str) -> String {
+    Path::new(named)
+        .file_name()
+        .and_then(|name| session_of_log(name.to_str()?))
+        .unwrap_or(named)
+        .to_owned()
 }
 
 /// Whether the chain the quests' record gives agrees with the node's.
@@ -944,6 +961,30 @@ mod tests {
             continues(logs.path(), "s-nobody"),
             None,
             "nor one with no log"
+        );
+    }
+
+    #[test]
+    fn a_log_names_its_parent_by_the_path_pi_writes() {
+        let logs = tempfile::tempdir().expect("a temporary folder");
+        let folder = logs.path().join("--home-joel-src-mycelium--");
+        fs::create_dir_all(&folder).expect("made");
+        let parent =
+            folder.join("2026-10-11T22-41-54-195Z_01a12d21-3813-76ee-b875-6702b23f353a.jsonl");
+        fs::write(
+            folder.join("2026-10-23T02-03-44-444Z_01a1667f-f5bc-7ba6-9290-033e899fff34.jsonl"),
+            format!(
+                "{{\"type\":\"session\",\"version\":3,\"id\":\"01a1667f-f5bc-7ba6-9290-033e899fff34\",\
+                 \"timestamp\":\"2026-10-23T02:03:44.444Z\",\"cwd\":\"/home/joel/src/mycelium\",\
+                 \"parentSession\":{}}}\n",
+                serde_json::Value::from(parent.to_str().expect("a path in words"))
+            ),
+        )
+        .expect("written");
+        assert_eq!(
+            continues(logs.path(), "01a1667f-f5bc-7ba6-9290-033e899fff34"),
+            Some("01a12d21-3813-76ee-b875-6702b23f353a".to_owned()),
+            "the session the parent's log file is named for"
         );
     }
 
