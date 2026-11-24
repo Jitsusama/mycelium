@@ -9675,7 +9675,7 @@ mod tests {
                         name: "work".to_owned(),
                         machine: "wren".to_owned(),
                     };
-                    let mut hello = serde_json::to_vec(&crate::link::Frame::Hello(wren.hello()))
+                    let mut hello = serde_json::to_vec(&link::Frame::Hello(wren.hello()))
                         .expect("a hello is written");
                     hello.push(b'\n');
                     let _ = far.write_all(&hello).await;
@@ -23112,6 +23112,10 @@ esac
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one gone machine's way in, release, booking and redial, told in order"
+    )]
     async fn a_made_machine_its_provider_says_is_gone_is_let_go_at_once() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let (to_dial, _) = mpsc::unbounded_channel();
@@ -23200,12 +23204,15 @@ esac
             (left, admits)
         };
 
-        let ((), (left, admits)) = tokio::time::timeout(PATIENCE, async {
-            tokio::join!(
-                keep_made(dial, made, keeping, Arc::new(Notify::new()), linked),
-                asked
-            )
-        })
+        let ((), (left, admits)) = tokio::time::timeout(
+            PATIENCE,
+            Box::pin(async {
+                tokio::join!(
+                    keep_made(dial, made, keeping, Arc::new(Notify::new()), linked),
+                    asked
+                )
+            }),
+        )
         .await
         .expect("a machine gone is let go long before its time, not redialled");
 
