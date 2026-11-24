@@ -147,11 +147,14 @@ impl Drop for Killed {
     }
 }
 
-/// Whether this test's own process ignores hangups, as one run under
-/// `nohup` does: a shell it starts inherits that, and can't be ended by
-/// one. Read where the kernel says it; a system that doesn't say is taken
-/// not to ignore them.
-fn hangups_ignored() -> bool {
+/// Whether a hangup reaches a shell this test starts: not where the test's
+/// own process ignores hangups, as one run under `nohup` does, since the
+/// shell inherits that. Only Linux says so, in /proc; a Mac has no /proc,
+/// and reading the mask there takes `sigaction`, which this crate's
+/// `unsafe_code = "deny"` keeps out, so a system that doesn't say is
+/// taken not to let it reach, and only the holder's outliving it is
+/// proved there.
+fn hangups_reach_the_shell() -> bool {
     const HANGUP_BIT: u64 = 1;
     fs::read_to_string("/proc/self/status")
         .ok()
@@ -161,7 +164,7 @@ fn hangups_ignored() -> bool {
                 .find_map(|line| line.strip_prefix("SigIgn:"))?;
             u64::from_str_radix(ignored.trim(), 16).ok()
         })
-        .is_some_and(|ignored| ignored & HANGUP_BIT != 0)
+        .is_some_and(|ignored| ignored & HANGUP_BIT == 0)
 }
 
 /// Closing a window hangs up on the terminal it ran, as a terminal closing
@@ -247,9 +250,9 @@ fn a_holder_outlives_the_hangup_of_the_terminal_it_was_started_from() {
         let _ = hung.send(terminal.0.wait());
     });
     // A runner that ignores hangups passes that on to the shell, which
-    // then stays, so only where they reach it is its end the proof that
-    // the hangup landed.
-    if !hangups_ignored() {
+    // then stays, so only where they're known to reach it is its end the
+    // proof that the hangup landed.
+    if hangups_reach_the_shell() {
         let hung = hangs
             .recv_timeout(PATIENCE)
             .expect("the terminal's shell goes with its window")
