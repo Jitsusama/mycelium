@@ -524,32 +524,43 @@ fn parked_presence(session: &Session) -> bool {
             == Some("parked")
 }
 
-/// Where `sessions` are seen, for judging carries: each running or
-/// parked, by its pi session's id where its presence names one, on its
-/// machine; each ended, where it last ran; and each quest, on every
-/// machine a session of it runs or is parked on. A session seen running
-/// anywhere isn't taken as ended, though another sighting says it is.
-fn sightings_of(sessions: Vec<Session>) -> kept::Sightings {
-    let mut sightings = kept::Sightings::default();
-    for session in sessions {
-        let id = session
-            .presence
+/// Where `sessions`, and the sessions other machines ran that were let go
+/// here as `gone`, are seen, for judging carries: each running or parked,
+/// by its pi session's id where its presence names one, on its machine;
+/// each ended, where it last ran; and each quest, on every machine a
+/// session of it runs or is parked on, with when that session was begun
+/// where its id says ([`kept::begun`]). A session seen running anywhere
+/// isn't taken as ended, though another sighting says it is.
+fn sightings_of(sessions: Vec<Session>, gone: &[store::Presence]) -> kept::Sightings {
+    let pi_id = |presence: &serde_json::Value, id: &str| {
+        presence
             .get("session")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or(&session.id)
-            .to_owned();
+            .unwrap_or(id)
+            .to_owned()
+    };
+    let mut sightings = kept::Sightings::default();
+    for one in gone {
+        if let Some(machine) = &one.elsewhere {
+            sightings
+                .ended_on
+                .insert(pi_id(&one.body, &one.session), machine.clone());
+        }
+    }
+    for session in sessions {
+        let id = pi_id(&session.presence, &session.id);
         if !stands(&session) {
             if session.state == SessionState::Ended {
                 sightings.ended_on.insert(id, session.machine);
             }
             continue;
         }
-        if let Some(quest) = &session.quest {
+        if let (Some(quest), Some(begun)) = (&session.quest, kept::begun(&id)) {
             sightings
                 .quest_on
                 .entry(quest.clone())
                 .or_default()
-                .insert(session.machine.clone());
+                .push((session.machine.clone(), begun));
         }
         sightings.runs_on.insert(id, session.machine);
     }
@@ -1951,7 +1962,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             (receptors, vec!["state", "read_at", "counts"]),
             (builders, vec!["state", "said", "heard_at"]),
             // What was kept of a carry never changes; how it stands does.
-            (carries, vec!["state", "refused"]),
+            (carries, vec!["state", "refused", "stuck"]),
             (
                 forages,
                 vec![
@@ -3329,9 +3340,7 @@ impl<S: Store> Shared<S> {
             return;
         };
         let now = jiff::Timestamp::now();
-        // Settling lets trees go, so it goes by the carried session alone,
-        // never its quest, which may run on there in a session of its own.
-        let runs_on = self.sightings().runs_on;
+        let runs_on = self.runs_on();
         let mut places = HashMap::new();
         for carry in settle::to_look_at(self.carries_looked_at(), &settled, &self.machine) {
             let session = carry.said("session");
@@ -3339,7 +3348,7 @@ impl<S: Store> Shared<S> {
             seen.runs_on = runs_on.get(session).cloned();
             places.insert(session.to_owned(), seen.runs_on.clone());
             let said = settled.get(&carry.id);
-            let state = settler.stands(&carry, kept::judged(&carry, &seen, now), said);
+            let state = settler.stands(&carry, kept::standing(&carry, &seen), said);
             // A line that stands is never asked again, so settle() needn't
             // read the file to say so.
             let stands = said.is_some_and(|said| settle::stands_at(said, now));
@@ -3389,7 +3398,7 @@ impl<S: Store> Shared<S> {
         if self
             .settles
             .as_ref()
-            .is_some_and(|settler| settler.moved(&self.sightings().runs_on))
+            .is_some_and(|settler| settler.moved(&self.runs_on()))
         {
             self.settle_carries();
         }
@@ -3469,10 +3478,20 @@ impl<S: Store> Shared<S> {
     }
 
     /// Where the node's state sees each session, by its id, and each
-    /// quest, for judging carries.
+    /// quest, for judging carries, with the sessions other machines ran
+    /// that it let go as ended.
     fn sightings(&self) -> kept::Sightings {
         let sessions = self.lock().state.sessions();
-        sightings_of(sessions)
+        sightings_of(sessions, &self.store.gone())
+    }
+
+    /// Where each session seen running, or parked, runs, by its id: all
+    /// settling reads, which goes by the carried session alone, never its
+    /// quest, since another session of the quest doesn't show the trees
+    /// this one left were taken.
+    fn runs_on(&self) -> HashMap<String, String> {
+        let sessions = self.lock().state.sessions();
+        sightings_of(sessions, &[]).runs_on
     }
 
     /// The person's words as the daemon interface holds them, each marked
@@ -3544,9 +3563,8 @@ impl<S: Store> Shared<S> {
         })?;
         let now = jiff::Timestamp::now();
         let sightings = self.sightings();
-        let judge = |carry: &kept::Kept| {
-            kept::judged(carry, &sightings.seen(carry, self.handed(carry)), now)
-        };
+        let judge =
+            |carry: &kept::Kept| kept::standing(carry, &sightings.seen(carry, self.handed(carry)));
         Ok(ended::carried(&carries, judge, now.as_millisecond()))
     }
 
@@ -12819,15 +12837,31 @@ esac
             session.quest = Some("QEST-20261115-HARBOR".to_owned());
             session
         };
-        let sightings = sightings_of(vec![
-            session("s-old", "skiff", "ended", json!({})),
-            session("s-new", "tern", "busy", json!({})),
-            session("held-1", "tern", "idle", json!({"session": "s-pi"})),
-            session("s-parked", "kestrel", "ended", json!({"state": "parked"})),
-            // Two sightings of one session: the one running says where.
-            session("s-both", "skiff", "ended", json!({})),
-            session("s-both", "tern", "idle", json!({})),
-        ]);
+        // Pi names a session by a UUID of version 7, begun when it says.
+        let (busy, parked) = (
+            "01a1ecaa-d25a-7132-83ff-19b26eac3da6",
+            "01a1ecab-0000-7132-83ff-19b26eac3da6",
+        );
+        let gone = |session: &str, machine: Option<&str>| store::Presence {
+            session: session.to_owned(),
+            body: Arc::new(json!({"session": session})),
+            elsewhere: machine.map(str::to_owned),
+            lives: false,
+            unreachable_since: None,
+        };
+        let sightings = sightings_of(
+            vec![
+                session("s-old", "skiff", "ended", json!({})),
+                session(busy, "tern", "busy", json!({})),
+                session("held-1", "tern", "idle", json!({"session": "s-pi"})),
+                session(parked, "kestrel", "ended", json!({"state": "parked"})),
+            ],
+            &[
+                gone("s-ended-there", Some("osprey")),
+                // Let go there, but running again: it runs, so isn't ended.
+                gone(busy, Some("wren")),
+            ],
+        );
         let on = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
             pairs
                 .iter()
@@ -12836,23 +12870,27 @@ esac
         };
         assert_eq!(
             sightings.runs_on,
-            on(&[
-                ("s-new", "tern"),
-                ("s-pi", "tern"),
-                ("s-parked", "kestrel"),
-                ("s-both", "tern"),
-            ]),
+            on(&[(busy, "tern"), ("s-pi", "tern"), (parked, "kestrel")]),
             "by pi's own id where its presence names one, the parked included"
         );
         assert_eq!(
             sightings.ended_on,
-            on(&[("s-old", "skiff")]),
-            "only what runs nowhere is ended"
+            on(&[("s-old", "skiff"), ("s-ended-there", "osprey")]),
+            "only what runs nowhere is ended, here or let go from elsewhere"
         );
+        let mut quest_on = sightings
+            .quest_on
+            .get("QEST-20261115-HARBOR")
+            .cloned()
+            .unwrap_or_default();
+        quest_on.sort();
         assert_eq!(
-            sightings.quest_on.get("QEST-20261115-HARBOR"),
-            Some(&["kestrel".to_owned(), "tern".to_owned()].into()),
-            "its quest is where any of its sessions runs, never where one ended"
+            quest_on,
+            [
+                ("kestrel".to_owned(), 0x01a1_ecab_0000),
+                ("tern".to_owned(), 0x01a1_ecaa_d25a),
+            ],
+            "its quest is where a session of it known begun runs, never where one ended"
         );
     }
 

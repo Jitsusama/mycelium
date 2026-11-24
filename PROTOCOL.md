@@ -969,11 +969,18 @@ since a session carried may come back to life under an id of its own;
 `back` once it runs here again after its done file was written since,
 or, running nowhere, once a session of its quest runs here; `carrying`
 once it is gone from here, by its presence ending or running somewhere
-else; and `ordered` until then. An `ordered` or `carrying` carry kept
-half an hour ago or more stands `stuck` instead, with `stuck` saying
-why: still running here, running on a machine other than `to`, or
-neither it nor its quest seen on `to`. Its `state`, `refused` and
-`stuck` are live. The chain and asker
+else; and `ordered` until then. A session of its quest counts only
+when it was begun since the carry was kept, as its pi session's id, a
+UUID of version 7, says, so a sibling already running on either side
+says nothing; one whose id says nothing of when, or any session of a
+carry naming no quest, never counts. Where the session ran elsewhere
+and was let go, it last ended there. An `ordered` or `carrying` carry
+kept half an hour ago or more stands `stuck` instead, with `stuck`
+saying why: still running here, running on a machine other than `to`,
+or neither it nor its quest seen on `to`. Stuck is for the person
+alone: settling, and a session's end, judge a carry as it stands
+however long it has taken. Its `state`, `refused` and `stuck` are
+live. The chain and asker
 stay in the file, which proves them. Each node serves the carries it
 kept, and those each linked machine's node told of in a `Carries`
 frame while a link carried it within the last day. Of those, `refused`
@@ -998,7 +1005,7 @@ started afresh has seen none arrive, but takes one with a line in
 it stood `arrived` when asked. It looks as presences
 change and each minute, at the newest carry of each session kept
 within the week; never at one standing `refused`, `ordered`,
-`carrying`, `stuck` or `back`. Settling goes by the carried session
+`carrying` or `back`. Settling goes by the carried session
 alone, never its quest, since another session of the quest on `to`
 doesn't show the trees this one left were taken. Settling lets go of each tree holding
 nothing the carry didn't take, and otherwise keeps every one, saying
