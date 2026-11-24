@@ -817,7 +817,11 @@ mod tests {
             "a session whose machine is out of reach reads as unreachable"
         );
         let parked = Presence {
-            body: json!({"session": "01a1", "addresses": ["4UHC5Q"], "state": "parked"}).into(),
+            body: json!({
+                "session": "01a1", "addresses": ["4UHC5Q"], "state": "parked",
+                "at": "2026-10-26T20:31:17.392Z",
+            })
+            .into(),
             ..presence(true, Some("kestrel"))
         };
         assert_eq!(
