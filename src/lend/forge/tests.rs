@@ -17,9 +17,6 @@ const SIGNATURE: &str = "-----BEGIN SSH SIGNATURE-----\n\
     7RI1hNXs0ZNU3iYVqZ9Ao=\n\
     -----END SSH SIGNATURE-----\n";
 
-/// The commit git made of [`UNSIGNED`] signed with [`SIGNATURE`].
-const SIGNED_COMMIT: &str = "78bddd5fe114f23734480da23e26db56e927e293";
-
 /// Where git is, as the forge is started with it: by its whole path,
 /// since it runs with no `PATH` of its own.
 fn git_path() -> PathBuf {
@@ -242,74 +239,82 @@ fn a_bundle_is_read_for_its_one_commit_and_what_it_needs() {
     assert_eq!(bundled(b"PACK"), Err("isn't a git bundle"));
 }
 
-#[tokio::test]
-async fn a_commit_is_signed_with_the_forges_key_and_named_as_git_names_it() {
+#[test]
+fn a_commit_comes_back_unsigned_with_its_parents_as_signed() {
+    let signed = with_signature(UNSIGNED.as_bytes(), SIGNATURE);
+    assert_eq!(
+        unsigned(&signed, &BTreeMap::new()),
+        Some(UNSIGNED.as_bytes().to_vec()),
+        "a signature it had is taken out, whole"
+    );
+    let (was, now) = ("a".repeat(40), "b".repeat(40));
+    let child = UNSIGNED.replacen("\nauthor", &format!("\nparent {was}\nauthor"), 1);
+    assert_eq!(
+        unsigned(child.as_bytes(), &[(was.clone(), now.clone())].into()),
+        Some(child.replace(&was, &now).into_bytes()),
+        "a parent signed in this push is named as signed"
+    );
+    let message = format!("{UNSIGNED}parent {was}\n");
+    assert_eq!(
+        unsigned(message.as_bytes(), &[(was.clone(), now)].into()),
+        Some(message.clone().into_bytes()),
+        "a parent only in the message is left as written"
+    );
+    assert_eq!(
+        unsigned(b"tree x\n\nno committer\n", &BTreeMap::new()),
+        None,
+        "what isn't a commit the forge signs isn't readied"
+    );
+}
+
+#[test]
+fn a_forge_starts_only_with_branch_starts_and_paths_named_whole() {
     let dir = tempfile::tempdir().expect("a temporary folder");
     let forge = forge_in(dir.path());
-    let asking = json!({
-        "cell": "KP0L6A",
-        "payload": STANDARD.encode(UNSIGNED),
-    });
-
-    let (status, body) = asked_of(&forge, &request("/sign", Some("kestrel"), &asking)).await;
-
-    assert_eq!(status, 200, "signed: {}", why(&body));
-    let signed: Signed = serde_json::from_slice(&body).expect("a signature");
-    assert_eq!(
-        signed,
-        Signed {
-            signature: SIGNATURE.to_owned(),
-            commit: SIGNED_COMMIT.to_owned(),
-        },
-        "the commit's id is the one git gives it signed"
+    assert_eq!(forge.unstartable(), None, "as the tests start it");
+    for (branches, said) in [
+        (vec![], "no branch without a start"),
+        (vec!["agents".to_owned()], "so not agents"),
+        (vec![String::new()], "ends in /"),
+        (vec!["agents/../".to_owned()], "ends in /"),
+    ] {
+        let starting = Forge {
+            branches: branches.clone(),
+            ..forge.clone()
+        };
+        let why = starting.unstartable().unwrap_or_default();
+        assert!(why.contains(said), "{branches:?}: {why}");
+    }
+    let relative = Forge {
+        folder: PathBuf::from("forge"),
+        ..forge.clone()
+    };
+    assert!(
+        relative
+            .unstartable()
+            .is_some_and(|why| why.contains("isn't named from the root")),
+        "a folder named from where it starts"
     );
-    assert_eq!(
-        fs::read_to_string(dir.path().join("payload")).expect("what was signed"),
-        UNSIGNED,
-        "the commit itself is what the key signs"
-    );
-    assert_eq!(
-        fs::read_to_string(dir.path().join("asked")).expect("what ssh-keygen was asked"),
-        format!(
-            "-Y sign -n git -U -f {}\n{}\nunset\n",
-            forge.key.display(),
-            forge.agent.display()
-        ),
-        "it signs as git with the key's agent alone, and nothing else of this machine's"
+    let mut repo = forge;
+    repo.repos.insert("core".to_owned(), PathBuf::from("core"));
+    assert!(
+        repo.unstartable()
+            .is_some_and(|why| why.starts_with("core isn't named")),
+        "and a repository too"
     );
 }
 
 #[tokio::test]
-async fn what_the_forge_wont_sign_is_refused_saying_why() {
+async fn what_the_forge_wont_answer_is_refused_saying_why() {
     let dir = tempfile::tempdir().expect("a temporary folder");
     let forge = forge_in(dir.path());
-    let signing = |payload: &[u8]| json!({"payload": STANDARD.encode(payload)});
-    let signed = with_signature(UNSIGNED.as_bytes(), SIGNATURE);
+    let pushing = json!({"repo": "core", "branch": "agents/x", "bundle": ""});
     for (request, status, words) in [
+        (request("/push", None, &pushing), 400, "named no machine"),
         (
-            request("/sign", None, &signing(UNSIGNED.as_bytes())),
+            request("/push", Some("../kestrel"), &pushing),
             400,
             "named no machine",
-        ),
-        (
-            request("/sign", Some("../kestrel"), &signing(UNSIGNED.as_bytes())),
-            400,
-            "named no machine",
-        ),
-        (
-            request("/sign", Some("kestrel"), &signing(&signed)),
-            422,
-            "signs commits alone",
-        ),
-        (
-            request("/sign", Some("kestrel"), &json!({"payload": "not base64!"})),
-            400,
-            "isn't base64",
-        ),
-        (
-            request("/sign", Some("kestrel"), &json!(["a list"])),
-            400,
-            "isn't a commit to sign",
         ),
         (
             request("/keys", Some("kestrel"), &json!({})),
@@ -317,11 +322,20 @@ async fn what_the_forge_wont_sign_is_refused_saying_why() {
             "answers no POST /keys",
         ),
         (
-            b"POST /sign HTTP/1.1\r\ntransfer-encoding: chunked\r\n\r\n0\r\n\r\n".to_vec(),
+            request(
+                "/sign",
+                Some("kestrel"),
+                &json!({"payload": STANDARD.encode(UNSIGNED)}),
+            ),
+            404,
+            "answers no POST /sign",
+        ),
+        (
+            b"POST /push HTTP/1.1\r\ntransfer-encoding: chunked\r\n\r\n0\r\n\r\n".to_vec(),
             501,
             "a body of a length alone",
         ),
-        (b"POST /sign\r\n\r\n".to_vec(), 400, "isn't HTTP"),
+        (b"POST /push\r\n\r\n".to_vec(), 400, "isn't HTTP"),
     ] {
         let (answered, body) = asked_of(&forge, &request).await;
         assert_eq!(
@@ -334,7 +348,7 @@ async fn what_the_forge_wont_sign_is_refused_saying_why() {
     }
     assert!(
         !dir.path().join("payload").exists(),
-        "nothing refused reached the key"
+        "nothing reached the key: it signs only what it pushes"
     );
 }
 
@@ -400,11 +414,16 @@ async fn a_branch_bundled_is_pushed_to_its_origin_and_tidied_after() {
         .repos
         .insert("core".to_owned(), dir.path().join("forge-repo"));
     let borrower = dir.path().join("borrower");
-    git(
-        &borrower,
-        &["commit", "--quiet", "--allow-empty", "-m", "a change"],
+    for message in ["a change", "another on it"] {
+        git(
+            &borrower,
+            &["commit", "--quiet", "--allow-empty", "-m", message],
+        );
+    }
+    let (first, head) = (
+        git(&borrower, &["rev-parse", "HEAD^"]),
+        git(&borrower, &["rev-parse", "HEAD"]),
     );
-    let head = git(&borrower, &["rev-parse", "HEAD"]);
     let bundle = borrow::bundle(&forge.git, &borrower, &base, "HEAD").expect("bundled");
     let pushing = Pushing {
         cell: Some("KP0L6A".to_owned()),
@@ -417,23 +436,74 @@ async fn a_branch_bundled_is_pushed_to_its_origin_and_tidied_after() {
         asked_of(&forge, &request("/push", Some("kestrel"), &json!(pushing))).await;
 
     assert_eq!(status, 200, "begun: {}", why(&body));
+    let answered = lines_of(&body);
+    let [
+        Pushed::Pushed {
+            head: now,
+            commits,
+            signed,
+            bundle: Some(_),
+        },
+    ] = answered.as_slice()
+    else {
+        panic!("one line saying it pushed, with a bundle back: {answered:?}");
+    };
+    let first_signed = signed.get(&first).expect("the first commit signed").clone();
     assert_eq!(
-        lines_of(&body),
-        [Pushed::Pushed {
-            head: head.clone(),
-            commits: vec![head.clone()],
-        }],
-        "it says what it pushed: the commits past the bundle's base"
+        (signed.len(), signed.get(&head)),
+        (2, Some(now)),
+        "each commit past the origin signed"
     );
     assert_eq!(
+        commits,
+        &[now.clone(), first_signed.clone()],
+        "and said newest first"
+    );
+    assert_ne!(now, &head, "signed, the head is another commit");
+    assert_eq!(
         git(&origin, &["rev-parse", "refs/heads/agents/kestrel-fix"]),
-        head,
-        "the branch is on the origin"
+        *now,
+        "the signed branch is on the origin"
+    );
+    assert_eq!(
+        git(&origin, &["rev-parse", &format!("{now}^")]),
+        first_signed,
+        "each signed commit's parent is its parent as signed"
+    );
+    assert!(
+        git(&origin, &["cat-file", "commit", now.as_str()])
+            .contains("\ngpgsig -----BEGIN SSH SIGNATURE"),
+        "it holds the forge's signature"
+    );
+    assert!(
+        fs::read_to_string(dir.path().join("payload"))
+            .expect("what was signed")
+            .contains(&format!("\nparent {first_signed}\n")),
+        "the key signed the commit as it points at its parent signed"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("asked")).expect("what ssh-keygen was asked"),
+        format!(
+            "-Y sign -n git -U -f {}\n{}\nunset\n",
+            forge.key.display(),
+            forge.agent.display()
+        ),
+        "it signs as git with the key's agent alone, and nothing else of this machine's"
+    );
+    assert_eq!(
+        borrow::arrive(&forge.git, &borrower, "main", &head, &answered[0]).expect("taken back"),
+        Some("refs/heads/main".to_owned()),
+        "the borrower's branch moves"
+    );
+    assert_eq!(
+        git(&borrower, &["rev-parse", "main"]),
+        *now,
+        "to the signed head"
     );
     assert_eq!(
         git(&dir.path().join("forge-repo"), &["for-each-ref", FETCHED]),
         "",
-        "what was fetched to push is let go"
+        "what was fetched and signed to push is let go"
     );
     assert_eq!(
         fs::read_dir(&forge.folder).expect("the folder").count(),
@@ -465,7 +535,7 @@ async fn a_branch_bundled_is_pushed_to_its_origin_and_tidied_after() {
     );
     assert_eq!(
         git(&origin, &["rev-parse", "refs/heads/agents/kestrel-fix"]),
-        head,
+        *now,
         "the branch stands as it was"
     );
 }
@@ -517,25 +587,4 @@ async fn a_push_the_forge_doesnt_allow_is_refused_before_git_is_asked() {
         );
     }
     assert!(!forge.folder.exists(), "nothing was kept to fetch");
-}
-
-#[test]
-fn git_asking_its_signing_program_to_sign_is_told_from_anything_else() {
-    let words = |words: &[&str]| {
-        words
-            .iter()
-            .map(|word| (*word).to_owned())
-            .collect::<Vec<_>>()
-    };
-    let signing = words(&["-Y", "sign", "-n", "git", "-f", "key.pub", "/tmp/x"]);
-    assert_eq!(borrow::asked(&signing), borrow::Asked::Sign("/tmp/x"));
-    let verifying = words(&[
-        "-Y", "verify", "-n", "git", "-f", "allowed", "-I", "a", "-s", "x",
-    ]);
-    assert_eq!(borrow::asked(&verifying), borrow::Asked::Other);
-    assert_eq!(
-        borrow::asked(&words(&["-Y", "sign", "-n", "git", "-U"])),
-        borrow::Asked::Other,
-        "a sign with no file named last is ssh-keygen's own"
-    );
 }

@@ -1,11 +1,12 @@
-//! The forge's side on a borrowing machine: git's signing program, and
-//! the push that bundles a branch and asks it. Each asks this machine's
-//! node for a lend of a `forge` budget, as `lend serve` asks one of a
-//! model's, so the node carries it over the link it already holds to the
-//! lender, and nothing here holds a key or a token.
+//! The forge's side on a borrowing machine: the push that bundles a
+//! branch of unsigned commits and asks it, and taking back the commits
+//! the forge signed. A push asks this machine's node for a lend of a
+//! `forge` budget, as `lend serve` asks one of a model's, so the node
+//! carries it over the link it already holds to the lender, and nothing
+//! here holds a key or a token.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -14,7 +15,7 @@ use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-use super::{Pushed, Pushing, Signed, Signing};
+use super::{Pushed, Pushing};
 use crate::lend::serve::MOST_BODY;
 use crate::lend::{Lend, Lent};
 use crate::wire::Request;
@@ -108,72 +109,6 @@ fn why_refused(status: u16, body: &[u8]) -> String {
     )
 }
 
-/// Asks the forge to sign `payload`, a commit as git asks it signed.
-///
-/// # Errors
-///
-/// When the node, the lender or the forge refuses it, saying why.
-pub async fn sign(asking: &Asking<'_>, payload: &[u8]) -> Result<Signed, String> {
-    let signing = Signing {
-        cell: asking.cell.clone(),
-        payload: STANDARD.encode(payload),
-    };
-    let mut body = Vec::new();
-    let status = lent(asking, "/sign", &json!(signing), |piece| {
-        body.extend_from_slice(piece);
-    })
-    .await?;
-    if status != 200 {
-        return Err(why_refused(status, &body));
-    }
-    serde_json::from_slice(&body)
-        .map_err(|error| format!("the forge's answer isn't a signature: {error}"))
-}
-
-/// What git asks of its signing program, read from its words: to sign
-/// the file named last, or anything else, which goes to `ssh-keygen`.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Asked<'a> {
-    /// Sign this file, writing its signature beside it, as `FILE.sig`.
-    Sign(&'a str),
-    /// Verify, find a principal or anything else `ssh-keygen` does.
-    Other,
-}
-
-/// What `words`, git's to its signing program, ask.
-#[must_use]
-pub fn asked(words: &[String]) -> Asked<'_> {
-    let signs = words
-        .windows(2)
-        .any(|pair| pair[0] == "-Y" && pair[1] == "sign");
-    match words.last() {
-        Some(file) if signs && !file.starts_with('-') => Asked::Sign(file),
-        _ => Asked::Other,
-    }
-}
-
-/// Signs the file `file` names through the forge, writing the signature
-/// to `FILE.sig` as `ssh-keygen -Y sign` does, so git takes it as its own.
-///
-/// # Errors
-///
-/// When the file can't be read or the signature written, or the forge
-/// refuses it.
-pub async fn sign_file(asking: &Asking<'_>, file: &Path) -> Result<Signed, String> {
-    let payload = std::fs::read(file)
-        .map_err(|error| format!("{} couldn't be read: {error}", file.display()))?;
-    let signed = sign(asking, &payload).await?;
-    let mut written = file.as_os_str().to_owned();
-    written.push(".sig");
-    std::fs::write(&written, &signed.signature).map_err(|error| {
-        format!(
-            "the signature couldn't be written to {}: {error}",
-            written.display()
-        )
-    })?;
-    Ok(signed)
-}
-
 /// Asks the forge to push `bundle`, a git bundle of one ref, to `branch`
 /// of `repo`, giving each line it answers to `each` as it comes.
 /// Answers how it ended: pushed or refused.
@@ -236,4 +171,86 @@ pub fn bundle(git: &Path, repo: &Path, base: &str, head: &str) -> io::Result<Vec
             String::from_utf8_lossy(&made.stderr).trim()
         )))
     }
+}
+
+/// The commit `rev` names in `repo`.
+///
+/// # Errors
+///
+/// When git can't say, saying what git said.
+pub fn resolved(git: &Path, repo: &Path, rev: &str) -> io::Result<String> {
+    said(
+        git,
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{rev}^{{commit}}"),
+        ],
+    )
+}
+
+/// What git says to `words` in `repo`, trimmed; else what it said wrong.
+fn said(git: &Path, repo: &Path, words: &[&str]) -> io::Result<String> {
+    let ran = std::process::Command::new(git)
+        .arg("-C")
+        .arg(repo)
+        .args(words)
+        .output()?;
+    if ran.status.success() {
+        Ok(String::from_utf8_lossy(&ran.stdout).trim().to_owned())
+    } else {
+        Err(io::Error::other(format!(
+            "git {} said: {}",
+            words.first().copied().unwrap_or_default(),
+            String::from_utf8_lossy(&ran.stderr).trim()
+        )))
+    }
+}
+
+/// Takes the commits the forge signed in `pushed` back into `repo`, and
+/// moves `local`, which named `was` when it was pushed, to the signed
+/// head, unless it has moved since: the ref it moved, if any. The signed
+/// commits hold the trees the unsigned ones did, so nothing checked out
+/// changes.
+///
+/// # Errors
+///
+/// When the bundle isn't one, or git can't take it.
+pub fn arrive(
+    git: &Path,
+    repo: &Path,
+    local: &str,
+    was: &str,
+    pushed: &Pushed,
+) -> io::Result<Option<String>> {
+    let Pushed::Pushed {
+        head,
+        bundle: Some(bundle),
+        ..
+    } = pushed
+    else {
+        return Ok(None);
+    };
+    let bundle = STANDARD
+        .decode(bundle)
+        .map_err(|_| io::Error::other("the forge's bundle isn't base64"))?;
+    let file = PathBuf::from(said(git, repo, &["rev-parse", "--absolute-git-dir"])?)
+        .join(format!("mycelium-forge-{}.bundle", std::process::id()));
+    std::fs::write(&file, bundle)?;
+    let took = said(
+        git,
+        repo,
+        &["bundle", "unbundle", file.to_str().unwrap_or_default()],
+    );
+    let _ = std::fs::remove_file(&file);
+    took?;
+    // A commit named by its id moves nothing; HEAD detached moves itself.
+    let named = said(git, repo, &["rev-parse", "--symbolic-full-name", local])?;
+    if named.is_empty() {
+        return Ok(None);
+    }
+    said(git, repo, &["update-ref", &named, head, was])?;
+    Ok(Some(named))
 }

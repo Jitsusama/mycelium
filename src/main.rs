@@ -562,10 +562,11 @@ enum Action {
         #[command(subcommand)]
         act: LendAct,
     },
-    /// Signs and pushes git work for the machines this one made.
+    /// Pushes git work for the machines this one made, signed.
     ///
     /// The machine lending serves it, holding the only key and token;
-    /// a machine borrowing signs and pushes through it, over its lend.
+    /// a machine borrowing pushes unsigned commits through it, over its
+    /// lend, and takes back the commits the forge signed.
     #[command(
         after_help = "Example:\n  mycelium forge push --repo mycelium --branch agents/kestrel-fix"
     )]
@@ -628,14 +629,16 @@ enum ForgeAct {
     /// Serves the forge to the lender, which carries it each request of
     /// a budget of kind `forge` from a machine it made.
     ///
-    /// It signs with the key `--key` names, whose private half only the
-    /// agent at `--agent` holds, and pushes to the `origin` of each
-    /// `--repo`, only to branches starting with a `--branch`, never
-    /// forced. Each sign and push is a `mycelium-forge:` line on stderr.
+    /// Each `--repo` is a clone the forge keeps for itself. A push is
+    /// fetched into it, each commit its `origin` doesn't hold is signed
+    /// with the key `--key` names, whose private half only the agent at
+    /// `--agent` holds, and the signed commits go to its `origin`, only
+    /// to a branch starting with a `--branch`, never forced. It signs
+    /// nothing else. Each push is a `mycelium-forge:` line on stderr.
     #[command(
         after_help = "Example:\n  mycelium forge serve --listen forge.sock --key signing.pub \
-                          --agent agent.sock --repo mycelium=src/mycelium --branch agents/ \
-                          --folder forge"
+                          --agent agent.sock --repo mycelium=/srv/forge/mycelium \
+                          --branch agents/ --folder /srv/forge/waiting"
     )]
     Serve {
         /// The socket the lender asks, in a folder only this account may
@@ -648,38 +651,26 @@ enum ForgeAct {
         /// The agent holding the key's private half.
         #[arg(long)]
         agent: PathBuf,
-        /// A repository it pushes, as `NAME=PATH`, once for each.
+        /// A repository it pushes, as `NAME=PATH`, once for each: an
+        /// absolute path to a clone of the forge's own.
         #[arg(long = "repo", value_name = "NAME=PATH", required = true)]
         repos: Vec<String>,
-        /// The start of a branch a push may name, once for each.
+        /// The start of a branch a push may name, ending in `/`, once
+        /// for each.
         #[arg(long = "branch", value_name = "PREFIX", required = true)]
         branches: Vec<String>,
-        /// Where each bundle waits while it is fetched.
+        /// Where each bundle waits while it is fetched, by an absolute
+        /// path.
         #[arg(long)]
         folder: PathBuf,
     },
-    /// Signs as git's `gpg.ssh.program` does, through the forge.
-    ///
-    /// Given `-Y sign` and a file, it writes the forge's signature to
-    /// `FILE.sig`; given anything else, it runs `ssh-keygen` with the
-    /// same words, so git verifies as it always does.
-    #[command(after_help = "Example:\n  mycelium forge sign -- -Y sign -n git -f key.pub commit")]
-    Sign {
-        /// The budget the lender counts it against.
-        #[arg(long, default_value = mycelium::lend::forge::borrow::BUDGET)]
-        budget: String,
-        /// The cell asking, as this machine says it.
-        #[arg(long, env = "PI_MESH_SESSION")]
-        cell: Option<String>,
-        /// What git asked of `ssh-keygen`.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        words: Vec<String>,
-    },
     /// Pushes what this repository's `--head` holds past `--base` to a
-    /// branch, through the forge.
+    /// branch, through the forge, which signs each commit it pushes.
     ///
     /// It prints each line the forge answers as it comes, a JSON line,
-    /// and ends 0 only once the branch was pushed.
+    /// and ends 0 only once the branch was pushed. The signed commits
+    /// come back, and `--head`'s branch moves to them unless it moved
+    /// while the push went; the files checked out stay as they are.
     #[command(
         after_help = "Example:\n  mycelium forge push --repo mycelium --branch agents/kestrel-fix"
     )]
@@ -3058,6 +3049,9 @@ fn forge(act: ForgeAct, node: &Path) -> io::Result<ExitCode> {
                 git: on_path("git")?,
                 folder,
             };
+            if let Some(why) = served.unstartable() {
+                return Err(io::Error::other(why));
+            }
             runtime()?.block_on(async {
                 let bound = node::bind(&listen)?;
                 tell!("mycelium: serving the forge at {}", listen.display());
@@ -3068,29 +3062,6 @@ fn forge(act: ForgeAct, node: &Path) -> io::Result<ExitCode> {
             })?;
             Ok(ExitCode::SUCCESS)
         }
-        ForgeAct::Sign {
-            budget,
-            cell,
-            words,
-        } => {
-            let borrow::Asked::Sign(file) = borrow::asked(&words) else {
-                use std::os::unix::process::CommandExt as _;
-                // Only exec's failure returns.
-                return Err(std::process::Command::new("ssh-keygen").args(&words).exec());
-            };
-            let asking = borrow::Asking {
-                node,
-                budget: &budget,
-                cell,
-            };
-            match runtime()?.block_on(borrow::sign_file(&asking, Path::new(file))) {
-                Ok(_) => Ok(ExitCode::SUCCESS),
-                Err(why) => {
-                    tell!("mycelium: the forge didn't sign it: {why}");
-                    Ok(ExitCode::FAILURE)
-                }
-            }
-        }
         ForgeAct::Push {
             repo,
             branch,
@@ -3099,7 +3070,9 @@ fn forge(act: ForgeAct, node: &Path) -> io::Result<ExitCode> {
             budget,
             cell,
         } => {
-            let bundle = borrow::bundle(Path::new("git"), Path::new("."), &base, &head)?;
+            let (git, here) = (Path::new("git"), Path::new("."));
+            let was = borrow::resolved(git, here, &head)?;
+            let bundle = borrow::bundle(git, here, &base, &was)?;
             let asking = borrow::Asking {
                 node,
                 budget: &budget,
@@ -3110,7 +3083,17 @@ fn forge(act: ForgeAct, node: &Path) -> io::Result<ExitCode> {
                     let _ = writeln!(io::stdout().lock(), "{line}");
                 }));
             match pushed {
-                Ok(Pushed::Pushed { .. }) => Ok(ExitCode::SUCCESS),
+                Ok(pushed @ Pushed::Pushed { .. }) => {
+                    match borrow::arrive(git, here, &head, &was, &pushed) {
+                        Ok(Some(moved)) => tell!("mycelium: {moved} is now the signed commits"),
+                        Ok(None) => {}
+                        Err(why) => tell!(
+                            "mycelium: pushed, but the signed commits didn't come back here: \
+                             {why}; fetch the branch to take them"
+                        ),
+                    }
+                    Ok(ExitCode::SUCCESS)
+                }
                 Ok(_) => Ok(ExitCode::FAILURE),
                 Err(why) => {
                     tell!("mycelium: the forge didn't push it: {why}");

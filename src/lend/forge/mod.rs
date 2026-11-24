@@ -1,20 +1,23 @@
-//! The forge: the commits a machine lending signs, and the branches it
-//! pushes, for the machines it made, so their git work leaves them with
-//! no key or token of the lender's ever crossing to them.
+//! The forge: the branches a machine lending pushes for the machines it
+//! made, each commit signed, so their git work leaves them with no key
+//! or token of the lender's ever crossing to them.
 //!
 //! It is a lend's upstream, as a model relay is: the lender carries each
 //! request of a budget of kind `forge` here, having refused what the lend
 //! file doesn't let that machine ask, counted it against the machine's
 //! day and named the machine in [`BORROWER`], and a cut ends it as it
-//! ends a model call. Here a request is signed with the one key the
-//! forge is started with, whose private half only its agent holds, or
-//! fetched from the bundle it carries and pushed to a branch the forge
-//! is started allowing, never forced. Each is written as one line to
-//! this machine's log, with the machine, the cell it says asked, and
-//! the commit signed or each commit pushed.
+//! ends a model call. A push carries a bundle of unsigned commits; the
+//! forge fetches it, signs each commit its origin doesn't hold yet with
+//! the one key it is started with (whose private half only its agent
+//! holds), oldest first, each pointing at its parents as signed, and
+//! pushes the signed chain to a branch it is started allowing, never
+//! forced. It signs nothing else: no signature leaves it but inside a
+//! commit it pushes, so none can be carried to other work. Each push is
+//! one line of this machine's log, with the machine, the cell it says
+//! asked, and each commit as it came and as signed.
 //!
-//! [`borrow`] is the borrowing machine's side: git's signing program, and
-//! the push that bundles a branch and asks it.
+//! [`borrow`] is the borrowing machine's side: the push that bundles a
+//! branch and asks it, and taking the signed commits back.
 
 pub mod borrow;
 #[cfg(test)]
@@ -51,6 +54,9 @@ pub const BORROWER: &str = "mycelium-borrower";
 /// message.
 const MOST_PAYLOAD: usize = 1024 * 1024;
 
+/// The most commits one push signs.
+const MOST_SIGNED: usize = 500;
+
 /// How long the agent has to sign.
 const SIGN_WITHIN: Duration = Duration::from_secs(30);
 
@@ -64,9 +70,6 @@ const PUSH_WITHIN: Duration = Duration::from_secs(45 * 60);
 /// the lender lets an answer go quiet.
 const STILL_EVERY: Duration = Duration::from_secs(60);
 
-/// The most commits a push's line names, past which it says how many.
-const MOST_NAMED: usize = 200;
-
 /// Where the forge fetches each bundle to, below the borrower's name.
 const FETCHED: &str = "refs/mycelium-forge";
 
@@ -78,9 +81,10 @@ pub struct Forge {
     /// The agent holding its private half.
     pub agent: PathBuf,
     /// The repositories it pushes, by the name a push asks for, each
-    /// pushed to its `origin`.
+    /// pushed to its `origin`: a clone the forge keeps for itself, since
+    /// what it holds that its origin doesn't is only what borrowers sent.
     pub repos: BTreeMap<String, PathBuf>,
-    /// The starts of the branches a push may name.
+    /// The starts of the branches a push may name, each ending in `/`.
     pub branches: Vec<String>,
     /// The program signing, `ssh-keygen`.
     pub ssh_keygen: PathBuf,
@@ -90,22 +94,36 @@ pub struct Forge {
     pub folder: PathBuf,
 }
 
-/// A commit a borrower asks signed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Signing {
-    /// The cell asking, as the borrower says it.
-    pub cell: Option<String>,
-    /// The commit, as git asks it signed, in base64.
-    pub payload: String,
-}
-
-/// A commit signed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Signed {
-    /// The signature, as `ssh-keygen -Y sign` writes it.
-    pub signature: String,
-    /// The commit's id once the signature is in it.
-    pub commit: String,
+impl Forge {
+    /// Why the forge can't start as it is given, if it can't: each branch
+    /// start ends in `/`, so `agents/` never allows `agents-of-another`,
+    /// and its folder and each repository are named whole, since git
+    /// runs in each repository.
+    #[must_use]
+    pub fn unstartable(&self) -> Option<String> {
+        if self.branches.is_empty() {
+            return Some("the forge pushes no branch without a start".to_owned());
+        }
+        if let Some(start) = self.branches.iter().find(|start| {
+            !start.ends_with('/')
+                || !branch_allowed(&format!("{start}x"), std::slice::from_ref(*start))
+        }) {
+            return Some(format!(
+                "a branch start ends in / and is a branch's name, so not {}",
+                start.escape_debug()
+            ));
+        }
+        let whole = std::iter::once(&self.folder).chain(self.repos.values());
+        whole
+            .into_iter()
+            .find(|path| !path.is_absolute())
+            .map(|path| {
+                format!(
+                    "{} isn't named from the root, as the forge's paths are",
+                    path.display()
+                )
+            })
+    }
 }
 
 /// A branch a borrower asks pushed.
@@ -133,11 +151,20 @@ pub enum Pushed {
     },
     /// It was pushed.
     Pushed {
-        /// The commit the branch is at now.
+        /// The commit the branch is at now, as signed.
         head: String,
-        /// The commits it carried that the bundle's base didn't hold,
+        /// The commits it carried that its origin didn't hold, as signed,
         /// newest first.
         commits: Vec<String>,
+        /// Each of those commits as the borrower made it, to the one the
+        /// forge signed.
+        #[serde(default)]
+        signed: BTreeMap<String, String>,
+        /// A bundle of the signed commits past the borrower's head, in
+        /// base64, for it to take them back; none where nothing was
+        /// signed.
+        #[serde(default)]
+        bundle: Option<String>,
     },
     /// It wasn't.
     Refused {
@@ -199,13 +226,6 @@ async fn connection(stream: UnixStream, forge: Arc<Forge>) {
         return;
     };
     match (asked.method.as_str(), asked.path.as_str()) {
-        ("POST", "/sign") => {
-            let (status, said) = match sign(&forge, &borrower, &asked.body).await {
-                Ok(signed) => (200, json!(signed)),
-                Err(refusal) => (refusal.status, json!({"why": refusal.why})),
-            };
-            let _ = answer(&mut writing, status, &said).await;
-        }
         ("POST", "/push") => push(&forge, &borrower, &asked.body, &mut writing).await,
         (method, path) => {
             let why = format!("the forge answers no {method} {}", path.escape_debug());
@@ -314,87 +334,58 @@ async fn answer<W: AsyncWrite + Unpin>(
     writing.flush().await
 }
 
-/// Signs the commit `body` asks for `borrower`, saying it in the log
-/// however it ends.
-async fn sign(forge: &Forge, borrower: &str, body: &[u8]) -> Result<Signed, Refusal> {
-    let signing: Result<Signing, _> = serde_json::from_slice(body);
-    let cell = signing
-        .as_ref()
-        .ok()
-        .and_then(|signing| signing.cell.clone());
-    let signed = signed(forge, signing).await;
-    let mut line = json!({
-        "time": format!("{:.3}", jiff::Timestamp::now()),
-        "vm": borrower,
-        "cell": cell,
-        "service": "sign",
-    });
-    match &signed {
-        Ok(signed) => {
-            line["commit"] = json!(signed.commit);
-            line["outcome"] = json!("signed");
-        }
-        Err(refusal) => line["outcome"] = json!(format!("refused: {}", refusal.why)),
-    }
-    eprintln!("mycelium-forge: {line}");
-    signed
-}
-
-/// The signature `signing` asks for, and the commit it makes.
-async fn signed(
-    forge: &Forge,
-    signing: Result<Signing, serde_json::Error>,
-) -> Result<Signed, Refusal> {
-    let signing = signing.map_err(|_| refused(400, "the request isn't a commit to sign"))?;
-    let payload = STANDARD
-        .decode(&signing.payload)
-        .map_err(|_| refused(400, "the commit isn't base64"))?;
-    if payload.len() > MOST_PAYLOAD {
-        return Err(refused(
-            413,
-            format!("a commit to sign is at most {MOST_PAYLOAD} bytes"),
-        ));
-    }
-    if !commit_like(&payload) {
-        return Err(refused(
-            422,
-            "the forge signs commits alone, of a repository whose ids are SHA-1, not yet signed",
-        ));
-    }
+/// `payload`, a commit as git asks one signed, with the forge's signature
+/// in it.
+async fn signed(forge: &Forge, payload: &[u8]) -> Result<Vec<u8>, String> {
     let signature = run(
         tokio::process::Command::new(&forge.ssh_keygen)
             .args(["-Y", "sign", "-n", "git", "-U", "-f"])
             .arg(&forge.key)
             .env_clear()
             .env("SSH_AUTH_SOCK", &forge.agent),
-        Some(&payload),
+        Some(payload),
         SIGN_WITHIN,
     )
     .await
-    .map_err(|why| refused(502, format!("the commit couldn't be signed: {why}")))?;
+    .map_err(|why| format!("a commit couldn't be signed: {why}"))?;
     let signature = String::from_utf8(signature)
         .ok()
         .filter(|signature| signature.starts_with("-----BEGIN SSH SIGNATURE-----\n"))
-        .ok_or_else(|| refused(502, "the signing key's agent said what isn't a signature"))?;
-    let object = with_signature(&payload, &signature);
-    // git hashes it in the forge's own folder, out of any repository.
-    own_folder(&forge.folder)
-        .map_err(|error| refused(500, format!("the forge's folder couldn't be made: {error}")))?;
-    let commit = run(
-        tokio::process::Command::new(&forge.git)
-            .args(["hash-object", "-t", "commit", "--stdin"])
-            .current_dir(&forge.folder)
-            .env_clear()
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("HOME", &forge.folder),
-        Some(&object),
-        SIGN_WITHIN,
-    )
-    .await
-    .map_err(|why| refused(502, format!("the commit signed isn't one: {why}")))?;
-    let commit = String::from_utf8_lossy(&commit).trim().to_owned();
-    Ok(Signed { signature, commit })
+        .ok_or_else(|| "the signing key's agent said what isn't a signature".to_owned())?;
+    Ok(with_signature(payload, &signature))
+}
+
+/// The commit `was`, as git keeps it, ready to sign: any signature it had
+/// taken out, and each parent the forge signed in this push, as `signed`
+/// maps them, named as signed. None where it isn't a commit the forge
+/// signs ([`commit_like`]).
+fn unsigned(was: &[u8], signed: &BTreeMap<String, String>) -> Option<Vec<u8>> {
+    let at = was
+        .windows(2)
+        .position(|pair| pair == b"\n\n")
+        .map_or(was.len(), |end| end + 1);
+    let header = std::str::from_utf8(&was[..at]).ok()?;
+    let mut payload = Vec::with_capacity(was.len());
+    let mut dropping = false;
+    for line in header.split_inclusive('\n') {
+        // A signature's lines past its first each begin with a space.
+        if dropping && line.starts_with(' ') {
+            continue;
+        }
+        dropping = line.starts_with("gpgsig ") || line.starts_with("gpgsig-sha256 ");
+        if dropping {
+            continue;
+        }
+        match line.strip_prefix("parent ").map(str::trim_end) {
+            Some(parent) => {
+                let parent = signed.get(parent).map_or(parent, String::as_str);
+                payload.extend_from_slice(format!("parent {parent}\n").as_bytes());
+            }
+            None => payload.extend_from_slice(line.as_bytes()),
+        }
+    }
+    payload.extend_from_slice(&was[at..]);
+    (payload.len() <= MOST_PAYLOAD && commit_like(&payload)).then_some(payload)
 }
 
 /// Whether `payload` is a commit as git asks one signed: a tree of a
@@ -478,9 +469,33 @@ async fn run(
         .unwrap_or("it said nothing");
     Err(format!(
         "{} ({})",
-        last.chars().take(300).collect::<String>(),
+        unlocked(last).chars().take(300).collect::<String>(),
         ran.status
     ))
+}
+
+/// `said` with whatever a URL in it carries before its host's `@` taken
+/// out, since git names a remote's URL whole, a token in it included,
+/// and what git said goes back to the borrower.
+fn unlocked(said: &str) -> String {
+    let mut kept = String::with_capacity(said.len());
+    let mut rest = said;
+    while let Some(at) = rest.find("://") {
+        let (before, after) = rest.split_at(at + 3);
+        kept.push_str(before);
+        let host_ends = after
+            .find(|letter: char| letter == '/' || letter.is_whitespace() || letter == '\'')
+            .unwrap_or(after.len());
+        match after[..host_ends].rfind('@') {
+            Some(user) => {
+                kept.push_str("***@");
+                rest = &after[user + 1..];
+            }
+            None => rest = after,
+        }
+    }
+    kept.push_str(rest);
+    kept
 }
 
 /// Whether `branch` may be pushed as the forge is started: within one of
@@ -561,7 +576,7 @@ async fn push<W: AsyncWrite + Unpin>(forge: &Forge, borrower: &str, body: &[u8],
     let checked = pushing
         .map_err(|_| refused(400, "the request isn't a branch to push"))
         .and_then(|pushing| checked(forge, pushing));
-    let (repo, pushing, bundle, head, needs) = match checked {
+    let (repo, pushing, bundle, head) = match checked {
         Ok(checked) => checked,
         Err(refusal) => {
             line["outcome"] = json!(format!("refused: {}", refusal.why));
@@ -582,15 +597,7 @@ async fn push<W: AsyncWrite + Unpin>(forge: &Forge, borrower: &str, body: &[u8],
     if headed.is_err() {
         return;
     }
-    let going = pushed(
-        forge,
-        &repo,
-        borrower,
-        &pushing.branch,
-        &bundle,
-        &head,
-        &needs,
-    );
+    let going = pushed(forge, &repo, borrower, &pushing.branch, &bundle, &head);
     tokio::pin!(going);
     let ended = loop {
         tokio::select! {
@@ -608,8 +615,15 @@ async fn push<W: AsyncWrite + Unpin>(forge: &Forge, borrower: &str, body: &[u8],
         }
     };
     match &ended {
-        Pushed::Pushed { commits, .. } => {
+        Pushed::Pushed {
+            head,
+            commits,
+            signed,
+            ..
+        } => {
+            line["pushed"] = json!(head);
             line["commits"] = json!(commits);
+            line["signed"] = json!(signed);
             line["outcome"] = json!("pushed");
         }
         Pushed::Refused { why } => line["outcome"] = json!(format!("refused: {why}")),
@@ -623,8 +637,8 @@ async fn push<W: AsyncWrite + Unpin>(forge: &Forge, borrower: &str, body: &[u8],
 }
 
 /// What a push checked at once: its repository's folder, the push, its
-/// bundle, the commit it pushes and those it needs.
-type Checked = (PathBuf, Pushing, Vec<u8>, String, Vec<String>);
+/// bundle and the commit it carries.
+type Checked = (PathBuf, Pushing, Vec<u8>, String);
 
 /// Whether `pushing` may be pushed, as far as can be told before git is
 /// asked.
@@ -655,13 +669,40 @@ fn checked(forge: &Forge, pushing: Pushing) -> Result<Checked, Refusal> {
     let bundle = STANDARD
         .decode(&pushing.bundle)
         .map_err(|_| refused(400, "the bundle isn't base64"))?;
-    let (head, needs) =
-        bundled(&bundle).map_err(|why| refused(400, format!("the bundle {why}")))?;
-    Ok((repo, pushing, bundle, head, needs))
+    let (head, _) = bundled(&bundle).map_err(|why| refused(400, format!("the bundle {why}")))?;
+    Ok((repo, pushing, bundle, head))
 }
 
-/// Fetches `bundle` into `repo` and pushes `head` to `branch` on its
-/// origin, never forced: how it ended.
+/// What a push leaves to let go however it ends, the borrower letting go
+/// partway included: its bundle, and the refs it fetched and signed to.
+struct Tidy<'a> {
+    git: &'a Path,
+    repo: &'a Path,
+    file: PathBuf,
+    fetched: String,
+    signed: String,
+}
+
+impl Drop for Tidy<'_> {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.file);
+        for name in [&self.fetched, &self.signed] {
+            // A ref never made is no matter.
+            let _ = std::process::Command::new(self.git)
+                .arg("-C")
+                .arg(self.repo)
+                .args(["update-ref", "-d", name])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+}
+
+/// Fetches `bundle` into `repo`, signs each commit to `head` its origin
+/// doesn't hold, and pushes the signed chain to `branch` on its origin,
+/// never forced: how it ended.
 async fn pushed(
     forge: &Forge,
     repo: &Path,
@@ -669,59 +710,79 @@ async fn pushed(
     branch: &str,
     bundle: &[u8],
     head: &str,
-    needs: &[String],
 ) -> Pushed {
     let count = PUSHES.fetch_add(1, Ordering::Relaxed);
-    let file = forge
-        .folder
-        .join(format!("{borrower}-{}-{count}.bundle", std::process::id()));
-    let fetched = format!("{FETCHED}/{borrower}/{}-{count}", std::process::id());
-    let ended = carried(forge, repo, &file, &fetched, branch, bundle, head, needs).await;
-    let _ = fs::remove_file(&file);
-    let _ = run(
-        git(forge, repo).args(["update-ref", "-d", &fetched]),
-        None,
-        FETCH_WITHIN,
-    )
-    .await;
-    match ended {
-        Ok(commits) => Pushed::Pushed {
-            head: head.to_owned(),
-            commits,
-        },
-        Err(why) => Pushed::Refused { why },
-    }
+    let named = format!("{borrower}/{}-{count}", std::process::id());
+    let tidy = Tidy {
+        git: &forge.git,
+        repo,
+        file: forge
+            .folder
+            .join(format!("{borrower}-{}-{count}.bundle", std::process::id())),
+        fetched: format!("{FETCHED}/{named}"),
+        signed: format!("{FETCHED}/{named}-signed"),
+    };
+    carried(forge, &tidy, branch, bundle, head)
+        .await
+        .unwrap_or_else(|why| Pushed::Refused { why })
 }
 
-/// `git` in `repo`.
+/// `git` in `repo`, never asking anyone anything.
 fn git(forge: &Forge, repo: &Path) -> tokio::process::Command {
     let mut git = tokio::process::Command::new(&forge.git);
-    git.arg("-C").arg(repo);
+    git.arg("-C")
+        .arg(repo)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("SSH_ASKPASS_REQUIRE", "never");
     git
 }
 
-/// The steps of [`pushed`], up to its tidying: the commits pushed.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each is one push's own, and bundling them would only rename them"
-)]
+/// The lines `listed` holds, each a word.
+fn listed(listed: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(listed)
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The steps of [`pushed`], up to its tidying, which `tidy` does.
 async fn carried(
     forge: &Forge,
-    repo: &Path,
-    file: &Path,
-    fetched: &str,
+    tidy: &Tidy<'_>,
     branch: &str,
     bundle: &[u8],
     head: &str,
-    needs: &[String],
-) -> Result<Vec<String>, String> {
-    kept(&forge.folder, file, bundle)
+) -> Result<Pushed, String> {
+    let repo = tidy.repo;
+    kept(&forge.folder, &tidy.file, bundle)
         .map_err(|error| format!("the bundle couldn't be kept: {error}"))?;
+    // What its origin holds now is what the forge needn't sign.
+    run(
+        git(forge, repo).args([
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--prune",
+            "origin",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ]),
+        None,
+        FETCH_WITHIN,
+    )
+    .await
+    .map_err(|why| format!("the origin couldn't be fetched: {why}"))?;
     run(
         git(forge, repo)
-            .args(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head"])
-            .arg(file)
-            .arg(format!("{head}:{fetched}")),
+            .args([
+                "-c",
+                "fetch.fsckObjects=true",
+                "fetch",
+                "--quiet",
+                "--no-tags",
+            ])
+            .arg("--no-write-fetch-head")
+            .arg(&tidy.file)
+            .arg(format!("{head}:{}", tidy.fetched)),
         None,
         FETCH_WITHIN,
     )
@@ -729,30 +790,98 @@ async fn carried(
     .map_err(|why| format!("the bundle couldn't be fetched: {why}"))?;
     let mut listing = git(forge, repo);
     listing
-        .args(["rev-list", &format!("--max-count={}", MOST_NAMED + 1), head])
-        .args(needs.iter().map(|needed| format!("^{needed}")));
-    let listed = run(&mut listing, None, FETCH_WITHIN)
-        .await
-        .map_err(|why| format!("the bundle's commits couldn't be listed: {why}"))?;
-    let mut commits: Vec<String> = String::from_utf8_lossy(&listed)
-        .lines()
-        .map(str::to_owned)
-        .collect();
-    if commits.len() > MOST_NAMED {
-        commits.truncate(MOST_NAMED);
-        commits.push(format!("and more past these {MOST_NAMED}"));
+        .args(["rev-list", "--reverse", "--topo-order"])
+        .arg(format!("--max-count={}", MOST_SIGNED + 1))
+        .args([head, "--not", "--remotes=origin"]);
+    let unsigned_ones = listed(
+        &run(&mut listing, None, FETCH_WITHIN)
+            .await
+            .map_err(|why| format!("the bundle's commits couldn't be listed: {why}"))?,
+    );
+    if unsigned_ones.len() > MOST_SIGNED {
+        return Err(format!(
+            "the forge signs at most {MOST_SIGNED} commits a push"
+        ));
     }
+    let signed = signed_all(forge, repo, &unsigned_ones).await?;
+    let now = signed.get(head).map_or(head, String::as_str).to_owned();
+    // The borrower takes back what was signed, past what it holds.
+    let back = if now == head {
+        None
+    } else {
+        run(
+            git(forge, repo).args(["update-ref", &tidy.signed, &now]),
+            None,
+            FETCH_WITHIN,
+        )
+        .await
+        .map_err(|why| format!("the signed commits couldn't be named: {why}"))?;
+        let made = run(
+            git(forge, repo)
+                .args(["bundle", "create", "--quiet", "-", &tidy.signed])
+                .arg(format!("^{head}")),
+            None,
+            FETCH_WITHIN,
+        )
+        .await
+        .map_err(|why| format!("the signed commits couldn't be bundled: {why}"))?;
+        Some(STANDARD.encode(made))
+    };
     run(
         git(forge, repo)
             // The repository's own hooks run, so its gates hold.
             .args(["push", "--quiet", "origin"])
-            .arg(format!("{head}:refs/heads/{branch}")),
+            .arg(format!("{now}:refs/heads/{branch}")),
         None,
         PUSH_WITHIN,
     )
     .await
     .map_err(|why| format!("the push was refused: {why}"))?;
-    Ok(commits)
+    Ok(Pushed::Pushed {
+        commits: unsigned_ones
+            .iter()
+            .rev()
+            .filter_map(|was| signed.get(was).cloned())
+            .collect(),
+        head: now,
+        signed,
+        bundle: back,
+    })
+}
+
+/// Signs each of `unsigned_ones` in `repo`, oldest first, each pointing at
+/// its parents as signed: each as it came, to the commit signed.
+async fn signed_all(
+    forge: &Forge,
+    repo: &Path,
+    unsigned_ones: &[String],
+) -> Result<BTreeMap<String, String>, String> {
+    let mut signed = BTreeMap::new();
+    for was in unsigned_ones {
+        let read = run(
+            git(forge, repo).args(["cat-file", "commit", was]),
+            None,
+            FETCH_WITHIN,
+        )
+        .await
+        .map_err(|why| format!("{was} couldn't be read: {why}"))?;
+        let payload = unsigned(&read, &signed).ok_or_else(|| {
+            format!(
+                "{was} isn't a commit the forge signs: one of SHA-1 ids, at most \
+                 {MOST_PAYLOAD} bytes, saying who committed it"
+            )
+        })?;
+        let object = self::signed(forge, &payload).await?;
+        let now = run(
+            git(forge, repo).args(["hash-object", "-t", "commit", "-w", "--stdin"]),
+            Some(&object),
+            SIGN_WITHIN,
+        )
+        .await
+        .map_err(|why| format!("{was} signed isn't a commit git takes: {why}"))?;
+        signed.insert(was.clone(), String::from_utf8_lossy(&now).trim().to_owned());
+    }
+    Ok(signed)
 }
 
 /// Keeps `bundle` at `file` in `folder`, both for this account alone.
