@@ -186,7 +186,8 @@ impl Cell {
             }
             None => {
                 return Some(match &self.lane {
-                    Some(lane) => format!("whether {who} still orchestrates {lane} can't be told"),
+                    // The lane names what of it can't be told.
+                    Some(lane) => format!("{who} may orchestrate {lane}"),
                     None => format!("whether {who} orchestrates other sessions can't be told"),
                 });
             }
@@ -1739,6 +1740,15 @@ pub(super) mod tests {
         assert_eq!(
             with(&|one| one.orchestrates = None),
             "whether S1 orchestrates other sessions can't be told"
+        );
+        assert_eq!(
+            with(&|one| {
+                one.orchestrates = None;
+                one.lane =
+                    Some("S9, out of reach on tern, though since when can't be told".to_owned());
+            }),
+            "S1 may orchestrate S9, out of reach on tern, though since when can't be told",
+            "a lane whose standing can't be told keeps its orchestrator, saying why once"
         );
         let awake_orchestrator = Cell {
             asleep: false,
