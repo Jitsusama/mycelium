@@ -395,6 +395,12 @@ pub async fn run(
         declared: declared_of(starting.as_ref()),
         heard_declared: declared_heard::DeclaredHeard::default(),
         lender: lender_of(starting.as_ref()),
+        apart: matches!(
+            starting
+                .as_ref()
+                .and_then(|starting| starting.asking.as_ref()),
+            Some(Asking::Dialled)
+        ),
         node: starting.map(|starting| starting.node),
         starters,
         answering,
@@ -1129,6 +1135,10 @@ struct End<S> {
     worker_wakes: VecDeque<i64>,
     /// The talks this end carries back to the other.
     following: Option<Following>,
+    /// Whether this end runs apart from the node, as a link another
+    /// machine dialled does, in a process SSH started, which may run on
+    /// while the node is stopped.
+    apart: bool,
     /// This machine's node's socket, which starts asked of it go to.
     node: Option<PathBuf>,
     /// What answers the lends a worker asks of this machine, if it lends.
@@ -1292,8 +1302,13 @@ impl<S: Store> End<S> {
         if !matches!(result, Ok(Ending::HandedOver)) {
             let _ = self.store.mark_ended(&self.other, left);
         }
-        // This node runs as the link drops, so it sees the drop as it is.
-        store::out_of_reach(&self.store, &self.other, left, left);
+        // A link the node keeps drops as the node runs, so it sees the
+        // drop as it is. One running apart may drop while the node is
+        // stopped, so it marks when the link went and leaves the seeing
+        // to the node: its next start, or its easing, which times a mark
+        // it hasn't seen from the drop.
+        let seen = (!self.apart).then_some(left);
+        store::out_of_reach(&self.store, &self.other, left, seen);
         result
     }
 
@@ -4555,7 +4570,7 @@ mod tests {
         skiff
             .put_presence("walgit", "kestrel", &json!({"session": "walgit"}))
             .expect("a copy is kept");
-        store::out_of_reach(&skiff, "kestrel", now(), now());
+        store::out_of_reach(&skiff, "kestrel", now(), Some(now()));
         let (near, far) = tokio::io::duplex(1 << 16);
         let _skiff_end = end(&skiff, "skiff", near);
         let (_far_reading, mut far_writing) = tokio::io::split(far);

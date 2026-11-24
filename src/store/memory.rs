@@ -358,7 +358,7 @@ impl Store for Memory {
         session: &str,
         machine: &str,
         since: i64,
-        seen: i64,
+        seen: Option<i64>,
     ) -> io::Result<()> {
         let mut held = self.held();
         if held.carries(session, machine)
@@ -370,7 +370,9 @@ impl Store for Memory {
             // reads how long a lane has been out of reach.
             if let Some(fields) = Arc::make_mut(&mut presence.body).as_object_mut() {
                 fields.insert("unreachableSince".to_owned(), Value::from(since));
-                fields.insert("unreachableSeen".to_owned(), Value::from(seen));
+                if let Some(seen) = seen {
+                    fields.insert("unreachableSeen".to_owned(), Value::from(seen.max(since)));
+                }
             }
             held.tell(&Change::Presence);
         }

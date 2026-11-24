@@ -530,7 +530,7 @@ impl Store for Folders {
         session: &str,
         machine: &str,
         since: i64,
-        seen: i64,
+        seen: Option<i64>,
     ) -> io::Result<()> {
         let Some((presence, file)) = self.carried(session, machine)? else {
             return Ok(());
@@ -545,11 +545,19 @@ impl Store for Folders {
             return Ok(());
         }
         // A mark an earlier run or an older node left keeps its time and
-        // gains when this run saw it.
-        fields
-            .entry(UNREACHABLE)
-            .or_insert_with(|| Value::from(since));
-        fields.insert(UNREACHABLE_SEEN.to_owned(), Value::from(seen));
+        // gains when this run saw it, which is never before it went.
+        let kept = fields.get(UNREACHABLE).and_then(Value::as_i64);
+        let since = kept.unwrap_or(since);
+        match seen {
+            Some(seen) => {
+                fields.insert(UNREACHABLE.to_owned(), Value::from(since));
+                fields.insert(UNREACHABLE_SEEN.to_owned(), Value::from(seen.max(since)));
+            }
+            None if kept.is_some() => return Ok(()),
+            None => {
+                fields.insert(UNREACHABLE.to_owned(), Value::from(since));
+            }
+        }
         rewrite_mark(&presence, &file, &body)
     }
 
@@ -1513,7 +1521,9 @@ mod tests {
         let (dir, store) = store();
         let id = "1793046604647-0FX11G-875563-952d5879";
         let secret = dir.path().join("secret.json");
-        let held = br#"{"session": "planted", "machine": "kestrel", "text": "ours"}"#;
+        // Seen, so a put-away that followed the link would rewrite it.
+        let held = br#"{"session": "planted", "machine": "kestrel", "text": "ours",
+                        "unreachableSeen": 1}"#;
         fs::write(&secret, held).expect("a file of the account's own");
         let touched = fs::metadata(&secret).and_then(|meta| meta.modified()).ok();
         symlink(&secret, store.messages().join(format!("{id}.json"))).expect("one as a message");
@@ -1532,7 +1542,7 @@ mod tests {
             .keep_presence("planted", "kestrel")
             .expect("keeping what isn't carried here is quiet");
         store
-            .mark_unreachable("planted", "kestrel", 1, 1)
+            .mark_unreachable("planted", "kestrel", 1, Some(1))
             .expect("marking what isn't carried here is quiet");
         store
             .put_away_unreachable("planted", "kestrel", 2)
@@ -1766,10 +1776,10 @@ mod tests {
             .expect("its time is set");
 
         store
-            .mark_unreachable("there", "kestrel", 7, 8)
+            .mark_unreachable("there", "kestrel", 7, Some(8))
             .expect("marked");
         store
-            .mark_unreachable("there", "kestrel", 9, 10)
+            .mark_unreachable("there", "kestrel", 9, Some(10))
             .expect("marked again");
         let held = store.presences();
         assert_eq!(
@@ -1813,7 +1823,7 @@ mod tests {
         older[UNREACHABLE] = json!(5);
         fs::write(&file, older.to_string()).expect("an older mark");
         store
-            .mark_unreachable("there", "kestrel", 9, 10)
+            .mark_unreachable("there", "kestrel", 9, Some(10))
             .expect("seen at this start");
         let held = store.presences();
         assert_eq!(
@@ -1823,6 +1833,43 @@ mod tests {
             ),
             (Some(5), json!(10)),
             "an older mark keeps since when and gains when it was seen"
+        );
+    }
+
+    /// A stop whose sweep fails still puts away what its run saw, then
+    /// says the sweep's failure.
+    #[test]
+    fn a_stop_puts_away_though_its_sweep_fails() {
+        let (_dir, store) = store();
+        for (session, machine) in [("s1", "kestrel"), ("s2", "wren")] {
+            store
+                .put_presence(session, machine, &json!({"session": session}))
+                .expect("carried");
+        }
+        store
+            .mark_unreachable("s2", "wren", 7, Some(8))
+            .expect("marked");
+        // kestrel's claim can't be made, so the sweep fails on it before it
+        // reaches wren.
+        fs::create_dir_all(store.claims.join("kestrel.lock")).expect("in its way");
+
+        assert!(
+            crate::store::stop_seeing_out_of_reach(&store, 20).is_err(),
+            "the sweep's failure is said"
+        );
+        let s2 = store
+            .presences()
+            .into_iter()
+            .find(|one| one.session == "s2")
+            .map(|one| one.body)
+            .expect("kept");
+        assert_eq!(
+            (
+                s2[UNREACHABLE_SEEN].clone(),
+                s2[UNREACHABLE_SEEN_FOR].clone()
+            ),
+            (Value::Null, json!(12)),
+            "and what this run saw of wren is put away all the same"
         );
     }
 
@@ -1841,7 +1888,7 @@ mod tests {
             .and_then(|file| file.set_modified(vouched))
             .expect("its time is set");
         store
-            .mark_unreachable("there", "kestrel", 7, 8)
+            .mark_unreachable("there", "kestrel", 7, Some(8))
             .expect("marked");
 
         store
