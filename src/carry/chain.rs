@@ -88,8 +88,8 @@ impl Orchestrations {
     }
 
     /// Records that `asker` heads `heads` and orchestrates `quests`, as of
-    /// `at`, in place of what it claimed before. Refused, changing nothing, where another session holds
-    /// any of them.
+    /// `at`, in place of what it claimed before. Refused, changing
+    /// nothing, where another session holds any of them.
     ///
     /// # Errors
     ///
@@ -123,7 +123,8 @@ impl Orchestrations {
                 let what = if heading { "heads" } else { "orchestrates" };
                 return Err(format!(
                     "{}'s session already {what} {quest} by this node's record, so {} can't: \
-                     only that session hands it on, or the person",
+                     only that session hands it on, by letting go or by ending once a session \
+                     continues its log, or the person",
                     holder.address, asker.address
                 ));
             }
@@ -301,14 +302,6 @@ impl Orchestrations {
             could.join(" or ")
         ))
     }
-}
-
-/// The session the log of `session` continues, as its own first line
-/// names it, looking among the logs under `logs`, as [`Logs`] finds
-/// them. None where no such log is found, or where it continues none.
-#[must_use]
-pub fn continues(logs: &Path, session: &str) -> Option<String> {
-    Logs::scan(logs).continues(session)
 }
 
 /// How many logs back a lapsing claim is followed to the session that
@@ -538,7 +531,8 @@ mod tests {
             ),
             Err(
                 "WCJQSG's session already orchestrates QEST-20261111-OSPHT4 by this node's \
-                 record, so HARBOR can't: only that session hands it on, or the person"
+                 record, so HARBOR can't: only that session hands it on, by letting go or by \
+                 ending once a session continues its log, or the person"
                     .to_owned()
             ),
             "a session claiming its own orchestrator's quest is refused"
@@ -547,7 +541,8 @@ mod tests {
             record.claim(helper, "QEST-20261007-WCJQSG", &[], at()),
             Err(
                 "WCJQSG's session already heads QEST-20261007-WCJQSG by this node's record, so \
-                 HARBOR can't: only that session hands it on, or the person"
+                 HARBOR can't: only that session hands it on, by letting go or by ending once a \
+                 session continues its log, or the person"
                     .to_owned()
             ),
             "and so is one claiming to head another's quest"
@@ -913,20 +908,14 @@ mod tests {
             "{\"type\":\"session\",\"version\":3,\"id\":\"s-steward\"}\n",
         )
         .expect("written");
+        let found = Logs::scan(logs.path());
+        assert_eq!(found.continues("s-weigh-2"), Some("s-weigh".to_owned()));
         assert_eq!(
-            continues(logs.path(), "s-weigh-2"),
-            Some("s-weigh".to_owned())
-        );
-        assert_eq!(
-            continues(logs.path(), "s-steward"),
+            found.continues("s-steward"),
             None,
             "one that continues none"
         );
-        assert_eq!(
-            continues(logs.path(), "s-nobody"),
-            None,
-            "nor one with no log"
-        );
+        assert_eq!(found.continues("s-nobody"), None, "nor one with no log");
     }
 
     #[test]
@@ -947,7 +936,7 @@ mod tests {
         )
         .expect("written");
         assert_eq!(
-            continues(logs.path(), "01a1667f-f5bc-7ba6-9290-033e899fff34"),
+            Logs::scan(logs.path()).continues("01a1667f-f5bc-7ba6-9290-033e899fff34"),
             Some("01a12d21-3813-76ee-b875-6702b23f353a".to_owned()),
             "the session the parent's log file is named for"
         );
