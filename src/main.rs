@@ -2194,7 +2194,7 @@ fn serve_link(
             reading: Box::new(tokio::io::stdin()),
             writing: Box::new(tokio::io::stdout()),
             keep: Box::new(()),
-            refused: None,
+            said: None,
             releases: false,
             worker: false,
             named: None,

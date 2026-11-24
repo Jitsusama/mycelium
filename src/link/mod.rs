@@ -966,7 +966,15 @@ async fn greet(
         releases,
         ..membership.hello()
     };
-    send(writing, &Frame::Hello(ours)).await?;
+    if let Err(error) = send(writing, &Frame::Hello(ours)).await {
+        // An end whose hello is already here was reached, though it
+        // closed before taking ours, so what its way in says next may be
+        // the far machine's own words.
+        return Err(match frames.try_recv() {
+            Ok(Ok(Frame::Hello(_))) => error,
+            _ => unheard_write(error),
+        });
+    }
     let other = hello(frames, within).await?;
     if let Err(why) = membership.admit(&other) {
         if let Err(error) = store.refuse_link(&other.machine, &why) {
@@ -1019,9 +1027,48 @@ async fn hello(
         // machine it can't find, a key refused, or no mycelium there.
         None => Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
-            "the other end closed before saying hello",
+            ClosedUnheard("the other end closed before saying hello".to_owned()),
         )),
     }
+}
+
+/// The other end closed before it said hello, so no link came up, in
+/// the words that say how.
+#[derive(Debug)]
+struct ClosedUnheard(String);
+
+impl fmt::Display for ClosedUnheard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ClosedUnheard {}
+
+/// Our hello, written to an end that closed before it was taken, which
+/// is a way in that ended before any link came up, as a provider's that
+/// says its machine is gone and exits may.
+fn unheard_write(error: io::Error) -> io::Error {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+    ) {
+        let words = format!("the other end closed before our hello was taken: {error}");
+        io::Error::new(error.kind(), ClosedUnheard(words))
+    } else {
+        error
+    }
+}
+
+/// Whether a link ended in `error` because the other end closed before
+/// it said hello, so no link ever came up. Only then is what the way in
+/// said its own, as a provider says before it dials, rather than what a
+/// machine it reached said once there.
+#[must_use]
+pub fn closed_unheard(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(<dyn std::error::Error + Send + Sync>::is::<ClosedUnheard>)
 }
 
 /// A living session's presence, the leases it holds, the id its holder
@@ -2703,7 +2750,7 @@ mod tests {
             reading: Box::new(reading),
             writing: Box::new(writing),
             keep: Box::new(()),
-            refused: None,
+            said: None,
             releases: false,
             worker: false,
             hello_within: Some(dial::HELLO_WITHIN),
@@ -2772,6 +2819,75 @@ mod tests {
                 .expect("read"),
             facts(4).expect("a frame"),
             "facts nothing newer waits behind are taken as they come"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_end_that_closes_before_hello_is_told_from_one_that_said_otherwise() {
+        let (_, mut closed) = mpsc::unbounded_channel::<io::Result<Frame>>();
+        let unheard = hello(&mut closed, None)
+            .await
+            .expect_err("nothing was said");
+        assert!(
+            closed_unheard(&unheard),
+            "an end that closed before saying anything brought no link up: {unheard}"
+        );
+        let (said, mut frames) = mpsc::unbounded_channel();
+        said.send(Err(io::Error::other("a frame that can't be read")))
+            .expect("sent");
+        let unreadable = hello(&mut frames, None).await.expect_err("no hello");
+        assert!(
+            !closed_unheard(&unreadable),
+            "an end that said something said more than its way in: {unreadable}"
+        );
+    }
+
+    #[test]
+    fn only_a_hello_written_to_a_closed_end_is_unheard() {
+        for kind in [io::ErrorKind::BrokenPipe, io::ErrorKind::ConnectionReset] {
+            let unheard = unheard_write(io::Error::from(kind));
+            assert!(
+                closed_unheard(&unheard) && unheard.kind() == kind,
+                "an end that closed before our hello was taken brought no link up, \
+                 and says how it closed: {unheard}"
+            );
+        }
+        let full = unheard_write(io::Error::from(io::ErrorKind::StorageFull));
+        assert!(
+            !closed_unheard(&full),
+            "a hello this end couldn't write isn't the other end's to say: {full}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_end_that_said_hello_and_closed_before_taking_ours_was_heard() {
+        let membership = realm("skiff");
+        let greeted = |said: Option<Hello>| {
+            let membership = membership.clone();
+            async move {
+                let (mut near, far) = tokio::io::duplex(64);
+                drop(far);
+                let (saying, mut frames) = mpsc::unbounded_channel();
+                if let Some(said) = said {
+                    saying.send(Ok(Frame::Hello(said))).expect("sent");
+                }
+                drop(saying);
+                let store = Memory::default();
+                greet(&mut near, &mut frames, (&store, &membership), false, None)
+                    .await
+                    .expect_err("the other end closed")
+            }
+        };
+
+        let unheard = greeted(None).await;
+        assert!(
+            closed_unheard(&unheard),
+            "an end that closed having said nothing brought no link up: {unheard}"
+        );
+        let heard = greeted(Some(realm("tern").hello())).await;
+        assert!(
+            !closed_unheard(&heard),
+            "an end whose hello came was reached, so its way in's words aren't taken: {heard}"
         );
     }
 

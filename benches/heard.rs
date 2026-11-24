@@ -239,7 +239,7 @@ async fn end(store: Folders, machine: &str, stream: tokio::io::DuplexStream) -> 
         reading: Box::new(reading),
         writing: Box::new(writing),
         keep: Box::new(()),
-        refused: None,
+        said: None,
         releases: false,
         hello_within: Some(link::dial::HELLO_WITHIN),
         worker: false,
