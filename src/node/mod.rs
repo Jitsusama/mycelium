@@ -524,6 +524,51 @@ fn parked_presence(session: &Session) -> bool {
             == Some("parked")
 }
 
+/// Where `sessions`, and the sessions other machines ran that were let go
+/// here as `gone`, are seen, for judging carries: each running or parked,
+/// by its pi session's id where its presence names one, on its machine;
+/// each ended, where it last ran; and each quest, on every machine a
+/// session of it runs or is parked on, with when that session was begun
+/// where its id says ([`kept::begun`]). A session seen running anywhere
+/// isn't taken as ended, though another sighting says it is.
+fn sightings_of(sessions: Vec<Session>, gone: &[store::Presence]) -> kept::Sightings {
+    let pi_id = |presence: &serde_json::Value, id: &str| {
+        presence
+            .get("session")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(id)
+            .to_owned()
+    };
+    let mut sightings = kept::Sightings::default();
+    for one in gone {
+        if let Some(machine) = &one.elsewhere {
+            sightings
+                .ended_on
+                .insert(pi_id(&one.body, &one.session), machine.clone());
+        }
+    }
+    for session in sessions {
+        let id = pi_id(&session.presence, &session.id);
+        if !stands(&session) {
+            if session.state == SessionState::Ended {
+                sightings.ended_on.insert(id, session.machine);
+            }
+            continue;
+        }
+        if let (Some(quest), Some(begun)) = (&session.quest, kept::begun(&id)) {
+            sightings
+                .quest_on
+                .entry(quest.clone())
+                .or_default()
+                .push((session.machine.clone(), begun));
+        }
+        sightings.runs_on.insert(id, session.machine);
+    }
+    let running = &sightings.runs_on;
+    sightings.ended_on.retain(|id, _| !running.contains_key(id));
+    sightings
+}
+
 /// Waits until `told` says its records changed, or forever where there is
 /// none or it can say no more, so a loop selecting on it never spins.
 async fn changed(told: &mut Option<watch::Receiver<u64>>) {
@@ -1917,7 +1962,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             (receptors, vec!["state", "read_at", "counts"]),
             (builders, vec!["state", "said", "heard_at"]),
             // What was kept of a carry never changes; how it stands does.
-            (carries, vec!["state", "refused"]),
+            (carries, vec!["state", "refused", "stuck"]),
             (
                 forages,
                 vec![
@@ -3199,13 +3244,15 @@ impl<S: Store> Shared<S> {
 
     /// The carries this node ordered over the last day, as the daemon
     /// interface holds them, each standing as `kept::judged` says from
-    /// what is seen of its session: where it runs now, by the node's
-    /// state, and what it wrote in its quest's handover here since.
+    /// what is seen of its session: where it, and its quest, run now or
+    /// it ended, by the node's state, and what it wrote in its quest's
+    /// handover here since.
     /// Nothing is shown when the file can't be read, since a carry's
     /// line is never guessed at.
     fn carry_records(&self) -> BTreeMap<String, serde_json::Value> {
         let since = shown_since();
-        let runs_on = self.runs_on();
+        let now = jiff::Timestamp::now();
+        let sightings = self.sightings();
         let here = self.carries_here(since).into_iter().map(|carry| {
             let seen = self.handed(&carry);
             (self.machine.clone(), carry, seen)
@@ -3225,9 +3272,9 @@ impl<S: Store> Shared<S> {
                     .collect::<Vec<_>>()
             });
         here.chain(heard)
-            .map(|(machine, carry, mut seen)| {
-                seen.runs_on = runs_on.get(carry.said("session")).cloned();
-                let mut fields = kept::fields(&carry, &kept::judged(&carry, &seen));
+            .map(|(machine, carry, seen)| {
+                let seen = sightings.seen(&carry, seen);
+                let mut fields = kept::fields(&carry, &kept::judged(&carry, &seen, now));
                 if let Some(fields) = fields.as_object_mut() {
                     fields.insert("machine".to_owned(), serde_json::Value::from(&*machine));
                 }
@@ -3301,7 +3348,7 @@ impl<S: Store> Shared<S> {
             seen.runs_on = runs_on.get(session).cloned();
             places.insert(session.to_owned(), seen.runs_on.clone());
             let said = settled.get(&carry.id);
-            let state = settler.stands(&carry, kept::judged(&carry, &seen), said);
+            let state = settler.stands(&carry, kept::standing(&carry, &seen), said);
             // A line that stands is never asked again, so settle() needn't
             // read the file to say so.
             let stands = said.is_some_and(|said| settle::stands_at(said, now));
@@ -3375,7 +3422,7 @@ impl<S: Store> Shared<S> {
                 }
             }),
             left: through::left(&handover, session, carry.at),
-            runs_on: None,
+            ..kept::Seen::default()
         }
     }
 
@@ -3430,25 +3477,21 @@ impl<S: Store> Shared<S> {
         }
     }
 
-    /// Where each session seen running, or parked, runs, by its id.
+    /// Where the node's state sees each session, by its id, and each
+    /// quest, for judging carries, with the sessions other machines ran
+    /// that it let go as ended.
+    fn sightings(&self) -> kept::Sightings {
+        let sessions = self.lock().state.sessions();
+        sightings_of(sessions, &self.store.gone())
+    }
+
+    /// Where each session seen running, or parked, runs, by its id: all
+    /// settling reads, which goes by the carried session alone, never its
+    /// quest, since another session of the quest doesn't show the trees
+    /// this one left were taken.
     fn runs_on(&self) -> HashMap<String, String> {
-        let runs =
-            |session: &Session| matches!(session.state, SessionState::Busy | SessionState::Idle);
-        self.lock()
-            .state
-            .sessions()
-            .into_iter()
-            .filter(|session| runs(session) || parked_presence(session))
-            .map(|session| {
-                let id = session
-                    .presence
-                    .get("session")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or(&session.id)
-                    .to_owned();
-                (id, session.machine)
-            })
-            .collect()
+        let sessions = self.lock().state.sessions();
+        sightings_of(sessions, &[]).runs_on
     }
 
     /// The person's words as the daemon interface holds them, each marked
@@ -3520,10 +3563,13 @@ impl<S: Store> Shared<S> {
         })?;
         let now = jiff::Timestamp::now().as_millisecond();
         let runs_on = self.runs_on();
+        // By the carried session alone, never its quest: a sibling of the
+        // quest begun here while it lands elsewhere would read it back, so
+        // reopen here a session still on its way.
         let judge = |carry: &kept::Kept| {
             let mut seen = self.handed(carry);
             seen.runs_on = runs_on.get(carry.said("session")).cloned();
-            kept::judged(carry, &seen)
+            kept::standing(carry, &seen)
         };
         Ok(ended::carried(&carries, judge, now))
     }
@@ -12788,6 +12834,74 @@ esac
                     .expect("it is JSON")
             })
             .collect()
+    }
+
+    #[test]
+    fn sightings_see_each_session_and_quest_where_the_node_does() {
+        let session = |id: &str, machine: &str, state: &str, presence: Value| {
+            let mut session: Session = serde_json::from_value(json!({
+                "id": id, "address": "HARBOR", "machine": machine, "groups": [],
+                "state": state, "at": "2026-11-23T22:00:00Z", "presence": presence,
+            }))
+            .expect("a session");
+            session.quest = Some("QEST-20261115-HARBOR".to_owned());
+            session
+        };
+        // Pi names a session by a UUID of version 7, begun when it says.
+        let (busy, parked) = (
+            "01a1ecaa-d25a-7132-83ff-19b26eac3da6",
+            "01a1ecab-0000-7132-83ff-19b26eac3da6",
+        );
+        let gone = |session: &str, machine: Option<&str>| store::Presence {
+            session: session.to_owned(),
+            body: Arc::new(json!({"session": session})),
+            elsewhere: machine.map(str::to_owned),
+            lives: false,
+            unreachable_since: None,
+        };
+        let sightings = sightings_of(
+            vec![
+                session("s-old", "skiff", "ended", json!({})),
+                session(busy, "tern", "busy", json!({})),
+                session("held-1", "tern", "idle", json!({"session": "s-pi"})),
+                session(parked, "kestrel", "ended", json!({"state": "parked"})),
+            ],
+            &[
+                gone("s-ended-there", Some("osprey")),
+                // Let go there, but running again: it runs, so isn't ended.
+                gone(busy, Some("wren")),
+            ],
+        );
+        let on = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
+            pairs
+                .iter()
+                .map(|(id, machine)| ((*id).to_owned(), (*machine).to_owned()))
+                .collect()
+        };
+        assert_eq!(
+            sightings.runs_on,
+            on(&[(busy, "tern"), ("s-pi", "tern"), (parked, "kestrel")]),
+            "by pi's own id where its presence names one, the parked included"
+        );
+        assert_eq!(
+            sightings.ended_on,
+            on(&[("s-old", "skiff"), ("s-ended-there", "osprey")]),
+            "only what runs nowhere is ended, here or let go from elsewhere"
+        );
+        let mut quest_on = sightings
+            .quest_on
+            .get("QEST-20261115-HARBOR")
+            .cloned()
+            .unwrap_or_default();
+        quest_on.sort();
+        assert_eq!(
+            quest_on,
+            [
+                ("kestrel".to_owned(), 0x01a1_ecab_0000),
+                ("tern".to_owned(), 0x01a1_ecaa_d25a),
+            ],
+            "its quest is where a session of it known begun runs, never where one ended"
+        );
     }
 
     #[tokio::test]
