@@ -229,11 +229,14 @@ pub fn crossed(message: &Message, from_realm: &str, pid: u32) -> Value {
 }
 
 /// The session a presence describes, on `here` unless it runs elsewhere.
+/// One parked reads as ended, its process gone, wherever it is parked:
+/// another machine's link keeps it standing for its address, and a
+/// parked one here lives no more.
 pub fn session(presence: &Presence, here: &str) -> Option<Session> {
     let said = Said::deserialize(&*presence.body).ok()?;
     let state = match (presence.lives, said.busy, said.state.as_deref()) {
         _ if presence.unreachable_since.is_some() => State::Unreachable,
-        (false, _, _) => State::Ended,
+        (false, _, _) | (_, _, Some("parked")) => State::Ended,
         (true, true, _) | (true, _, Some("busy")) => State::Busy,
         (true, _, _) => State::Idle,
     };
@@ -812,6 +815,15 @@ mod tests {
                 .state,
             State::Unreachable,
             "a session whose machine is out of reach reads as unreachable"
+        );
+        let parked = Presence {
+            body: json!({"session": "01a1", "addresses": ["4UHC5Q"], "state": "parked"}).into(),
+            ..presence(true, Some("kestrel"))
+        };
+        assert_eq!(
+            session(&parked, "skiff").expect("a presence reads").state,
+            State::Ended,
+            "a session parked on another machine, which its link keeps, reads as one parked here"
         );
     }
 

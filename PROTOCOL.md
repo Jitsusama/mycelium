@@ -138,7 +138,7 @@ same code, each line a JSON value:
 
 1. `{"Hello": {"machine", "realm", "version", "facts", "starts",
    "steers", "releases", "updates", "runs", "carries", "shows",
-   "ends", "lends", "reopens"}}`, first,
+   "ends", "lends", "reopens", "parks"}}`, first,
    from each end. Each end's
    membership admits the other or refuses it, and nothing else crosses
    until it has. `facts` says the end hears and says what a machine is; an end
@@ -154,7 +154,11 @@ same code, each line a JSON value:
    session held there; an end older than it is asked none. `lends`
    says it carries lends, as below; an end older than it is asked none.
    `reopens` says its node judges a reopening relayed to it
-   (`"Start"`); an end older than it is asked none.
+   (`"Start"`); an end older than it is asked none. `parks` says it
+   keeps a session parked on the other machine as parked, its process
+   gone and its address there to send to, which wakes it; only such an
+   end is told of one, since an end older than it would take it as
+   running.
    `machine` is the name the end's machine goes by, one name for every
    command there: the node's `--machine`, else the system's name up to
    its first dot, which the node records in its folder's `machine` file
@@ -165,8 +169,11 @@ same code, each line a JSON value:
    refused, saying to pass `--machine`.
 2. `{"Have": {"messages": [ids], "living": [sessions]}}`: every message
    the end holds within the link's reach, and its machine's living
-   sessions. An end older than `living` names none, and every session of
-   its machine out of reach is let go, to come again as it sends each.
+   sessions, with, to an end saying `parks`, those parked this boot: a
+   park whose presence names an earlier boot has no holder left to wake
+   it, and one naming no boot is taken as this one's. An end older
+   than `living` names none, and every session of its machine out of
+   reach is let go, to come again as it sends each.
    The reach goes back to a minute before the end last heard the
    other, and never past the mesh's week, so a link never hands back
    what the other end has let go. A link whose other end fell silent
@@ -185,7 +192,8 @@ same code, each line a JSON value:
    heard, which a watch that missed a write would otherwise leave
    behind for good.
 4. `{"Presence": {"session", "body", "leases", "held", "started_by"}}`:
-   a living session of the sending end's machine, again whenever it, its
+   a living session of the sending end's machine, or one parked as the
+   Have counts it, again whenever it, its
    leases, its `held` id or its starter change. `held` is the id a
    holder there keeps it by, which the other end writes into the carried
    presence as `heldAs`. `started_by` is the cell that machine's node's
@@ -444,16 +452,16 @@ Three seams shape a link:
   nothing back. Its end's starts, steers, updates, carries, ends and
   runs are refused, its follows are ignored, and a presence of its
   naming another machine isn't kept, nor one answering to an id or
-  address a session living here or through another link answers to,
-  nor a reply to an ask it wasn't
+  address a session living or parked here or through another link
+  answers to, nor a reply to an ask it wasn't
   sent, nor what it tells of carries. It is said and served only the
   quests it was given, each by a `mycelium share --to` naming it,
   which gives that quest alone and none above it, and nothing it says
   of any quest is taken: what it writes to one it was given stays on
   it, as does a quest it began. A message of its is kept only when it
   names as its sender a session it holds a presence for now, by an
-  address that presence lists or by its id, and no session living here
-  or through another link answers to that name, and never when it
+  address that presence lists or by its id, and no session living or
+  parked here or through another link answers to that name, and never when it
   steers this machine's sessions: a hold, a pivot, the end of a hold,
   or anything to the machine-wide group or answering what was. Nor is
   one kept unless its `intent` is one of the mesh's five, exactly, and
