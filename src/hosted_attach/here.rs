@@ -13,12 +13,21 @@ use rustix::termios::{self, OptionalActions, SpecialCodeIndex, Termios};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 
-/// What a viewer's client can do for the host, as it says at attach.
-pub const FEATURES: [&str; 2] = ["edit", "suspend"];
+/// What a viewer's client can do for the host, as it says at attach:
+/// edit a draft, suspend, and join a conversation's child process itself
+/// when the host names its socket ([`DIRECT`]).
+pub const FEATURES: [&str; 3] = ["edit", "suspend", DIRECT];
+
+/// The feature saying a viewer joins a conversation's child itself: the
+/// host answers such an attach, for a conversation a child runs, with the
+/// child's `socket`, and the viewer attaches there, so what it types and
+/// is shown never crosses the host's one thread.
+pub const DIRECT: &str = "direct";
 
 /// The terminal a viewer runs in, as joining a conversation uses it.
 pub trait Here {
-    /// What this terminal can do for the host: edit, suspend, or neither.
+    /// What this terminal can do for the host: edit, suspend, join a
+    /// child directly, or none of them.
     fn features(&self) -> &'static [&'static str];
 
     /// The next keys typed here, or none once nothing more can be.
