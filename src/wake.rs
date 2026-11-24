@@ -241,14 +241,14 @@ mod tests {
         wake
     }
 
-    fn turn(message: &Value, groups: &[&str], earlier: Option<Value>) -> bool {
+    fn turn(message: &Value, groups: &[&str], earlier: Option<&Value>) -> bool {
         let parked = Parked {
             session: "s1".to_owned(),
             addresses: vec!["SAK9FZ".to_owned()],
             wake: PathBuf::from("/nowhere/s1.wake"),
         };
         let groups: Vec<String> = groups.iter().map(|group| (*group).to_owned()).collect();
-        gives_turn(message, &parked, &groups, |_| earlier.clone())
+        gives_turn(message, &parked, &groups, |_| earlier.cloned())
     }
 
     #[test]
@@ -280,7 +280,7 @@ mod tests {
             turn(
                 &json!({"from": "WCJQSG", "to": ["@sak9fz"], "intent": "fyi", "re": "m1"}),
                 &[],
-                Some(json!({"from": "SAK9FZ"}))
+                Some(&json!({"from": "SAK9FZ"}))
             ),
             "an answer to a message it sent, its address in any case"
         );
@@ -324,7 +324,7 @@ mod tests {
             !turn(
                 &json!({"from": "WCJQSG", "to": ["@SAK9FZ"], "intent": "fyi", "re": "m1"}),
                 &[],
-                Some(json!({"from": "OSPREY"}))
+                Some(&json!({"from": "OSPREY"}))
             ),
             "nor an answer to another's"
         );
@@ -359,7 +359,8 @@ mod tests {
         let message = json!({"from": "WCJQSG", "to": ["@SAK9FZ"], "intent": "question"});
         let later = jiff::Timestamp::now().as_millisecond() + 60_000;
 
-        assert!(wake_for(&park, Some(later), "m2", &message, &[], |_| None).is_empty());
+        let woken = wake_for(&park, Some(later), "m2", &message, &[], |_| None);
+        assert_eq!(woken, Vec::<String>::new(), "none is woken before its time");
         assert!(!wake.exists());
     }
 

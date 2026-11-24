@@ -364,7 +364,6 @@ pub async fn run(
     // As it stood before admission, which marks a machine never linked
     // as of now.
     let began = admitted(&store, &other.machine)?;
-    let exchange = shares.map(|places| exchange_with(places, &membership.hello(), &other, worker));
     let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine).await;
     let (answering, mut answered) = mpsc::unbounded_channel();
     let (runs, mut run_said) = Runs::new();
@@ -397,13 +396,13 @@ pub async fn run(
         asks: HashMap::new(),
         runs,
         next_ask: 0,
+        exchange: shares.map(|places| exchange_with(places, &membership.hello(), &other, worker)),
         other: other.machine.clone(),
         said: other,
         reach,
         has: HashSet::new(),
         sent: BTreeMap::new(),
         carried: HashSet::new(),
-        exchange,
         _claim: claim,
     };
 
