@@ -71,6 +71,9 @@ pub enum Request {
     /// sprout` says: the node finds its folder as the asker would see it,
     /// and starts it there as a [`Start`] would.
     Sprout(Sprout),
+    /// The places work can begin in on this machine, as the asker sees
+    /// its disk: answered with [`Response::Places`].
+    Places {},
     /// Run a command where placement chooses, as the node's own: answered
     /// with [`Response::Running`], then a [`Ran`] a line for as long as it
     /// runs, ending with its exit or why it couldn't run. A client that
@@ -447,6 +450,8 @@ pub enum Response {
     StartedBy(BTreeMap<String, String>),
     /// What the node's providers offer.
     Offers(Offers),
+    /// The places work can begin in ([`crate::places::on`]).
+    Places(Vec<crate::places::Place>),
     /// Where the work asked about goes.
     Placement(Placement),
     /// The program asked for, started.

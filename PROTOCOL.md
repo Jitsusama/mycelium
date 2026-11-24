@@ -1507,7 +1507,8 @@ reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"PlaceToStart": work}` | `{"Placement": placement}`, as `"Place"` for a start, counted here as one |
 | `{"Start": {"work", "folder", "strict", "command", "may_cost", "once"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
 | `{"Takes": {"starts", "ordered"}}` | `{"Placement": placement}`, the last start's, placed as `"Start"` would, or a refusal; starts nothing |
-| `{"Sprout": {"words", "folder", "from", "on", "cwd"}}` | `{"Started": {"machine", "held", "folder", "attach"}}`, as for `"Start"` |
+| `{"Sprout": {"words", "folder", "from", "on", "cwd"}}` | `{"Started": {"machine", "held", "folder", "attach"}}`, as for `"Start"`, or `{"Refused": {"code", "why"}}` |
+| `{"Places": {}}` | `{"Places": [{"folder", "name", "kind", "out", "checkOut"}]}`, where work can begin, as the asker sees the disk |
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by", "carries_on"}}`, where it was put, who ordered a carry, and whether the node carries it on |
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
 | `{"Free": {"quest"}}` | `"Orchestrated"`, freed, from the person's own login |
@@ -2516,12 +2517,44 @@ as it connected, so an id taken again is refused. Where that can't be
 read, as on a Mac, once the asker has gone, or where the kernel can't
 keep a path inside a root, the person's sprout is judged on the node's
 disk from `cwd`, where the asker says it is, and an agent's is refused.
-Refusals are errors saying why: `say what
-the work is: a link or words`, `<folder> isn't a folder here`, a home
-folder's, a folder with no repository's, or `an agent's sprout is judged
-on the disk as it sees it, and <why it can't be read>; the person can
-start it`. `mycelium sprout` judges the sprout on its own disk first, so
-it refuses what the node would without asking it. A node from before
+`folder` may instead name a place, as `"Places"` lists them: a zone by
+its path, `//<path>`, a checkout from `~`, as `~/src/skiff`, or one
+plain name that isn't a folder where the asker is, which is the last
+step of exactly one place's name, as `reef` names `//system/reef`. A
+zone checked out begins in it; one not checked out begins at its
+checkout's top, the session told to work in a tree of its own that has
+the zone, since checking it out there changes the tree for everyone in
+it. With no folder named, a link to a repository no checkout under
+`~/src` holds begins in a place's checkout that fetches from it, and a
+link's `tree/<ref>/<path>` or `blob/<ref>/<path>` begins in the deepest
+zone checked out there that the path lies in.
+
+What the judging refuses is answered `{"Refused": {"code", "why"}}`,
+as a crossing's refusal is, `why` saying it in words and `code` one of
+`no_work` (`say what the work is: a link or words`), `not_a_cell`,
+`not_here` (`<folder> isn't a folder here`), `needs_folder` (named
+home, or asked from no repository with none named: `it needs a
+repository to work in, and <folder> isn't one: say which, ...`),
+`no_such_place` or `several_places` (naming the first eight). A
+launcher offers the places on `needs_folder`. Anything else is an
+error saying why, as `an agent's sprout is judged on the disk as it
+sees it, and <why it can't be read>; the person can start it`.
+`mycelium sprout` judges the sprout on its own disk first, so it
+refuses what the node would without asking it, printing the same
+`"Refused"` with `-o json`.
+
+`"Places"` lists where work can begin on this machine, judged on the
+disk as the asker sees it, as a sprout is, and refused for an agent
+whose view can't be read: each repository checked out at `~/src/<repo>`
+or `~/src/<host>/<owner>/<repo>`; the tree on `main`, else `master`, of
+each bare repository at `~/<name>` or `~/<name>/<name>`, hidden folders
+passed over; and each zone a checkout's `.meta/manifest.json` names, a
+JSON object whose keys are `//<path>`, each step a plain name, read up
+to 8 MiB. `name` is a zone's path, or a checkout's folder from `~`;
+`kind` is `checkout` or `zone`; `out` is true for a zone not checked
+out, and only then `checkOut` says the command that checks it out
+(`git -C <checkout> sparse-checkout add <path>`). `mycelium places`
+prints it. A node from before
 `"Sprout"` answers `not a request: unknown variant` naming it, and
 `mycelium sprout` then asks for the `"Start"` it judged.
 
