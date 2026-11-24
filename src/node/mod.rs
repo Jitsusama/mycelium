@@ -3561,11 +3561,17 @@ impl<S: Store> Shared<S> {
                 self.carries.display()
             )
         })?;
-        let now = jiff::Timestamp::now();
-        let sightings = self.sightings();
-        let judge =
-            |carry: &kept::Kept| kept::standing(carry, &sightings.seen(carry, self.handed(carry)));
-        Ok(ended::carried(&carries, judge, now.as_millisecond()))
+        let now = jiff::Timestamp::now().as_millisecond();
+        let runs_on = self.runs_on();
+        // By the carried session alone, never its quest: a sibling of the
+        // quest begun here while it lands elsewhere would read it back, so
+        // reopen here a session still on its way.
+        let judge = |carry: &kept::Kept| {
+            let mut seen = self.handed(carry);
+            seen.runs_on = runs_on.get(carry.said("session")).cloned();
+            kept::standing(carry, &seen)
+        };
+        Ok(ended::carried(&carries, judge, now))
     }
 
     /// The sessions here that ended while their quest goes on, as
