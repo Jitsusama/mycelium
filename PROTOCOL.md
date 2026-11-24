@@ -837,7 +837,10 @@ session says of itself:
   fenced. Only a `bwrap` reached from the owner through `pi-spawner`,
   `bash` or `sh` alone counts, as the agent fence starts it; one a
   command starts, such as a test suite's, says nothing of the agent's
-  fence. A presence naming a looser fence than that is
+  fence. That chain is the fence's contract with the node: a fence
+  that puts any other program before `bwrap` (`timeout`, `env`,
+  `setsid`) reads its sessions unfenced, which costs placement, never
+  containment. A presence naming a looser fence than that is
   refused, as `HARBOR says it runs unfenced, but its process shows it
   fenced, so where it may land can't be told`; one naming a stricter
   stands, since the strict fence leaves nothing lasting to show. A
@@ -1756,7 +1759,12 @@ node logs. The end hearing it keeps what the machine last declared
 over that link while it declares nothing, for 10 minutes at most, so
 a node restarting or slow to answer leaves its machine's ground as it
 was; past that, the machine reads as declaring nothing. A declaration
-said again replaces it at once.
+said again replaces it at once. Where the node did answer, declaring
+nothing, the end says `declares_nothing: true` (left out when false),
+and the end hearing it drops what was declared before at once, so only
+a silence is kept through. While a declaration is kept, the machine is
+still withheld the quests above those shared with it, as one declaring
+nothing is.
 
 Its `reached` says whether each probed network answered, by name. The
 node tries each probe every 30 seconds, giving each 3 to answer (a
@@ -2023,7 +2031,10 @@ none or names no folder there, unless `strict` is true: then a `folder`
 that machine hasn't, or can't look at, is refused, as `tern has no
 folder src/elsewhere, which the start names` (a path within tern's
 home), since the work it's for is there and home won't do. A sprout's
-start is strict; any asker may make one so. `strict` is false where it
+start is strict; any asker may make one so. A start that machine runs
+within its strict fence's launcher is refused so too, strict or not,
+since that fence won't let a command write home; one where pi fences
+itself begins in its home as ever. `strict` is false where it
 isn't said and isn't written when false, so a node, or a link's end,
 from before it reads the start as ever, dropping `strict`, and it
 begins in that machine's home; a sprout's command then ends itself

@@ -1,7 +1,7 @@
 //! Starting a holder in a process of its own, as `mycelium hold` does and
 //! as the node does when it is asked to start a session.
 
-use std::io::{self, BufRead, IsTerminal};
+use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -130,17 +130,19 @@ impl Scope {
     }
 }
 
-/// Whether a holder started `in` a scope says what it has to say on its
-/// starter's standard error, `a_terminal` or not. Where there is no
+/// Whether a holder started in `scope`, by a node or not, says what it
+/// has to say on its starter's standard error. Where there is no
 /// journal, as on a Mac, a holder says there how each run of its program
 /// ended ([`super::journal`]), so a node's holder must say it on the
 /// node's log: a carried session that never arrived on a Mac left no
 /// line anywhere, its holder's end gone to nothing (23 November). A
-/// holder a person's terminal started stays silent, since it outlives the
-/// command and would write over whatever runs there next; one in a scope
+/// holder `mycelium hold` started stays silent, a terminal's or a pipe's
+/// alike, since it outlives the command: on a terminal it would write
+/// over whatever runs there next, and holding a pipe open it would keep
+/// whatever reads that pipe waiting until the hold ends. One in a scope
 /// of its own says why the scope couldn't be made.
-fn says_on_its_log(scope: Scope, a_terminal: bool) -> bool {
-    scope == Scope::Apart || !a_terminal
+fn says_on_its_log(scope: Scope, by_a_node: bool) -> bool {
+    scope == Scope::Apart || by_a_node
 }
 
 impl Starter {
@@ -180,7 +182,9 @@ impl Starter {
             .args(command)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(if says_on_its_log(self.scope, io::stderr().is_terminal()) {
+            // Only a node's start runs through the login shell, so
+            // `login` says who started it.
+            .stderr(if says_on_its_log(self.scope, login) {
                 Stdio::inherit()
             } else {
                 Stdio::null()
@@ -367,19 +371,19 @@ mod tests {
     #[test]
     fn a_nodes_holder_says_how_its_runs_end_on_the_nodes_log() {
         assert!(
-            says_on_its_log(Scope::None, false),
+            says_on_its_log(Scope::None, true),
             "a Mac's node logs to a file, where its holders' ends must land"
         );
         assert!(
             says_on_its_log(Scope::Apart, false),
-            "a unit's holder says why its scope failed"
+            "a holder in a unit of its own says why its scope failed, whoever started it"
         );
         assert!(
-            !says_on_its_log(Scope::None, true),
-            "a terminal's holder writes nothing over what runs there next"
+            !says_on_its_log(Scope::None, false),
+            "one `mycelium hold` started holds nothing of its caller's open"
         );
         assert!(
-            !says_on_its_log(Scope::Beside, true),
+            !says_on_its_log(Scope::Beside, false),
             "nor does one beside a terminal's slice"
         );
     }
