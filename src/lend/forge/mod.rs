@@ -617,7 +617,7 @@ impl Held {
     /// A push held, unless the forge holds [`MOST_PUSHING`] already.
     fn taken() -> Option<Self> {
         PUSHING
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |held| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |held| {
                 (held < MOST_PUSHING).then_some(held + 1)
             })
             .ok()
@@ -643,12 +643,13 @@ async fn push<W: AsyncWrite + Unpin>(forge: &Forge, borrower: &str, body: &[u8],
         "cell": pushing.as_ref().ok().and_then(|pushing| pushing.cell.clone()),
         "service": "push",
     });
-    let held = Held::taken();
+    // The turn is kept to the end of the push, so it counts until done.
+    let turn = Held::taken();
     let checked = pushing
         .map_err(|_| refused(400, "the request isn't a branch to push"))
         .and_then(|pushing| checked(forge, pushing))
         .and_then(|checked| {
-            if held.is_none() {
+            if turn.is_none() {
                 return Err(refused(
                     503,
                     format!("the forge holds {MOST_PUSHING} pushes already; ask again soon"),

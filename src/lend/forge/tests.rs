@@ -463,6 +463,10 @@ fn lines_of(body: &[u8]) -> Vec<Pushed> {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one push followed from its bundle to its origin and its tidying"
+)]
 async fn a_branch_bundled_is_pushed_to_its_origin_and_tidied_after() {
     let dir = tempfile::tempdir().expect("a temporary folder");
     let (origin, base) = repos_in(dir.path());
