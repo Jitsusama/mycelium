@@ -330,7 +330,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         rustix::fs::mknodat(
             rustix::fs::CWD,
-            &dir.path().join("planted.json"),
+            dir.path().join("planted.json"),
             FileType::Fifo,
             Mode::from_raw_mode(0o600),
             0,
