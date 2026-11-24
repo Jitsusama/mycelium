@@ -92,6 +92,8 @@ pub use tie::{
     records as tie_records, talk,
 };
 mod turns;
+mod worker;
+pub use worker::Worker;
 
 /// The most of its newest starts a node lists when asked.
 const STARTS_LISTED: usize = 100;
@@ -778,6 +780,10 @@ pub struct Given {
     /// made, if it lends any (`lend::lender`): their links' ends answer
     /// each lend they ask by it, and refuse every one without it.
     pub lend: Option<PathBuf>,
+    /// Where this machine's sessions, running as another account, are
+    /// present and speak on the mesh through the node, if they do, as a
+    /// worker machine's do (`worker`).
+    pub worker: Option<Worker>,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -867,7 +873,7 @@ pub async fn run<S, M, D>(
     store: S,
     membership: M,
     discovery: D,
-    given: Given,
+    mut given: Given,
     socket: Socket,
     stop: impl Future<Output = ()>,
 ) -> io::Result<()>
@@ -877,6 +883,10 @@ where
     D: Discovery,
 {
     store::out_of_reach_of_unclaimed(&store)?;
+    // Bound before any task is spawned, so a socket that can't be put
+    // in place leaves nothing running.
+    let workers = given.worker.take().as_ref().map(worker::bind).transpose()?;
+    let holdings = worker::Holdings::default();
     let (to_dial, mut made) = mpsc::unbounded_channel();
     redial_standing(&given.book, &given.providers, &store, &to_dial);
     let eases = given.eases.clone();
@@ -943,6 +953,16 @@ where
                 }
                 Err(error) => break Err(error),
             },
+            accepted = worker::accept(workers.as_ref()), if resting.is_none() && unread.is_none() => match accepted {
+                Ok((stream, uid)) => {
+                    tokio::spawn(worker::serve(stream, shared.clone(), uid, holdings.clone()));
+                }
+                Err(error) if accept_passes(&error) => {
+                    eprintln!("a worker couldn't be taken, so the node rests before taking more: {error}");
+                    resting = Some(Box::pin(tokio::time::sleep(ACCEPT_REST)));
+                }
+                Err(error) => break Err(error),
+            },
             () = rested(&mut resting) => resting = None,
             Some(dial) = found.recv() => {
                 let dial = Arc::new(dial);
@@ -1002,6 +1022,7 @@ where
     // time the node is down isn't counted as seen at its next start.
     store::stop_seeing_out_of_reach(&store, jiff::Timestamp::now().as_millisecond())?;
     drop(socket);
+    drop(workers);
     // A stop's time is the service manager's to bound, so each is said.
     eprintln!(
         "stopped: its links ended in {} ms, and what they carried was let go in {} ms more",
@@ -3007,6 +3028,8 @@ impl<S: Store> Shared<S> {
             settles,
             lends_from,
             lend,
+            // Bound and served by `run` alone.
+            worker: _,
         } = given;
         let lender = lend.map(|file| {
             Arc::new(crate::lend::lender::Lender::from_file(
@@ -9032,7 +9055,7 @@ mod tests {
 
     /// What a node given only its sessions' `steers` and its `starter` runs
     /// with: nothing shared or served, no updater and no providers.
-    fn bare(steers: PathBuf, starter: Option<Starter>) -> Given {
+    pub(super) fn bare(steers: PathBuf, starter: Option<Starter>) -> Given {
         Given {
             sharing: None,
             starter,
@@ -9068,6 +9091,7 @@ mod tests {
             eases: None,
             lends_from: None,
             lend: None,
+            worker: None,
         }
     }
 
@@ -9315,7 +9339,7 @@ mod tests {
 
     /// Runs a node of skiff in the work realm on `socket`, as `given`
     /// says and linked to nothing, until `stop` is dropped.
-    fn alone_with(
+    pub(super) fn alone_with(
         store: &Memory,
         socket: &Path,
         given: Given,
@@ -9413,6 +9437,7 @@ mod tests {
             settles,
             lends_from: None,
             lend: None,
+            worker: None,
         }
     }
 

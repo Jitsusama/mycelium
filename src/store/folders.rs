@@ -261,6 +261,24 @@ impl Folders {
             .is_some_and(|owner| !ended.contains(&owner.pid) && self.lives(owner, boot))
     }
 
+    /// Whether the session `held` is of stands for one: another machine's,
+    /// or this machine's living, or parked in this `boot` to start again.
+    fn stands(&self, held: &Facts, boot: Option<&str>) -> bool {
+        let parked_now = held.state.as_deref() == Some("parked")
+            && match (
+                boot,
+                held.owner
+                    .as_ref()
+                    .and_then(|owner| owner.boot_id.as_deref()),
+            ) {
+                (Some(boot), Some(began)) => boot == began,
+                _ => true,
+            };
+        held.machine.is_some()
+            || parked_now
+            || self.own_lives(held, &self.ended_processes().clone(), boot)
+    }
+
     /// Forgets each verdict on a process no presence names any more.
     fn forget_judged(&self, present: &BTreeSet<&Owner>) {
         self.judged
@@ -582,6 +600,57 @@ impl Store for Folders {
         self.put_leases(session, machine, &[])
     }
 
+    fn put_own_presence(&self, session: &str, body: &Value) -> io::Result<()> {
+        let file = format!("{}.json", safe(session)?);
+        let mut body = body.clone();
+        let Some(fields) = body.as_object_mut() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a presence is an object",
+            ));
+        };
+        if fields.get("session").and_then(Value::as_str) != Some(session) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("the presence of {session:?} names another session"),
+            ));
+        }
+        let presence = self.folder("presence")?;
+        let mine = Owner::mine();
+        if let Some(held) = read_in::<Facts>(&presence, &file)
+            && held.owner.as_ref() != Some(&mine)
+            && self.stands(&held, mine.boot_id.as_deref())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("{session:?} is a session another process or machine holds"),
+            ));
+        }
+        // A worker says none of what the node keeps of a session out of
+        // reach, since only the node judges that.
+        for kept in [MACHINE, UNREACHABLE, UNREACHABLE_SEEN, UNREACHABLE_SEEN_FOR] {
+            fields.remove(kept);
+        }
+        fields.insert(
+            "owner".to_owned(),
+            serde_json::json!({
+                "pid": mine.pid,
+                "bootId": mine.boot_id,
+                "startTicks": mine.start_ticks,
+            }),
+        );
+        write_in(&presence, &file, &body)
+    }
+
+    fn remove_own_presence(&self, session: &str) -> io::Result<()> {
+        let file = format!("{}.json", safe(session)?);
+        let presence = self.folder("presence")?;
+        match read_in::<Facts>(&presence, &file) {
+            Some(held) if held.owner == Some(Owner::mine()) => presence.remove(&file),
+            _ => Ok(()),
+        }
+    }
+
     fn gone(&self) -> Vec<Presence> {
         let Ok(entries) = fs::read_dir(&*self.claims) else {
             return Vec::new();
@@ -814,6 +883,7 @@ struct Facts {
     machine: Option<String>,
     #[serde(rename = "unreachableSince")]
     unreachable_since: Option<i64>,
+    state: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize)]
@@ -831,6 +901,16 @@ fn process_exists(pid: i32) -> bool {
 }
 
 impl Owner {
+    /// This process, as a presence it writes names its owner.
+    fn mine() -> Self {
+        let pid = std::process::id().cast_signed();
+        Self {
+            pid,
+            boot_id: boot_id(),
+            start_ticks: stat(pid).map(|stat| stat.start_ticks),
+        }
+    }
+
     /// Whether the process that wrote the presence still runs: the same
     /// boot, and a process of that id that started when it did.
     fn lives(&self, boot: Option<&str>) -> bool {
@@ -1076,6 +1156,79 @@ mod tests {
             boot_id: boot_id(),
             start_ticks: start_ticks(pid),
         }
+    }
+
+    #[test]
+    fn the_node_holds_a_presence_as_its_own_only_where_none_other_stands() {
+        let (dir, folders) = store();
+        let presence = dir.path().join("mesh/presence");
+        let said = json!({"session": "s-w", "machine": "tern", "title": "a worker's"});
+        folders.put_own_presence("s-w", &said).expect("kept");
+        let kept: Value =
+            serde_json::from_slice(&fs::read(presence.join("s-w.json")).expect("its file"))
+                .expect("JSON");
+        assert_eq!(kept.get("machine"), None, "only a link says a machine");
+        assert_eq!(kept["owner"]["pid"], json!(me().pid), "the node owns it");
+        let standing = folders.presences();
+        let held = standing
+            .iter()
+            .find(|p| p.session == "s-w")
+            .expect("it stands");
+        assert!(
+            held.lives && held.elsewhere.is_none(),
+            "a living session here"
+        );
+        assert!(
+            folders
+                .put_own_presence("s-x", &json!({"session": "s-w"}))
+                .is_err(),
+            "a presence of another session"
+        );
+
+        // A session another process here holds, living, or parked this boot.
+        // The test's parent, which is of its account and outlives it.
+        let parent = rustix::process::getppid().map_or(1, |pid| pid.as_raw_nonzero().get());
+        let living = Owner {
+            pid: parent,
+            boot_id: boot_id(),
+            start_ticks: start_ticks(parent),
+        };
+        let theirs = |state: Option<&str>, owner: &Owner| {
+            json!({"session": "s-o", "state": state, "owner": {
+                "pid": owner.pid, "bootId": owner.boot_id, "startTicks": owner.start_ticks,
+            }})
+        };
+        fs::write(presence.join("s-o.json"), theirs(None, &living).to_string()).expect("written");
+        let refused = folders.put_own_presence("s-o", &json!({"session": "s-o"}));
+        assert!(refused.is_err(), "a living session of another process");
+        folders
+            .remove_own_presence("s-o")
+            .expect("nothing to let go");
+        assert!(presence.join("s-o.json").exists(), "another's is left");
+        let gone = Owner {
+            // Past any machine's highest process id, so never running.
+            pid: 0x3fff_fff0,
+            start_ticks: None,
+            ..living
+        };
+        let parked = theirs(Some("parked"), &gone).to_string();
+        fs::write(presence.join("s-o.json"), parked).expect("written");
+        let refused = folders.put_own_presence("s-o", &json!({"session": "s-o"}));
+        assert!(refused.is_err(), "a session parked to start again");
+        fs::write(presence.join("s-o.json"), theirs(None, &gone).to_string()).expect("written");
+        folders
+            .put_own_presence("s-o", &json!({"session": "s-o"}))
+            .expect("an ended session's id taken");
+
+        // Another machine's session.
+        folders
+            .put_presence("s-t", "tern", &json!({"session": "s-t"}))
+            .expect("a link keeps it");
+        let refused = folders.put_own_presence("s-t", &json!({"session": "s-t"}));
+        assert!(refused.is_err(), "another machine's session");
+
+        folders.remove_own_presence("s-w").expect("let go");
+        assert!(!presence.join("s-w.json").exists(), "its own is let go");
     }
 
     #[test]

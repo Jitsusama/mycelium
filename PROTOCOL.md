@@ -2967,6 +2967,50 @@ signed head, unless it moved since; the signed commits hold the same
 trees, so nothing checked out changes. It asks this machine's node for
 a lend of the `forge` budget, or the one `--budget` names.
 
+### The Worker Socket
+
+A worker machine's sessions run as an account of their own, which
+may not write the mesh's folders, since a file there could say
+anything as anyone. A node given `--worker-socket PATH` and
+`--worker-uid UID` takes them on a socket of its own instead, in a
+folder only the node's account or the system's may change, made 0755
+if it isn't there. It answers only a process the kernel names as of
+account UID, refusing any other with one `{"Err": ...}` line, and the
+main socket answers none of these asks.
+
+A connection opens with `{"Presence": {"presence": {...}}}`, the
+presence as the harness writes its file, answered `{"Ok":
+"Present"}` or `{"Err": "why"}`, which closes it. The node keeps the
+presence as its own, owned by its own process, without `owner`,
+`machine`, `unreachableSince`, `heldAs` or `startedByAs`, and lets it
+go as the connection closes. It refuses a session, or any address,
+that a session living or parked here or elsewhere answers to, and a
+session another connection holds. Later lines on it are another
+`Presence`, when it changes, or `{"Send": {"message": {...}}}`, the
+message as the harness writes its file, each answered in turn.
+
+The node writes a message again with only the fields the mesh reads,
+keeping it only when its id is of the mesh's shape, names its sender
+and was stamped within a minute of the node's clock, its `at` is its
+id's time to the millisecond, its sender is one of the presence's
+names, and it goes only to peers by address or to the presence's
+own quest, the group its `quest` field's last part names. Its intent
+is none, `fyi`, `question` or `finding`; it ends no hold and invites
+only to its own quest. A message whose id is said already is refused.
+It answers `{"Ok": {"Sent": {...}}}` with the file it kept.
+
+A second connection of the same process may ask `{"Watch":
+{"session", "groups"?, "since"?, "recent"?}}` for a session it holds,
+answered `{"Ok": "Watching"}`. It hears `{"MessagesChanged":
+{"messages"}}` then `{"Message": {"message"}}` for each new one, each
+in its file's shape, and only those to the session's own addresses
+or quest, which `groups` narrows. `recent` counts the latest of all
+messages before they are narrowed, a thousand when `since` is given
+and none otherwise; `since` keeps those after it, by time then id, so
+one the node doesn't hold starts from its time. The watch ends at
+its next event once the session's presence has, or when the client
+says anything more.
+
 ### A Hosted Session's Spawner
 
 A pi host runs many sessions in one process, so its process alone

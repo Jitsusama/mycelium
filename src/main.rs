@@ -844,6 +844,16 @@ struct Node {
     /// limit for five minutes, and all of them as the node starts.
     #[arg(long, requires = "eases")]
     eases_sleep: Option<PathBuf>,
+    /// Where this machine's sessions, running as the account
+    /// `--worker-uid` names, are present and speak on the mesh through
+    /// the node, which judges what each says, as a worker machine's do.
+    /// Its folder must be the node's account's or the system's alone.
+    #[arg(long, requires = "worker_uid")]
+    worker_socket: Option<PathBuf>,
+    /// The account whose sessions `--worker-socket` answers; a process
+    /// of any other is refused.
+    #[arg(long, requires = "worker_socket")]
+    worker_uid: Option<u32>,
 }
 
 /// A machines file of builders to dial, as `--builders` gives it.
@@ -2050,6 +2060,24 @@ fn processes_here(unattended: bool) -> node::Processes {
     }
 }
 
+/// How the node settles carries for `realm`, kept under `state`.
+fn settles_kept(state: &Path, realm: &str) -> Settles {
+    Settles {
+        kept: state.join("settles.jsonl"),
+        program: carry::PI_CARRY.into(),
+        realm: realm.to_owned(),
+        answers_within: carry::settle::ANSWERS_WITHIN,
+    }
+}
+
+/// The worker socket the node serves on, answering only `uid`, where it
+/// was given both; clap asks for each with the other.
+fn worker_given(socket: Option<PathBuf>, uid: Option<u32>) -> Option<node::Worker> {
+    socket
+        .zip(uid)
+        .map(|(socket, uid)| node::Worker { socket, uid })
+}
+
 /// How the node eases its machine, kept under `state`, if it `eases` at
 /// all: whether it `carries`, and where it asks the harness to park the
 /// sessions it `sleeps`.
@@ -2142,14 +2170,10 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
         health: node.health_socket,
         scratch,
         eases: eases_given(node.eases, node.eases_carry, node.eases_sleep, &state),
-        settles: Some(Settles {
-            kept: state.join("settles.jsonl"),
-            program: carry::PI_CARRY.into(),
-            realm: membership.name.clone(),
-            answers_within: carry::settle::ANSWERS_WITHIN,
-        }),
+        settles: Some(settles_kept(&state, &membership.name)),
         lends_from: node.lends_from,
         lend: node.lend,
+        worker: worker_given(node.worker_socket, node.worker_uid),
     };
     tell!(
         "mycelium: {}",
