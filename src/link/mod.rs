@@ -5197,6 +5197,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each of a worker's messages is refused or carried for its own reason"
+    )]
     async fn a_worker_puts_no_words_in_another_machines_session_nor_rewrites_a_message() {
         let skiff = Memory::default();
         skiff
