@@ -1735,9 +1735,10 @@ each door by the name the machine's configuration gives it, and with
 `runs`, the words that start a command as that fence runs its
 sessions, such as its launcher and the fence's rules. With
 `accepts`, `{"<machine>": {"secrets": [...]}}`, it names the doors
-another machine may open beyond these for a session carried from
-here in that fence, each allowed by the person; the machine there
-still declares every door it opens, so a gain is said, never hidden.
+another machine may open beyond these for a session in that fence
+carried from here, or started there by an agent here, each allowed
+by the person; the machine there still declares every door it opens,
+so a gain is said, never hidden.
 A node says a
 fence's `runs` in its `Machine` only where its own launcher takes them
 (below), and none where it refuses them, so another machine judges it
@@ -2049,9 +2050,10 @@ id, the `folder` it began in, and `attach`, the words that join it from
 a terminal on the asking machine, to be run as given. A start that
 isn't placed, or doesn't start, is an error saying why, such as
 `nowhere: skiff isn't kestrel`. An agent's start is held to its own
-ground as its run is (`"Run"`): every machine looser than this one is
-missed as `looser-ground`, `never`, naming the machine and the fence
-it lacks, and a start naming one is told only that, as `this asks as a
+ground as its run is (`"Run"`): every machine looser than this one,
+beyond the doors this machine's fence `accepts` for it, is missed as
+`looser-ground`, `never`, naming the machine and the fence it lacks,
+and a start naming one is told only that, as `this asks as a
 strictly fenced agent, so it starts nothing on looser ground: ...`. A
 machine made for it is held to the same once it links, and let go
 where it is looser. The person's starts aren't, nor is an agent's
