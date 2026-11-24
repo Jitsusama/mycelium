@@ -991,7 +991,9 @@ where
     links.shutdown().await;
     let ended = stopping.elapsed();
     let letting_go = std::time::Instant::now();
-    store::out_of_reach_of_unclaimed(&store)?;
+    // What this run saw of each machine out of reach is put away, so the
+    // time the node is down isn't counted as seen at its next start.
+    store::stop_seeing_out_of_reach(&store, jiff::Timestamp::now().as_millisecond())?;
     drop(socket);
     // A stop's time is the service manager's to bound, so each is said.
     eprintln!(
@@ -1583,9 +1585,6 @@ struct Shared<S> {
     /// The boot this machine runs in, which says which sessions ended
     /// this boot.
     boot: Arc<standing::Boot>,
-    /// When this node started, in milliseconds since the epoch, since it
-    /// has seen a machine out of reach only while it has run.
-    up_since: i64,
     /// This machine's sessions' steer inboxes.
     steers: PathBuf,
     /// Where the machine tells who runs its processes, which says who asks
@@ -1832,7 +1831,6 @@ impl<S: Clone> Clone for Shared<S> {
             held: self.held.clone(),
             parked: self.parked.clone(),
             boot: self.boot.clone(),
-            up_since: self.up_since,
             steers: self.steers.clone(),
             processes: self.processes.clone(),
             client: self.client,
@@ -3061,7 +3059,6 @@ impl<S: Store> Shared<S> {
             held: held_here,
             parked,
             boot: Arc::new(standing::Boot::this()),
-            up_since: jiff::Timestamp::now().as_millisecond(),
             steers,
             updater,
             store,
@@ -5420,7 +5417,6 @@ impl<S: Store> Shared<S> {
             orchestrators: orchestrators.as_ref().ok(),
             boot: self.boot.id.as_deref(),
             began: self.boot.began,
-            up_since: self.up_since,
             now,
         };
         let cells = easing::cells(&self.machine, &looked);

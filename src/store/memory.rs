@@ -331,6 +331,8 @@ impl Store for Memory {
         if let Some(fields) = body.as_object_mut() {
             fields.remove("owner");
             fields.remove("unreachableSince");
+            fields.remove("unreachableSeen");
+            fields.remove("unreachableSeenFor");
         }
         held.presences.insert(
             session.to_owned(),
@@ -351,18 +353,47 @@ impl Store for Memory {
         Ok(())
     }
 
-    fn mark_unreachable(&self, session: &str, machine: &str, since: i64) -> io::Result<()> {
+    fn mark_unreachable(
+        &self,
+        session: &str,
+        machine: &str,
+        since: i64,
+        seen: i64,
+    ) -> io::Result<()> {
         let mut held = self.held();
         if held.carries(session, machine)
             && let Some(presence) = held.presences.get_mut(session)
-            && presence.unreachable_since.is_none()
+            && presence.body.get("unreachableSeen").is_none()
         {
-            presence.unreachable_since = Some(since);
+            let since = *presence.unreachable_since.get_or_insert(since);
             // As the folders mark it, in the presence too, where easing
             // reads how long a lane has been out of reach.
             if let Some(fields) = Arc::make_mut(&mut presence.body).as_object_mut() {
                 fields.insert("unreachableSince".to_owned(), Value::from(since));
+                fields.insert("unreachableSeen".to_owned(), Value::from(seen));
             }
+            held.tell(&Change::Presence);
+        }
+        Ok(())
+    }
+
+    fn put_away_unreachable(&self, session: &str, machine: &str, at: i64) -> io::Result<()> {
+        let mut held = self.held();
+        if held.carries(session, machine)
+            && let Some(presence) = held.presences.get_mut(session)
+            && let Some(fields) = Arc::make_mut(&mut presence.body).as_object_mut()
+            && let Some(seen) = fields
+                .remove("unreachableSeen")
+                .and_then(|seen| seen.as_i64())
+        {
+            // As the folders put it away: what this run saw joins what
+            // earlier runs saw.
+            let earlier = fields
+                .get("unreachableSeenFor")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let all = earlier.saturating_add(at.saturating_sub(seen).max(0));
+            fields.insert("unreachableSeenFor".to_owned(), Value::from(all));
             held.tell(&Change::Presence);
         }
         Ok(())
