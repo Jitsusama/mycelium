@@ -196,8 +196,9 @@ impl Orchestrations {
     /// started afresh, which continues no session, may claim its quests
     /// again. `continues` is asked only where some claim lapses, so the
     /// logs are read only then, and once. Where it gives nothing, as the
-    /// logs can't be read, each lapsing claim is kept as it is until a
-    /// later lapse can tell where it goes, rather than lost.
+    /// logs folder can't be read, each lapsing claim is kept as it is
+    /// until a later lapse can tell where it goes, rather than lost; a
+    /// log that can't be opened still reads as continuing none.
     pub fn lapse<Continues: Fn(&str) -> Option<String>>(
         &mut self,
         standing: &BTreeMap<String, Option<String>>,
@@ -332,31 +333,38 @@ pub const CONTINUED_MOST: usize = 8;
 pub struct Logs {
     /// Each log found, by the session its name says it keeps.
     found: BTreeMap<String, PathBuf>,
+    /// Each folder in it that couldn't be read, and why, passed over.
+    unread: Vec<String>,
 }
 
 impl Logs {
     /// The logs under `logs`, as they are now; none where it isn't
     /// there, as on a machine pi never ran on. A folder gone between
     /// the scan's steps is taken as gone, and a file beside the folders
-    /// is passed over.
+    /// is passed over. A folder in it that can't be read is passed over
+    /// too, named in [`Self::unread`], so one stray folder costs only
+    /// the logs it holds, never every claim's.
     ///
     /// # Errors
     ///
-    /// Where `logs`, or a folder in it, is there but can't be read, so
-    /// which log continues which can't be told: read as none, a claim
-    /// that should pass on would lapse instead.
+    /// Where `logs` is there but can't be read, so which log continues
+    /// which can't be told: read as none, a claim that should pass on
+    /// would lapse instead.
     pub fn scan(logs: &Path) -> io::Result<Self> {
-        let mut found = BTreeMap::new();
+        let mut scanned = Self::default();
         let folders = match fs::read_dir(logs) {
             Ok(folders) => folders,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(Self { found });
-            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(scanned),
             Err(error) => return Err(error),
         };
         for folder in folders {
             let folder = folder?.path();
-            let files = match fs::read_dir(&folder) {
+            let read = fs::read_dir(&folder).and_then(|files| {
+                files
+                    .map(|file| file.map(|file| (file.file_name(), file.path())))
+                    .collect::<io::Result<Vec<_>>>()
+            });
+            let files = match read {
                 Ok(files) => files,
                 Err(error)
                     if matches!(
@@ -366,16 +374,26 @@ impl Logs {
                 {
                     continue;
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    scanned
+                        .unread
+                        .push(format!("{}: {error}", folder.display()));
+                    continue;
+                }
             };
-            for file in files {
-                let file = file?;
-                if let Some(session) = file.file_name().to_str().and_then(session_of_log) {
-                    found.insert(session.to_owned(), file.path());
+            for (name, path) in files {
+                if let Some(session) = name.to_str().and_then(session_of_log) {
+                    scanned.found.insert(session.to_owned(), path);
                 }
             }
         }
-        Ok(Self { found })
+        Ok(scanned)
+    }
+
+    /// Each folder the scan passed over as it couldn't be read, with why.
+    #[must_use]
+    pub fn unread(&self) -> &[String] {
+        &self.unread
     }
 
     /// The session the log of `session` continues, as its own first line
@@ -1088,24 +1106,43 @@ mod tests {
 
     #[test]
     fn a_logs_folder_that_cant_be_read_is_refused_not_read_as_empty() {
+        let logs = tempfile::tempdir().expect("a temporary folder");
+        let file = logs.path().join("sessions");
+        fs::write(&file, "not a folder\n").expect("written");
+        assert_eq!(
+            Logs::scan(&file).map(|_| ()).map_err(|error| error.kind()),
+            Err(io::ErrorKind::NotADirectory),
+            "logs that can't be listed can't say what continues what"
+        );
+    }
+
+    #[test]
+    fn a_folder_that_cant_be_read_is_passed_over_and_named() {
         use std::os::unix::fs::PermissionsExt as _;
         let logs = tempfile::tempdir().expect("a temporary folder");
-        let folder = logs.path().join("--home-joel--");
-        fs::create_dir_all(&folder).expect("made");
-        for unreadable in [&folder, &logs.path().to_path_buf()] {
-            fs::set_permissions(unreadable, fs::Permissions::from_mode(0o000)).expect("unreadable");
-            // An account that reads past modes can't see this case.
-            let shut = fs::read_dir(unreadable).is_err();
-            let scanned = Logs::scan(logs.path());
-            fs::set_permissions(unreadable, fs::Permissions::from_mode(0o700)).expect("readable");
-            if shut {
-                assert!(
-                    scanned.is_err(),
-                    "{} unreadable can't say what continues what",
-                    unreadable.display()
-                );
-            }
-        }
+        let session = "01a1667f-f5bc-7ba6-9290-033e899fff34";
+        let readable = logs.path().join("--home-joel-src--");
+        fs::create_dir_all(&readable).expect("made");
+        fs::write(
+            readable.join(format!("2026-11-24T10-00-00-000Z_{session}.jsonl")),
+            format!("{{\"id\":\"{session}\",\"parentSession\":\"s-steward\"}}\n"),
+        )
+        .expect("written");
+        let shut = logs.path().join("--root--");
+        fs::create_dir_all(&shut).expect("made");
+        fs::set_permissions(&shut, fs::Permissions::from_mode(0o000)).expect("unreadable");
+        // An account that reads past modes reads it, so names none.
+        let unreadable = fs::read_dir(&shut).is_err();
+        let scanned = Logs::scan(logs.path());
+        fs::set_permissions(&shut, fs::Permissions::from_mode(0o700)).expect("readable");
+        let scanned = scanned.expect("one folder unread costs only its own logs");
+        assert_eq!(scanned.continues(session).as_deref(), Some("s-steward"));
+        assert_eq!(
+            scanned.unread().iter().any(|why| why.contains("--root--")),
+            unreadable,
+            "{:?}",
+            scanned.unread()
+        );
     }
 
     #[test]
@@ -1119,6 +1156,22 @@ mod tests {
         assert_eq!(
             record, before,
             "where which session goes on can't be told, nothing is lost or handed on"
+        );
+        lapsed(
+            &mut record,
+            &standing(&[("s-steward-2", Some("WCJQSG")), ("s-weigh", Some("OSPHT4"))]),
+            &logs(&[("s-steward-2", "s-steward")]),
+        );
+        assert_eq!(
+            record
+                .sessions
+                .get("s-steward-2")
+                .map(|claim| claim.heads.as_str()),
+            before
+                .sessions
+                .get("s-steward")
+                .map(|claim| claim.heads.as_str()),
+            "a kept claim passes on once the logs can be read"
         );
     }
 
