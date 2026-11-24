@@ -111,6 +111,37 @@ expect refuses "${sha}" "src/loose.rs 1, main has 0" \
 sha=$(counted "${loose}" "nix/counts.sh=exit 0")
 expect refuses "${sha}" "src/loose.rs: 1, listed 0" \
   "a head that loosens the counts' rule is judged by main's"
+# A head that takes the rule away, or leaves a link or a folder in its
+# place, which merged would leave main with no rule to judge the next head
+# by.
+git checkout -q -B counted "${first}"
+git rm -q nix/counts.sh
+git commit -q -m dropped
+sha=$(git rev-parse HEAD)
+pass "${sha}"
+expect refuses "${sha}" "doesn't keep nix/counts.sh as a file" \
+  "a head that takes the counts' rule away is refused"
+ln -s ../said nix/counts.sh
+git add nix/counts.sh
+git commit -q -m linked
+sha=$(git rev-parse HEAD)
+pass "${sha}"
+expect refuses "${sha}" "doesn't keep nix/counts.sh as a file" \
+  "a head that turns the counts' rule into a link is refused"
+git rm -q nix/counts.sh
+mkdir nix/counts.sh
+echo 'exit 0' > nix/counts.sh/rule
+git add nix/counts.sh
+git commit -q -m folder
+sha=$(git rev-parse HEAD)
+pass "${sha}"
+expect refuses "${sha}" "doesn't keep nix/counts.sh as a file" \
+  "a head that puts a folder where the counts' rule was is refused"
+# The gate run from a folder below the top reads the rule where it is.
+sha=$(counted 'src/fine.rs=fn fine() {}')
+cd src
+expect merges "${sha}" "holds main" "the gate run from a folder below the top finds the rule"
+cd ..
 sha=$(counted "nix/suppressions-waiting.txt=src/main.rs many")
 expect refuses "${sha}" "is not a path and a count above 0" \
   "a list line whose count isn't a number is refused"
@@ -169,12 +200,15 @@ expect refuses "${sha}" "begins or ends with a space" \
 # a comment to an awk reading UTF-8, but an entry to the counts, which
 # would take the folder as listed and let it merge. A Mac's awk reads a
 # no-break space as a space, and gawk an ideographic one. Without the UTF-8
-# locale, the awk on the path would read neither so, and both cases would pass
-# whether or not the gate reads under C, so that fails here first.
+# locale, or with an awk that reads no multibyte classes, as mawk and
+# BusyBox's don't, the awk on the path would read neither so, and both
+# cases would pass whether or not the gate reads under C, so that fails
+# here first.
 spaced=$(LC_ALL=en_US.UTF-8 awk '/^[[:space:]]+#/ { n++ } END { print n + 0 }' \
   <<< $'\302\240#\n\343\200\200#')
 if [[ ${spaced} == 0 ]]; then
-  echo "FAIL the crowd cases need a UTF-8 locale: awk reads neither space as one" >&2
+  echo "FAIL the crowd cases can't run: this awk reads neither space as one under" \
+    "en_US.UTF-8 (no UTF-8 locale, or an awk without multibyte classes)" >&2
   failed=1
 fi
 for named in no-break=$'\302\240' ideographic=$'\343\200\200'; do
@@ -218,8 +252,29 @@ chmod +x "${work}/old-git/git"
 PATH="${work}/old-git:${PATH}" expect refuses "${head}" "run the gate with git 2.42 or later" \
   "a git before 2.42 is refused"
 
-# A main without the rule, as before it first comes in: the head's rule
-# and lists judge it, and a head without the rule either is refused.
+# A git that can't read the rule's entry stops the gate with its own
+# status, rather than the gate reading it as a commit holding no rule and
+# refusing with its own. Its words reach the output either way, so the
+# status is what tells them apart.
+mkdir "${work}/broken-git"
+cat > "${work}/broken-git/git" << EOF
+#!${BASH}
+if [[ \$1 == ls-tree ]]; then echo "fatal: the tree can't be read" >&2; exit 128; fi
+exec "${real_git}" "\$@"
+EOF
+chmod +x "${work}/broken-git/git"
+pass "${head}"
+code=0
+PATH="${work}/broken-git:${PATH}" bash "${gate}" "${head}" > /dev/null 2>&1 || code=$?
+if ((code != 128)); then
+  echo "FAIL a git error reading the rule's entry stops the gate with git's status:" \
+    "it ended ${code}" >&2
+  failed=1
+fi
+
+# A main without the rule, as before it first came in or were it taken
+# off: a head's own rule would judge the head by whatever it brought, so a
+# head is refused, with the rule or without.
 git init -q --bare -b main "${work}/bare.git"
 git clone -q "${work}/bare.git" "${work}/bare" 2> /dev/null
 cd "${work}/bare"
@@ -227,23 +282,19 @@ commit bare > /dev/null
 git push -q origin HEAD:main
 ruleless=$(commit ruleless)
 pass "${ruleless}"
-expect refuses "${ruleless}" "neither main nor" "a rule neither has is refused"
+expect refuses "${ruleless}" "main has no nix/counts.sh" \
+  "a head without the rule is refused where main has none"
+# A head bringing a rule that passes anything, and a lint turned off with
+# no list, which its own rule would let merge.
 mkdir nix src
-cp "${counts}" nix/counts.sh
+echo 'exit 0' > nix/counts.sh
 echo '#[allow(dead_code)]' > src/loose.rs
-echo "src/loose.rs 1" > nix/suppressions-waiting.txt
 git add nix src
 git commit -q -m ruled
 ruled=$(git rev-parse HEAD)
 pass "${ruled}"
-expect merges "${ruled}" "holds main" "the rule's first head is judged by its own rule and lists"
-echo '#[allow(unused)]' > src/unlisted.rs
-git add src
-git commit -q -m unlisted
-unlisted=$(git rev-parse HEAD)
-pass "${unlisted}"
-expect refuses "${unlisted}" "src/unlisted.rs: 1, listed 0" \
-  "the rule's first head is refused by its own rule where it doesn't hold"
+expect refuses "${ruled}" "main has no nix/counts.sh" \
+  "a head bringing its own rule is refused where main has none"
 cd "${work}/tree"
 
 # Main moves on past the head, as another change merges first.

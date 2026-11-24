@@ -10,15 +10,19 @@
   source,
 }:
 let
-  # A check that runs `script` in a copy of the repository, with `tools` on
-  # its path, and passes when the script does.
-  # A UTF-8 locale for the gate's cases, which read a list line opening with
-  # a space outside ASCII under one, as a merger's shell might.
+  # A UTF-8 locale for the gate's cases and the counts' own, which read a
+  # list line opening with a space outside ASCII under one, as a merger's
+  # shell might.
   utf8 = pkgs.glibcLocales.override {
     allLocales = false;
     locales = [ "en_US.UTF-8/UTF-8" ];
   };
+  inUtf8 = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+    export LOCALE_ARCHIVE=${utf8}/lib/locale/locale-archive
+  '';
 
+  # A check that runs `script` in a copy of the repository, with `tools` on
+  # its path, and passes when the script does.
   inTree =
     name: tools: script:
     pkgs.runCommand name { nativeBuildInputs = tools; } ''
@@ -36,9 +40,7 @@ let
   gateHolds =
     named:
     inTree "merge-gate-holds" [ pkgs.git pkgs.shellcheck ] ''
-      ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
-        export LOCALE_ARCHIVE=${utf8}/lib/locale/locale-archive
-      ''}
+      ${inUtf8}
       shellcheck --enable=all scripts/merge-gate.sh scripts/merge-gate-test.sh \
         scripts/merge-train.sh
       bash scripts/merge-gate-test.sh scripts/merge-gate.sh scripts/merge-train.sh \
@@ -155,6 +157,7 @@ let
     # The cases run under gawk and again under the one true awk, a Mac's
     # own, since the gate runs the counts with whatever awk its host has.
     counts-only-fall = inTree "counts-only-fall" [ pkgs.shellcheck pkgs.git ] ''
+      ${inUtf8}
       shellcheck --enable=all nix/counts.sh nix/counts-test.sh
       bash nix/counts.sh
       bash nix/counts-test.sh nix/counts.sh

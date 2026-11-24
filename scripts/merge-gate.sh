@@ -48,6 +48,11 @@ if [[ -z ${passed} ]]; then
   fi
 fi
 
+# From the checkout's top, since git reads a path given to it, and checks
+# an index out, from the folder it runs in. Read outside the `cd`, so a
+# folder outside any checkout stops the gate in git's words.
+top=$(git rev-parse --show-toplevel)
+cd "${top}"
 git fetch -q origin main
 main=$(git rev-parse origin/main)
 if ! git cat-file -e "${sha}^{commit}" 2> /dev/null; then
@@ -62,15 +67,19 @@ fi
 
 # The counts that only fall (nix/counts.sh), judged by main's copy of the
 # rule over the head's own tree, each of the head's lists only shrinking
-# against main's, so a head can neither loosen the rule nor list its own
-# new entry. The train lands only as this lets its tip, so a train's merged
-# tree is judged too. A rule main doesn't have yet, as when it first comes
-# in, is the head's, and so are its lists; once main has the rule, a list
-# main lacks is an empty one. The tree is read from an index of the
-# gate's own, its attributes from the empty tree so none of the head's
-# changes a file from its blob, and each link written as a file holding
-# its target, so none reaches outside the copy. A git before 2.42 ignores
-# GIT_ATTR_SOURCE and would apply the head's attributes, so it's refused.
+# against main's, so a head can neither loosen the rule it's judged by nor
+# list its own new entry; a looser rule it brings judges only the heads
+# after it, as a change to the rule, read by its review. The train lands
+# only as this lets its tip, so a train's merged tree is judged too. Main
+# must have the rule, since a head's own copy would judge the head by
+# whatever it brought, and a list main lacks is an empty one. The head
+# must keep the rule as a file too, or once it merged main would have none
+# and every head after it would be refused. The tree is read from an index
+# of the gate's own, its attributes from the empty tree so none of the
+# head's changes a file from its blob, and each link written as a file
+# holding its target, so none reaches outside the copy. A git before 2.42
+# ignores GIT_ATTR_SOURCE and would apply the head's attributes, so it's
+# refused.
 version=$(git version | sed -n 's/^git version \([0-9]*\.[0-9]*\).*/\1/p')
 if ! printf '%s\n' 2.42 "${version}" | sort -C -t . -k 1,1n -k 2,2n; then
   echo "merge-gate: git ${version:-of no version} can't read a tree without its" \
@@ -84,24 +93,28 @@ GIT_INDEX_FILE="${scratch}/index" git read-tree "${sha}"
 GIT_INDEX_FILE="${scratch}/index" GIT_ATTR_SOURCE="${empty_tree}" \
   git -c core.symlinks=false checkout-index -a --prefix="${scratch}/tree/"
 rule=nix/counts.sh
-main_rule=no
-if git cat-file -e "${main}:${rule}" 2> /dev/null; then
-  git show "${main}:${rule}" > "${scratch}/counts.sh"
-  main_rule=yes
-elif [[ -f "${scratch}/tree/${rule}" ]]; then
-  cp "${scratch}/tree/${rule}" "${scratch}/counts.sh"
-else
-  echo "merge-gate: neither main nor ${sha:0:12} has ${rule}, so its counts" \
-    "can't be judged: rebase onto main and run the checks again." >&2
+# Each commit's entry for the rule, read outside any condition so a commit
+# git can't read stops the gate with git's own words. Only a file's mode
+# holds it as a file, rather than as a link or not at all.
+main_rule=$(git ls-tree "${main}" -- "${rule}")
+head_rule=$(git ls-tree "${sha}" -- "${rule}")
+as_file='^100(644|755) blob '
+if [[ ! ${main_rule} =~ ${as_file} ]]; then
+  echo "merge-gate: main has no ${rule}, so nothing of main's can judge" \
+    "${sha:0:12}'s counts: put the rule back on main first." >&2
   exit 1
 fi
+if [[ ! ${head_rule} =~ ${as_file} ]]; then
+  echo "merge-gate: ${sha:0:12} doesn't keep ${rule} as a file, so main would" \
+    "have nothing to judge the next head by: keep the rule." >&2
+  exit 1
+fi
+git show "${main}:${rule}" > "${scratch}/counts.sh"
 raised=""
 for list in nix/long-files-waiting.txt nix/suppressions-waiting.txt; do
   main_list=""
   if git cat-file -e "${main}:${list}" 2> /dev/null; then
     main_list=$(git show "${main}:${list}")
-  elif [[ ${main_rule} == no ]]; then
-    continue
   fi
   head_list=""
   if [[ -f "${scratch}/tree/${list}" ]]; then
