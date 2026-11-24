@@ -227,12 +227,12 @@ pub fn standing(kept: &Kept, seen: &Seen) -> State {
         Some(machine) if machine == to => State::Arrived,
         Some(machine) if machine == from && seen.left => State::Back,
         Some(machine) if machine == from => State::Ordered,
-        Some(_) => State::Carrying,
         None if seen.ended_on.as_deref() == Some(to) || seen.quest_on.contains(to) => {
             State::Arrived
         }
         None if seen.quest_on.contains(from) => State::Back,
-        None => State::Carrying,
+        // Gone from here, and not yet seen where it went.
+        Some(_) | None => State::Carrying,
     }
 }
 
