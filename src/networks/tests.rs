@@ -1837,7 +1837,7 @@ fn a_name_matching_none_or_several_networks_is_said_plainly() {
     );
     // A group's name is a peer's to pick, as a short name is, so one
     // named like another's short name leaves the two to choose between.
-    let mut grouped = mycelium();
+    let mut grouped = self::mycelium();
     let mut group = grouped.networks[0].clone();
     group.name = "harbor".to_owned();
     group.short = "harbor".to_owned();
