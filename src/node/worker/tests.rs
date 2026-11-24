@@ -254,9 +254,9 @@ async fn a_worker_is_present_and_speaks_within_its_reach_through_the_node() {
                 .is_some_and(|why| why.contains("said already")),
             "{again}"
         );
-        let hold =
+        let refused =
             present.ask(&json!({"Send": {"message": message(now + 1, &["@P9R1KI"], "hold")}}));
-        assert!(hold["Err"].is_string(), "a worker held: {hold}");
+        assert!(refused["Err"].is_string(), "a worker held: {refused}");
 
         let to_it = message(now + 2, &["#quest/kp0l6a"], "fyi");
         let sent = present.ask(&json!({"Send": {"message": to_it}}));
