@@ -76,13 +76,14 @@ pub fn steers(body: &Value, earlier: impl Fn(&str) -> Option<Value>) -> Option<&
 }
 
 /// Whether a mesh message is of the shape the mesh writes, in each field
-/// that says whom it reaches or what it asks of them: an intent of the
-/// mesh's own words, exactly; `to`, if any, a list of words; `endsHold`,
-/// if any, true or false; and `re` and `supersedes`, if any, words.
+/// that says whom it reaches or what it asks of them: an intent, if any,
+/// of the mesh's own words, exactly (none reads as news); `to`, if any, a
+/// list of words; `endsHold`, if any, true or false; and `re` and
+/// `supersedes`, if any, words.
 fn known_shape(body: &Value) -> bool {
     let words = |field: &str| body.get(field).is_none_or(Value::is_string);
     body.get("intent")
-        .is_some_and(|intent| Intent::deserialize(intent).is_ok())
+        .is_none_or(|intent| Intent::deserialize(intent).is_ok())
         && body.get("to").is_none_or(|to| {
             to.as_array()
                 .is_some_and(|to| to.iter().all(Value::is_string))
@@ -521,6 +522,11 @@ mod tests {
         let nothing = |_: &str| None;
         let fyi = json!({"intent": "fyi", "to": ["@KESTREL"], "re": "a", "text": "hi"});
         assert_eq!(steers(&fyi, nothing), None, "a plain fyi steers nothing");
+        assert_eq!(
+            steers(&json!({"to": ["@KESTREL"], "text": "hi"}), nothing),
+            None,
+            "nor does one of no intent, which reads as news"
+        );
         let changed = |field: &str, value: Value| {
             let mut body = fyi.clone();
             body[field] = value;
@@ -539,7 +545,6 @@ mod tests {
                 changed("intent", json!(["hold"])),
                 "an intent that isn't a word",
             ),
-            (json!({"to": ["@KESTREL"], "text": "hi"}), "no intent"),
             (changed("to", json!("#machine")), "a `to` that isn't a list"),
             (
                 changed("to", json!(["@KESTREL", 1])),
