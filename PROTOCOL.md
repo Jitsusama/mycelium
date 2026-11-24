@@ -459,7 +459,8 @@ Three seams shape a link:
   said too is taken over it.
   A machine reached so is a worker: it is asked and asks
   nothing back. Its end's starts, steers, updates, carries, ends and
-  runs are refused, its follows are ignored, and a presence of its
+  runs are refused (what it asks: a carry to a worker is Carrying a
+  Quest's to judge), its follows are ignored, and a presence of its
   naming another machine isn't kept, nor one answering to an id or
   address a session living or parked here or through another link
   answers to, nor a reply to an ask it wasn't
@@ -662,7 +663,10 @@ in order and says each step:
 
 1. `find`: the quest's sessions on this machine that can carry their own
    work, those running and those parked this boot. A machine not in reach,
-   or this one, is refused. So is a carry whose sessions' starts the
+   or this one, is refused. So is one to a worker (The Link) whose
+   `declared` doesn't say `takes_carries`, as `tern is a worker that
+   doesn't declare it takes carries, so nothing is carried there`.
+   So is a carry whose sessions' starts the
    machine wouldn't take: the node is asked `"Takes"` once, with each
    session's arrival and the quest's own, and its refusal is said, as
    `HARBOR's sessions can't start on osprey now: this asks as a fenced
@@ -780,7 +784,15 @@ in order and says each step:
    weighed as a hub by its cell's talk. Carried on again, it brings
    that cell.
 3. `share`: the quest is shared with `handover`, as `mycelium share
-   --scratch handover` does.
+   --scratch handover` does; to a worker, as `--to` does, giving it
+   the quest alone, once no file in the whole handover, links passed
+   over unfollowed, is named as a secret is: `auth.json`, `.netrc`, a
+   private ssh key, one ending `.pem`, `.key`, `.p12`, `.pfx` or
+   `.tpm`, or one with the word `credentials` or `token` in its name
+   that isn't a bundle, patch, log or done file. One that is refuses
+   the carry, naming it. What a bundle or a log holds isn't read. The
+   node logs each carried session started on a worker, naming it, its
+   quest and the worker.
 4. `start`: each carried session starts again on the machine, held:
    those told to carry first, then the quest's own, then those the find
    couldn't ask of, so a refusal the ask couldn't foresee meets no
@@ -909,7 +921,9 @@ session says of itself:
   each of `to`'s `fence` and `strict` fences it declares must declare
   its `runs` too, or the carry is refused before any session is told
   to carry and ends (The Socket). A node easing itself never chooses
-  such a machine.
+  such a machine. A worker is firm ground only where its `declared`
+  says `takes_carries`, and never for a strict session, since a
+  worker's strict fence is its own word, which no node holds it to.
 - The fence it names is never looser than its process shows. The
   node reads the proved owner's process: `PI_SANDBOX` in the
   environment it began with (`strict` or `fence`), and, for a pi that
@@ -1838,6 +1852,10 @@ than every cell in it: lower-case letters, digits and hyphens, at most
 63, read as no basin in any other shape, which spoils nothing else
 declared. It is the cell's own word and only ever drawn, never weighed
 in placement.
+Where true, `takes_carries` says a worker takes carried sessions, as
+one made to take load off the person's machines does: a carry to a
+worker that doesn't say so is refused (Carrying a Quest), and one of
+the person's own machines takes carries either way.
 Where given, `fence` says the fences an agent session runs in there, by
 kind (`none`, `fence` or `strict`), each with the doors it opens:
 `{"strict": {"builders": [...], "forges": [...], "secrets": [...]}}`,

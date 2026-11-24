@@ -2462,6 +2462,18 @@ fn keep_forages(
     to_read
 }
 
+/// The carried session `command` starts, in words for the log: its
+/// session, its quest and the machine it left; or none, where it starts
+/// no carried session.
+fn carried_words(command: &[String]) -> Option<String> {
+    crate::carry::arrives(command).map(|arrives| {
+        format!(
+            "session {} of {} from {}",
+            arrives.session, arrives.quest, arrives.from
+        )
+    })
+}
+
 /// Whether a start asked by `by` to run `command` is marked as the
 /// person's carry of a session: only the person's, and only of a carry's
 /// shape. It is marked where it is asked, since who asked is known only
@@ -6572,6 +6584,7 @@ impl<S: Store> Shared<S> {
                 lead.ends(at, &Err(refused.clone()));
             }
         })?;
+        let arriving = carried_words(&asked.command);
         let answered = match (whither, again) {
             // Asked again where it was asked under that name, in the
             // fence its first ask was placed in ([`Self::placed_held`]).
@@ -6612,7 +6625,8 @@ impl<S: Store> Shared<S> {
                 .map_err(Clone::clone),
             joined,
         );
-        if started.is_ok() {
+        if let Ok(started) = &started {
+            self.says_carried_to_a_worker(arriving.as_deref(), started);
             // Its session may be judged already, its presence written
             // before its holder answered, so it is judged again now its
             // book's line names its starter, by the node's loop, so no
@@ -6620,6 +6634,24 @@ impl<S: Store> Shared<S> {
             self.rejudge.notify_one();
         }
         started.map(Response::Started)
+    }
+
+    /// Says in this node's log a carried session, as `arriving` names it
+    /// ([`carried_words`]), started on a worker, as `started` says, so
+    /// every carry to a lent machine is kept here, on the person's own.
+    fn says_carried_to_a_worker(&self, arriving: Option<&str>, started: &Started) {
+        let Some(arriving) = arriving else {
+            return;
+        };
+        let worker = self.others().into_iter().any(|one| {
+            one.name == started.machine && crate::carry::Lent::of(&one) != crate::carry::Lent::Not
+        });
+        if worker {
+            eprintln!(
+                "mycelium: carried {arriving} to {}, a worker",
+                started.machine
+            );
+        }
     }
 
     /// Whether a reopening asked `whither` by `by` goes unfenced: asked
@@ -22503,6 +22535,7 @@ esac
             .put_machine(&facts::Machine {
                 declared: Some(crate::declared::Declared {
                     pi_fences_itself: false,
+                    takes_carries: false,
                     reach: Vec::new(),
                     probes: BTreeMap::new(),
                     outlives: Vec::new(),
@@ -23146,6 +23179,12 @@ esac
             !marks_a_carry(By::Person, &["pi".to_owned()]),
             "nor the person's other starts"
         );
+        assert_eq!(
+            carried_words(&carry).as_deref(),
+            Some("session s-harbour of QEST-20261013-4UHC5Q from tern"),
+            "the log names what a carry starts"
+        );
+        assert_eq!(carried_words(&["pi".to_owned()]), None, "and nothing else");
     }
 
     /// The strength tie `record` has now, faded as every reader of ties
@@ -23539,6 +23578,7 @@ esac
             .put_machine(&facts::Machine {
                 declared: Some(crate::declared::Declared {
                     pi_fences_itself: false,
+                    takes_carries: false,
                     reach: Vec::new(),
                     probes: BTreeMap::new(),
                     outlives: Vec::new(),
