@@ -79,6 +79,27 @@ a message, a presence, a holding or a folder is read as nothing there,
 and a write takes the link's place by rename rather than writing what it
 names.
 
+A message a link carries in wakes each session parked on this machine
+that it gives a turn, as its sender would on its own machine: a pivot
+reaching it, a question or hold to its own address, a question to a
+named group it is in, or an answer to a message it sent, never one it
+sent itself. The parked sessions are those whose markers in
+`~/.local/state/pi/agentic-harness.pi/park-workflow/parked/` were
+written this boot, beside the steer inboxes; each is woken by writing
+`{"session", "messageId", "at"}` whole as the file its marker names as
+`wake`, as the harness does. Only a marker this account wrote, in a
+folder no other account may write, is read, and a wake is written only
+in such a folder, so a marker another account wrote can't name a file
+of this one's to be written over.
+
+A worker machine's sessions run as an account of their own, so a
+message a worker's link carries in wakes less: only a question or hold
+to a session's own address, or an answer to a message it sent, never a
+pivot nor a question to a group, so one session there can't start a
+turn in every session of a group here. A worker's link wakes at most 6
+sessions a minute; the rest read theirs at their next start, and the
+node's journal says how many were left and from which machine.
+
 A session's own machine judges whether it lives, from its process, and is
 told the moment it ends: on Linux the node holds each session's process
 by a pidfd, which wakes it as the process exits, so nothing is judged on a
@@ -406,7 +427,20 @@ Three seams shape a link:
   since it may first make the machine and put the far end there, and
   it ends when it can't. Its error output is passed on, and a line
   saying the other end "turned this machine away" is taken as a refused
-  SSH key is. A machine reached so is a worker: it is asked and asks
+  SSH key is. A line starting `mycelium-gone:`, from a program whose
+  far end closed without saying hello, whether or not it had taken
+  ours, says the machine no longer exists, as one its provider took
+  back: a machine the node made leaves the realm's machines at once
+  and is released, asked again up to three times if that fails, all
+  within nine minutes, then booked as let go, released or not, so
+  what a release that failed left is its provider's to clear, rather
+  than being dialled until its time; one it was
+  given is dialled again as any link that dropped, since the node
+  can't let it go. Once a link came up, the line may be the far
+  machine's own, so it counts for nothing. A provider writes it only
+  when it knows, never for a machine merely out of reach. A refusal
+  said too is taken over it.
+  A machine reached so is a worker: it is asked and asks
   nothing back. Its end's starts, steers, updates, carries, ends and
   runs are refused, its follows are ignored, and a presence of its
   naming another machine isn't kept, nor one answering to an id or
@@ -861,7 +895,10 @@ session says of itself:
   fenced. Only a `bwrap` reached from the owner through `pi-spawner`,
   `bash` or `sh` alone counts, as the agent fence starts it; one a
   command starts, such as a test suite's, says nothing of the agent's
-  fence. A presence naming a looser fence than that is
+  fence. That chain is the fence's contract with the node: a fence
+  that puts any other program before `bwrap` (`timeout`, `env`,
+  `setsid`) reads its sessions unfenced, which costs placement, never
+  containment. A presence naming a looser fence than that is
   refused, as `HARBOR says it runs unfenced, but its process shows it
   fenced, so where it may land can't be told`; one naming a stricter
   stands, since the strict fence leaves nothing lasting to show. A
@@ -1531,7 +1568,11 @@ link of this node's reaches, and none while no link does. Over SSH,
 those are `mycelium --realm REALM attach --on MACHINE ID -- WORDS`,
 `WORDS` being SSH's to that machine's own: run here, it runs `WORDS`
 and runs them again each time SSH ends 255, as it does when its link
-drops, putting back the terminal modes the program there left set
+drops. SSH's words are given `-o ServerAliveInterval=5 -o
+ServerAliveCountMax=3` after `ssh`, served so and added to words that
+name neither, so a way that dies saying nothing, as a dock's address
+does when it is undocked, ends within 15 seconds rather than never.
+Each time it puts back the terminal modes the program there left set
 (the kitty keyboard flags, the alternate screen, a hidden cursor,
 mouse and focus reports and bracketed paste) when its standard error
 is a terminal, saying `Reconnecting to MACHINE.` and waiting 1
@@ -1756,9 +1797,10 @@ each door by the name the machine's configuration gives it, and with
 `runs`, the words that start a command as that fence runs its
 sessions, such as its launcher and the fence's rules. With
 `accepts`, `{"<machine>": {"secrets": [...]}}`, it names the doors
-another machine may open beyond these for a session carried from
-here in that fence, each allowed by the person; the machine there
-still declares every door it opens, so a gain is said, never hidden.
+another machine may open beyond these for a session in that fence
+carried from here, or started there by an agent here, each allowed
+by the person; the machine there still declares every door it opens,
+so a gain is said, never hidden.
 A node says a
 fence's `runs` in its `Machine` only where its own launcher takes them
 (below), and none where it refuses them, so another machine judges it
@@ -1780,7 +1822,14 @@ node logs. The end hearing it keeps what the machine last declared
 over that link while it declares nothing, for 10 minutes at most, so
 a node restarting or slow to answer leaves its machine's ground as it
 was; past that, the machine reads as declaring nothing. A declaration
-said again replaces it at once.
+said again replaces it at once. Where the node did answer, declaring
+nothing, or an end reading its declaration's file itself found it
+declares nothing or couldn't read it, the end says
+`declares_nothing: true` (left out when false),
+and the end hearing it drops what was declared before at once, so only
+a silence is kept through. While a declaration is kept, the machine is
+still withheld the quests above those shared with it, as one declaring
+nothing is.
 
 Its `reached` says whether each probed network answered, by name. The
 node tries each probe every 30 seconds, giving each 3 to answer (a
@@ -2047,7 +2096,13 @@ none or names no folder there, unless `strict` is true: then a `folder`
 that machine hasn't, or can't look at, is refused, as `tern has no
 folder src/elsewhere, which the start names` (a path within tern's
 home), since the work it's for is there and home won't do. A sprout's
-start is strict; any asker may make one so. `strict` is false where it
+start is strict; any asker may make one so. A start that machine runs
+within its strict fence's launcher is refused so too, strict or not,
+since that fence won't let a command write home, and so is one there
+that names no folder, or names home itself, as `tern would begin this
+start at home, which its strict fence won't let it write, so the start
+must name the folder of the work it's for`; one where pi fences itself
+begins in its home as ever. `strict` is false where it
 isn't said and isn't written when false, so a node, or a link's end,
 from before it reads the start as ever, dropping `strict`, and it
 begins in that machine's home; a sprout's command then ends itself
@@ -2057,9 +2112,10 @@ id, the `folder` it began in, and `attach`, the words that join it from
 a terminal on the asking machine, to be run as given. A start that
 isn't placed, or doesn't start, is an error saying why, such as
 `nowhere: skiff isn't kestrel`. An agent's start is held to its own
-ground as its run is (`"Run"`): every machine looser than this one is
-missed as `looser-ground`, `never`, naming the machine and the fence
-it lacks, and a start naming one is told only that, as `this asks as a
+ground as its run is (`"Run"`): every machine looser than this one,
+beyond the doors this machine's fence `accepts` for it, is missed as
+`looser-ground`, `never`, naming the machine and the fence it lacks,
+and a start naming one is told only that, as `this asks as a
 strictly fenced agent, so it starts nothing on looser ground: ...`. A
 machine made for it is held to the same once it links, and let go
 where it is looser. The person's starts aren't, nor is an agent's
@@ -2117,8 +2173,9 @@ without the tools its work prefers, since a node too old to read one
 may have been preferred and would end the link rather than answer, and
 its `attach` comes back as the words that join it over the dial,
 as a held session's `attach` says, such as `mycelium --realm work
-attach --on kestrel <held> -- ssh -t -- kestrel mycelium --realm work
-attach <held>`. It fails with a reason when no link reaches the machine, its
+attach --on kestrel <held> -- ssh -t -o ServerAliveInterval=5 -o
+ServerAliveCountMax=3 -- kestrel mycelium --realm work attach
+<held>`. It fails with a reason when no link reaches the machine, its
 mycelium is too old to start sessions, or it doesn't answer within 30
 seconds.
 

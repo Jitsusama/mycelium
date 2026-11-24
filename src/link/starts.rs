@@ -62,6 +62,10 @@ pub struct Starting {
     /// end carries is written into, and whose talks' replies are carried
     /// back.
     pub steers: PathBuf,
+    /// The folder the harness marks each session it parks on this machine
+    /// in, as the node reads it, so a message carried in wakes those it
+    /// gives a turn ([`crate::wake`]).
+    pub parked: PathBuf,
     /// This machine's own health as the node keeps it, which the link
     /// carries in this machine's facts and says again each time it moves.
     /// None for a link another machine dialled, which watches it over the

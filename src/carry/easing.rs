@@ -89,6 +89,9 @@ pub struct Looked<'a> {
     /// where the system says: on a machine naming no boot, as a Mac names
     /// none, a lane is judged parked this boot by it.
     pub began: Option<i64>,
+    /// When this node started, in milliseconds since the epoch: it has
+    /// seen a lane out of reach no longer than it has run.
+    pub up_since: i64,
     /// When.
     pub now: Timestamp,
 }
@@ -402,7 +405,10 @@ fn lane_word(here: &str, looked: &Looked, lane: &Session) -> Option<Word> {
                 .presence
                 .get("unreachableSince")
                 .and_then(Value::as_i64)
-                .map(|since| looked.now.as_millisecond().saturating_sub(since));
+                .map(|since| {
+                    let seen = since.max(looked.up_since);
+                    looked.now.as_millisecond().saturating_sub(seen)
+                });
             // A drop this node's clock has since set behind it is recent.
             match out.map(SignedDuration::from_millis) {
                 Some(out) if out < OUT_OF_REACH_LEADS => Some(Word::Counts(2, away)),
@@ -416,11 +422,17 @@ fn lane_word(here: &str, looked: &Looked, lane: &Session) -> Option<Word> {
 }
 
 /// How long after this node lost the link to its machine a lane out of
-/// reach still says its orchestrator leads it. A link drops for minutes, as a
-/// machine's network moves, and that is what the lane's word is kept
+/// reach still says its orchestrator leads it. A link drops for minutes,
+/// as a machine's network moves, and that is what the lane's word is kept
 /// through; a machine gone for longer, closed or retired, may never leave
 /// the realm's records, so without a bound its lane would keep its
 /// orchestrator here for good.
+///
+/// The hour runs from the drop or from when this node started, whichever
+/// is later. A node started after longer down marks each machine no link
+/// carries out of reach since it was last linked, which may be hours
+/// back, though it has seen that machine gone only while it has run, so a
+/// lane whose link is slow to come back after the restart keeps its hour.
 pub const OUT_OF_REACH_LEADS: SignedDuration = SignedDuration::from_hours(1);
 
 /// Whether `session` is parked and was parked in the machine's present
@@ -1000,6 +1012,10 @@ mod tests {
     /// Two hours before [`NOW`], an hour before the boot [`began`].
     const EARLIER: &str = "2026-11-16T06:00:00Z";
 
+    /// A node up since long before any lane here dropped, so it has seen
+    /// each drop itself.
+    const UP_ALL_ALONG: i64 = 0;
+
     /// When the machine's boot began: an hour before [`NOW`].
     fn began() -> i64 {
         "2026-11-16T07:00:00Z"
@@ -1066,6 +1082,7 @@ mod tests {
             orchestrators: None,
             boot: None,
             began: None,
+            up_since: UP_ALL_ALONG,
             now: now(),
         };
         let cells = cells("skiff", &looked);
@@ -1132,6 +1149,7 @@ mod tests {
                 orchestrators,
                 boot: None,
                 began: None,
+                up_since: UP_ALL_ALONG,
                 now: now(),
             };
             cells("skiff", &looked)
@@ -1205,6 +1223,7 @@ mod tests {
             orchestrators: Some(&BTreeSet::new()),
             boot: Some("b2"),
             began: Some(began()),
+            up_since: UP_ALL_ALONG,
             now: now(),
         };
         let lane = |id: &str, said: &str| (id.to_owned(), Some(true), Some(said.to_owned()));
@@ -1300,6 +1319,7 @@ mod tests {
             orchestrators: Some(&recorded),
             boot: Some("b2"),
             began: Some(began()),
+            up_since: UP_ALL_ALONG,
             now: now(),
         };
         let lane = |id: &str, said: &str| (id.to_owned(), Some(true), Some(said.to_owned()));
@@ -1370,6 +1390,7 @@ mod tests {
             orchestrators: Some(&BTreeSet::new()),
             boot: None,
             began: Some(began()),
+            up_since: UP_ALL_ALONG,
             now: now(),
         };
         let lane = |id: &str, said: &str| (id.to_owned(), Some(true), Some(said.to_owned()));
@@ -1396,6 +1417,88 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    // Our council, round 2 of #393 (2026-11-23): an idle lane's own time is
+    // as old as its last change, so only when its link dropped bounds it.
+    #[test]
+    fn an_idle_lane_out_of_reach_counts_by_when_its_link_dropped() {
+        let away = |id: &str, by: &str, dropped_mins: i64| {
+            json!({"orchestrated_by": by, "state": "unreachable", "at": EARLIER,
+                   "presence": dropped(id, dropped_mins)})
+        };
+        let sessions = [
+            session("s1", "skiff", &json!({})),
+            session("s2", "tern", &away("s2", "S1", 10)),
+            session("s3", "skiff", &json!({})),
+            session("s4", "tern", &away("s4", "S3", 90)),
+        ];
+        let looked = Looked {
+            sessions: &sessions,
+            fences: &BTreeMap::new(),
+            holdings: &[],
+            queued: &BTreeSet::new(),
+            sizes: &BTreeMap::new(),
+            orchestrators: Some(&BTreeSet::new()),
+            boot: Some("b2"),
+            began: Some(began()),
+            up_since: UP_ALL_ALONG,
+            now: now(),
+        };
+        assert_eq!(
+            leading(&looked),
+            [(
+                "s1".to_owned(),
+                Some(true),
+                Some("S2, out of reach on tern".to_owned())
+            )],
+            "both lanes were last written two hours since, but only s4's link dropped \
+             more than the hour before"
+        );
+    }
+
+    // Our council, on #393's fix-forward (2026-11-23): a node back from
+    // long down marks a machine out of reach since it was last linked,
+    // hours back, though it has seen that machine gone only since it
+    // started, so a lane slow to redial would lose its hour at once.
+    #[test]
+    fn a_lane_dropped_while_this_node_was_down_counts_from_its_start() {
+        let sessions = [
+            session("s1", "skiff", &json!({})),
+            session(
+                "s2",
+                "tern",
+                &json!({"orchestrated_by": "S1", "state": "unreachable",
+                        "presence": dropped("s2", 120)}),
+            ),
+        ];
+        let (fences, sizes) = (BTreeMap::new(), BTreeMap::new());
+        let (queued, orchestrators) = (BTreeSet::new(), BTreeSet::new());
+        let looked = |up_mins: i64| Looked {
+            sessions: &sessions,
+            fences: &fences,
+            holdings: &[],
+            queued: &queued,
+            sizes: &sizes,
+            orchestrators: Some(&orchestrators),
+            boot: Some("b2"),
+            began: Some(began()),
+            up_since: ago(up_mins).as_millisecond(),
+            now: now(),
+        };
+        assert_eq!(
+            leading(&looked(10)),
+            [(
+                "s1".to_owned(),
+                Some(true),
+                Some("S2, out of reach on tern".to_owned())
+            )],
+            "up ten minutes, this node has seen tern gone ten minutes, not two hours"
+        );
+        assert!(
+            leading(&looked(61)).is_empty(),
+            "up over the hour, it has seen tern gone over the hour"
+        );
     }
 
     /// The lane S4, parked in a boot that can't be told, as a reason names it.
@@ -1433,6 +1536,7 @@ mod tests {
             orchestrators: Some(&BTreeSet::new()),
             boot: None,
             began: None,
+            up_since: UP_ALL_ALONG,
             now: now(),
         };
         let untold = |id: &str, said: &str| (id.to_owned(), None, Some(said.to_owned()));
@@ -1476,6 +1580,7 @@ mod tests {
             orchestrators: None,
             boot: None,
             began: None,
+            up_since: UP_ALL_ALONG,
             now: now(),
         };
         let told: Vec<_> = cells("skiff", &looked)
@@ -1527,6 +1632,7 @@ mod tests {
             orchestrators: Some(&BTreeSet::new()),
             boot: None,
             began: None,
+            up_since: UP_ALL_ALONG,
             now: now(),
         };
         let driven: Vec<_> = cells("skiff", &looked)

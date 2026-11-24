@@ -2138,6 +2138,7 @@ fn run_link(here: Here, realm: String, socket: PathBuf, far: Option<String>) -> 
         held,
         asking: Some(link::starts::Asking::Dialled),
         steers,
+        parked: place::parked(),
         // A dialled link runs apart from the node, so asks it.
         health: None,
         declared: None,
@@ -2194,7 +2195,7 @@ fn serve_link(
             reading: Box::new(tokio::io::stdin()),
             writing: Box::new(tokio::io::stdout()),
             keep: Box::new(()),
-            refused: None,
+            said: None,
             releases: false,
             worker: false,
             named: None,
@@ -3247,7 +3248,9 @@ fn attach_on(
         };
         ssh.there(&joins)
     } else {
-        words
+        // Words a node served before it kept SSH alive itself are kept
+        // alive here, so an open window needs no new words.
+        rejoin::kept_alive(words)
     };
     let mut over = rejoin::Over {
         words,
