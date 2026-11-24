@@ -31,19 +31,43 @@ pub fn stays_here(body: &Value, earlier: impl Fn(&str) -> Option<Value>) -> bool
     {
         return true;
     }
-    let to_machine = |body: &Value| {
-        body.get("to").and_then(Value::as_array).is_some_and(|to| {
-            to.iter()
-                .filter_map(Value::as_str)
-                .any(|to| MACHINE_TARGETS.contains(&to))
-        })
-    };
     to_machine(body)
         || body
             .get("re")
             .and_then(Value::as_str)
             .and_then(earlier)
             .is_some_and(|answered| to_machine(&answered))
+}
+
+/// Whether a mesh message is sent to the machine-wide group.
+fn to_machine(body: &Value) -> bool {
+    body.get("to").and_then(Value::as_array).is_some_and(|to| {
+        to.iter().filter_map(Value::as_str).any(|to| {
+            MACHINE_TARGETS
+                .iter()
+                .any(|target| target.eq_ignore_ascii_case(to))
+        })
+    })
+}
+
+/// What a mesh message says that steers the sessions of the machine it
+/// reaches, if it says any: a hold or a pivot, which park or turn every
+/// session it names, the end of a hold, which lets them go on, or
+/// anything to the machine-wide group or answering what was, which every
+/// session of the machine hears. A worker machine, shared with an account
+/// of its own, may say none of these here, as `earlier` finds what a
+/// message answers.
+#[must_use]
+pub fn steers(body: &Value, earlier: impl Fn(&str) -> Option<Value>) -> Option<&'static str> {
+    match body.get("intent").and_then(Value::as_str) {
+        Some("hold") => return Some("a hold"),
+        Some("pivot") => return Some("a pivot"),
+        _ => {}
+    }
+    if body.get("endsHold").and_then(Value::as_bool) == Some(true) {
+        return Some("the end of a hold");
+    }
+    stays_here(body, earlier).then_some("what is the whole machine's alone")
 }
 
 /// The leases of `session`, a session of this machine's, that another
