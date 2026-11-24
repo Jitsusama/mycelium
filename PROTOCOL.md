@@ -1827,8 +1827,8 @@ each door by the name the machine's configuration gives it, and with
 sessions, such as its launcher and the fence's rules. With
 `accepts`, `{"<machine>": {"secrets": [...]}}`, it names the doors
 another machine may open beyond these for a session in that fence
-carried from here, or started there by an agent here, each allowed
-by the person; the machine there still declares every door it opens,
+carried from here, or run or started there by an agent here, each
+allowed by the person; the machine there still declares every door it opens,
 so a gain is said, never hidden.
 A node says a
 fence's `runs` in its `Machine` only where its own launcher takes them
