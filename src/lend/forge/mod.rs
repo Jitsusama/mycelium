@@ -616,12 +616,17 @@ struct Held;
 impl Held {
     /// A push held, unless the forge holds [`MOST_PUSHING`] already.
     fn taken() -> Option<Self> {
-        PUSHING
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |held| {
-                (held < MOST_PUSHING).then_some(held + 1)
-            })
-            .ok()
-            .map(|_| Self)
+        // A loop of its own rather than `try_update`, which is newer than
+        // the crate's oldest Rust, or `fetch_update`, which is deprecated.
+        let mut held = PUSHING.load(Ordering::Acquire);
+        while held < MOST_PUSHING {
+            match PUSHING.compare_exchange_weak(held, held + 1, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return Some(Self),
+                Err(now) => held = now,
+            }
+        }
+        None
     }
 }
 
