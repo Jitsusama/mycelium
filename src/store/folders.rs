@@ -14,6 +14,11 @@
 //! holds are kept in one holding of its own, marked the same way, which
 //! goes with its presence.
 //!
+//! Where the mesh is shared with another account, as a worker machine's
+//! is, that account may put a link anywhere inside it, so every folder and
+//! file inside is reached without following one (see `folder`): a link
+//! named like a message or a presence is neither read nor written through.
+//!
 //! Claims are locks on files of mycelium's own, outside the mesh, so they
 //! hold across every mycelium process on the machine and go when the
 //! process holding one does, however it ends.
@@ -34,6 +39,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::ends::Ends;
+use super::folder::{Folder, Kind};
 use super::{Change, Changes, Claim, Presence, Store};
 use crate::facts::Machine;
 
@@ -174,10 +180,21 @@ impl Folders {
         use std::os::unix::fs::MetadataExt;
         let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
         let mut seen = BTreeMap::new();
-        for path in records(&self.presence()) {
-            let Ok(meta) = fs::metadata(&path) else {
+        // A folder that can't be opened, such as a link put in its place,
+        // holds no presence.
+        let Ok(folder) = self.folder("presence") else {
+            kept.clear();
+            return Vec::new();
+        };
+        let dir = self.presence();
+        for name in records_in(&folder) {
+            let Ok(Some(file)) = folder.file(&name) else {
                 continue;
             };
+            let Ok(meta) = file.metadata() else {
+                continue;
+            };
+            let path = dir.join(&name);
             let same = kept.remove(&path).filter(|one| {
                 one.inode == meta.ino()
                     && one.len == meta.len()
@@ -187,7 +204,7 @@ impl Folders {
                 inode: meta.ino(),
                 len: meta.len(),
                 modified: meta.modified().ok(),
-                body: read::<Value>(&path).map(Arc::new),
+                body: read_in::<Value>(&folder, &name).map(Arc::new),
             });
             seen.insert(path, one);
         }
@@ -256,15 +273,14 @@ impl Folders {
             .retain(|told| told.send(Change::Presence).is_ok());
     }
 
-    fn messages(&self) -> PathBuf {
-        self.dir.join("messages")
+    /// The mesh's folder `name`, opened never through a link inside the
+    /// mesh.
+    fn folder(&self, name: &str) -> io::Result<Folder> {
+        Folder::open(&self.dir, &[name])
     }
 
-    /// The folder the mesh moves the message `id` into once it is six
-    /// hours old: `messages/<YYYY-MM-DD>/`, by the UTC day its id says it
-    /// was sent on. Holds stay at the top until they end.
-    fn moved(&self, id: &str) -> Option<PathBuf> {
-        Some(self.messages().join(day_of(sent_at(id)?)?))
+    fn messages(&self) -> PathBuf {
+        self.dir.join("messages")
     }
 
     fn presence(&self) -> PathBuf {
@@ -275,21 +291,29 @@ impl Folders {
         self.dir.join("leases")
     }
 
-    /// The presence file of `session`, if `machine` carries it here.
-    fn carried(&self, session: &str, machine: &str) -> io::Result<Option<PathBuf>> {
-        let path = self.presence().join(format!("{}.json", safe(session)?));
-        let carried =
-            read::<Facts>(&path).is_some_and(|facts| facts.machine.as_deref() == Some(machine));
-        Ok(carried.then_some(path))
+    /// The presence folder and the name of the presence of `session` in
+    /// it, if `machine` carries it here.
+    fn carried(&self, session: &str, machine: &str) -> io::Result<Option<(Folder, String)>> {
+        let file = format!("{}.json", safe(session)?);
+        let presence = self.folder("presence")?;
+        let carried = read_in::<Facts>(&presence, &file)
+            .is_some_and(|facts| facts.machine.as_deref() == Some(machine));
+        Ok(carried.then_some((presence, file)))
     }
 }
 
 /// Watches the process of each living session of this machine's whose
-/// presence is at `paths`, so its end is told.
-fn watch_ends(ends: &Ends, paths: impl Iterator<Item = PathBuf>) {
+/// presence is named among `names` in the mesh at `root`, or of every one
+/// there where none are named, so its end is told.
+fn watch_ends(ends: &Ends, root: &Path, names: Option<Vec<String>>) {
+    let Ok(presence) = Folder::open(root, &["presence"]) else {
+        return;
+    };
+    let names = names.unwrap_or_else(|| records_in(&presence).collect());
     let boot = boot_id();
-    let owners = paths
-        .filter_map(|path| read::<Facts>(&path))
+    let owners = names
+        .iter()
+        .filter_map(|name| read_in::<Facts>(&presence, name))
         .filter(|facts| facts.machine.is_none())
         .filter_map(|facts| facts.owner);
     for owner in owners {
@@ -304,14 +328,19 @@ impl Store for Folders {
         // A day folder holds only messages sent that day, so one before
         // `since`'s day holds none that new.
         let earliest = day_of(since).unwrap_or_default();
-        let messages = self.messages();
-        let days: Vec<PathBuf> = days(&messages)
-            .filter(|day| *day >= earliest)
-            .map(|day| messages.join(day))
-            .collect();
-        let ids: BTreeSet<String> = records(&messages)
-            .chain(days.iter().flat_map(|day| records(day)))
-            .filter_map(|path| Some(path.file_stem()?.to_str()?.to_owned()))
+        let Ok(messages) = self.folder("messages") else {
+            return Vec::new();
+        };
+        let names = messages.names().unwrap_or_default();
+        let days = names
+            .iter()
+            .filter(|(name, kind)| *kind == Kind::Folder && is_day(name) && *name >= earliest)
+            .filter_map(|(day, _)| messages.folder(day).ok());
+        let ids: BTreeSet<String> = days
+            .flat_map(|day| day.names().unwrap_or_default())
+            .chain(names.iter().cloned())
+            .filter(|(name, kind)| *kind == Kind::File && is_record_name(name))
+            .filter_map(|(name, _)| Some(name.strip_suffix(".json")?.to_owned()))
             .filter(|id| sent_at(id).is_some_and(|at| at >= since))
             .collect();
         ids.into_iter().collect()
@@ -319,16 +348,18 @@ impl Store for Folders {
 
     fn message(&self, id: &str) -> Option<Value> {
         let file = format!("{}.json", safe(id).ok()?);
-        read(&self.messages().join(&file)).or_else(|| read(&self.moved(id)?.join(&file)))
+        let messages = self.folder("messages").ok()?;
+        read_in(&messages, &file).or_else(|| read_in(&moved(&messages, id)?, &file))
     }
 
     fn put_message(&self, id: &str, body: &Value) -> io::Result<()> {
         let file = format!("{}.json", safe(id)?);
-        let moved = self.moved(id).is_some_and(|day| day.join(&file).exists());
-        if moved || self.messages().join(&file).exists() {
+        let messages = self.folder("messages")?;
+        let moved = moved(&messages, id).is_some_and(|day| day.holds(&file));
+        if moved || messages.holds(&file) {
             return Ok(());
         }
-        write_whole(&self.messages(), &file, body)
+        write_in(&messages, &file, body)
     }
 
     fn presences(&self) -> Vec<Presence> {
@@ -444,7 +475,8 @@ impl Store for Folders {
         // `machine` now, carried there, is that machine's to speak for:
         // the mesh keeps a session's file after it ends, which would
         // otherwise stand for it here as ended for good.
-        if let Some(held) = read::<Facts>(&self.presence().join(&file))
+        let presence = self.folder("presence")?;
+        if let Some(held) = read_in::<Facts>(&presence, &file)
             && held.machine.as_deref() != Some(machine)
             && (held.machine.is_some()
                 || self.own_lives(&held, &self.ended_processes().clone(), boot_id().as_deref()))
@@ -460,14 +492,17 @@ impl Store for Folders {
         fields.remove("owner");
         fields.remove(UNREACHABLE);
         fields.insert(MACHINE.to_owned(), Value::String(machine.to_owned()));
-        write_whole(&self.presence(), &file, &body)
+        write_in(&presence, &file, &body)
     }
 
     fn mark_unreachable(&self, session: &str, machine: &str, since: i64) -> io::Result<()> {
-        let Some(path) = self.carried(session, machine)? else {
+        let Some((presence, file)) = self.carried(session, machine)? else {
             return Ok(());
         };
-        let Some(mut body) = read::<Value>(&path) else {
+        let Some(found) = presence.file(&file)? else {
+            return Ok(());
+        };
+        let Some(mut body) = read_in::<Value>(&presence, &file) else {
             return Ok(());
         };
         let Some(fields) = body.as_object_mut() else {
@@ -478,37 +513,31 @@ impl Store for Folders {
         }
         // The file's time is when a link last said the session stands,
         // which the mesh reads, so marking it keeps that time.
-        let vouched = fs::metadata(&path)?.modified()?;
+        let vouched = found.metadata()?.modified()?;
         fields.insert(UNREACHABLE.to_owned(), Value::from(since));
-        write_whole(&self.presence(), &format!("{}.json", safe(session)?), &body)?;
-        fs::File::options()
-            .append(true)
-            .open(&path)?
-            .set_modified(vouched)
+        write_in(&presence, &file, &body)?;
+        presence.touch(&file, vouched)
     }
 
     fn keep_presence(&self, session: &str, machine: &str) -> io::Result<()> {
         match self.carried(session, machine)? {
-            Some(path) => fs::File::options()
-                .append(true)
-                .open(path)?
-                .set_modified(SystemTime::now()),
+            Some((presence, file)) => presence.touch(&file, SystemTime::now()),
             None => Ok(()),
         }
     }
 
     fn remove_presence(&self, session: &str, machine: &str) -> io::Result<()> {
-        let Some(path) = self.carried(session, machine)? else {
+        let Some((presence, file)) = self.carried(session, machine)? else {
             return Ok(());
         };
         // Letting it go matters more than remembering it, so a record
         // that can't be written is told, never in the way.
-        if let Some(body) = read::<Value>(&path)
+        if let Some(body) = read_in::<Value>(&presence, &file)
             && let Err(error) = self.keep_gone(session, machine, body)
         {
             eprintln!("couldn't keep {session} from {machine} as gone: {error}");
         }
-        fs::remove_file(path)?;
+        presence.remove(&file)?;
         self.put_leases(session, machine, &[])
     }
 
@@ -538,17 +567,20 @@ impl Store for Folders {
     }
 
     fn holdings(&self) -> Vec<Value> {
-        records(&self.leases())
-            .filter_map(|path| read::<Value>(&path))
+        let Ok(holdings) = self.folder("leases") else {
+            return Vec::new();
+        };
+        records_in(&holdings)
+            .filter_map(|name| read_in::<Value>(&holdings, &name))
             .collect()
     }
 
     fn put_leases(&self, session: &str, machine: &str, leases: &[Value]) -> io::Result<()> {
         let file = format!("{}.json", safe(session)?);
-        let path = self.leases().join(&file);
+        let holdings = self.folder("leases")?;
         // A holding of this machine's goes with its session, once that is
         // carried here from `machine`.
-        if let Some(held) = read::<Value>(&path)
+        if let Some(held) = read_in::<Value>(&holdings, &file)
             && held.get(MACHINE).and_then(Value::as_str) != Some(machine)
             && (held.get(MACHINE).is_some() || self.carried(session, machine)?.is_none())
         {
@@ -562,13 +594,10 @@ impl Store for Folders {
             ));
         }
         if leases.is_empty() {
-            return match fs::remove_file(path) {
-                Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-                _ => Ok(()),
-            };
+            return holdings.remove(&file);
         }
         let holding = serde_json::json!({"session": session, "leases": leases, MACHINE: machine});
-        write_whole(&self.leases(), &file, &holding)
+        write_in(&holdings, &file, &holding)
     }
 
     fn machines(&self) -> Vec<Machine> {
@@ -648,20 +677,18 @@ impl Store for Folders {
         let claims = Arc::clone(&self.claims);
         let ends = Arc::new(Ends::new(sender.clone(), Arc::clone(&self.judged.ends))?);
         let watching = {
-            let every = presence.clone();
+            let root = Arc::clone(&self.dir);
             let ends = Arc::clone(&ends);
-            move |only: Option<Vec<PathBuf>>| match only {
-                Some(paths) => watch_ends(&ends, paths.into_iter()),
-                None => watch_ends(&ends, records(&every)),
-            }
+            move |only: Option<Vec<String>>| watch_ends(&ends, &root, only)
         };
         watching(None);
         let mut watcher = crate::watching::watcher(move |event: notify::Result<notify::Event>| {
-            let written: Vec<PathBuf> = event.as_ref().map_or_else(
+            let written: Vec<String> = event.as_ref().map_or_else(
                 |_| Vec::new(),
                 |event| {
                     let here = |path: &&PathBuf| path.parent() == Some(presence.as_path());
-                    event.paths.iter().filter(here).cloned().collect()
+                    let name = |path: &PathBuf| Some(path.file_name()?.to_str()?.to_owned());
+                    event.paths.iter().filter(here).filter_map(name).collect()
                 },
             );
             let seen: Vec<Change> = match event {
@@ -797,6 +824,37 @@ fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
 
+/// Reads the plain file `name` in the mesh's `folder` as `T`, or nothing
+/// when it is gone, half-written, not of this kind, or not a plain file,
+/// as a link put in its place isn't.
+fn read_in<T: for<'de> Deserialize<'de>>(folder: &Folder, name: &str) -> Option<T> {
+    serde_json::from_slice(&folder.read(name).ok()??).ok()
+}
+
+/// Writes `body` as `name` in the mesh's `folder`, whole, over whatever had
+/// the name, a link included, never through it.
+fn write_in(folder: &Folder, name: &str, body: &Value) -> io::Result<()> {
+    let bytes = serde_json::to_vec(body).map_err(io::Error::other)?;
+    folder.write_whole(name, &bytes)
+}
+
+/// The folder the mesh moves the message `id` into once it is six hours
+/// old, in the mesh's `messages`: `<YYYY-MM-DD>/`, by the UTC day its id
+/// says it was sent on. Holds stay at the top until they end.
+fn moved(messages: &Folder, id: &str) -> Option<Folder> {
+    messages.folder(&day_of(sent_at(id)?)?).ok()
+}
+
+/// The name of each plain file in the mesh's `folder` that is a record.
+fn records_in(folder: &Folder) -> impl Iterator<Item = String> {
+    folder
+        .names()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(name, kind)| *kind == Kind::File && is_record_name(name))
+        .map(|(name, _)| name)
+}
+
 /// A session another machine ran, as kept once let go here.
 #[derive(Deserialize, serde::Serialize)]
 struct Gone {
@@ -860,27 +918,11 @@ fn day_of(at: i64) -> Option<String> {
     Some(at.strftime("%Y-%m-%d").to_string())
 }
 
-/// The day folders in `dir`, by name.
-fn days(dir: &Path) -> impl Iterator<Item = String> {
-    fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| name.parse::<jiff::civil::Date>().is_ok())
+/// Whether `name` is a day folder's, as the mesh names one.
+fn is_day(name: &str) -> bool {
+    name.parse::<jiff::civil::Date>().is_ok()
 }
 
-fn records(dir: &Path) -> impl Iterator<Item = PathBuf> {
-    fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| is_record(path))
-}
-
-/// Whether `path` names a record, not a read marker or a staged write.
 /// The machine whose facts `path` holds, if it holds a machine's facts.
 fn said(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
@@ -895,15 +937,21 @@ fn told(path: &Path) -> Option<String> {
     (!machine.is_empty() && !machine.starts_with('.')).then(|| machine.to_owned())
 }
 
+/// Whether `path` names a record, not a read marker or a staged write.
 fn is_record(path: &Path) -> bool {
-    let name = path
-        .file_name()
+    path.file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or_default();
+        .is_some_and(is_record_name)
+}
+
+/// Whether `name` is a record's, not a read marker's or a staged write's.
+fn is_record_name(name: &str) -> bool {
+    // Only this store names records, always in lower case, so a name
+    // ending otherwise is no record of its.
     !name.starts_with('.')
-        && path
-            .extension()
-            .is_some_and(|extension| extension == "json")
+        && name
+            .strip_suffix(".json")
+            .is_some_and(|stem| !stem.is_empty())
 }
 
 /// This boot's id, where the system has one (Linux): read once, since it
@@ -1243,6 +1291,98 @@ mod tests {
             store.message_ids(1_793_046_604_648).is_empty(),
             "nothing is that new"
         );
+    }
+
+    #[test]
+    fn a_link_planted_as_a_message_or_a_presence_leaves_what_it_names_unread_and_unwritten() {
+        use std::os::unix::fs::symlink;
+
+        let (dir, store) = store();
+        let id = "1793046604647-0FX11G-875563-952d5879";
+        let secret = dir.path().join("secret.json");
+        let held = br#"{"session": "planted", "machine": "kestrel", "text": "ours"}"#;
+        fs::write(&secret, held).expect("a file of the account's own");
+        let touched = fs::metadata(&secret).and_then(|meta| meta.modified()).ok();
+        symlink(&secret, store.messages().join(format!("{id}.json"))).expect("one as a message");
+        symlink(&secret, store.presence().join("planted.json")).expect("one as a presence");
+        symlink(&secret, store.leases().join("planted.json")).expect("one as a holding");
+
+        assert_eq!(
+            store.message(id),
+            None,
+            "a message is never read through a link"
+        );
+        assert!(store.message_ids(0).is_empty(), "nor listed");
+        assert!(store.presences().is_empty(), "nor is a presence");
+        assert!(store.holdings().is_empty(), "nor a holding");
+        store
+            .keep_presence("planted", "kestrel")
+            .expect("keeping what isn't carried here is quiet");
+        store
+            .mark_unreachable("planted", "kestrel", 1)
+            .expect("marking what isn't carried here is quiet");
+        store
+            .put_message(id, &json!({"text": "carried in"}))
+            .expect("a message carried in takes the link's place");
+        let there = json!({"session": "planted", "title": "π - walgit"});
+        store
+            .put_presence("planted", "kestrel", &there)
+            .expect("as does a presence");
+        store
+            .put_leases("planted", "kestrel", &[json!({"name": "tests"})])
+            .expect("and a holding");
+
+        assert_eq!(
+            fs::read(&secret).expect("the account's file stands"),
+            held,
+            "nothing is written through a link"
+        );
+        assert_eq!(
+            fs::metadata(&secret).and_then(|meta| meta.modified()).ok(),
+            touched,
+            "nor is its time moved"
+        );
+        assert_eq!(store.message(id), Some(json!({"text": "carried in"})));
+        assert_eq!(store.presences().len(), 1, "what took its place is read");
+    }
+
+    #[test]
+    fn a_link_planted_in_place_of_a_mesh_folder_is_never_gone_through() {
+        use std::os::unix::fs::symlink;
+
+        let (dir, store) = store();
+        let elsewhere = dir.path().join("elsewhere");
+        fs::create_dir_all(&elsewhere).expect("a folder of the account's own");
+        let held = br#"{"session": "planted", "leases": [], "machine": "kestrel"}"#;
+        fs::write(elsewhere.join("planted.json"), held).expect("a file in it");
+        let id = "1795392000000-planted";
+        fs::write(elsewhere.join(format!("{id}.json")), b"{}").expect("and one like a message");
+        fs::remove_dir(store.leases()).expect("the mesh's own folder taken away");
+        symlink(&elsewhere, store.leases()).expect("a link in its place");
+        let day = store.messages().join("2026-11-23");
+        symlink(&elsewhere, &day).expect("and one as a day's messages");
+
+        assert!(
+            store.holdings().is_empty(),
+            "what the link names is never read"
+        );
+        assert!(
+            store
+                .put_leases("another", "kestrel", &[json!({"name": "tests"})])
+                .is_err(),
+            "nor written in"
+        );
+        assert_eq!(
+            fs::read_dir(&elsewhere).expect("the folder reads").count(),
+            2,
+            "so it holds only its own"
+        );
+        assert_eq!(
+            store.message(id),
+            None,
+            "nor is a day's message read through a link"
+        );
+        assert!(store.message_ids(0).is_empty(), "nor listed");
     }
 
     #[test]
