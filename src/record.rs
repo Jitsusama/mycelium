@@ -202,6 +202,11 @@ pub struct Want {
     pub since: String,
     /// What it asked or said, in one short line.
     pub said: String,
+    /// The whole text it asked in, where it says more than `said`: its
+    /// paragraphs and lines as written, for a reader that shows the
+    /// question whole. A harness too old to say it leaves it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked: Option<String>,
 }
 
 /// Something a session landed: a change merged, or an item of its plan done.
