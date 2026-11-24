@@ -2854,6 +2854,87 @@ refused or not, is written to the node's log as one line,
 body, headers or key. `upstream` is null where the lend was refused
 before it was sent there, so a line naming one is one that was.
 
+### The Forge
+
+A machine made by a lender signs its commits and pushes its branches
+through the lender's forge, so no key or token of the lender's ever
+crosses to it. A budget in the lend file may say `"kind": "forge"`
+(else `"models"`), and a `vms` entry may name `also`, the budgets
+beside its own `budget` its machines may ask by name, as a forge beside
+its models; a lend naming any other is refused 403 as before, and one
+naming none goes through `budget`. Every budget's requests count
+against the one `requests_a_day`. A forge's lend is carried as a
+model's is, with one header more, `mycelium-borrower`, naming the
+machine by its link, never by what it said: a borrower hands on no
+header of that name, since only `content-type`, `anthropic-version`,
+`anthropic-beta` and `accept` are handed on. Its line in the log says
+`"service": "forge"` and no model.
+
+`mycelium forge serve --listen PATH --key PUB --agent SOCKET --repo
+NAME=PATH... --branch PREFIX... --folder PATH` serves it, one request
+a connection, each named by `mycelium-borrower` (letters, digits and
+`-`, at most 64) once, or refused 400. A connection that fails as it
+is taken is passed over, so one never ends the forge, though a minute
+of failing with none taken ends it, for its service manager to start
+afresh; a run of failures is said once as it begins. It won't start
+unless each `PREFIX` ends in `/`, so `agents/` never allows
+`agents-of-another`, and the folder and each repository, a clone the
+forge keeps for itself, are named from the root. It answers only
+`POST /push`, refusing anything else 404, a body sent in chunks 501
+and a request that isn't HTTP 400. There is no way to have it sign
+anything but the commits it pushes, so it is never a signer for hire.
+
+`POST /push` takes `{"cell", "repo", "branch", "bundle"}`: a
+repository by a `NAME` it was started with, else 404; a branch that
+begins with a `PREFIX`, is longer than it, and is a plain name, else
+403; and a git bundle whose refs name one commit, version 2 or 3 and
+SHA-1, in base64, else 400, each refused before git is asked; a
+commit named in capitals is taken as git names it. One push at a
+time holds the forge's turn, from its fetch until it is tidied, so two
+never share a clone's refs at once; one waiting says so each minute
+as any does. The forge holds at most 8 pushes, the one pushing and
+those waiting, refusing another 503, and tidying gives each ref it
+lets go 30 seconds, so a git that hangs as it tidies ends there. It
+fetches the repository's `origin`, then the bundle,
+kept for its account alone in `--folder`, to a ref below
+`refs/mycelium-forge/MACHINE/`, and signs each commit of it the origin
+doesn't hold, oldest first, each pointing at its parents as signed: at
+most 500, else it is refused, each at most 1 MiB, of SHA-1 ids and
+saying who committed it, any signature it came with dropped. Each is
+signed by `ssh-keygen -Y sign -n git` with the key at `PUB`, whose
+private half only the agent at `SOCKET` holds, run with no environment
+but that agent, within 30 seconds. It then pushes the signed head to
+the branch on `origin`, never forced, with the repository's own hooks,
+fetching within 10 minutes and pushing within 45; the bundle and its
+refs are let go however it ends, and a borrower that stops reading
+lets the push go. A bundle whose head isn't a commit, such as a tag's,
+is refused before anything is signed. Commits signed for a push that
+is then refused stay in the forge's clone, named by no ref, until git
+prunes them; they never leave it, since a signed bundle goes back only
+with a push that went.
+
+It answers in chunks, a JSON line each: `{"waiting": {"seconds"}}`
+each minute while it goes, then `{"pushed": {"head", "commits",
+"signed", "bundle"}}`, the branch's head as signed, the commits it
+signed newest first, a map of each commit as it came to it as signed,
+and a bundle in base64 of the signed commits past the borrower's head,
+none where nothing needed signing; or `{"refused": {"why"}}`. Each
+push is a `mycelium-forge:` line on its error output, of its `time`,
+`vm`, `cell`, `service` (`push`), `outcome`, `repo`, `branch` and
+`head`, and, once pushed, the head `pushed`, its `commits` and what
+was `signed`.
+
+On the borrowing machine, `mycelium forge push --repo NAME --branch
+BRANCH [--base REF] [--head REF]` bundles what `--head` holds past
+`--base`, naming the commit `--head` names by a ref below
+`refs/mycelium-bundled/` while it bundles, since git bundles only what
+a ref names, and letting it go after. It prints each line the forge
+answers, and ends 0 only once the branch was pushed. It then takes the
+signed commits back and moves the local branch `--head` named to the
+signed head, unless it moved since; the signed commits hold the same
+trees, so nothing checked out changes. It asks this machine's node for
+a lend of the `forge` budget, or the one `--budget` names.
+
 ### A Hosted Session's Spawner
 
 A pi host runs many sessions in one process, so its process alone

@@ -251,6 +251,66 @@ async fn a_lend_is_carried_with_this_machines_key_and_none_of_the_borrowers() {
 }
 
 #[tokio::test]
+async fn a_forge_beside_its_models_is_told_which_machine_asked_by_its_link() {
+    let mut lending = Lending::with(&json!({
+        "vms": [{
+            "prefix": "agents-", "budget": "models", "also": ["forge"],
+            "requests_a_day": 3,
+        }],
+        "budgets": {
+            "models": {
+                "upstream": "relay/agents.sock", "host": "models.example",
+                "paths": ["/v1/messages"], "auth_header": "authorization",
+            },
+            "forge": {
+                "upstream": "relay/agents.sock", "host": "forge.example",
+                "paths": ["/push"], "auth_header": "authorization", "kind": "forge",
+            },
+            "another": {
+                "upstream": "relay/agents.sock", "host": "another.example",
+                "paths": ["/push"], "auth_header": "authorization", "kind": "forge",
+            },
+        },
+    }));
+    let asking = |budget: Option<&str>, path: &str| {
+        let mut asking = lend(path);
+        asking.budget = budget.map(str::to_owned);
+        // What the borrower says of itself is never handed on.
+        asking
+            .headers
+            .push((BORROWER.to_owned(), "agents-someone-else".to_owned()));
+        asking
+    };
+    let _forge = answer(&lending.lender, "agents-1", asking(Some("forge"), "/push"));
+    let head = lending.relay.asked().await.head.to_ascii_lowercase();
+    assert!(head.starts_with("post /push http/1.1\r\n"), "{head}");
+    assert!(head.contains("\r\nhost: forge.example\r\n"), "{head}");
+    assert!(
+        head.contains(&format!("\r\n{BORROWER}: agents-1\r\n")),
+        "the forge hears the machine its link names: {head}"
+    );
+    assert!(!head.contains("agents-someone-else"), "{head}");
+    let _models = answer(&lending.lender, "agents-1", asking(None, "/v1/messages"));
+    let head = lending.relay.asked().await.head.to_ascii_lowercase();
+    assert!(head.contains("\r\nhost: models.example\r\n"), "{head}");
+    assert!(
+        !head.contains(BORROWER),
+        "a model relay is told nothing of who asked: {head}"
+    );
+    let mut another = answer(
+        &lending.lender,
+        "agents-1",
+        asking(Some("another"), "/push"),
+    );
+    assert_eq!(
+        refusal(&mut another).await,
+        403,
+        "a budget neither its own nor beside it"
+    );
+    assert!(!lending.relay.was_asked());
+}
+
+#[tokio::test]
 async fn an_answer_of_a_length_is_streamed_whole_as_it_comes() {
     let mut lending = Lending::new();
     let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));

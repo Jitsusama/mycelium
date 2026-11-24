@@ -6,6 +6,7 @@
 //! [`serve`] is the borrower's side, where pi's requests come in, and
 //! [`lender`] the lender's, where they are carried to its model relay.
 
+pub mod forge;
 pub mod lender;
 pub mod serve;
 

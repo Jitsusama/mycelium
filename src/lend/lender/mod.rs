@@ -33,6 +33,7 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufR
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 
+use crate::lend::forge::BORROWER;
 use crate::lend::serve::{HANDED_ON, MOST_BODY, MOST_HEAD};
 use crate::lend::{BACKLOG, Lend, Lent};
 
@@ -89,10 +90,25 @@ struct Written {
 struct Vm {
     /// The start of their names.
     prefix: String,
-    /// The budget their requests go through.
+    /// The budget their requests go through where they name none.
     budget: String,
-    /// How many requests each may make a day.
+    /// The other budgets they may name, as a forge beside their models.
+    #[serde(default)]
+    also: Vec<String>,
+    /// How many requests each may make a day, through all its budgets.
     requests_a_day: u64,
+}
+
+/// What a budget's upstream is.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Kind {
+    /// A model relay, told nothing of who asked.
+    #[default]
+    Models,
+    /// A forge, told which machine asked in [`BORROWER`], since it signs
+    /// and pushes for each by name.
+    Forge,
 }
 
 /// Where a budget's requests go, and with what key.
@@ -111,6 +127,9 @@ struct Budget {
     /// value; none where the upstream adds its own.
     #[serde(default)]
     key: Option<Vec<String>>,
+    /// What answers at its upstream.
+    #[serde(default)]
+    kind: Kind,
 }
 
 /// The machines a lend is cut off from.
@@ -148,6 +167,7 @@ enum Ended {
 /// What one lend's line says of it, as it goes.
 #[derive(Default)]
 struct Used {
+    service: Kind,
     budget: Option<String>,
     model: Option<String>,
     upstream: Option<String>,
@@ -499,7 +519,10 @@ fn say(machine: &str, used: &Used, took: Duration, outcome: &str) {
         "time": format!("{:.3}", jiff::Timestamp::now()),
         "lender": lender,
         "vm": machine,
-        "service": "models",
+        "service": match used.service {
+            Kind::Models => "models",
+            Kind::Forge => "forge",
+        },
         "budget": used.budget,
         "model": used.model,
         "upstream": used.upstream,
@@ -556,7 +579,10 @@ async fn lent(
     // Watched while it is sent too, so a relay that stops taking it
     // can't hold the lend past a cut or its borrower letting go.
     let sent = tokio::select! {
-        sent = tokio::time::timeout(SENT_WITHIN, asked(stream, key, &asking, &budget)) => sent,
+        sent = tokio::time::timeout(
+            SENT_WITHIN,
+            asked(stream, key, &asking, &budget, machine),
+        ) => sent,
         ended = watched(lender, machine, sending) => {
             lender.uncount(machine, &day);
             return ended;
@@ -669,23 +695,28 @@ fn allowed(
             },
         ));
     };
-    used.budget = Some(vm.budget.clone());
-    if let Some(asked) = lend.budget.as_deref()
-        && asked != vm.budget
-    {
-        return Err(refused(
-            403,
-            format!("{machine} may not borrow through the budget {asked}"),
-        ));
-    }
+    let named = match lend.budget.as_deref() {
+        None => vm.budget.clone(),
+        Some(asked) if asked == vm.budget || vm.also.iter().any(|also| also == asked) => {
+            asked.to_owned()
+        }
+        Some(asked) => {
+            used.budget = Some(vm.budget.clone());
+            return Err(refused(
+                403,
+                format!("{machine} may not borrow through the budget {asked}"),
+            ));
+        }
+    };
+    used.budget = Some(named.clone());
     let most = vm.requests_a_day;
-    let named = vm.budget.clone();
     let budget = written.budgets.remove(&named).ok_or_else(|| {
         refused(
             403,
             format!("the budget {named} isn't in this machine's lend"),
         )
     })?;
+    used.service = budget.kind;
     if !METHODS.contains(&lend.method.as_str()) {
         return Err(refused(403, format!("a lend may not ask {}", lend.method)));
     }
@@ -716,9 +747,11 @@ fn allowed(
         ));
     }
     used.request_bytes = body.len();
-    used.model = serde_json::from_slice::<Modelled>(&body)
-        .ok()
-        .and_then(|modelled| modelled.model);
+    if budget.kind == Kind::Models {
+        used.model = serde_json::from_slice::<Modelled>(&body)
+            .ok()
+            .and_then(|modelled| modelled.model);
+    }
     Ok((
         Asking {
             method: lend.method.clone(),
@@ -803,12 +836,14 @@ async fn reached(
 }
 
 /// Asks `asking` of `budget`'s upstream over `stream`, with its `key`
-/// added: the upstream's answer, to be read.
+/// added, and for a forge the `machine` that asked: the upstream's
+/// answer, to be read.
 async fn asked(
     mut stream: UnixStream,
     key: Option<String>,
     asking: &Asking,
     budget: &Budget,
+    machine: &str,
 ) -> Result<BufReader<UnixStream>, Refusal> {
     let mut said = format!(
         "{} {} HTTP/1.1\r\nhost: {}\r\n",
@@ -816,6 +851,11 @@ async fn asked(
     );
     if let Some(key) = key {
         let _ = write!(said, "{}: {key}\r\n", budget.auth_header);
+    }
+    // Named by the link, never by what the borrower said, which hands on
+    // no header of this name.
+    if budget.kind == Kind::Forge && spoken(machine) {
+        let _ = write!(said, "{BORROWER}: {machine}\r\n");
     }
     for (name, value) in &asking.headers {
         let _ = write!(said, "{name}: {value}\r\n");
