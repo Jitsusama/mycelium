@@ -1379,8 +1379,11 @@ mod tests {
             .keep_presence("planted", "kestrel")
             .expect("keeping what isn't carried here is quiet");
         store
-            .mark_unreachable("planted", "kestrel", 1)
+            .mark_unreachable("planted", "kestrel", 1, 1)
             .expect("marking what isn't carried here is quiet");
+        store
+            .put_away_unreachable("planted", "kestrel", 2)
+            .expect("as is putting it away");
         store
             .put_message(id, &json!({"text": "carried in"}))
             .expect("a message carried in takes the link's place");
