@@ -451,10 +451,12 @@ fn plain_quest(quest: &str) -> bool {
 }
 
 /// What each log under `logs` continues, the folder scanned once, as a
-/// lapse of the record of orchestrations asks only where a claim lapses.
-fn continuing(logs: &Path) -> impl Fn(&str) -> Option<String> + use<> {
-    let found = chain::Logs::scan(logs);
-    move |session| found.continues(session)
+/// lapse of the record of orchestrations asks only where a claim lapses;
+/// none where the folder can't be read, so what lapses is kept until it
+/// can be.
+fn continuing(logs: &Path) -> Option<impl Fn(&str) -> Option<String> + use<>> {
+    let found = chain::Logs::scan(logs).ok()?;
+    Some(move |session: &str| found.continues(session))
 }
 
 /// Whether `session` stands where a carry reaches it: running, or parked
