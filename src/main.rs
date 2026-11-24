@@ -626,16 +626,19 @@ enum LendAct {
 /// What `mycelium forge` is asked to do.
 #[derive(Subcommand)]
 enum ForgeAct {
-    /// Serves the forge to the lender, which carries it each request of
-    /// a budget of kind `forge` from a machine it made.
+    /// Serves the forge to the lender, for budgets of kind `forge`.
     ///
-    /// Each `--repo` is a clone the forge keeps for itself. A push is
-    /// fetched into it, each commit its `origin` doesn't hold is signed
-    /// with the key `--key` names, whose private half only the agent at
-    /// `--agent` holds, and the signed commits go to its `origin`, only
-    /// to a branch starting with a `--branch`, never forced. It signs
-    /// nothing else. Each push is a `mycelium-forge:` line on stderr.
+    /// The lender carries it each request of such a budget from a
+    /// machine it made. Each `--repo` is a clone the forge keeps for
+    /// itself. A push is fetched into it, each commit its `origin`
+    /// doesn't hold is signed with the key `--key` names, whose private
+    /// half only the agent at `--agent` holds, and the signed commits go
+    /// to its `origin`, only to a branch starting with a `--branch`,
+    /// never forced. It signs nothing else. Each push is a `mycelium-forge:` line on stderr.
     #[command(
+        override_usage = "mycelium forge serve [OPTIONS] --listen <LISTEN>\n       --key <KEY> \
+                          --agent <AGENT> --repo <NAME=PATH>\n       --branch <PREFIX> \
+                          --folder <FOLDER>",
         after_help = "Example:\n  mycelium forge serve --listen forge.sock --key signing.pub \
                           --agent agent.sock --repo mycelium=/srv/forge/mycelium \
                           --branch agents/ --folder /srv/forge/waiting"
@@ -664,14 +667,14 @@ enum ForgeAct {
         #[arg(long)]
         folder: PathBuf,
     },
-    /// Pushes what this repository's `--head` holds past `--base` to a
-    /// branch, through the forge, which signs each commit it pushes.
+    /// Pushes `--head` past `--base` to a branch through the forge.
     ///
-    /// It prints each line the forge answers as it comes, a JSON line,
-    /// and ends 0 only once the branch was pushed. The signed commits
-    /// come back, and `--head`'s branch moves to them unless it moved
-    /// while the push went; the files checked out stay as they are.
+    /// The forge signs each commit it pushes. It prints each line the
+    /// forge answers as it comes, a JSON line, and ends 0 only once the
+    /// branch was pushed. The signed commits come back, and `--head`'s
+    /// branch moves to them unless it moved while the push went; the files checked out stay as they are.
     #[command(
+        override_usage = "mycelium forge push [OPTIONS] --repo <REPO>\n       --branch <BRANCH>",
         after_help = "Example:\n  mycelium forge push --repo mycelium --branch agents/kestrel-fix"
     )]
     Push {
