@@ -680,8 +680,9 @@ pub fn command(first_words: &str, seed: Option<&str>) -> Vec<String> {
 /// What the sprout `asked` starts, asked from `cwd` by someone whose home
 /// is `home`, its folders found on `disk`: on the machine it names, else
 /// where placement chooses, as a start naming no machine is placed, so
-/// new work goes where there is room for it. Work in a tree only this
-/// machine has, or in no checkout, starts `here` all the same. It starts
+/// new work goes where there is room for it. Work in a folder only this
+/// machine has as it is, anywhere but a repository's own checkout under
+/// `~/src`, starts `here` all the same. It starts
 /// in the folder found, as `disk` resolves it where it's this machine's,
 /// so what starts is what was judged rather than what its words would
 /// point at by then, and named within home, where only the
@@ -757,31 +758,40 @@ pub fn within_home(folder: PathBuf, home: &Path) -> PathBuf {
 }
 
 /// Whether work begun in `folder` stays on this machine rather than going
-/// where placement chooses: where the checkout it is in is a tree cut
-/// from a repository kept elsewhere, as a quest's tree or a zone's is,
-/// which no other machine has as it is here, or where it is in no
-/// checkout below `home`. A repository's own checkout may go anywhere,
-/// since a person's machines keep their repositories at the same places,
-/// and one that doesn't refuses the strict start, which then starts here.
+/// where placement chooses. Only work in a repository's own checkout
+/// where the person keeps them, `~/src/<repo>` or
+/// `~/src/<host>/<owner>/<repo>` under `home`, fetching from a remote,
+/// may go, since a person's machines keep those at the same places, from
+/// the same remotes; a machine that hasn't it refuses the strict start,
+/// which then begins here. Everything else stays, since no other machine
+/// has it as it is here: the checkout nearest `folder` a tree cut from a
+/// repository kept elsewhere (a quest's tree, a zone's, a bare
+/// repository's trunk with its sparse checkout, a submodule), a clone
+/// kept anywhere else (a quest's scratch clone, each machine's own), one
+/// with no remote, and a folder in no checkout. What a checkout holds
+/// uncommitted isn't looked at: work on that is asked `--on` this one.
 fn stays(folder: &Path, home: &Path, disk: &impl Disk) -> bool {
+    let src = home.join("src");
+    let shared = |top: &Path| {
+        let Ok(within) = top.strip_prefix(&src) else {
+            return false;
+        };
+        // A host's folder holds its owners', so is no checkout itself.
+        let kept = match within.components().count() {
+            1 => true,
+            3 => within
+                .components()
+                .next()
+                .is_some_and(|host| !disk.is_checkout(&src.join(host))),
+            _ => false,
+        };
+        kept && !disk.is_cut_tree(top) && disk.origin(top).is_some()
+    };
     folder
         .ancestors()
         .take_while(|at| *at != home)
         .find(|at| disk.is_checkout(at))
-        .is_none_or(|top| disk.is_cut_tree(top))
-}
-
-/// The machine that answered `said` to a start naming `folder`, where it
-/// refused it only for having no such folder, as a strict start's machine
-/// does ([`crate::hold::start::begins_strictly`]): so a sprout placed on
-/// a machine that hasn't its repository checked out starts where it was
-/// found instead.
-#[must_use]
-pub fn lacks_folder<'a>(said: &'a str, folder: &Path) -> Option<&'a str> {
-    said.strip_suffix(&format!(
-        " has no folder {}, which the start names",
-        folder.display()
-    ))
+        .is_none_or(|top| !shared(top))
 }
 
 /// What a sprout asks the node to start: its session on `machine` and
@@ -850,11 +860,13 @@ pub(crate) mod tests {
     }
 
     impl Held {
-        /// A bare repository at `repository`, its trunk's tree at `trunk`.
+        /// A bare repository at `repository`, its trunk's tree at `trunk`,
+        /// a tree cut from it, as on a disk.
         pub(crate) fn bare(mut self, repository: &str, trunk: &str) -> Self {
             self.folders.insert(PathBuf::from(repository));
             self.bare
                 .insert(PathBuf::from(repository), PathBuf::from(trunk));
+            self.cut.insert(PathBuf::from(trunk));
             self
         }
 
@@ -1403,7 +1415,7 @@ pub(crate) mod tests {
     fn a_sprout_asked_of_a_machine_over_its_room_goes_to_one_with_room() {
         use crate::placement::tests::{machine, pressed};
         use crate::placement::{Loads, Placement, Weights, decide_as};
-        let disk = Held::of(&["/home/kestrel/src/rows"], &["/home/kestrel/src/rows"]);
+        let disk = Held::default().fetching("/home/kestrel/src/rows", "https://example.com/rows");
         let home = Path::new("/home/kestrel");
         let start = starting(
             &sprouting("tidy the rows", Some("src/rows"), None),
@@ -1414,9 +1426,10 @@ pub(crate) mod tests {
         )
         .expect("it starts")
         .start;
-        let mut over = pressed(machine("kestrel", "linux", 60, &[]), 90.0);
+        // Alike but for kestrel's queue saying it's past its processors.
+        let mut over = pressed(machine("kestrel", "linux", 60, &[]), 20.0);
         over.room.as_mut().expect("a room").over = Some(vec![crate::room::Limit::Cpu]);
-        let roomy = pressed(machine("osprey", "macos", 60, &[]), 20.0);
+        let roomy = pressed(machine("osprey", "linux", 60, &[]), 20.0);
         // As each machine said its room, so both are heard and nothing is
         // left to a draw.
         let now = "2026-10-29T06:00:00Z".parse().expect("a time");
@@ -1447,41 +1460,39 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
-    fn a_machine_refusing_a_strict_start_for_its_folder_alone_is_told() {
-        let home = tempfile::tempdir().expect("a home");
-        let folder = Path::new("src/rows");
-        let refused = crate::hold::start::begins_strictly(
-            Some(folder),
-            crate::hold::start::Needs::ItsFolder,
-            home.path(),
-            "tern",
-        )
-        .expect_err("tern hasn't it");
-        assert_eq!(lacks_folder(&refused, folder), Some("tern"));
-        assert_eq!(
-            lacks_folder(&refused, Path::new("src/other")),
-            None,
-            "another folder's refusal is no answer about this one"
-        );
-        assert_eq!(lacks_folder("tern didn't answer within 90s", folder), None);
-    }
-
     // New work goes where there is room, so a sprout naming no machine
     // leaves it to placement, unless its work is in a tree only this
     // machine has.
     #[test]
     fn a_sprout_naming_no_machine_is_placed_unless_its_work_is_only_here() {
+        let origin = "https://example.com/rows";
+        // Home itself a checkout, as a person's dotfiles may make it.
         let disk = Held::of(
             &[
-                "/home/kestrel/src/rows",
                 "/home/kestrel/src/rows/docs",
+                "/home/kestrel/src/rows/.worktrees/tidy",
+                "/home/kestrel/src/example.com/kestrel/reef",
+                "/home/kestrel/src/loose",
+                "/home/kestrel/src/rows/vendor/sea",
                 "/home/kestrel/trees/tidy/docs",
+                "/home/kestrel/scratch/rows",
                 "/home/kestrel/notes",
+                "/srv/rows",
             ],
-            &["/home/kestrel/src/rows", "/home/kestrel/trees/tidy"],
+            &[
+                "/home/kestrel",
+                "/home/kestrel/trees/tidy",
+                "/home/kestrel/src/loose",
+            ],
         )
-        .cutting("/home/kestrel/trees/tidy");
+        .fetching("/home/kestrel/src/rows", origin)
+        .fetching("/home/kestrel/src/example.com/kestrel/reef", origin)
+        .fetching("/home/kestrel/src/rows/.worktrees/tidy", origin)
+        .fetching("/home/kestrel/src/rows/vendor/sea", origin)
+        .fetching("/home/kestrel/scratch/rows", origin)
+        .fetching("/srv/rows", origin)
+        .cutting("/home/kestrel/trees/tidy")
+        .cutting("/home/kestrel/src/rows/.worktrees/tidy");
         let needs = |folder: &str, on: Option<&str>| {
             starting(
                 &sprouting("tidy the rows", Some(folder), on),
@@ -1500,12 +1511,21 @@ pub(crate) mod tests {
             needs("src/rows/docs", None).is_empty(),
             "work in a repository's own checkout goes where placement chooses"
         );
-        assert_eq!(
-            needs("trees/tidy/docs", None),
-            here,
-            "a tree cut from a repository elsewhere is this machine's alone"
+        assert!(
+            needs("src/example.com/kestrel/reef", None).is_empty(),
+            "one kept under its host and owner too"
         );
-        assert_eq!(needs("notes", None), here, "a folder in no checkout stays");
+        for (folder, why) in [
+            ("trees/tidy/docs", "a tree cut from a repository elsewhere"),
+            ("src/rows/.worktrees/tidy", "one cut inside the checkout"),
+            ("src/rows/vendor/sea", "a clone inside a checkout"),
+            ("src/loose", "a checkout fetching from nowhere"),
+            ("scratch/rows", "a clone each machine keeps its own"),
+            ("/srv/rows", "a checkout outside home"),
+            ("notes", "no checkout below home, home one or not"),
+        ] {
+            assert_eq!(needs(folder, None), here, "{folder}: {why}");
+        }
         assert_eq!(
             needs("src/rows", Some("osprey")),
             here,

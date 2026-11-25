@@ -211,6 +211,30 @@ mod tests {
         assert_eq!(viewed.cwd(), rows);
     }
 
+    // A tree cut from a repository kept elsewhere has a `.git` file naming
+    // it, where the repository's own checkout has a folder; both a Disk
+    // of this machine and an asker's view tell them apart.
+    #[test]
+    fn a_tree_cut_from_a_repository_elsewhere_is_told_from_its_own_checkout() {
+        let place = tempfile::tempdir().expect("a place");
+        let rows = place.path().join("src/rows");
+        checkout(&rows);
+        let tidy = place.path().join("trees/tidy");
+        fs::create_dir_all(&tidy).expect("the tree is made");
+        let named = "gitdir: ../../src/rows/.git/worktrees/tidy\n";
+        fs::write(tidy.join(".git"), named).expect("it names its repository");
+        let procs = place.path().join("proc");
+        asking(&procs, 43, 7, Path::new("/"), &rows);
+        let viewed = Viewed::of(&procs, 43, 7).expect("the asker is seen");
+
+        assert!(viewed.is_checkout(&tidy) && viewed.is_cut_tree(&tidy));
+        assert!(viewed.is_checkout(&rows) && !viewed.is_cut_tree(&rows));
+        let here = crate::sprout::ThisDisk;
+        assert!(here.is_checkout(&tidy) && here.is_cut_tree(&tidy));
+        assert!(here.is_checkout(&rows) && !here.is_cut_tree(&rows));
+        assert!(!here.is_cut_tree(place.path()), "no checkout is no tree");
+    }
+
     #[test]
     fn a_folder_only_the_person_holds_is_no_folder_to_an_agent_that_cant_see_it() {
         let place = tempfile::tempdir().expect("a place");

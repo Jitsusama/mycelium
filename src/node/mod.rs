@@ -694,18 +694,28 @@ fn sprouted(
     }
 }
 
-/// The machine placement chose for a sprout's start `asked` that answered
-/// `reply`, refusing it for having no folder by the name it gives, where
-/// that is one other than `here`: the folder was found here, so the
-/// sprout starts here instead. None for a start naming its machine, and
-/// for every other answer.
-fn lacked_elsewhere(asked: &Start, reply: &Reply, here: &str) -> Option<String> {
-    let (Err(why), Some(folder)) = (reply, &asked.folder) else {
-        return None;
-    };
-    sprout::lacks_folder(why, folder)
-        .filter(|there| asked.work.needs.is_empty() && *there != here)
-        .map(str::to_owned)
+/// What follows `reply`, the answer of `chosen`, the machine placement
+/// chose, to `asked`: `asked` pinned to `here`, this machine, with
+/// `chosen`'s refusal, where `chosen` refused it for lacking the folder it
+/// names, a sprout's strict start naming no machine whose folder was
+/// found here, so it begins here, as it did before sprouts were placed,
+/// within the one start it is booked and counted as; else the answer
+/// itself. So a start whose answer was lost, which may have started
+/// there, is never asked again.
+fn here_where_it_lacks_its_folder(
+    (chosen, here): (&str, &str),
+    asked: Start,
+    reply: Reply,
+) -> Result<(Start, String), Reply> {
+    let placed = asked.strict && asked.work.needs.is_empty() && chosen != here;
+    match (reply, &asked.folder) {
+        (Err(why), Some(folder)) if placed && start::lacks_folder(&why, chosen, folder) => {
+            let mut pinned = asked;
+            pinned.work.needs = vec![Need::Machine(here.to_owned())];
+            Ok((pinned, why))
+        }
+        (reply, _) => Err(reply),
+    }
 }
 
 /// The places work can begin in under `home`, listed as a sprout is
@@ -6688,7 +6698,7 @@ impl<S: Store> Shared<S> {
             Ok(Err(refused)) => return refused,
             Err(error) => return Answer::Err(format!("the sprout couldn't be judged: {error}")),
         };
-        let reply = self.sprout_start(start).await;
+        let reply = self.start(start).await;
         // A log that can't be written takes nothing from the asker, whose
         // session started or didn't as the reply says.
         // A write that panicked leaves at most part of a line behind,
@@ -6700,21 +6710,6 @@ impl<S: Store> Shared<S> {
         let _ = left_out.tell(&reply, &mut *log);
         drop(log);
         reply.into()
-    }
-
-    /// Starts a sprout's `start`. One placement chose a machine for that
-    /// refused it for having no checkout of its repository there starts
-    /// here instead, where its folder was found, as it did before sprouts
-    /// were placed; every other answer is the sprout's.
-    async fn sprout_start(&self, start: Start) -> Reply {
-        let reply = self.start(start.clone()).await;
-        let Some(there) = lacked_elsewhere(&start, &reply, &self.machine) else {
-            return reply;
-        };
-        eprintln!("a sprout placed on {there} starts here instead, as {there} hasn't its folder");
-        let mut here = start;
-        here.work.needs = vec![Need::Machine(self.machine.clone())];
-        self.start(here).await
     }
 
     /// Starts a program held where placement chooses, as [`Self::placed`]
@@ -7720,9 +7715,18 @@ impl<S: Store> Shared<S> {
                     return self.asked_there(&machine, asked, true, within).await;
                 }
                 Placement::Placed { machine, .. } => {
+                    let fenced = (starts_in(fence, screen), within);
+                    let reply = self.start_on(machine.clone(), asked.clone(), fenced).await;
+                    let chosen = (machine.as_str(), self.machine.as_str());
+                    let (pinned, why) = match here_where_it_lacks_its_folder(chosen, asked, reply) {
+                        Ok(instead) => instead,
+                        Err(reply) => return reply,
+                    };
+                    eprintln!("a start placed on {machine} begins here instead, as {why}");
                     return self
-                        .start_on(machine, asked, (starts_in(fence, screen), within))
-                        .await;
+                        .placed_here((pinned, at), fence, screen, &admits)
+                        .await
+                        .map_err(|again| format!("{why}, and here: {again}"));
                 }
                 Placement::Pending { misses } => {
                     let nowhere = nowhere_now(&misses);
@@ -7743,6 +7747,32 @@ impl<S: Store> Shared<S> {
             return self.start_on_made(asked, &misses, fence).await;
         }
         self.start_on_free(asked, nowhere, fence).await
+    }
+
+    /// Starts `asked`, asked at `at`, here where placement takes it here,
+    /// placing it in `fence` behind `screen` as [`Self::placed`] does, so
+    /// a start that couldn't begin elsewhere is held here to the same
+    /// ground as one placed here first.
+    async fn placed_here(
+        &self,
+        (asked, at): (Start, i64),
+        fence: Option<crate::declared::Kind>,
+        screen: Screen,
+        admits: &Admits,
+    ) -> Reply {
+        let within = relayed_within(at, jiff::Timestamp::now().as_millisecond());
+        match self.place(&asked.work, Counts::Always, fence, screen, admits) {
+            Placement::Placed { machine, .. } if machine == self.machine => {
+                self.start_on(machine, asked, (starts_in(fence, screen), within))
+                    .await
+            }
+            Placement::Placed { machine, .. } => Err(format!("it would go to {machine}")),
+            Placement::Pending { misses } | Placement::Refused { misses } => Err(format!(
+                "{} doesn't take it now: {}",
+                self.machine,
+                placement::said(&misses)
+            )),
+        }
     }
 
     /// Makes a machine for `asked`, which `misses` say no machine of the
@@ -23864,48 +23894,77 @@ esac
     }
 
     // A sprout placed on a machine without its repository's checkout
-    // starts where its folder was found instead, and only then.
+    // begins where its folder was found instead, and only for that
+    // refusal.
     #[test]
-    fn a_placed_sprout_whose_machine_hasnt_its_folder_starts_here_instead() {
+    fn a_placed_sprout_whose_machine_hasnt_its_folder_begins_here_instead() {
+        let folder = Path::new("src/rows");
         let asked = |needs: Vec<Need>| Start {
             work: work(needs),
-            folder: Some(PathBuf::from("src/rows")),
+            folder: Some(folder.to_owned()),
             strict: true,
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
             once: None,
         };
-        let lacks = |machine: &str| -> Reply {
-            Err(start::begins_strictly(
-                Some(Path::new("src/rows")),
-                start::Needs::ItsFolder,
-                Path::new("/nowhere/home"),
-                machine,
-            )
-            .expect_err("it hasn't the folder"))
+        let lacks = |machine: &str| start::no_folder(machine, folder);
+        let instead = |chosen: &str, one: Start, reply: Reply| {
+            here_where_it_lacks_its_folder((chosen, "skiff"), one, reply)
+                .map(|(pinned, why)| (pinned.work.needs, why))
         };
-        let placed = asked(Vec::new());
+
+        let skiff = vec![Need::Machine("skiff".to_owned())];
         assert_eq!(
-            lacked_elsewhere(&placed, &lacks("tern"), "skiff").as_deref(),
-            Some("tern")
+            instead("tern", asked(Vec::new()), Err(lacks("tern"))),
+            Ok((skiff.clone(), lacks("tern"))),
+            "it begins here, pinned here, tern's refusal kept"
         );
+        let wrapped = format!(
+            "tern takes a relayed start as an agent's, and refused it: {}",
+            lacks("tern")
+        );
+        assert_eq!(
+            instead("tern", asked(Vec::new()), Err(wrapped.clone())),
+            Ok((skiff, wrapped)),
+            "a wrapped one is tern's too"
+        );
+
+        let started = Ok(Response::Started(Started {
+            machine: "tern".to_owned(),
+            held: "5e55".to_owned(),
+            folder: folder.to_owned(),
+            attach: Vec::new(),
+        }));
+        let silent = Err("tern didn't answer within 90s".to_owned());
+        let saturated = Err("tern doesn't take it now: it's saturated".to_owned());
+        for (reply, why) in [
+            (silent, "unanswered, it may have started there"),
+            (saturated, "another refusal stands"),
+            (Err(lacks("osprey")), "another machine's words"),
+            (started, "started there"),
+        ] {
+            let answered = instead("tern", asked(Vec::new()), reply.clone());
+            assert_eq!(answered, Err(reply), "{why}");
+        }
+
         let named = asked(vec![Need::Machine("tern".to_owned())]);
         assert_eq!(
-            lacked_elsewhere(&named, &lacks("tern"), "skiff"),
-            None,
+            instead("tern", named, Err(lacks("tern"))),
+            Err(Err(lacks("tern"))),
             "named, it goes there or nowhere"
         );
         assert_eq!(
-            lacked_elsewhere(&placed, &lacks("skiff"), "skiff"),
-            None,
-            "here hasn't it either"
+            instead("skiff", asked(Vec::new()), Err(lacks("skiff"))),
+            Err(Err(lacks("skiff"))),
+            "placed here, here hasn't it either"
         );
-        let silent: Reply = Err("tern didn't answer within 90s".to_owned());
+        let mut loose = asked(Vec::new());
+        loose.strict = false;
         assert_eq!(
-            lacked_elsewhere(&placed, &silent, "skiff"),
-            None,
-            "unanswered, it may have started there"
+            instead("tern", loose, Err(lacks("tern"))),
+            Err(Err(lacks("tern"))),
+            "a start not strict is left as it was"
         );
     }
 

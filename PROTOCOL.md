@@ -2522,14 +2522,25 @@ in no window: the node makes the `"Start"` and starts it as above, under
 the same limits. `words` is the work, a link alone or words, which
 become the session's first words; `from` the address of the cell it
 comes from; `on` the machine; and all but `words` may be left out.
-With no `on`, the start names no machine, so placement chooses, as
-for any start, and new work goes where there is room. It names this
-one where its folder is in a tree cut from a repository kept elsewhere
-(its `.git` a file), as a quest's tree or a zone's tree is, or in no
-checkout below home, since no other machine has that folder as it is
-here. A machine placement chose that answers `<machine> has no folder
-<folder>, which the start names` is passed over, and the sprout
-starts on this one. Beside its first words the
+With no `on`, a sprout whose folder is in a repository's own checkout
+where the person keeps them, `~/src/<repo>` or
+`~/src/<host>/<owner>/<repo>`, fetching from a remote, names no
+machine, so placement chooses, as for any start, and new work goes
+where there is room. Every other names this one, since no other
+machine has its folder as it is here: one in a tree cut from a
+repository kept elsewhere (its `.git` a file: a quest's tree, a
+zone's, a bare repository's trunk), a clone kept anywhere else, as a
+quest's scratch clone is, one with no remote, or in no checkout. What
+a checkout holds uncommitted isn't looked at, so work on it names this
+machine with `on`. Where the machine placement chose refuses the start
+with `<machine> has no folder <folder>, which the start names`, alone
+or wrapped after `: `, before anything starts there, it begins on this
+one instead, within the same start: counted once, under one wait for
+room and one time to answer. Any other answer stands, so one lost on
+its way back, which may have started there, is never asked again. A
+node from before `strict` begins a strict start at home and its guard
+ends it, so a realm placing sprouts runs nodes that judge `strict`.
+Beside its first words the
 session is given `QUEST_WORKFLOW_SPROUT`, the same work as data, a
 JSON object such as
 `{"v": 1, "link": "https://...", "from": "HARBOR", "id": "sprout-..."}`:

@@ -207,6 +207,11 @@ fn a_node_from_before_sprout_is_asked_to_start_and_what_the_seed_left_out_is_sai
     assert_eq!(asked.len(), 2, "a sprout, then the start it judged");
     assert!(asked[0].starts_with(r#"{"Sprout":"#), "{}", asked[0]);
     assert!(asked[1].starts_with(r#"{"Start":"#), "{}", asked[1]);
+    assert!(
+        asked[1].contains(r#""needs":[{"machine":"tern"}]"#),
+        "on this machine, as sprouts were then: {}",
+        asked[1]
+    );
     let id = line
         .strip_prefix("mycelium sprout: sprout ")
         .and_then(|rest| rest.split_once(' '))
