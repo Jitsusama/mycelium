@@ -67,6 +67,8 @@ impl Drop for Process {
 }
 
 /// Puts a program saying `text` at `path`, runnable, written by a child.
+/// Its `chmod` is given no `--`, which a Mac's takes for a file's name;
+/// `path` is a test's own, never one starting with a dash.
 ///
 /// # Panics
 ///
@@ -74,7 +76,7 @@ impl Drop for Process {
 /// test without its stand-in proves nothing.
 pub fn program(path: &Path, text: &str) {
     let mut child = Command::new("sh")
-        .args(["-c", "cat > \"$1\" && chmod 755 -- \"$1\"", "sh"])
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
         .arg(path)
         .stdin(Stdio::piped())
         .spawn()
