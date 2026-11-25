@@ -82,8 +82,9 @@ fn address_of(quest: &str) -> &str {
 /// keeps its old address among its addresses, while the sessions it
 /// spawned before still answer to the old one, so its team is one team
 /// under its own address rather than two, one of them without a lead
-/// (H2VYOB, once 37MNI3, 2026-11-14).
-fn renamed<'a>(living: &[&'a Session]) -> BTreeMap<&'a str, &'a str> {
+/// (H2VYOB, once 37MNI3, 2026-11-14). Each old address is kept in upper
+/// case, as a team is keyed, so its sessions find it in any case.
+fn renamed<'a>(living: &[&'a Session]) -> BTreeMap<String, &'a str> {
     let mut renamed = BTreeMap::new();
     for session in living {
         let others = session
@@ -93,9 +94,11 @@ fn renamed<'a>(living: &[&'a Session]) -> BTreeMap<&'a str, &'a str> {
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
-            .filter(|other| *other != session.address);
+            .filter(|other| !other.eq_ignore_ascii_case(&session.address));
         for other in others {
-            renamed.entry(other).or_insert(session.address.as_str());
+            renamed
+                .entry(other.to_ascii_uppercase())
+                .or_insert(session.address.as_str());
         }
     }
     renamed
@@ -258,7 +261,14 @@ fn fields(
     (quests, parked): (&BTreeMap<String, Value>, &HashSet<String>),
     (within, worst): (&BTreeMap<&str, &str>, &BTreeMap<&str, Attention>),
 ) -> Value {
-    let quest = quests.get(id);
+    // A team is keyed in upper case, and its quest by the address the
+    // quest's file says, in whatever case that is.
+    let quest = quests.get(id).or_else(|| {
+        quests
+            .iter()
+            .find(|(address, _)| address.eq_ignore_ascii_case(id))
+            .map(|(_, quest)| quest)
+    });
     let title = quest
         .and_then(|quest| quest.get("title")?.as_str())
         .map(str::to_owned)
@@ -447,6 +457,48 @@ mod tests {
             (&teams["HARBOR"]["lead"], &teams["HARBOR"]["members"]),
             (&json!("lead"), &json!(["one", "peer", "lead"])),
             "led by the session on its quest, the peer only among its members"
+        );
+    }
+
+    #[test]
+    fn a_quest_said_in_another_case_still_titles_its_team() {
+        let sessions = [
+            session(
+                "lead",
+                State::Idle,
+                (None, Some("QEST-20261007-HARBOR")),
+                &[],
+            ),
+            session("one", State::Busy, (Some("HARBOR"), None), &[]),
+        ];
+        let teams = worked_out(&sessions, &[("harbor", "Harbour")], &[]);
+        assert_eq!(
+            teams["HARBOR"]["title"],
+            json!("Harbour"),
+            "a team keyed in upper case lost the quest its file says in lower"
+        );
+    }
+
+    #[test]
+    fn an_old_address_said_in_another_case_still_reaches_the_renamed_team() {
+        let mut lead = session(
+            "lead",
+            State::Busy,
+            (None, Some("QEST-20261114-KELP01")),
+            &[],
+        );
+        lead.address = "KELP01".to_owned();
+        lead.presence = json!({"addresses": ["KELP01", "harbor"]}).into();
+        let sessions = [
+            lead,
+            session("old", State::Busy, (Some("harbor"), None), &[]),
+            session("new", State::Idle, (Some("KELP01"), None), &[]),
+        ];
+        let teams = worked_out(&sessions, &[("KELP01", "Kelp Beds")], &[]);
+        assert_eq!(
+            teams.keys().collect::<Vec<_>>(),
+            ["KELP01"],
+            "an old address said in lower case split the team in two"
         );
     }
 
