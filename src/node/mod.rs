@@ -5273,7 +5273,7 @@ impl<S: Store> Shared<S> {
                 continue;
             };
             let (line, back) = self
-                .look_to_ease(easing, std::mem::take(&mut sampler), now)
+                .look_to_ease(easing, &eases.onto, std::mem::take(&mut sampler), now)
                 .await;
             sampler = back;
             if !easing.still_short()
@@ -5447,6 +5447,7 @@ impl<S: Store> Shared<S> {
     async fn look_to_ease(
         &self,
         easing: &mut Easing,
+        onto: &std::collections::BTreeSet<String>,
         mut sampler: easing::Sampler,
         now: jiff::Timestamp,
     ) -> (Option<serde_json::Value>, easing::Sampler) {
@@ -5536,7 +5537,7 @@ impl<S: Store> Shared<S> {
             now,
         };
         let cells = easing::cells(&self.machine, &looked);
-        let here = ease::Here::of(&self.machine, &machines, &loads);
+        let here = ease::Here::of(&self.machine, &machines, &loads, onto);
         let reading = crate::balance::read(&machines, &sessions, now);
         easing.doubt(orchestrators.err());
         let line = easing.look(&here, reading, cells, &holds, kept_eases, now);
@@ -21193,6 +21194,7 @@ esac
             every: Duration::from_millis(10),
             carries: false,
             sleeps: Some(parks.clone()),
+            onto: std::collections::BTreeSet::new(),
         };
         let given = Given {
             eases: Some(eases),
@@ -21303,6 +21305,7 @@ esac
                 every: Duration::from_millis(10),
                 carries: false,
                 sleeps: None,
+                onto: std::collections::BTreeSet::new(),
             }),
             carries: dir.path().join("carries.jsonl"),
             processes: Processes::Folder(procs),
@@ -21329,6 +21332,7 @@ esac
                 every: Duration::from_millis(10),
                 carries: false,
                 sleeps: None,
+                onto: std::collections::BTreeSet::new(),
             }),
             carries: dir.path().join("carries.jsonl"),
             ..bare(dir.path().join("steer"), None)

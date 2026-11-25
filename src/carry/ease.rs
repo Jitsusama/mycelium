@@ -16,7 +16,8 @@
 //! [`SETTLE`] after its first sleep still say it is over. Those that
 //! wait anew sleep too: while it settles, and once it has, only where it
 //! carries none. It carries one asleep session at a time to a peer, or a
-//! worker that says it takes carries, with room whose latest facts are
+//! worker that says it takes carries and that its node names, with
+//! room whose latest facts are
 //! fresh enough to place by, placed as any work is, onto ground as
 //! firm as here's, never one in a turn, on the person's screen,
 //! orchestrating other sessions, part way through something a carry
@@ -28,7 +29,7 @@
 //! nothing goes to a machine a session came here from within
 //! [`NO_RETURN`]. This module only chooses; the node acts on its choice.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 
 use jiff::{SignedDuration, Timestamp};
 use serde::Serialize;
@@ -401,13 +402,22 @@ pub struct Here<'a> {
     pub machines: &'a [Machine],
     /// What each carries, as placement weighs it.
     pub loads: &'a Loads,
+    /// The workers it may carry to, by name, as its node was told: a
+    /// worker's word that it takes carries is only its own, so one this
+    /// doesn't name takes none from it.
+    pub workers: &'a BTreeSet<String>,
 }
 
 impl<'a> Here<'a> {
     /// The machine named `name` among the realm's `machines`, as its own
-    /// configuration says of it.
+    /// configuration says of it, carrying to the `workers` named.
     #[must_use]
-    pub fn of(name: &'a str, machines: &'a [Machine], loads: &'a Loads) -> Self {
+    pub fn of(
+        name: &'a str,
+        machines: &'a [Machine],
+        loads: &'a Loads,
+        workers: &'a BTreeSet<String>,
+    ) -> Self {
         Self {
             name,
             declared: machines
@@ -416,6 +426,7 @@ impl<'a> Here<'a> {
                 .and_then(|one| one.declared.as_ref()),
             machines,
             loads,
+            workers,
         }
     }
 }
@@ -575,8 +586,8 @@ fn carry(
     let peers = peers(here, reading, history, now);
     if peers.is_empty() {
         return nothing(
-            "no machine with room is a peer or a worker taking carries it may carry to, with \
-             facts fresh enough to place by, that no session came from within the hour"
+            "no machine with room is a peer or a worker named here taking carries it may carry \
+             to, with facts fresh enough to place by, that no session came from within the hour"
                 .to_owned(),
         );
     }
@@ -656,13 +667,14 @@ fn over(
 
 /// The machines `here` may carry to: those with room while it is over,
 /// as the watch holds it and in `reading` itself, peers or workers that
-/// declare they take carries, whose facts in `reading` aren't too old to
-/// place by, and none a session came from within the hour. A worker is
-/// where the person's load goes off their machines, so one that says it
-/// takes carries is as good a place as a peer; [`ground::firm`] still
-/// keeps a strict session off it. A machine last heard
-/// minutes ago may have filled up since, or its link may be down, so a
-/// carry there may close a session here that it can't open there.
+/// declare they take carries and that `here` names, whose facts in
+/// `reading` aren't too old to place by, and none a session came from
+/// within the hour. A worker is where the person's load goes off their
+/// machines, so one named that says it takes carries is as good a place
+/// as a peer; [`ground::firm`] still keeps a strict session off it. A
+/// machine last heard minutes ago may have filled up since, or its link
+/// may be down, so a carry there may close a session here that it can't
+/// open there.
 fn peers(here: &Here, reading: &Reading, history: &History, now: Timestamp) -> Vec<Machine> {
     let cool = |flags: &[Flag], name: &str| {
         flags.iter().any(
@@ -685,7 +697,12 @@ fn peers(here: &Here, reading: &Reading, history: &History, now: Timestamp) -> V
                 && !stale(&machine.name)
         })
         .filter(|machine| {
-            machine.declared.is_some() && ground::Lent::of(machine) != ground::Lent::TakesNone
+            machine.declared.is_some()
+                && match ground::Lent::of(machine) {
+                    ground::Lent::Not => true,
+                    ground::Lent::TakesCarries => here.workers.contains(&machine.name),
+                    ground::Lent::TakesNone => false,
+                }
         })
         .filter(|machine| !history.came_from(here.name, &machine.name, now))
         .cloned()
@@ -1119,6 +1136,7 @@ pub(super) mod tests {
             declared: Some(&declared),
             machines,
             loads: &Loads::new(),
+            workers: &["osprey".to_owned(), "tern".to_owned()].into(),
         };
         choose(&here, cells, &reading(machines, now()), history, now())
     }
@@ -1184,6 +1202,7 @@ pub(super) mod tests {
             declared: Some(&declared),
             machines: &realm,
             loads: &Loads::new(),
+            workers: &BTreeSet::new(),
         };
         let mut unfelt = realm.clone();
         unfelt[0].room = None;
@@ -1264,6 +1283,7 @@ pub(super) mod tests {
                 declared: Some(&declared),
                 machines: latest,
                 loads: &Loads::new(),
+                workers: &BTreeSet::new(),
             };
             let mut on = reading(latest, now());
             on.held = balance::read(held, &[], now()).flags.into();
@@ -1389,14 +1409,18 @@ pub(super) mod tests {
         let mut skiff = machine("skiff", 4.6);
         skiff.declared = Some(declaring(&[Kind::Fence]));
         let machines = [tern, skiff];
-        let loads = Loads::new();
-        let here = Here::of("skiff", &machines, &loads);
+        let (loads, workers) = (Loads::new(), BTreeSet::new());
+        let here = Here::of("skiff", &machines, &loads, &workers);
         assert_eq!(
             here.declared,
             machines[1].declared.as_ref(),
             "skiff, listed second, by its own facts"
         );
-        assert!(Here::of("osprey", &machines, &loads).declared.is_none());
+        assert!(
+            Here::of("osprey", &machines, &loads, &workers)
+                .declared
+                .is_none()
+        );
     }
 
     #[test]
@@ -1453,6 +1477,7 @@ pub(super) mod tests {
             declared: Some(&declared),
             machines: &realm,
             loads: &Loads::new(),
+            workers: &BTreeSet::new(),
         };
         // The watch still holds it over, as it does just after one cool
         // reading among hot ones.
@@ -2090,7 +2115,8 @@ pub(super) mod tests {
             "a worker that says it takes carries takes one"
         );
         let mut both = paid;
-        both.push(machine("wren", 30.0));
+        // Under a quarter stalled, so with room.
+        both.push(machine("wren", 20.0));
         assert_eq!(
             carries(&chose(&both, &[cell("s1")], &hot_for(&both, 11))),
             Some(("s1", "wren")),
@@ -2129,7 +2155,7 @@ pub(super) mod tests {
             declared.takes_carries = true;
             machine
         };
-        let mut serviced = machine("wren", 30.0);
+        let mut serviced = machine("wren", 20.0);
         let taints = &mut serviced.declared.as_mut().expect("declared").taints;
         taints.push(Taint {
             key: "serviced".to_owned(),
@@ -2148,6 +2174,21 @@ pub(super) mod tests {
             Some(("s1", "tern")),
             "a worker takes what the person's own refuse, the roomiest first"
         );
+        let named: BTreeSet<String> = ["osprey".to_owned()].into();
+        let declared = declaring(&[Kind::None, Kind::Fence]);
+        let here = Here {
+            name: "skiff",
+            declared: Some(&declared),
+            machines: &realm,
+            loads: &Loads::new(),
+            workers: &named,
+        };
+        let on = reading(&realm, now());
+        assert_eq!(
+            carries(&choose(&here, &[cell("s1")], &on, &history, now())),
+            Some(("s1", "osprey")),
+            "a worker its node doesn't name takes none, whatever it says of itself"
+        );
         let mut leaving = realm.clone();
         let tern = leaving[2].declared.as_mut().expect("declared");
         tern.leaves_at = Some(now() + PIN);
@@ -2157,7 +2198,7 @@ pub(super) mod tests {
             "a worker that refuses leaves the next to take it"
         );
         let mut unfenced = realm;
-        unfenced[3] = machine("wren", 30.0);
+        unfenced[3] = machine("wren", 20.0);
         unfenced[3].declared = Some(declaring(&[Kind::None]));
         assert_eq!(
             carries(&chose(&unfenced, &[cell("s1")], &hot_for(&unfenced, 11))),
@@ -2187,6 +2228,7 @@ pub(super) mod tests {
             declared: Some(&declared),
             machines: &realm,
             loads: &Loads::new(),
+            workers: &["tern".to_owned()].into(),
         };
         let history = hot_for(&realm, 11);
         let reading = reading(&realm, now());
@@ -2245,6 +2287,7 @@ pub(super) mod tests {
                 declared: Some(&declared),
                 machines,
                 loads: &Loads::new(),
+                workers: &BTreeSet::new(),
             };
             let history = hot_for(machines, 11);
             choose(

@@ -842,6 +842,12 @@ struct Node {
     /// `node@<machine>`, or a carry is kept and told but never taken.
     #[arg(long, requires = "eases")]
     eases_carry: bool,
+    /// A worker `--eases` may carry to, by its name, once for each: a
+    /// worker's word that it takes carries is only its own, so one not
+    /// named here takes none from this node. The person's own machines
+    /// need no naming; unnamed, no worker takes a carry from it.
+    #[arg(long, value_name = "MACHINE", requires = "eases")]
+    eases_onto: Vec<String>,
     /// The machine this one borrows model calls from, through the link
     /// it was accepted by, as a worker's image names its maker. Unnamed,
     /// the node refuses every lend asked of it, so a lender's own node
@@ -2130,12 +2136,13 @@ fn gates_given(
 /// How the node eases its machine, kept under `state`, if it `eases` at
 /// all: whether it `carries`, and where it asks the harness to park the
 /// sessions it `sleeps`.
-fn eases_given(eases: bool, carries: bool, sleeps: Option<PathBuf>, state: &Path) -> Option<Eases> {
-    eases.then(|| Eases {
+fn eases_given(node: &Node, state: &Path) -> Option<Eases> {
+    node.eases.then(|| Eases {
         folder: state.join("eases"),
         every: carry::easing::EVERY,
-        carries,
-        sleeps,
+        carries: node.eases_carry,
+        sleeps: node.eases_sleep.clone(),
+        onto: node.eases_onto.iter().cloned().collect(),
     })
 }
 
@@ -2218,7 +2225,7 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
         placements: Some(mycelium::placements::Log::at(state.join("placements"))),
         health: node.health_socket,
         scratch,
-        eases: eases_given(node.eases, node.eases_carry, node.eases_sleep, &state),
+        eases: eases_given(&node, &state),
         settles: Some(settles_kept(&state, &membership.name)),
         lends_from: node.lends_from,
         lend: node.lend,
@@ -4081,6 +4088,23 @@ mod tests {
         assert!(
             node(&["--eases", "--eases-sleep", "/run/park"]).is_ok(),
             "one that eases can"
+        );
+        assert_eq!(
+            node(&["--eases-onto", "tern"])
+                .err()
+                .map(|error| error.kind()),
+            Some(clap::error::ErrorKind::MissingRequiredArgument),
+            "nor name workers to carry to"
+        );
+        let named = node(&["--eases", "--eases-onto", "tern", "--eases-onto", "osprey"]);
+        let Ok(Some(Action::Node(named))) = named.map(|asked| asked.action) else {
+            panic!("one that eases names its workers");
+        };
+        let onto = eases_given(&named, Path::new("/state")).map(|eases| eases.onto);
+        assert_eq!(
+            onto,
+            Some(["osprey".to_owned(), "tern".to_owned()].into()),
+            "each it names"
         );
     }
 
