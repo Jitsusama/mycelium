@@ -63,7 +63,7 @@ pub const UNASKED: i32 = 79;
 /// The signal a held pi dies by when it quit though nobody asked it to
 /// while a name lookup it can't cut short held its exit, so it is ended
 /// as [`UNASKED`] is, started again at once.
-const UNASKED_SIGNAL: i32 = rustix::process::Signal::USR2.as_raw();
+pub const UNASKED_SIGNAL: i32 = rustix::process::Signal::USR2.as_raw();
 
 /// Whether a run that ended as `status` quit though nobody asked it to:
 /// with [`UNASKED`], or killed by [`UNASKED_SIGNAL`].
@@ -73,7 +73,10 @@ fn ended_unasked(status: ExitStatus) -> bool {
 
 /// How many unasked quits within [`UNASKED_WITHIN`] of the newest are
 /// started again, whatever ran between them; one more parks it, so a
-/// program that quits as it starts can't start forever.
+/// program that quits as it starts can't start forever, and a key that
+/// wakes it gives it as many again. One that runs longer than a third
+/// of [`UNASKED_WITHIN`] each time is started again for as long as it
+/// lasts, since it isn't spinning.
 const UNASKED_MOST: usize = 3;
 
 /// How close together unasked quits count toward [`UNASKED_MOST`].
@@ -679,7 +682,19 @@ pub async fn hold(
             if let Some(how) = how {
                 away(&record, &shown, how);
             } else if too_often && !restarting {
-                parks(&record, &shown, &unasked_line());
+                // Said on the holder's standard error too, which a node's
+                // holder shares with the node's log, since no window may
+                // be joined to see it; one joining later is shown it as
+                // one is a host away.
+                eprintln!(
+                    "mycelium: {} quit unasked {} times within {} s, so it is parked",
+                    holding.id,
+                    UNASKED_MOST + 1,
+                    UNASKED_WITHIN.as_secs(),
+                );
+                record.parks();
+                shown.show(FOCUS_ON);
+                shown.stands(UNASKED_LINE);
             } else if !restarting {
                 parks(&record, &shown, PARKED_LINE);
             }
@@ -792,11 +807,13 @@ fn gone_runs_after(runs: u32, gone: bool, lasted: Duration) -> u32 {
 
 /// Whether a program quitting unasked `now` has quit so more than
 /// [`UNASKED_MOST`] times within [`UNASKED_WITHIN`], counting `before`,
-/// when each recent unasked quit ended; unless so, `now` is kept among
-/// them, and those too old to count are let go either way.
+/// when each recent unasked quit ended. If so, it is parked, and `before`
+/// is emptied, so it starts afresh once woken; else `now` is kept among
+/// them, and those too old to count are let go.
 fn quits_too_often(before: &mut Vec<Instant>, now: Instant) -> bool {
     before.retain(|at| now.saturating_duration_since(*at) < UNASKED_WITHIN);
     if before.len() >= UNASKED_MOST {
+        before.clear();
         return true;
     }
     before.push(now);
@@ -886,22 +903,17 @@ fn unstarted(error: &io::Error) -> Vec<u8> {
     format!("\r\nIt couldn't start again: {error}. {PARKED_WAKES}\r\n").into_bytes()
 }
 
+/// What every window, joined or joining, is told while a program that
+/// quit unasked too often is parked rather than started again: one more
+/// than [`UNASKED_MOST`] within [`UNASKED_WITHIN`], as a test holds it.
+const UNASKED_LINE: &[u8] =
+    b"\r\nIt quit unasked 4 times within 60 s, so it's parked. A key or a message starts \
+      it again.\r\n";
+
 /// Says the program is parked, in its record and with `line` in every
 /// joined window, each asked to say when it comes in front, which wakes
 /// the program as a key does. A window joining while it's parked is
 /// asked as it's given the modes.
-/// What a window is told as a program that quit unasked too often is
-/// parked rather than started again.
-fn unasked_line() -> Vec<u8> {
-    format!(
-        "\r\nIt quit unasked {} times within {} s, so it's parked. A key or a message \
-         starts it again.\r\n",
-        UNASKED_MOST + 1,
-        UNASKED_WITHIN.as_secs(),
-    )
-    .into_bytes()
-}
-
 fn parks(record: &Record, shown: &Shown, line: &[u8]) {
     record.parks();
     shown.show(&[FOCUS_ON, line].concat());
@@ -2457,12 +2469,27 @@ mod tests {
         let parked = listed_parked(&dir, &mut changes, true).await;
         assert_eq!(parked.pid, 0, "one more quit within a minute parks it");
 
-        // Its window stayed, so a key starts it again, as any park's.
+        // Its window stayed, so a key starts it again, as any park's,
+        // and with as many unasked quits as at first.
         window.types("x").await;
+        pid = runs_anew(&dir, &mut changes, pid).await;
+        window.types("echo woke $((5 * 7)); exit 79\r").await;
+        window.sees("woke 35").await;
         runs_anew(&dir, &mut changes, pid).await;
         window.types("echo woken $((6 * 7)); exit 3\r").await;
         window.sees("woken 42").await;
         assert_eq!(exited(holder).await, Some(3), "a release still ends it");
+    }
+
+    #[test]
+    fn the_too_often_line_says_the_bound_it_keeps() {
+        let line = String::from_utf8_lossy(UNASKED_LINE);
+        let said = format!(
+            "It quit unasked {} times within {} s",
+            UNASKED_MOST + 1,
+            UNASKED_WITHIN.as_secs()
+        );
+        assert!(line.contains(&said), "{line:?} says {said:?}");
     }
 
     #[test]
@@ -2473,7 +2500,7 @@ mod tests {
             ended_unasked(ExitStatus::from_raw(UNASKED_SIGNAL)),
             "its signal"
         );
-        for meant in [0, 1, PARKED, GONE] {
+        for meant in [0, 1, PARKED, i32::from(GONE)] {
             assert!(!ended_unasked(exited(meant)), "exit {meant} was meant");
         }
         for signal in [Signal::TERM, Signal::KILL, Signal::HUP, Signal::USR1] {
@@ -2500,6 +2527,19 @@ mod tests {
             quits_too_often(&mut quits, start + Duration::from_secs(10)),
             "one more within a minute is too often"
         );
+        assert!(
+            quits.is_empty(),
+            "it is parked, so once woken it starts afresh"
+        );
+        for after in 0..UNASKED_MOST {
+            let at = start + Duration::from_secs(u64::try_from(after).expect("a few"));
+            quits_too_often(&mut quits, at);
+        }
+        assert!(
+            !quits_too_often(&mut quits, start + UNASKED_WITHIN),
+            "a quit a whole minute after the first counts it no more"
+        );
+        quits.clear();
         assert!(
             !quits_too_often(&mut quits, start + UNASKED_WITHIN + Duration::from_secs(1)),
             "once the first has aged out, one more starts again"

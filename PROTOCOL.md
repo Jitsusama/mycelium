@@ -4196,11 +4196,13 @@ terminal, as one that restarts is, never shown as parked: its window
 stays rather than closing on the person. Its run's end warns in the
 journal, as `quit unasked (exit 79)`. One killed by `SIGUSR2` quit
 unasked too, as a pi does when a name lookup it can't cut short holds
-its exit, and is started again the same way; its journal line names
-the signal. One such quit with three others in the minute before it
-is parked instead, its window told why, so a program that quits
-as it starts can't start forever; a key or a message starts it
-again, as any park's does.
+its exit, and is started again the same way; it warns too, its
+journal line naming the signal. One such quit with three others in
+the minute before it is parked instead, so a program that quits as it
+starts can't start forever: every window, and each joining while it
+is parked, is told why, and so is the holder's standard error. A key
+or a message starts it again, as any park's does, with as many quits
+as at first.
 
 A program that exits with 69 (sysexits' `EX_UNAVAILABLE`) having
 written `<id>.gone`, told its path in `MYCELIUM_GONE`, is kept as a

@@ -17,7 +17,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
-use super::holder::{PARKED, RELEASED, UNASKED};
+use super::holder::{PARKED, RELEASED, UNASKED, UNASKED_SIGNAL};
 
 /// Where the journal takes entries in its own form.
 const JOURNAL_SOCKET: &str = "/run/systemd/journal/socket";
@@ -29,9 +29,13 @@ pub enum How {
     Exited(i32),
     /// It parked, to start again once woken.
     Parked,
-    /// It quit though nobody asked it to, and is started again unless it
-    /// has quit so too often.
-    Unasked,
+    /// It quit though nobody asked it to, by its own code or, as a pi
+    /// whose exit a name lookup held does, by [`UNASKED_SIGNAL`], and is
+    /// started again unless it has quit so too often.
+    Unasked {
+        /// Whether it quit so by the signal rather than its code.
+        by_signal: bool,
+    },
     /// A signal ended it, leaving a core or not.
     Killed {
         /// The signal's number.
@@ -47,7 +51,8 @@ impl How {
     pub fn of(status: ExitStatus) -> Self {
         match (status.code(), status.signal()) {
             (Some(PARKED), _) => Self::Parked,
-            (Some(UNASKED), _) => Self::Unasked,
+            (Some(UNASKED), _) => Self::Unasked { by_signal: false },
+            (None, Some(UNASKED_SIGNAL)) => Self::Unasked { by_signal: true },
             (Some(code), _) => Self::Exited(code),
             (None, signal) => Self::Killed {
                 signal: signal.unwrap_or_default(),
@@ -79,7 +84,11 @@ impl Ended {
         let how = match self.how {
             How::Exited(code) => format!("exited {code}"),
             How::Parked => format!("parked (exit {PARKED})"),
-            How::Unasked => format!("quit unasked (exit {UNASKED})"),
+            How::Unasked { by_signal: false } => format!("quit unasked (exit {UNASKED})"),
+            How::Unasked { by_signal: true } => format!(
+                "quit unasked (signal {UNASKED_SIGNAL}, {})",
+                signal_name(UNASKED_SIGNAL)
+            ),
             How::Killed { signal, core } => format!(
                 "was killed by signal {signal} ({}){}",
                 signal_name(signal),
@@ -107,7 +116,10 @@ impl Ended {
             How::Parked => ("exited", PARKED.to_string(), 6),
             // A program quitting unasked gave up on something, so it warns,
             // whether or not it is started again.
-            How::Unasked => ("exited", UNASKED.to_string(), 4),
+            How::Unasked { by_signal: false } => ("exited", UNASKED.to_string(), 4),
+            How::Unasked { by_signal: true } => {
+                ("killed", signal_name(UNASKED_SIGNAL).to_owned(), 4)
+            }
             How::Killed { signal, core } => (
                 if core { "dumped" } else { "killed" },
                 signal_name(signal).to_owned(),
@@ -256,12 +268,36 @@ mod tests {
             ended(How::Parked).line().ends_with("parked (exit 75)"),
             "a park says it parked"
         );
-        let unasked = ended(How::Unasked);
+        let unasked = ended(How::of(ExitStatus::from_raw(UNASKED << 8)));
         assert!(
             unasked.line().ends_with("quit unasked (exit 79)")
                 && unasked.entry().contains("EXIT_STATUS=79\n")
                 && unasked.entry().contains("PRIORITY=4\n"),
             "an unasked quit says so, and warns"
+        );
+        let signalled = ended(How::of(ExitStatus::from_raw(UNASKED_SIGNAL)));
+        assert!(
+            signalled
+                .line()
+                .ends_with(&format!("quit unasked (signal {UNASKED_SIGNAL}, USR2)")),
+            "one quitting so by its signal says so too: {}",
+            signalled.line()
+        );
+        assert!(
+            signalled
+                .entry()
+                .contains("EXIT_CODE=killed\nEXIT_STATUS=USR2\n")
+                && signalled.entry().contains("PRIORITY=4\n"),
+            "and warns as the code does, not erring as a kill: {}",
+            signalled.entry()
+        );
+        assert_eq!(
+            How::of(ExitStatus::from_raw(rustix::process::Signal::USR1.as_raw())),
+            How::Killed {
+                signal: rustix::process::Signal::USR1.as_raw(),
+                core: false
+            },
+            "another signal is a kill"
         );
         let dumped = ended(How::Killed {
             signal: 11,
