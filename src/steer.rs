@@ -571,12 +571,6 @@ mod tests {
             ),
             ("AB12", json!({"act": "pause", "value": "yes"})),
             ("AB12", json!({"text": "hi", "look": "l1"})),
-            ("AB12", json!({"act": "park"})),
-            ("AB12", json!({"act": "park", "at": " "})),
-            ("AB12", json!({"act": "park", "at": 7})),
-            ("AB12", json!({"act": "park", "at": "t", "text": "sleep"})),
-            ("AB12", json!({"act": "park", "at": "t", "id": "talk-1"})),
-            ("AB12", json!({"act": "park", "at": "t", "now": true})),
         ] {
             assert!(
                 Steer::new(address, &said).is_err(),
@@ -589,17 +583,6 @@ mod tests {
                 "{act} is an act the harness reads"
             );
         }
-        let parking = json!({"act": "park", "at": "2026-11-24T22:00:00.000Z", "from": "joel"});
-        let parked = Steer::new("AB12", &parking).expect("a park saying when");
-        assert_eq!(
-            Value::Object(parked.body.clone()),
-            parking,
-            "a park goes to the harness as it was said"
-        );
-        assert!(
-            !parked.only_wakes() && claims_the_person(&parking),
-            "a park is delivered, and as the person's"
-        );
         let waking = Steer::new("AB12", &json!({"act": "wake"})).expect("a wake alone");
         assert!(
             waking.only_wakes()
@@ -647,6 +630,31 @@ mod tests {
         }
         let talking = Steer::new("AB12", &json!({"text": "hi", "id": "talk-1"})).expect("a steer");
         assert_eq!(talking.talk(), Some("talk-1"), "its talk");
+    }
+
+    #[test]
+    fn a_park_says_when_it_was_asked_and_nothing_else() {
+        for said in [
+            json!({"act": "park"}),
+            json!({"act": "park", "at": " "}),
+            json!({"act": "park", "at": 7}),
+            json!({"act": "park", "at": "t", "text": "sleep"}),
+            json!({"act": "park", "at": "t", "id": "talk-1"}),
+            json!({"act": "park", "at": "t", "now": true}),
+        ] {
+            assert!(Steer::new("AB12", &said).is_err(), "{said} is refused");
+        }
+        let parking = json!({"act": "park", "at": "2026-11-24T22:00:00.000Z", "from": "joel"});
+        let parked = Steer::new("AB12", &parking).expect("a park saying when");
+        assert_eq!(
+            Value::Object(parked.body.clone()),
+            parking,
+            "a park goes to the harness as it was said"
+        );
+        assert!(
+            !parked.only_wakes() && claims_the_person(&parking),
+            "a park is delivered, and as the person's"
+        );
     }
 
     #[test]
