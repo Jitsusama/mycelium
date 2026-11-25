@@ -335,7 +335,9 @@ fn single_spaced(lead: &str) -> String {
 /// and emoji presentation say: two for a wide character or an emoji,
 /// none for a joiner or a combining mark, one for the rest. A colour's
 /// escape, which [`Look::paint`] writes and no peer's text keeps once
-/// [`unmarked`], takes none.
+/// [`unmarked`], takes none. So it measures only text cleaned or painted
+/// here: in a peer's raw text, an escape never closed would count all
+/// that follows it as no cells.
 pub(crate) fn drawn_width(text: &str) -> usize {
     let mut count = 0;
     let mut rest = text;

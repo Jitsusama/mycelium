@@ -3640,9 +3640,11 @@ drops each character that draws nothing and each of Unicode's 66
 noncharacters, keeping one selector only after a character drawn as
 part of a word past ASCII (none a space, a braille blank or a
 noncharacter), and a joiner only between two, the first perhaps
-followed by its selector, and at most three joiners from one
-character that draws something, follows no joiner and is no skin
-tone to the next, the rest dropped, and then is trimmed of spaces
+followed by its selector, and at most three zero-width joiners
+(U+200D) from one character taking a cell of its own (no mark,
+selector or skin tone) and following no zero-width joiner to the
+next, the rest dropped, a non-joiner (U+200C) never counted; and
+then is trimmed of spaces
 and braille blanks (U+2800), and cut to its first 120 characters, then
 cleaned again, so it ends in no space and no joiner left joining
 nothing; `folder` is 1 to 1024 bytes. A

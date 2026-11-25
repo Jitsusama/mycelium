@@ -1387,9 +1387,10 @@ pub(crate) fn one_line(text: &str) -> String {
         })
         .collect();
     let mut kept: Vec<char> = Vec::with_capacity(plain.len());
-    // The joiners kept in the run at hand, which a character that follows
-    // no joiner, draws something and neither selects nor modifies ends, so
-    // a mark between emoji can't start the count afresh.
+    // The zero-width joiners kept in the run at hand, which a character
+    // that follows none, takes a cell of its own and neither selects nor
+    // modifies ends, so a mark between emoji can't start the count afresh.
+    // A non-joiner is never counted, as it joins no emoji.
     let mut joined = 0;
     for (at, &each) in plain.iter().enumerate() {
         let before = kept.last().copied();

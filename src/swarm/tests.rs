@@ -1033,12 +1033,18 @@ fn a_peer_s_name_chained_from_emoji_counts_a_cell_pair_for_each_four() {
     // Four emoji joined as no sequence still count two cells and draw
     // eight, a bound the cap keeps rather than closes. A mark between them
     // draws nothing, and a skin tone carries on the emoji before it, so
-    // neither starts the count afresh: a run holds four emoji at most,
-    // and each four cost two cells, as Unicode's widths count them.
+    // neither starts the count afresh, nor does a flag's second half: a
+    // run holds four emoji at most, and each four cost two cells, as
+    // Unicode's widths count them.
     let marked =
         "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{301}\u{200D}".repeat(20);
     let toned = "\u{1F469}\u{1F3FB}\u{200D}".repeat(20);
-    for (chain, emoji) in [(marked.as_str(), 80), (toned.as_str(), 20)] {
+    let flagged = "\u{1F1E8}\u{1F1E6}\u{200D}".repeat(20);
+    for (chain, emoji) in [
+        (marked.as_str(), 80),
+        (toned.as_str(), 20),
+        (flagged.as_str(), 20),
+    ] {
         let cleaned = unmarked(chain);
         assert!(
             cells(cleaned.as_str()) >= 2 * emoji / 4,
