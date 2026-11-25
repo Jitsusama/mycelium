@@ -986,6 +986,12 @@ session says of itself:
   seen strict that later names a looser fence is refused. Where that
   file can't be read or kept, every ordered carry is refused. A
   session here seen fenced says so in its record as `fence_shown`.
+- A start that is pi's bare resume of a session (`pi --session <id>`,
+  at most with `--model`) declares at least the strictest fence that
+  session was seen in here, and strict where `fences.json` can't be
+  read, whoever asks. So a session brought back after a restart, as a
+  Mac's are by its login agent, which declares no fence, resumes no
+  looser than it ran.
 - A strict session goes only to a machine whose `system` is this
   machine's, since each system's strict fence reads and writes its own
   way: a Mac's reads more of the home folder than Linux's, so carried

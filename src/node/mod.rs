@@ -2893,6 +2893,23 @@ fn declaring_carried(
     }
 }
 
+/// What a start running `command` declares where it is pi's bare resume
+/// of a session ([`starts::reopens`]): `declared`, raised to the
+/// strictest fence `seen` says that session ran in, so a session brought
+/// back after a restart resumes no looser than it ran, whoever asks. A
+/// Mac's sessions come back so after it boots, asked by launchd, which
+/// declares no fence. Any other start declares as it was asked.
+fn declaring_resumed(
+    command: &[String],
+    declared: Option<DeclaredFence>,
+    seen: impl FnOnce(&str) -> crate::declared::Kind,
+) -> Option<DeclaredFence> {
+    match starts::reopens(command) {
+        Some(session) => declaring_at_least(declared, Some(seen(session))),
+        None => declared,
+    }
+}
+
 /// What a start sent to another machine declares: `declared`, raised to
 /// `fence` where that is stricter, so the machine taking it knows the
 /// fence it was placed in. What declared it stays where it already
@@ -6557,7 +6574,7 @@ impl<S: Store> Shared<S> {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
-        let asked = self.carried_declaring(asked);
+        let asked = self.brought_back_declaring(asked);
         let (by, _, charged) = self.judged_declaring(asked.work.fence).await?;
         self.counted((by, charged), asked, waits, Whither::Placed)
             .await
@@ -6578,9 +6595,15 @@ impl<S: Store> Shared<S> {
     /// says, since the session has ended by the time it arrives. A carry
     /// keeping none, as the person's, takes the stricter of what the
     /// session claims and the strictest it was seen in while it is still
-    /// here, and strict once it is gone or that can't be read.
-    fn carried_declaring(&self, mut asked: Start) -> Start {
+    /// here, and strict once it is gone or that can't be read. And pi's
+    /// bare resume of a session ([`declaring_resumed`]) declares at least
+    /// the strictest fence it was seen in here, strict where that can't
+    /// be read.
+    fn brought_back_declaring(&self, mut asked: Start) -> Start {
         use crate::declared::Kind;
+        asked.work.fence = declaring_resumed(&asked.command, asked.work.fence, |session| {
+            self.fences.strictest(session).unwrap_or(Kind::Strict)
+        });
         asked.work.fence =
             declaring_carried(&asked.command, &self.machine, asked.work.fence, |session| {
                 let kind_of = |said: Option<&serde_json::Value>| -> Option<Kind> {
@@ -7345,7 +7368,7 @@ impl<S: Store> Shared<S> {
         let mut book = Vec::with_capacity(asked.starts.len());
         let mut unweighed = None;
         for one in &asked.starts {
-            let one = &self.carried_declaring(one.clone());
+            let one = &self.brought_back_declaring(one.clone());
             let judged = match self.judged_declaring(one.work.fence).await {
                 Ok((by, _, charged)) => self
                     .booked_as((by, charged), one, asked.ordered)
@@ -22493,19 +22516,128 @@ esac
         kept("s-harbour", "fence");
         kept("s-quay", "strict");
         assert_eq!(
-            shared.carried_declaring(arriving("s-harbour")).work.fence,
+            shared
+                .brought_back_declaring(arriving("s-harbour"))
+                .work
+                .fence,
             declared(FenceKind::Fence),
             "in the fence its carry was judged in"
         );
         assert_eq!(
-            shared.carried_declaring(arriving("s-quay")).work.fence,
+            shared.brought_back_declaring(arriving("s-quay")).work.fence,
             declared(FenceKind::Strict),
             "a strict one arrives strict, though its carrier runs looser"
         );
         assert_eq!(
-            shared.carried_declaring(arriving("s-wharf")).work.fence,
+            shared
+                .brought_back_declaring(arriving("s-wharf"))
+                .work
+                .fence,
             declared(FenceKind::Strict),
             "one gone with no carry kept arrives strict, never unfenced"
+        );
+    }
+
+    #[test]
+    fn a_bare_resume_declares_at_least_the_fence_its_session_ran_in() {
+        use crate::declared::Kind;
+        let words = |all: &[&str]| all.iter().map(|one| (*one).to_owned()).collect::<Vec<_>>();
+        let resume = |session: &str| words(&["pi", "--session", session]);
+        let fenced = |session: &str| {
+            assert_eq!(
+                session, "s-harbour",
+                "the session resumed is the one weighed"
+            );
+            Kind::Fence
+        };
+        let declared = |kind| {
+            Some(DeclaredFence {
+                kind,
+                from: FenceFrom::Default,
+            })
+        };
+        assert_eq!(
+            declaring_resumed(&resume("s-harbour"), None, fenced),
+            declared(FenceKind::Fence),
+            "a resume asked with no fence takes the one its session ran in"
+        );
+        assert_eq!(
+            declaring_resumed(&resume("s-harbour"), declared(FenceKind::Strict), fenced),
+            declared(FenceKind::Strict),
+            "one asked stricter stays so"
+        );
+        assert_eq!(
+            declaring_resumed(&resume("s-harbour"), None, |_| Kind::None),
+            None,
+            "one never seen fenced declares as it was asked"
+        );
+        assert_eq!(
+            declaring_resumed(
+                &words(&["pi", "--session", "s-harbour", "-p", "hi"]),
+                None,
+                fenced
+            ),
+            None,
+            "a start that does more than resume isn't one"
+        );
+    }
+
+    // 315D0071, Tue 24 Nov: after a Mac boots, its sessions come back as
+    // launchd's starts, which declare no fence, so the node raises each
+    // to what that session was seen in before.
+    #[tokio::test]
+    async fn a_session_brought_back_after_a_restart_resumes_no_looser_than_it_ran() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let carries = dir.path().join("carries.jsonl");
+        fs::write(
+            dir.path().join("fences.json"),
+            r#"{"s-harbour": "fence", "s-quay": "strict"}"#,
+        )
+        .expect("what was seen is kept");
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            Given {
+                carries,
+                ..bare("/nowhere/steer".into(), None)
+            },
+            to_dial,
+        );
+        let resumed = |session: &str| {
+            let asked = Start {
+                work: work(vec![Need::Machine("skiff".to_owned())]),
+                folder: Some("/nowhere/quest".into()),
+                command: vec!["pi".to_owned(), "--session".to_owned(), session.to_owned()],
+                may_cost: false,
+                carries: false,
+                once: None,
+                strict: false,
+            };
+            shared
+                .brought_back_declaring(asked)
+                .work
+                .fence
+                .map(|said| said.kind)
+        };
+        assert_eq!(
+            resumed("s-harbour"),
+            Some(FenceKind::Fence),
+            "fenced as it ran"
+        );
+        assert_eq!(
+            resumed("s-quay"),
+            Some(FenceKind::Strict),
+            "strict as it ran"
+        );
+        assert_eq!(
+            resumed("s-wharf"),
+            None,
+            "one never seen fenced as it was asked"
         );
     }
 
