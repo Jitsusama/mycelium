@@ -2139,6 +2139,24 @@ mod tests {
         again.sees("\u{1b}]2;pi --session far\u{7}").await;
     }
 
+    // A held pi copies by asking the terminal to (OSC 52), and only the
+    // person's own terminal, wherever it joins from, holds their
+    // clipboard: so the ask reaches every joined window as it was sent.
+    #[tokio::test]
+    async fn a_programs_copy_reaches_every_joined_window_as_it_asked() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, _holder) = holding_sh(root.path()).await;
+        let mut typing = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        let mut watching = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        // Spelt out as typed, so only the program's own output asks it.
+        typing
+            .types("printf '\\033]52;c;%s\\007' \"$(printf copied | base64)\"\r")
+            .await;
+        let asked = "\u{1b}]52;c;Y29waWVk\u{7}";
+        typing.sees(asked).await;
+        watching.sees(asked).await;
+    }
+
     #[tokio::test]
     async fn a_window_is_listed_only_while_it_is_joined() {
         let root = tempfile::tempdir().expect("a temporary folder");
