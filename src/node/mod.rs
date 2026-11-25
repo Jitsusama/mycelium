@@ -23900,6 +23900,11 @@ esac
             json!({"v": 1, "id": "m-hold", "at": now.to_string(), "from": "TERN02",
                    "to": ["#machine"], "intent": "hold", "text": "a reboot", "pid": 1}),
         );
+        store.send_here(
+            "m-ask",
+            json!({"v": 1, "id": "m-ask", "at": now.to_string(), "from": "TERN02",
+                   "to": ["person"], "intent": "question", "text": "ship it?", "pid": 1}),
+        );
         let shared = typing(dir.path(), &store, true);
         let typed = shared.typed.clone().expect("it mints");
         let tried = async |want: &str, more: Value| {

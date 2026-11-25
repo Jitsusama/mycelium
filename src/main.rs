@@ -3366,7 +3366,9 @@ fn say_placed(realm: &str, id: &str) {
         })
         && !why.starts_with("this node mints no typed answer")
     {
-        eprintln!("mycelium: {id} isn't kept as yours, so its pi gets no typed answer: {why}");
+        let said =
+            format!("mycelium: {id} isn't kept as yours, so its pi gets no typed answer: {why}\n");
+        let _ = io::stderr().lock().write_all(said.as_bytes());
     }
 }
 
