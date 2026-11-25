@@ -1392,9 +1392,9 @@ pub(crate) fn one_line(text: &str) -> String {
     // its own by unicode-width and neither selects nor modifies ends, so
     // a nonspacing mark between emoji can't start the count afresh,
     // though a spacing mark can where unicode-width gives it a cell (not
-    // one extending a grapheme), nor can either half of a flag, whose
-    // second follows its first rather than a joiner. A non-joiner is
-    // never counted, as it joins no emoji.
+    // one extending a grapheme), nor can any regional indicator, paired
+    // as a flag or not, a flag's second half following its first rather
+    // than a joiner. A non-joiner is never counted, as it joins no emoji.
     let mut joined = 0;
     for (at, &each) in plain.iter().enumerate() {
         let before = kept.last().copied();

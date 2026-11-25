@@ -1033,8 +1033,8 @@ fn a_peer_s_name_chained_from_emoji_counts_a_cell_pair_for_each_four() {
     // Four emoji joined as no sequence still count two cells and draw
     // eight, a bound the cap keeps rather than closes. A nonspacing mark
     // between them draws nothing, and a skin tone carries on the emoji
-    // before it, so neither starts the count afresh, nor does either half
-    // of a flag: a run holds four emoji at most, and each four cost two
+    // before it, so neither starts the count afresh, nor does a regional
+    // indicator, paired as a flag or alone: a run holds four emoji at most, and each four cost two
     // cells, as Unicode's widths count them. Each emoji carries its mark,
     // so one that restarted the count would keep every joiner. The count
     // runs from the text's start, so a chain of flags, which nothing in
@@ -1054,6 +1054,13 @@ fn a_peer_s_name_chained_from_emoji_counts_a_cell_pair_for_each_four() {
         kept(&flagged),
         3,
         "a flag's half started a run, or the count didn't run from the start"
+    );
+    assert_eq!(
+        kept(
+            "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{1F1E6}\u{200D}\u{1F469}"
+        ),
+        3,
+        "a lone regional indicator started a run"
     );
     // A spacing mark takes a cell of its own, so it starts a run afresh,
     // as PROTOCOL says: the joiner after it is the run's first.
@@ -1126,8 +1133,17 @@ fn a_noncharacter_in_a_chain_parts_no_run_of_joiners() {
     // But what draws nothing goes in the same pass as the joiners are
     // judged, as PROTOCOL says: before a joiner it is looked past, as
     // what is kept, and after one it parts it, as the very next
-    // character, whatever it is.
+    // character left. A direction mark, gone before, as a noncharacter
+    // is, parts nothing.
     for (said, cleaned) in [
+        (
+            "\u{6E2F}\u{200D}\u{200E}\u{6E7E}",
+            "\u{6E2F}\u{200D}\u{6E7E}",
+        ),
+        (
+            "\u{6E2F}\u{200D}\u{202E}\u{6E7E}",
+            "\u{6E2F}\u{200D}\u{6E7E}",
+        ),
         (
             "\u{6E2F}\u{200B}\u{200D}\u{6E7E}",
             "\u{6E2F}\u{200D}\u{6E7E}",

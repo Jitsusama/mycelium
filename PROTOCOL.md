@@ -3635,15 +3635,17 @@ as `quest:<id>`, so its short name is never a group's, as no group's
 name holds a colon; it is read in lower case, so keys differing only
 in case are one folder. `for` and `folder` are drawn on one line: each
 control character and line or paragraph separator in them is read as
-a space and each mark turning text's direction is dropped. `for` also
-drops each of Unicode's 66 noncharacters first, then each character
-that draws nothing, keeping one selector only after a character drawn
-as part of a word past ASCII (none a space or a braille blank), and a
-joiner only between two, the first perhaps followed by its selector
-and the second the very next character, so one dropped after a joiner
-parts it, and at most three zero-width joiners
-(U+200D) from the start or from one character, other than a skin tone
-or either half of a flag, given a cell by unicode-width 0.2.3's
+a space and each mark turning text's direction is dropped. From what
+is left, `for` also drops each of Unicode's 66 noncharacters first,
+then each character that draws nothing, keeping one selector only
+after a character drawn as part of a word past ASCII (none a space or
+a braille blank), and a joiner only between two, the first perhaps
+followed by its selector and the second the very next character left,
+so one dropped in this pass after a joiner parts it, though a
+direction mark or noncharacter, gone before, doesn't; and at most
+three zero-width joiners (U+200D) from the start or from one
+character, other than a skin tone or any regional indicator (U+1F1E6
+to U+1F1FF, paired as a flag or not), given a cell by unicode-width 0.2.3's
 per-character width (most spacing marks are, though none extending a
 grapheme, such as U+09BE; no nonspacing mark, conjoining jamo vowel or
 final, or selector is) and following no zero-width joiner kept, to the

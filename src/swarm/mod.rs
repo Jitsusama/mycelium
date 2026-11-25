@@ -423,7 +423,7 @@ fn steps(text: &str) -> impl Iterator<Item = &str> {
 }
 
 /// Whether no width rule of Unicode's joins `each` to what's before it:
-/// it takes a cell of its own, isn't a modifier, a flag's half or a
+/// it takes a cell of its own, isn't a modifier, a regional indicator or a
 /// letter of a script whose ligatures narrow, and follows no joiner.
 fn starts_afresh(before: Option<char>, each: char) -> bool {
     let follows_a_joiner = matches!(before, Some('\u{200D}' | '\u{2D7F}' | '\u{17D2}' | '\r'));
