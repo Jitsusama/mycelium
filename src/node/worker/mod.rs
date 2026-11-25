@@ -39,6 +39,18 @@ pub struct Worker {
     pub uid: u32,
 }
 
+impl Worker {
+    /// The socket each program the node holds is told to speak through:
+    /// this one, where it answers the account the node runs as, which is
+    /// the account every program the node starts runs as; none where it
+    /// answers another, since it would refuse them.
+    #[must_use]
+    pub fn told_to_starts(&self) -> Option<PathBuf> {
+        // The kernel names a connecting process by its effective account.
+        (self.uid == rustix::process::geteuid().as_raw()).then(|| self.socket.clone())
+    }
+}
+
 /// How far from the node's clock a message's time may be, in
 /// milliseconds: its sender stamps it as it writes it, a moment before.
 const SENT_WITHIN: i64 = 60_000;

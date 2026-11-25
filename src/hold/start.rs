@@ -10,6 +10,10 @@ use std::time::Duration;
 /// How long a holder has to say it holds before it is given up on.
 const HOLDS_WITHIN: Duration = Duration::from_secs(10);
 
+/// The variable a held program is told its worker socket in
+/// ([`Starter::worker_socket`]), which pi speaks on the mesh through.
+pub const WORKER_SOCKET_SAID: &str = "MYCELIUM_WORKER_SOCKET";
+
 /// How holders are started.
 #[derive(Debug, Clone)]
 pub struct Starter {
@@ -23,6 +27,12 @@ pub struct Starter {
     /// through the person's login shell ([`login_shell`]) where it is
     /// carried, or none where the machine is given none.
     pub kit: Option<Kit>,
+    /// The worker socket each program it holds is told in
+    /// [`WORKER_SOCKET_SAID`], where its node serves one for the account
+    /// it starts them as; none otherwise, and then none is passed on from
+    /// the starter's own environment, since no socket there would answer
+    /// them. The node says it, so a worker machine's image need not.
+    pub worker_socket: Option<PathBuf>,
 }
 
 /// The realm's kit as a node was given it, once checked
@@ -173,6 +183,7 @@ impl Starter {
         // A session and its tools are given the limit on open files the
         // node was started with, not the node's own.
         crate::open_files::as_started(&mut holder);
+        self.tell_worker_socket(&mut holder);
         self.name(&mut holder, realm, &id, folder, login);
         if !within.is_empty() {
             // One word, so none of the launcher's is read as the holder's.
@@ -223,6 +234,16 @@ impl Starter {
                 format!("its holder said nothing within {HOLDS_WITHIN:?}"),
             )),
         }
+    }
+
+    /// Tells `holder` the worker socket its program speaks through, or
+    /// takes away any it was left, which the holder passes on to each
+    /// start of its program.
+    fn tell_worker_socket(&self, holder: &mut Command) {
+        match &self.worker_socket {
+            Some(socket) => holder.env(WORKER_SOCKET_SAID, socket),
+            None => holder.env_remove(WORKER_SOCKET_SAID),
+        };
     }
 
     /// Gives `holder` the words that make it the holder `id` of a program
@@ -689,6 +710,7 @@ mod tests {
             program: PathBuf::from("/bin/mycelium"),
             scope: Scope::None,
             kit: Some(Kit::Carried(PathBuf::from("/nix/store/kit"))),
+            worker_socket: None,
         };
         // The words the holder is started with, as `start` gives them.
         let words = |login: bool| {
@@ -725,6 +747,34 @@ mod tests {
         assert!(
             !words.contains(&kit[0]),
             "a refused kit is named to no holder: {words:?}"
+        );
+    }
+
+    #[test]
+    fn a_holder_is_told_the_worker_socket_only_where_its_node_serves_one() {
+        let told = |worker_socket: Option<&str>| {
+            let starter = Starter {
+                program: PathBuf::from("/bin/mycelium"),
+                scope: Scope::None,
+                kit: None,
+                worker_socket: worker_socket.map(PathBuf::from),
+            };
+            let mut holder = starter.scope.command(&starter.program, "f00d");
+            starter.tell_worker_socket(&mut holder);
+            holder
+                .get_envs()
+                .find(|(name, _)| *name == WORKER_SOCKET_SAID)
+                .map(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+        };
+        assert_eq!(
+            told(Some("/run/mycelium/work-worker.sock")),
+            Some(Some("/run/mycelium/work-worker.sock".to_owned())),
+            "a node serving a worker socket tells each holder it"
+        );
+        assert_eq!(
+            told(None),
+            Some(None),
+            "one serving none takes away whatever its own environment named"
         );
     }
 
