@@ -6909,7 +6909,10 @@ impl<S: Store> Shared<S> {
         let waking = sessions
             .iter()
             .filter(|session| session.machine == self.machine)
-            .find_map(|session| steer::wake_for(session, boot.as_deref(), &self.held));
+            .find_map(|session| {
+                steer::wake_for(session, boot.as_deref(), &self.held)
+                    .or_else(|| self.marked_wake(&session.id))
+            });
         match (waking, steer.only_wakes()) {
             (Some(file), true) => steer::wake(&file, address)
                 .map_err(|error| format!("{address} didn't wake: {error}")),
@@ -7494,12 +7497,21 @@ impl<S: Store> Shared<S> {
     fn parked_here(&self, session: &Session) -> bool {
         session.machine == self.machine
             && (steer::wake_for(session, self.boot.id.as_deref(), &self.held).is_some()
-                || crate::wake::parked(&self.parked, standing::began())
-                    .iter()
-                    .any(|marked| {
-                        marked.session == session.id
-                            && steer::read_by_a_holder(&marked.wake, &self.held)
-                    }))
+                || self.marked_wake(&session.id).is_some())
+    }
+
+    /// The wake file of a park marker this boot wrote for `session`,
+    /// where a running holder reads it, so a steer wakes a session parked
+    /// that way as surely as one whose presence names its wake. The boot
+    /// is the one read when the node started, so no `sysctl` runs while
+    /// the node's lock is held.
+    fn marked_wake(&self, session: &str) -> Option<PathBuf> {
+        crate::wake::parked(&self.parked, self.boot.began)
+            .into_iter()
+            .find(|marked| {
+                marked.session == session && steer::read_by_a_holder(&marked.wake, &self.held)
+            })
+            .map(|marked| marked.wake)
     }
 
     /// The session `asked` brings back uncounted, `reopened` as the node
@@ -20680,6 +20692,16 @@ esac
                     .to_owned()
             ),
             "nor one whose marker its holder reads"
+        );
+        // What the refusal says holds: a steer wakes it (round 8's F6).
+        let mut client = Speaking::greeted(&socket).await;
+        let rouse = json!({"id": 1, "ask": "steer", "address": "MARKED", "steer": {"act": "wake"}});
+        client.ask(rouse).await;
+        let woken = client.next().await;
+        assert_eq!(woken["steered"]["machine"], json!("skiff"), "{woken}");
+        assert!(
+            wake("e0r3").exists(),
+            "a steer wakes s-marked through its marker"
         );
         for session in ["s-orphan", "s-napped"] {
             assert_eq!(
