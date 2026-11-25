@@ -1460,6 +1460,26 @@ pub(crate) mod tests {
         );
     }
 
+    // A tree cut from a repository kept elsewhere has a `.git` file naming
+    // it, where the repository's own checkout has a folder.
+    #[test]
+    fn this_disk_tells_a_cut_tree_from_its_repositorys_own_checkout() {
+        let place = tempfile::tempdir().expect("a place");
+        let rows = place.path().join("src/rows");
+        std::fs::create_dir_all(rows.join(".git")).expect("the checkout is made");
+        let tidy = place.path().join("trees/tidy");
+        std::fs::create_dir_all(&tidy).expect("the tree is made");
+        let named = "gitdir: ../../src/rows/.git/worktrees/tidy\n";
+        std::fs::write(tidy.join(".git"), named).expect("it names its repository");
+
+        assert!(ThisDisk.is_checkout(&tidy) && ThisDisk.is_cut_tree(&tidy));
+        assert!(ThisDisk.is_checkout(&rows) && !ThisDisk.is_cut_tree(&rows));
+        assert!(
+            !ThisDisk.is_cut_tree(place.path()),
+            "no checkout is no tree"
+        );
+    }
+
     // New work goes where there is room, so a sprout naming no machine
     // leaves it to placement, unless its work is in a tree only this
     // machine has.
@@ -1475,6 +1495,8 @@ pub(crate) mod tests {
                 "/home/kestrel/src/loose",
                 "/home/kestrel/src/rows/vendor/sea",
                 "/home/kestrel/trees/tidy/docs",
+                "/home/kestrel/src/tidy",
+                "/home/kestrel/src/rows/sea",
                 "/home/kestrel/scratch/rows",
                 "/home/kestrel/notes",
                 "/srv/rows",
@@ -1491,6 +1513,9 @@ pub(crate) mod tests {
         .fetching("/home/kestrel/src/rows/vendor/sea", origin)
         .fetching("/home/kestrel/scratch/rows", origin)
         .fetching("/srv/rows", origin)
+        .fetching("/home/kestrel/src/tidy", origin)
+        .fetching("/home/kestrel/src/rows/sea", origin)
+        .cutting("/home/kestrel/src/tidy")
         .cutting("/home/kestrel/trees/tidy")
         .cutting("/home/kestrel/src/rows/.worktrees/tidy");
         let needs = |folder: &str, on: Option<&str>| {
@@ -1519,6 +1544,8 @@ pub(crate) mod tests {
             ("trees/tidy/docs", "a tree cut from a repository elsewhere"),
             ("src/rows/.worktrees/tidy", "one cut inside the checkout"),
             ("src/rows/vendor/sea", "a clone inside a checkout"),
+            ("src/rows/sea", "a clone just inside a checkout"),
+            ("src/tidy", "a tree cut where checkouts are kept"),
             ("src/loose", "a checkout fetching from nowhere"),
             ("scratch/rows", "a clone each machine keeps its own"),
             ("/srv/rows", "a checkout outside home"),

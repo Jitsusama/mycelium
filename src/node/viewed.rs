@@ -212,8 +212,8 @@ mod tests {
     }
 
     // A tree cut from a repository kept elsewhere has a `.git` file naming
-    // it, where the repository's own checkout has a folder; both a Disk
-    // of this machine and an asker's view tell them apart.
+    // it, where the repository's own checkout has a folder; an asker's
+    // view tells them apart, as this machine's Disk does in sprout's.
     #[test]
     fn a_tree_cut_from_a_repository_elsewhere_is_told_from_its_own_checkout() {
         let place = tempfile::tempdir().expect("a place");
@@ -229,10 +229,6 @@ mod tests {
 
         assert!(viewed.is_checkout(&tidy) && viewed.is_cut_tree(&tidy));
         assert!(viewed.is_checkout(&rows) && !viewed.is_cut_tree(&rows));
-        let here = crate::sprout::ThisDisk;
-        assert!(here.is_checkout(&tidy) && here.is_cut_tree(&tidy));
-        assert!(here.is_checkout(&rows) && !here.is_cut_tree(&rows));
-        assert!(!here.is_cut_tree(place.path()), "no checkout is no tree");
     }
 
     #[test]

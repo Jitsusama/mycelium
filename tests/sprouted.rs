@@ -141,6 +141,19 @@ fn checkout_on_tern() -> (tempfile::TempDir, std::path::PathBuf) {
     (home, rows)
 }
 
+/// Makes the checkout at `rows` a repository that fetches from a remote,
+/// as git reads one: its head, its objects and refs, and its origin.
+fn fetches(rows: &Path) {
+    let git = rows.join(".git");
+    for folder in ["objects", "refs/heads"] {
+        std::fs::create_dir_all(git.join(folder)).expect("a repository's folders");
+    }
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").expect("its head");
+    let config = "[core]\n\trepositoryformatversion = 0\n\tbare = false\n\
+                  [remote \"origin\"]\n\turl = https://example.com/rows\n";
+    std::fs::write(git.join("config"), config).expect("its origin");
+}
+
 /// What a node answers a start that started, in `folder`.
 fn started_in(folder: &Path) -> Answer {
     always(serde_json::json!({"Ok": {"Started": {
@@ -181,6 +194,9 @@ fn left_out_lines(said: &str) -> Vec<&str> {
 #[test]
 fn a_node_from_before_sprout_is_asked_to_start_and_what_the_seed_left_out_is_said() {
     let (home, rows) = checkout_on_tern();
+    // Fetching from a remote, so the sprout would be placed, and only its
+    // asking of a node from before Sprout pins it here.
+    fetches(&rows);
     let socket = home.path().join("old.sock");
     let asked = node_answering(&socket, vec![as_a_node_before_sprout(), started_in(&rows)]);
 
@@ -207,6 +223,11 @@ fn a_node_from_before_sprout_is_asked_to_start_and_what_the_seed_left_out_is_sai
     assert_eq!(asked.len(), 2, "a sprout, then the start it judged");
     assert!(asked[0].starts_with(r#"{"Sprout":"#), "{}", asked[0]);
     assert!(asked[1].starts_with(r#"{"Start":"#), "{}", asked[1]);
+    assert!(
+        !asked[0].contains(r#""on":"#),
+        "the sprout itself names no machine: {}",
+        asked[0]
+    );
     assert!(
         asked[1].contains(r#""needs":[{"machine":"tern"}]"#),
         "on this machine, as sprouts were then: {}",

@@ -2208,8 +2208,11 @@ none or names no folder there, unless `strict` is true: then a `folder`
 that machine hasn't, or can't look at, is refused, as `tern has no
 folder src/elsewhere, which the start names` (a path within tern's
 home), since the work it's for is there and home won't do. A sprout's
-start is strict; any asker may make one so. A start that machine runs
-within its strict fence's launcher is refused so too, strict or not,
+start is strict; any asker may make one so. A strict start naming no
+machine that the machine placement chose refuses so is placed again on
+the asking node's machine alone, as a sprout's is (below). A start
+that machine runs within its strict fence's launcher is refused so
+too, strict or not,
 since that fence won't let a command write home, and so is one there
 that names no folder, or names home itself, as `tern would begin this
 start at home, which its strict fence won't let it write, so the start
@@ -2534,9 +2537,11 @@ quest's scratch clone is, one with no remote, or in no checkout. What
 a checkout holds uncommitted isn't looked at, so work on it names this
 machine with `on`. Where the machine placement chose refuses the start
 with `<machine> has no folder <folder>, which the start names`, alone
-or wrapped after `: `, before anything starts there, it begins on this
-one instead, within the same start: counted once, under one wait for
-room and one time to answer. Any other answer stands, so one lost on
+or wrapped after `: `, before anything starts there, it is placed again
+on this one alone, held to the ground it would be placed here on, within
+the same start: booked once, under one wait for room and one time to
+answer, with the refusing machine's load forgotten, though the day's
+placements keep both. Any other answer stands, so one lost on
 its way back, which may have started there, is never asked again. A
 node from before `strict` begins a strict start at home and its guard
 ends it, so a realm placing sprouts runs nodes that judge `strict`.

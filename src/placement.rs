@@ -682,6 +682,14 @@ impl Starts {
         self.placed.push((machine.to_owned(), at));
     }
 
+    /// Forgets the newest start kept as placed on `machine`, which refused
+    /// it before it began, so it weighs there no longer.
+    pub fn unplaced(&mut self, machine: &str) {
+        if let Some(newest) = self.placed.iter().rposition(|(one, _)| one == machine) {
+            self.placed.remove(newest);
+        }
+    }
+
     /// Each of `machines`' load as of `now`, with `sessions` naming the
     /// machine each session running runs on; forgets each start its
     /// machine's room now shows, or that is past its time.
@@ -2683,6 +2691,21 @@ pub(crate) mod tests {
             BTreeMap::from([("kestrel".to_owned(), 5), ("skiff".to_owned(), 5)]),
             "each start counts against its machine, and none goes to one over"
         );
+    }
+
+    #[test]
+    fn a_start_its_machine_refused_counts_there_no_longer() {
+        let kestrel = machine("kestrel", "linux", 32, &[]);
+        let at: jiff::Timestamp = "2026-10-29T06:00:05Z".parse().expect("a time");
+        let mut starts = Starts::default();
+        starts.placed("kestrel", at);
+        starts.placed("kestrel", at);
+        starts.placed("skiff", at);
+        starts.unplaced("kestrel");
+        starts.unplaced("tern");
+        let later = at + jiff::SignedDuration::from_secs(10);
+        let loads = starts.loads(std::slice::from_ref(&kestrel), [], later);
+        assert_eq!(loads["kestrel"].placed, 1, "one refused, one still counted");
     }
 
     #[test]

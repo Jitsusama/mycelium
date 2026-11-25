@@ -1236,10 +1236,11 @@ struct Starting {
 
 #[derive(clap::Args)]
 struct Sprouting {
-    /// The machine it starts on, by name; if none, the one with most room
-    /// where its folder is a repository's checkout under `~/src`, else
-    /// this one. Name this one for work on what a checkout holds
-    /// uncommitted.
+    /// The machine it starts on, by name; if none, where placement
+    /// chooses, where its folder is a repository's own checkout under
+    /// `~/src` fetching from a remote (this one where the machine chosen
+    /// hasn't it), else this one. Name this one for work on what a
+    /// checkout holds uncommitted.
     #[arg(long)]
     on: Option<String>,
     /// The folder it works in, or a place by name, such as

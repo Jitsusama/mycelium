@@ -697,8 +697,8 @@ fn sprouted(
 /// What follows `reply`, the answer of `chosen`, the machine placement
 /// chose, to `asked`: `asked` pinned to `here`, this machine, with
 /// `chosen`'s refusal, where `chosen` refused it for lacking the folder it
-/// names, a sprout's strict start naming no machine whose folder was
-/// found here, so it begins here, as it did before sprouts were placed,
+/// names, a strict start naming no machine (a sprout's, or any asker's),
+/// so it is placed here, as sprouts began before they were placed,
 /// within the one start it is booked and counted as; else the answer
 /// itself. So a start whose answer was lost, which may have started
 /// there, is never asked again.
@@ -7722,7 +7722,11 @@ impl<S: Store> Shared<S> {
                         Ok(instead) => instead,
                         Err(reply) => return reply,
                     };
-                    eprintln!("a start placed on {machine} begins here instead, as {why}");
+                    // Quoted, since the folder in it is one the asker chose.
+                    let said = why.escape_debug();
+                    eprintln!("a start placed on {machine} is placed here instead, as {said}");
+                    // Nothing began there, so it weighs there no longer.
+                    self.lock().starts.unplaced(&machine);
                     return self
                         .placed_here((pinned, at), fence, screen, &admits)
                         .await
@@ -23891,6 +23895,44 @@ esac
             "no link reaches tern: {refused:?}"
         );
         assert_eq!(logged(), "", "nothing for a start refused");
+    }
+
+    // A start that falls back here is placed again, pinned here, so the
+    // ground that would keep it off this machine keeps it off still.
+    #[tokio::test]
+    async fn a_start_falling_back_here_is_held_to_what_here_takes() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let skiff = holding_skiff(dir.path(), Memory::default(), None, processes);
+        let pinned = Start {
+            work: work(vec![Need::Machine("skiff".to_owned())]),
+            folder: Some(dir.path().to_owned()),
+            strict: true,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let at = jiff::Timestamp::now().as_millisecond();
+        let admits = skiff.admits().await;
+        let ground = (None, Screen::Ground);
+        let started = skiff
+            .placed_here((pinned.clone(), at), ground.0, ground.1, &admits)
+            .await;
+        assert!(
+            matches!(&started, Ok(Response::Started(one)) if one.machine == "skiff"),
+            "the person's begins here: {started:?}"
+        );
+        let strict = Some(crate::declared::Kind::Strict);
+        let refused = skiff
+            .placed_here((pinned, at), strict, held_screen(strict), &admits)
+            .await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.starts_with("skiff doesn't take it now: ")),
+            "an agent's, which here runs no command for, stays refused: {refused:?}"
+        );
     }
 
     // A sprout placed on a machine without its repository's checkout
