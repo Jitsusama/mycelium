@@ -123,6 +123,8 @@ pub fn holds_the_bar(
             all < within,
             "the records of {CELLS} cells took {all:?}, past {within:?}"
         );
+    } else {
+        eprintln!("{all:?} for {CELLS} cells is held by growth alone, as a debug build");
     }
 }
 
