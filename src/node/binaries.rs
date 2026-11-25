@@ -174,12 +174,8 @@ impl System {
 #[must_use]
 pub fn binary(procs: &Path, pid: i32, system: &System) -> Option<Binary> {
     let file = fs::read_link(procs.join(pid.to_string()).join("exe")).ok()?;
-    let name = file.file_name()?.to_str()?;
-    // The kernel says a file since removed with this after its path, and
-    // one removed may have been anything.
-    if name.ends_with(" (deleted)") {
-        return None;
-    }
-    let binary = Binary::named(name)?;
+    // The kernel says a file since removed with " (deleted)" after its
+    // path, which no binary's name matches, so one removed counts as none.
+    let binary = Binary::named(file.file_name()?.to_str()?)?;
     system.holds(binary, file.parent()?).then_some(binary)
 }

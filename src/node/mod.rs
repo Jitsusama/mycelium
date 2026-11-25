@@ -24121,10 +24121,10 @@ esac
         };
         let said = json!({"act": "answer", "want": "m-ask", "value": "yes",
                           "from": "person", "token": "0".repeat(32)});
-        // Each node its own folder, so the log counted below is the on
-        // node's alone, and the off node is seen to keep none.
-        let off_dir = tempfile::tempdir().expect("a temporary folder");
-        let off = typing(off_dir.path(), &store, false);
+        // A node told not to mint holds no minter, so it has no log to
+        // keep, and every mint and spend asked of it is refused.
+        let off = typing(dir.path(), &store, false);
+        assert!(off.typed.is_none(), "a node told not to mint keeps no log");
         for refused in [
             off.mint("s-own", bound(&typed::digest("yes")))
                 .await
@@ -24165,10 +24165,6 @@ esac
         );
         let log = fs::read_to_string(dir.path().join("typed-answers.jsonl")).expect("its log");
         assert_eq!(log.lines().count(), 3, "each refused mint is kept: {log}");
-        assert!(
-            fs::read_dir(off_dir.path()).is_ok_and(|mut kept| kept.next().is_none()),
-            "a node told not to mint keeps no log"
-        );
     }
 
     #[tokio::test]
@@ -24178,30 +24174,69 @@ esac
         // A hold record whose holder no longer runs is read as none, so
         // the test's own process stands in for the holder.
         let holder = i32::try_from(std::process::id()).expect("a pid");
-        // 45 is what the person typed under kitty's shell; 58 a pi on the
-        // same terminal and 60 a command it ran; 70 an agent's, on no
-        // terminal; the holder, 45's own child, holds pi 31.
+        // The stand-ins go past the most pids Linux ever names, so the
+        // real holder is never one of them, in a pid namespace or not.
+        const FAR: i32 = 4_194_304;
+        let (kitty, shell, typed_by, a_pi, it_ran, agents, held_pi) = (
+            FAR + 40,
+            FAR + 41,
+            FAR + 45,
+            FAR + 58,
+            FAR + 60,
+            FAR + 70,
+            FAR + 31,
+        );
+        // typed_by is what the person typed under kitty's shell; a_pi a pi
+        // on the same terminal and it_ran a command it ran; agents an
+        // agent's, on no terminal; the holder, typed_by's own child, holds
+        // held_pi.
         let machine = procs(&[
-            (40, "kitty", 1, "app.slice/kitty.scope"),
-            (41, "zsh", 40, "app.slice/kitty.scope"),
-            (45, "mycelium", 41, "app.slice/kitty.scope"),
-            (58, "pi", 41, "agents.slice/mycelium-pi-a.scope"),
-            (60, "mycelium", 58, "agents.slice/mycelium-pi-a.scope"),
-            (70, "mycelium", 1, "agents.slice/mycelium-pi-b.scope"),
-            (holder, "mycelium", 45, "app.slice/mycelium-hold.scope"),
-            (31, "pi", holder, "app.slice/mycelium-hold.scope"),
+            (kitty, "kitty", 1, "app.slice/kitty.scope"),
+            (shell, "zsh", kitty, "app.slice/kitty.scope"),
+            (typed_by, "mycelium", shell, "app.slice/kitty.scope"),
+            (a_pi, "pi", shell, "agents.slice/mycelium-pi-a.scope"),
+            (it_ran, "mycelium", a_pi, "agents.slice/mycelium-pi-a.scope"),
+            (agents, "mycelium", 1, "agents.slice/mycelium-pi-b.scope"),
+            (
+                holder,
+                "mycelium",
+                typed_by,
+                "app.slice/mycelium-hold.scope",
+            ),
+            (held_pi, "pi", holder, "app.slice/mycelium-hold.scope"),
         ]);
         let at = machine.path();
         let binaries = tempfile::tempdir().expect("a stand-in for the store");
-        runs_binary(at, 40, binaries.path(), ".kitty-wrapped");
+        runs_binary(at, kitty, binaries.path(), ".kitty-wrapped");
         runs_binary(at, holder, binaries.path(), "mycelium");
-        on_terminal(at, (41, "zsh", 200), (40, 41, 41), (TTY, 45));
-        on_terminal(at, (45, "mycelium", 450), (41, 45, 41), (TTY, 45));
-        on_terminal(at, (58, "pi", 500), (41, 58, 41), (TTY, 58));
-        on_terminal(at, (60, "mycelium", 600), (58, 58, 41), (TTY, 58));
-        on_terminal(at, (70, "mycelium", 700), (1, 70, 70), (0, -1));
-        on_terminal(at, (holder, "mycelium", 460), (45, holder, holder), (0, -1));
-        on_terminal(at, (31, "pi", 470), (holder, 31, 31), (TTY + 1, 31));
+        on_terminal(
+            at,
+            (shell, "zsh", 200),
+            (kitty, shell, shell),
+            (TTY, typed_by),
+        );
+        let session = (shell, typed_by, shell);
+        on_terminal(at, (typed_by, "mycelium", 450), session, (TTY, typed_by));
+        on_terminal(at, (a_pi, "pi", 500), (shell, a_pi, shell), (TTY, a_pi));
+        on_terminal(
+            at,
+            (it_ran, "mycelium", 600),
+            (a_pi, a_pi, shell),
+            (TTY, a_pi),
+        );
+        on_terminal(at, (agents, "mycelium", 700), (1, agents, agents), (0, -1));
+        on_terminal(
+            at,
+            (holder, "mycelium", 460),
+            (typed_by, holder, holder),
+            (0, -1),
+        );
+        on_terminal(
+            at,
+            (held_pi, "pi", 470),
+            (holder, held_pi, held_pi),
+            (TTY + 1, held_pi),
+        );
         let held = dir.path().join("held");
         fs::create_dir_all(&held).expect("its folder is made");
         let record = hold::Held {
@@ -24209,7 +24244,7 @@ esac
             command: vec!["pi".to_owned()],
             folder: PathBuf::from("/"),
             holder: std::process::id(),
-            pid: 31,
+            pid: u32::try_from(held_pi).expect("a pid"),
             parked: false,
             since: String::new(),
             windows: Vec::new(),
@@ -24231,9 +24266,9 @@ esac
         shared.processes = Arc::new(Processes::Folder(at.to_owned()));
         shared.held = held;
         for (asker, says) in [
-            (58, "a pi places it"),
-            (60, "a pi places it or runs above"),
-            (70, "neither the person's own terminal nor the launcher"),
+            (a_pi, "a pi places it"),
+            (it_ran, "a pi places it or runs above"),
+            (agents, "neither the person's own terminal nor the launcher"),
         ] {
             shared.client = Some(asker);
             let refused = shared.placed_by_the_person("a1").await;
@@ -24246,7 +24281,7 @@ esac
             typed.placements().placed().is_empty(),
             "no agent's ask keeps a hold as the person's"
         );
-        shared.client = Some(45);
+        shared.client = Some(typed_by);
         let unnamed = shared.placed_by_the_person("b2").await;
         assert!(
             unnamed

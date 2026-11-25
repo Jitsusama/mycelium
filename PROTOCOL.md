@@ -1555,6 +1555,7 @@ reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `"Present"` | `"Present"`, then held open while its process runs |
 | `{"Spawned": {"pid", "started", "session"}}` | `"Spawned"`, from a pi host, of its own spawner (A Hosted Session's Spawner) |
 | `{"Mint": {"session", "address", "want", "digest"}}` | `{"Minted": {"token", "until"}}`, from pi's own process, for the person's typed answer (A Typed Answer) |
+| `{"Placed": {"held"}}` | `"Placed"`, from the person's `mycelium hold`, once the node keeps that hold as theirs (A Typed Answer) |
 | `{"Carry": {"machine", "reopens"}}` | `"Carrying"`, then what it asks of `machine` |
 | `"Health"` | `{"Health": health}`, then another each time it moves |
 | `{"Turn": {"session"}}` | `"Turn"`, once a holder may resume `session` (A Held Session) |
