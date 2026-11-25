@@ -485,10 +485,11 @@ pub(crate) fn shorts_of(swarm: &Swarm) -> BTreeMap<String, String> {
 
 /// Each team's short name, as [`short_names`] gives it, unless it cleans
 /// to another team's address, or to the address of a session among
-/// `living`, by its address and id, that doesn't lead it. A steer typed
-/// with such a name reaches what has that address first, as the session
-/// a team's lead is leaves it to the team, so a page never draws, nor a
-/// hint offers, a name that reaches another.
+/// `living`, by its address and id, unless that session leads the team
+/// and the team goes by that address too. A steer typed with such a name
+/// reaches what has that address first, and a session leaves it to a
+/// team only where both hold, as `session_by_address` asks, so a page
+/// never draws, nor a hint offers, a name that reaches another.
 pub(crate) fn shorts_beside<'a>(
     teams: &[Value],
     living: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
@@ -505,8 +506,9 @@ pub(crate) fn shorts_beside<'a>(
             .iter()
             .map(address)
             .any(|other| other != team && other.eq_ignore_ascii_case(&short));
+        let its_own = team.eq_ignore_ascii_case(&short);
         let a_session = living.iter().any(|(other, id)| {
-            other.eq_ignore_ascii_case(&short) && !(id.is_some() && *id == lead)
+            other.eq_ignore_ascii_case(&short) && !(its_own && id.is_some() && *id == lead)
         });
         !a_team && !a_session
     });
@@ -760,13 +762,16 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
 }
 
 /// Each team as a person types it, its short name where it has one, in
-/// the order the overview lists them, for a shell to complete.
+/// the order the overview lists them, for a shell to complete. Each is
+/// cleaned as a page draws it, since a peer gives the name and a shell
+/// may draw what it completes; matching cleans both sides, so the
+/// cleaned name still reaches its team.
 #[must_use]
 pub fn typed(swarm: &Swarm) -> Vec<String> {
     let shorts = shorts_of(swarm);
     ordered(swarm.teams.iter())
         .into_iter()
-        .map(|team| names::typed(team, &shorts).to_owned())
+        .map(|team| unmarked(names::typed(team, &shorts)))
         .collect()
 }
 

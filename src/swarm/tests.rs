@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Look, Swarm, WHOLE, aligned, overview, team, typed};
+use super::{Look, Swarm, WHOLE, aligned, overview, team, typed, unmarked};
 
 /// A look 72 columns wide, without colour, at 17:00 on Thursday
 /// 12 November 2026, in UTC.
@@ -502,6 +502,25 @@ fn a_team_s_own_address_as_its_short_name_is_drawn_only_where_its_lead_has_it() 
 }
 
 #[test]
+fn a_lead_s_address_as_its_team_s_short_name_is_never_drawn_where_the_team_goes_by_another() {
+    // Harbour goes by HARBOR, led by the session LEAD: typed, lead reaches
+    // that session alone, so pausing it would leave the rest running.
+    let mut swarm = swarm();
+    swarm.teams[1]["swarm"] = json!("lead");
+    let shown = overview(&swarm, &look());
+    assert!(
+        !shown
+            .lines()
+            .any(|line| line.trim_start().starts_with("lead ")),
+        "a page drew a name that reaches the session LEAD alone:\n{shown}"
+    );
+    assert!(
+        !typed(&swarm).contains(&"lead".to_owned()),
+        "a shell was offered a name that reaches the session LEAD alone"
+    );
+}
+
+#[test]
 fn a_short_name_that_cleans_to_an_act_is_never_drawn() {
     // Drawn, it reads as resume, which swarm does rather than reach Harbour.
     let mut swarm = swarm();
@@ -514,7 +533,7 @@ fn a_short_name_that_cleans_to_an_act_is_never_drawn() {
         "a page drew an act as a team's name:\n{shown}"
     );
     assert!(
-        !typed(&swarm).contains(&"resume".to_owned()),
+        !typed(&swarm).iter().any(|name| unmarked(name) == "resume"),
         "a shell was offered an act as a team's name"
     );
 }
@@ -599,7 +618,7 @@ fn a_session_s_doing_draws_as_its_words_on_one_line() {
         );
         assert_eq!(
             Ok(shown),
-            team(&doing(&super::unmarked(dirty)), "harb", &look),
+            team(&doing(&unmarked(dirty)), "harb", &look),
             "a doing's mark, break or escape drew otherwise than on one line at {}",
             look.width
         );

@@ -3478,8 +3478,10 @@ each message's `at` in UTC to the millisecond, as
 `2026-11-16T17:00:00.000Z`, whatever offset or precision it came with,
 so the order of the words is the order sent; an `at` that is no time
 is held as when the node heard it. The `team` kind
-holds each orchestrator's team, keyed by its address: the living
-sessions answering to it as `members`, its `lead` working on its quest,
+holds each orchestrator's team, keyed by its address in upper case,
+as is `within`, so a client matches a session's `orchestrated_by`
+without regard to case: the living sessions answering to it as
+`members`, its `lead` working on its quest,
 its `title` as a served `quest` names it (else its lead's), the name it
 goes by in the swarm as `swarm` where that quest gives one, the team it
 sits `within` by its lead's orchestrator, and `counts` of its members
