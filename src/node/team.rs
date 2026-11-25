@@ -171,7 +171,16 @@ pub fn teams(
             continue;
         };
         if let Some(team) = teams.get_mut(quest) {
-            team.lead.get_or_insert(session);
+            // The orchestrator the team goes by leads it where it works on
+            // the quest, before any older session on it, as one restarted
+            // under its own address is, so its address reaches the team.
+            let led_by = |lead: &Session| own(&lead.address) == quest;
+            if team
+                .lead
+                .is_none_or(|lead| !led_by(lead) && led_by(session))
+            {
+                team.lead = Some(session);
+            }
             if session.orchestrated_by.is_none() {
                 team.members.push(session);
             }
@@ -457,6 +466,35 @@ mod tests {
             (&teams["HARBOR"]["lead"], &teams["HARBOR"]["members"]),
             (&json!("lead"), &json!(["one", "peer", "lead"])),
             "led by the session on its quest, the peer only among its members"
+        );
+    }
+
+    #[test]
+    fn an_orchestrator_on_its_own_quest_leads_its_team_before_an_older_session() {
+        // A restarted orchestrator keeps its address but not its place in
+        // id order, and a team led by another wouldn't be reached by the
+        // address it goes by.
+        let mut orchestrator = session(
+            "orchestrator",
+            State::Idle,
+            (None, Some("QEST-20261007-HARBOR")),
+            &[],
+        );
+        orchestrator.address = "HARBOR".to_owned();
+        let sessions = [
+            session(
+                "elder",
+                State::Busy,
+                (Some("HARBOR"), Some("QEST-20261007-HARBOR")),
+                &[],
+            ),
+            orchestrator,
+        ];
+        let teams = worked_out(&sessions, &[("HARBOR", "Harbour")], &[]);
+        assert_eq!(
+            teams["HARBOR"]["lead"],
+            json!("orchestrator"),
+            "an older session on the quest led the team its orchestrator goes by"
         );
     }
 
