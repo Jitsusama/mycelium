@@ -126,6 +126,17 @@ pub enum Request {
         /// The machine to update.
         machine: String,
     },
+    /// Keep `machine`, made for the person, with no end it is held to,
+    /// through its provider, which may stop and start it on the way.
+    /// Asked by the person, or by a session the node names a keeper, and
+    /// refused while a session on it runs a turn unless `force`.
+    Keep {
+        /// The machine to keep.
+        machine: String,
+        /// Whether to keep it though a session on it runs a turn.
+        #[serde(default)]
+        force: bool,
+    },
     /// Records that the session asking, as the kernel and pi's records
     /// prove it, heads the orchestrating quest `heads` and orchestrates
     /// `quests`, in place of what it said before; with neither, forgets
@@ -508,6 +519,8 @@ pub enum Response {
     /// one JSON object naming its `step`, such as `done` or `refused`, and
     /// the commit the machine runs after it.
     Updated(serde_json::Value),
+    /// The machine kept, as its node now books it.
+    Kept(Box<crate::made::Made>),
     /// How the person's carry asked for ended: the carry's last line,
     /// naming the machine it went to and each session started there.
     Carried(serde_json::Value),

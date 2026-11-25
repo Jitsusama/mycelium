@@ -58,6 +58,7 @@ fn node(dir: &Path, realm: &str, to: &[&str], from: &[&str], heard: &[&str]) -> 
         updater: "/nowhere".into(),
         serves: BTreeMap::new(),
         providers: Vec::new(),
+        keepers: Vec::new(),
         book: Book::at("/nowhere/made.jsonl".into()),
         flows: Flows {
             to: realms(to),

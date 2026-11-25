@@ -2357,6 +2357,24 @@ where it still asks the provider that made it, at its path or built
 again into the Nix store (the same path past the store's hash), and
 books as let go each whose `until` passed while it was down. A line
 naming no realm, kept before lines named one, is never linked again.
+
+A machine made for the person, its make told `person`, may be kept
+with no end it is held to (`mycelium keep MACHINE`, `{"Keep":
+{"machine", "force"}}`), asked of the node that made it by the
+person, or by a session whose address that node's configuration
+names a keeper (`--keeper ADDRESS`); any other asker is refused, and
+so is a machine made for an agent, for nobody said, or by another
+node. The node asks `PROGRAM keep PLACE --lasting 0`, told
+`MYCELIUM_ASKER=person`, and the program keeps it, such as on a kind
+never taken back, writing one JSON line, `{"place", "machine",
+"until", "shape", "costs"}`, for the same place and machine. It may
+stop and start the machine on the way, which ends what it held, so a
+keep is refused while a session there runs a turn, unless `force`.
+The node books the answer as a make of the same machine at its place,
+which stands in place of the one before, and lets the machine go at
+its new `until`, as it does once started again; a keep that fails
+leaves its booking as it was. Each keep asked, kept or refused, is
+said in the node's journal, and the answer is `{"Kept": made}`.
 A start whose providers make nothing says why: each machine's and each
 offer's reasons, and each program that couldn't say what it offers.
 

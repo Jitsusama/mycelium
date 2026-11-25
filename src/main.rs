@@ -367,6 +367,22 @@ enum Action {
         /// The machine, such as `tern`.
         machine: String,
     },
+    /// Keeps a machine made for the person, with no end.
+    ///
+    /// Its provider keeps it, with no end it is held to, such as on a
+    /// kind that is never taken back, and may stop and start it on the
+    /// way, which ends what it held.
+    /// Asked of the node that made it, by the person or a keeper that
+    /// node names, and refused while a session there runs a turn unless
+    /// forced. This prints the machine as its node now books it.
+    #[command(after_help = "Example:\n  mycelium keep tern")]
+    Keep {
+        /// The machine, such as `tern`.
+        machine: String,
+        /// Keep it though a session there runs a turn, which may end it.
+        #[arg(long)]
+        force: bool,
+    },
     /// Lists recent starts here, or stops or resumes agents' starts.
     ///
     /// Stopping holds till resumed, through a restart, and only on this
@@ -764,6 +780,11 @@ struct Node {
     /// what it is asked.
     #[arg(long = "provider")]
     providers: Vec<String>,
+    /// The address of a session that may keep a machine made for the
+    /// person, beside the person, with `mycelium keep`; given again for
+    /// each.
+    #[arg(long = "keeper")]
+    keepers: Vec<String>,
     /// A JSON file naming files to serve in the daemon interface, each
     /// as a kind of records; PROTOCOL.md says its shape.
     #[arg(long)]
@@ -1787,6 +1808,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Offers => print_reply(&socket, &Request::Offers),
         Action::Place(asked) => print_reply(&socket, &Request::Place(asked.into())),
         Action::Update { machine } => print_reply(&socket, &Request::Update { machine }),
+        Action::Keep { machine, force } => print_reply(&socket, &Request::Keep { machine, force }),
         Action::Starts { act } => print_reply(&socket, &Request::Starts { act: act.into() }),
         Action::Start(asked) => start(&socket, asked),
         Action::Sprout(asked) => sprout(&socket, asked),
@@ -2148,7 +2170,7 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
     // given, else the system's, recorded once its realm is settled.
     let machine = place::node_machine(node.here.machine.as_deref())?;
     let (dials, serves) = (node.dials(), node.serves(&machine)?);
-    let providers = node.providers;
+    let (providers, keepers) = (node.providers, node.keepers);
     let declared = node.declared.unwrap_or_else(place::declared);
     let processes = processes_here(node.unattended);
     let builders = builders::Given {
@@ -2202,6 +2224,7 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
         updater: place::updater(),
         serves,
         providers,
+        keepers,
         book,
         flows,
         parked: place::parked(),
