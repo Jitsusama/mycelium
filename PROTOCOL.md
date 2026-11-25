@@ -1245,13 +1245,16 @@ row starts the ten minutes again, as does a reading five minutes or
 more after the lone one. While it is held over while another has
 room, in the latest reading too, and the readings five minutes after
 the first sleep of its spell over still say over, it would carry one
-session to a peer with room in the watch and in the latest reading,
-straight away where it put none to sleep; while none has room it
+session to a peer, or a worker whose `declared` says `takes_carries`,
+with room in the watch and in the latest reading, straight away where
+it put none to sleep; while none has room it
 carries nothing. Sessions that wait anew meanwhile sleep too without
 putting the carry off, and once the five minutes are past they sleep
 only where nothing is carried; while it is short of memory, one that
 has never slept is never carried. It carries the smallest log first,
-placed as any work is and onto ground as firm. A session in a turn,
+placed as any work is and onto ground as firm: a worker takes no
+strict session, its strict fence being its own word, and one that
+leaves takes none, since a carried session lasts. A session in a turn,
 on the person's screen, written in by the person (its presence says
 `"driven": true`, and only `false` says not), orchestrating other
 sessions, holding a lease

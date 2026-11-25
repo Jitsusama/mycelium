@@ -15,11 +15,11 @@
 //! room, and the latest reading says so too, and only once the readings
 //! [`SETTLE`] after its first sleep still say it is over. Those that
 //! wait anew sleep too: while it settles, and once it has, only where it
-//! carries none. It carries one asleep session at a time to a peer with
-//! room whose latest facts are fresh enough to place by, placed as any
-//! work is, onto ground as firm as here's, never one in a turn, on the
-//! person's screen, orchestrating
-//! other sessions, part way through something a carry would break, or
+//! carries none. It carries one asleep session at a time to a peer, or a
+//! worker that says it takes carries, with room whose latest facts are
+//! fresh enough to place by, placed as any work is, onto ground as
+//! firm as here's, never one in a turn, on the person's screen,
+//! orchestrating other sessions, part way through something a carry would break, or
 //! whose quest runs elsewhere too; what can't be told of a session keeps
 //! it here. After a carry it waits [`COOLDOWN`], and it carries at most
 //! [`DAILY`] within a [`DAY`], counted as the larger of what its node
@@ -575,8 +575,8 @@ fn carry(
     let peers = peers(here, reading, history, now);
     if peers.is_empty() {
         return nothing(
-            "no machine with room is a peer it may carry to, with facts fresh enough to place \
-             by, that no session came from within the hour"
+            "no machine with room is a peer or a worker taking carries it may carry to, with \
+             facts fresh enough to place by, that no session came from within the hour"
                 .to_owned(),
         );
     }
@@ -655,9 +655,12 @@ fn over(
 }
 
 /// The machines `here` may carry to: those with room while it is over,
-/// as the watch holds it and in `reading` itself, peers rather than
-/// workers, whose facts in `reading` aren't too old to place by, and
-/// none a session came from within the hour. A machine last heard
+/// as the watch holds it and in `reading` itself, peers or workers that
+/// declare they take carries, whose facts in `reading` aren't too old to
+/// place by, and none a session came from within the hour. A worker is
+/// where the person's load goes off their machines, so one that says it
+/// takes carries is as good a place as a peer; [`ground::firm`] still
+/// keeps a strict session off it. A machine last heard
 /// minutes ago may have filled up since, or its link may be down, so a
 /// carry there may close a session here that it can't open there.
 fn peers(here: &Here, reading: &Reading, history: &History, now: Timestamp) -> Vec<Machine> {
@@ -682,10 +685,7 @@ fn peers(here: &Here, reading: &Reading, history: &History, now: Timestamp) -> V
                 && !stale(&machine.name)
         })
         .filter(|machine| {
-            machine
-                .declared
-                .as_ref()
-                .is_some_and(|declared| !declared.is_worker())
+            machine.declared.is_some() && ground::Lent::of(machine) != ground::Lent::TakesNone
         })
         .filter(|machine| !history.came_from(here.name, &machine.name, now))
         .cloned()
@@ -2031,21 +2031,35 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_worker_with_room_is_never_where_a_session_goes() {
+    fn a_worker_with_room_takes_a_session_only_where_it_says_it_takes_carries() {
         let history = hot_for(&realm(), 11);
         let mut paid = realm();
         paid[1].declared.as_mut().expect("declared").costs_money = true;
         assert!(
             why_not(&chose(&paid, &[cell("s1")], &history))
                 .starts_with("no machine with room is a peer"),
-            "a machine that costs money is a worker"
+            "a machine that costs money is a worker, which takes none unsaid"
+        );
+        paid[1].declared.as_mut().expect("declared").takes_carries = true;
+        assert_eq!(
+            carries(&chose(&paid, &[cell("s1")], &history)),
+            Some(("s1", "tern")),
+            "a worker that says it takes carries takes one"
+        );
+        let mut linked = realm();
+        linked[1].worker = true;
+        assert!(
+            why_not(&chose(&linked, &[cell("s1")], &history))
+                .starts_with("no machine with room is a peer"),
+            "a machine its link marks a worker takes none unsaid"
         );
         let mut lent = realm();
-        lent[1].declared.as_mut().expect("declared").leaves_at = Some(now() + PIN);
+        let leaving = lent[1].declared.as_mut().expect("declared");
+        leaving.leaves_at = Some(now() + PIN);
+        leaving.takes_carries = true;
         assert!(
-            why_not(&chose(&lent, &[cell("s1")], &history))
-                .starts_with("no machine with room is a peer"),
-            "a machine that leaves is a worker"
+            carries(&chose(&lent, &[cell("s1")], &history)).is_none(),
+            "a worker that leaves takes none, since a carried session lasts"
         );
         let mut untold = realm();
         untold[1].declared = None;
@@ -2053,6 +2067,42 @@ pub(super) mod tests {
             why_not(&chose(&untold, &[cell("s1")], &history))
                 .starts_with("no machine with room is a peer"),
             "a machine that says nothing of itself can't be told a peer"
+        );
+    }
+
+    // A worker's strict fence is only its own word, so easing carries no
+    // strict session to one, though it says it takes carries.
+    #[test]
+    fn a_strict_session_never_goes_to_a_worker() {
+        let kinds = [Kind::None, Kind::Fence, Kind::Strict];
+        let mut realm = realm();
+        for one in &mut realm {
+            one.declared = Some(declaring(&kinds));
+            one.system = Some("linux".to_owned());
+        }
+        let worker = realm[1].declared.as_mut().expect("declared");
+        worker.costs_money = true;
+        worker.takes_carries = true;
+        let mut strict = cell("s1");
+        strict.fence = Some(Kind::Strict);
+        let declared = declaring(&kinds);
+        let here = Here {
+            name: "skiff",
+            declared: Some(&declared),
+            machines: &realm,
+            loads: &Loads::new(),
+        };
+        let history = hot_for(&realm, 11);
+        let reading = reading(&realm, now());
+        assert_eq!(
+            why_not(&choose(&here, &[strict], &reading, &history, now())),
+            "S1: tern is a worker, whose strict fence is its own word, so no node carries a \
+             strict session there"
+        );
+        assert_eq!(
+            carries(&choose(&here, &[cell("s2")], &reading, &history, now())),
+            Some(("s2", "tern")),
+            "a fenced session still goes"
         );
     }
 
