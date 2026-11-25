@@ -24167,76 +24167,88 @@ esac
         assert_eq!(log.lines().count(), 3, "each refused mint is kept: {log}");
     }
 
-    #[tokio::test]
-    async fn a_hold_is_kept_as_the_persons_only_where_they_place_it_themselves() {
-        use asker::tests::{TTY, on_terminal, procs, runs_binary, system_of};
-        let dir = tempfile::tempdir().expect("a temporary folder");
-        // A hold record whose holder no longer runs is read as none, so
-        // the test's own process stands in for the holder.
-        let holder = i32::try_from(std::process::id()).expect("a pid");
-        // The stand-ins go past the most pids Linux ever names, so the
-        // real holder is never one of them, in a pid namespace or not.
-        const FAR: i32 = 4_194_304;
-        let (kitty, shell, typed_by, a_pi, it_ran, agents, held_pi) = (
-            FAR + 40,
-            FAR + 41,
-            FAR + 45,
-            FAR + 58,
-            FAR + 60,
-            FAR + 70,
-            FAR + 31,
-        );
-        // typed_by is what the person typed under kitty's shell; a_pi a pi
-        // on the same terminal and it_ran a command it ran; agents an
-        // agent's, on no terminal; the holder, typed_by's own child, holds
-        // held_pi.
+    /// Past the most pids Linux ever names, so a stand-in is never the
+    /// test's own process, in a pid namespace or not.
+    const FAR: i32 = 4_194_304;
+    /// The stand-ins of [`placing_machine`]: kitty and its shell; what the
+    /// person typed there; a pi on the same terminal, and a command it
+    /// ran; an agent's, on no terminal; and the pi the holder holds.
+    const KITTY: i32 = FAR + 40;
+    const SHELL: i32 = FAR + 41;
+    const TYPED_BY: i32 = FAR + 45;
+    const A_PI: i32 = FAR + 58;
+    const IT_RAN: i32 = FAR + 60;
+    const AGENTS: i32 = FAR + 70;
+    const HELD_PI: i32 = FAR + 31;
+
+    /// A stand-in for /proc where `holder`, the child of what the person
+    /// typed under kitty's shell, holds a pi, beside the agents' processes
+    /// that ask to place it, and a stand-in for the store's binaries.
+    fn placing_machine(holder: i32) -> (tempfile::TempDir, tempfile::TempDir) {
+        use asker::tests::{TTY, on_terminal, procs, runs_binary};
         let machine = procs(&[
-            (kitty, "kitty", 1, "app.slice/kitty.scope"),
-            (shell, "zsh", kitty, "app.slice/kitty.scope"),
-            (typed_by, "mycelium", shell, "app.slice/kitty.scope"),
-            (a_pi, "pi", shell, "agents.slice/mycelium-pi-a.scope"),
-            (it_ran, "mycelium", a_pi, "agents.slice/mycelium-pi-a.scope"),
-            (agents, "mycelium", 1, "agents.slice/mycelium-pi-b.scope"),
+            (KITTY, "kitty", 1, "app.slice/kitty.scope"),
+            (SHELL, "zsh", KITTY, "app.slice/kitty.scope"),
+            (TYPED_BY, "mycelium", SHELL, "app.slice/kitty.scope"),
+            (A_PI, "pi", SHELL, "agents.slice/mycelium-pi-a.scope"),
+            (IT_RAN, "mycelium", A_PI, "agents.slice/mycelium-pi-a.scope"),
+            (AGENTS, "mycelium", 1, "agents.slice/mycelium-pi-b.scope"),
             (
                 holder,
                 "mycelium",
-                typed_by,
+                TYPED_BY,
                 "app.slice/mycelium-hold.scope",
             ),
-            (held_pi, "pi", holder, "app.slice/mycelium-hold.scope"),
+            (HELD_PI, "pi", holder, "app.slice/mycelium-hold.scope"),
         ]);
         let at = machine.path();
         let binaries = tempfile::tempdir().expect("a stand-in for the store");
-        runs_binary(at, kitty, binaries.path(), ".kitty-wrapped");
+        runs_binary(at, KITTY, binaries.path(), ".kitty-wrapped");
         runs_binary(at, holder, binaries.path(), "mycelium");
         on_terminal(
             at,
-            (shell, "zsh", 200),
-            (kitty, shell, shell),
-            (TTY, typed_by),
+            (SHELL, "zsh", 200),
+            (KITTY, SHELL, SHELL),
+            (TTY, TYPED_BY),
         );
-        let session = (shell, typed_by, shell);
-        on_terminal(at, (typed_by, "mycelium", 450), session, (TTY, typed_by));
-        on_terminal(at, (a_pi, "pi", 500), (shell, a_pi, shell), (TTY, a_pi));
         on_terminal(
             at,
-            (it_ran, "mycelium", 600),
-            (a_pi, a_pi, shell),
-            (TTY, a_pi),
+            (TYPED_BY, "mycelium", 450),
+            (SHELL, TYPED_BY, SHELL),
+            (TTY, TYPED_BY),
         );
-        on_terminal(at, (agents, "mycelium", 700), (1, agents, agents), (0, -1));
+        on_terminal(at, (A_PI, "pi", 500), (SHELL, A_PI, SHELL), (TTY, A_PI));
+        on_terminal(
+            at,
+            (IT_RAN, "mycelium", 600),
+            (A_PI, A_PI, SHELL),
+            (TTY, A_PI),
+        );
+        on_terminal(at, (AGENTS, "mycelium", 700), (1, AGENTS, AGENTS), (0, -1));
         on_terminal(
             at,
             (holder, "mycelium", 460),
-            (typed_by, holder, holder),
+            (TYPED_BY, holder, holder),
             (0, -1),
         );
         on_terminal(
             at,
-            (held_pi, "pi", 470),
-            (holder, held_pi, held_pi),
-            (TTY + 1, held_pi),
+            (HELD_PI, "pi", 470),
+            (holder, HELD_PI, HELD_PI),
+            (TTY + 1, HELD_PI),
         );
+        (machine, binaries)
+    }
+
+    #[tokio::test]
+    async fn a_hold_is_kept_as_the_persons_only_where_they_place_it_themselves() {
+        use asker::tests::system_of;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        // A hold record whose holder no longer runs is read as none, so
+        // the test's own process stands in for the holder.
+        let holder = i32::try_from(std::process::id()).expect("a pid");
+        let (machine, binaries) = placing_machine(holder);
+        let at = machine.path();
         let held = dir.path().join("held");
         fs::create_dir_all(&held).expect("its folder is made");
         let record = hold::Held {
@@ -24244,7 +24256,7 @@ esac
             command: vec!["pi".to_owned()],
             folder: PathBuf::from("/"),
             holder: std::process::id(),
-            pid: u32::try_from(held_pi).expect("a pid"),
+            pid: u32::try_from(HELD_PI).expect("a pid"),
             parked: false,
             since: String::new(),
             windows: Vec::new(),
@@ -24266,9 +24278,9 @@ esac
         shared.processes = Arc::new(Processes::Folder(at.to_owned()));
         shared.held = held;
         for (asker, says) in [
-            (a_pi, "a pi places it"),
-            (it_ran, "a pi places it or runs above"),
-            (agents, "neither the person's own terminal nor the launcher"),
+            (A_PI, "a pi places it"),
+            (IT_RAN, "a pi places it or runs above"),
+            (AGENTS, "neither the person's own terminal nor the launcher"),
         ] {
             shared.client = Some(asker);
             let refused = shared.placed_by_the_person("a1").await;
@@ -24281,7 +24293,7 @@ esac
             typed.placements().placed().is_empty(),
             "no agent's ask keeps a hold as the person's"
         );
-        shared.client = Some(typed_by);
+        shared.client = Some(TYPED_BY);
         let unnamed = shared.placed_by_the_person("b2").await;
         assert!(
             unnamed
