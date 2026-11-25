@@ -24952,7 +24952,8 @@ esac
             Ok(made::PERSON)
         );
         assert_eq!(may_keep("wren", &asks("QK4T7Z"), &keepers), Ok("QK4T7Z"));
-        let agent = may_keep("wren", &asks("WRENT1"), &keepers);
+        let wrent1 = asks("WRENT1");
+        let agent = may_keep("wren", &wrent1, &keepers);
         assert!(
             agent
                 .as_ref()
