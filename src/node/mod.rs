@@ -4937,46 +4937,8 @@ impl<S: Store> Shared<S> {
         let folder = self.held.clone();
         if hold::held(&folder).iter().any(|one| one.id == held) {
             if let (hold::end::Asker::Session(address), Some(asking)) = (&asker, &asking) {
-                let target = sessions
-                    .iter()
-                    .find(|session| {
-                        session.machine == self.machine && session.held.as_deref() == Some(held)
-                    })
-                    .ok_or_else(|| {
-                        format!(
-                            "no session here runs in {held}, so {address} isn't proved to \
-                             orchestrate it: only the person ends it"
-                        )
-                    })?;
-                let session = target
-                    .presence
-                    .get("session")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or(&target.id);
-                let asking_known = ordered::Known {
-                    session: asking,
-                    address,
-                };
-                let carried = ordered::Known {
-                    session,
-                    address: &target.address,
-                };
-                let mut open = self.records_of("quest");
-                open.retain(ordered::open);
-                let proved = if ordered::holds(session, &open) {
-                    self.ordered_by(asking_known, carried, &sessions)
-                        .await
-                        .map(|_| ())
-                } else {
-                    self.orchestrated_ended(asking_known, carried, &open, &sessions)
-                        .await
-                };
-                proved.map_err(|why| {
-                    format!(
-                        "{address} isn't proved to orchestrate the session held as {held}, \
-                             so it can't end it: {why}"
-                    )
-                })?;
+                self.orchestrates_held(held, address, asking, &sessions)
+                    .await?;
             }
             let id = held.to_owned();
             let ending =
@@ -4991,6 +4953,64 @@ impl<S: Store> Shared<S> {
                 ending,
             });
         }
+        self.end_away(held, asker, &sessions).await
+    }
+
+    /// Proves `address`, asking from its session `asking`, orchestrates the
+    /// session held here as `held`, by its ordered carry or the quests it
+    /// ended, so an agent ends only a hold it orchestrates.
+    async fn orchestrates_held(
+        &self,
+        held: &str,
+        address: &str,
+        asking: &str,
+        sessions: &[Session],
+    ) -> Result<(), String> {
+        let target = sessions
+            .iter()
+            .find(|session| {
+                session.machine == self.machine && session.held.as_deref() == Some(held)
+            })
+            .ok_or_else(|| {
+                format!(
+                    "no session here runs in {held}, so {address} isn't proved to \
+                             orchestrate it: only the person ends it"
+                )
+            })?;
+        let session = target
+            .presence
+            .get("session")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(&target.id);
+        let asking_known = ordered::Known {
+            session: asking,
+            address,
+        };
+        let carried = ordered::Known {
+            session,
+            address: &target.address,
+        };
+        let mut open = self.records_of("quest");
+        open.retain(ordered::open);
+        let proved = if ordered::holds(session, &open) {
+            self.ordered_by(asking_known, carried, sessions)
+                .await
+                .map(|_| ())
+        } else {
+            self.orchestrated_ended(asking_known, carried, &open, sessions)
+                .await
+        };
+        proved.map_err(|why| {
+            format!(
+                "{address} isn't proved to orchestrate the session held as {held}, \
+                             so it can't end it: {why}"
+            )
+        })
+    }
+
+    /// Ends `held`, held on no machine here, where a presence shows it or
+    /// else where this node's book says it started it.
+    async fn end_away(&self, held: &str, asker: hold::end::Asker, sessions: &[Session]) -> Reply {
         let mut machines: Vec<&str> = sessions
             .iter()
             .filter(|session| {
