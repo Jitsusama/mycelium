@@ -432,22 +432,27 @@ pub const OUT_OF_REACH_LEADS: SignedDuration = SignedDuration::from_hours(1);
 /// How long, in milliseconds, this node has seen a lane's machine out of
 /// reach by `now`, from the marks its store keeps in the lane's presence:
 /// what earlier runs saw, `unreachableSeenFor`, and since when this run has
-/// seen it, `unreachableSeen`. A mark an older node left with neither is
-/// timed by its `unreachableSince`; one with no time at all can't be told.
-/// A time this node's clock has since set behind it reads as recent.
+/// seen it, `unreachableSeen`. A seen time this node's clock has since set
+/// behind it adds nothing, and takes nothing from what earlier runs saw. A
+/// mark this run hasn't seen, as one a link running apart from the node
+/// left, or one its start couldn't mark again, is timed from its
+/// `unreachableSince`, as an older node's is, so a doubt lets the lane go
+/// rather than holding it; one with no time at all can't be told. Such a
+/// mark is seen by the next start, so a lane let go meanwhile may count
+/// again from then for what is left of the hour.
 fn seen_out_of_reach(presence: &Value, now: i64) -> Option<i64> {
     let earlier = presence.get("unreachableSeenFor").and_then(Value::as_i64);
     match presence.get("unreachableSeen").and_then(Value::as_i64) {
         Some(seen) => Some(
             earlier
                 .unwrap_or(0)
-                .saturating_add(now.saturating_sub(seen)),
+                .saturating_add(now.saturating_sub(seen).max(0)),
         ),
-        None if earlier.is_some() => earlier,
         None => presence
             .get("unreachableSince")
             .and_then(Value::as_i64)
-            .map(|since| now.saturating_sub(since)),
+            .map(|since| now.saturating_sub(since))
+            .max(earlier),
     }
 }
 
@@ -1540,10 +1545,22 @@ mod tests {
             leads(lane(120, Some(60), None)).is_empty(),
             "seen gone the whole hour is no longer within it"
         );
+        assert!(
+            leads(lane(300, None, Some(55))).is_empty(),
+            "put away by a stop and not seen again by a start: from the drop, so it goes"
+        );
+        assert!(
+            leads(lane(70, None, Some(5))).is_empty(),
+            "not seen again after a stop that saw five minutes: an hour since the drop"
+        );
         assert_eq!(
-            leads(lane(300, None, Some(55))),
+            leads(lane(-5, None, None)),
             counts,
-            "put away by a stop and not yet seen by a start: what was seen, not since when"
+            "a drop the clock has since set behind reads as within the hour"
+        );
+        assert!(
+            leads(lane(120, Some(-5), Some(61))).is_empty(),
+            "a clock set behind this run's sight takes nothing from what earlier runs saw"
         );
         assert!(
             leads(lane(10, None, Some(61))).is_empty(),

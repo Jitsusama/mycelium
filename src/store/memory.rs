@@ -358,19 +358,23 @@ impl Store for Memory {
         session: &str,
         machine: &str,
         since: i64,
-        seen: i64,
+        seen: Option<i64>,
     ) -> io::Result<()> {
         let mut held = self.held();
         if held.carries(session, machine)
             && let Some(presence) = held.presences.get_mut(session)
             && presence.body.get("unreachableSeen").is_none()
+            // A mark kept as it stands writes nothing, as in the folders.
+            && (seen.is_some() || presence.unreachable_since.is_none())
         {
             let since = *presence.unreachable_since.get_or_insert(since);
             // As the folders mark it, in the presence too, where easing
             // reads how long a lane has been out of reach.
             if let Some(fields) = Arc::make_mut(&mut presence.body).as_object_mut() {
                 fields.insert("unreachableSince".to_owned(), Value::from(since));
-                fields.insert("unreachableSeen".to_owned(), Value::from(seen));
+                if let Some(seen) = seen {
+                    fields.insert("unreachableSeen".to_owned(), Value::from(seen.max(since)));
+                }
             }
             held.tell(&Change::Presence);
         }

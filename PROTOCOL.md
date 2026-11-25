@@ -122,15 +122,27 @@ milliseconds since the epoch, since a dropped link says nothing of
 whether those sessions still run; what a link killed outright left is
 marked by the node as it starts and stops, since that machine was last
 linked. Each mark also says, as `unreachableSeen`, when this run of the
-node first saw that machine gone: the drop itself, or the node's start.
-As the node stops, it adds the time from then to the stop to the mark's
+node first saw that machine gone: the drop of a link the node keeps, or
+the node's start, never before the drop. A link another machine dialled
+runs apart from the node and may drop while it is stopped, so it marks
+only `unreachableSince`. As the node stops, under each machine's claim,
+it adds the time from then to the stop to the mark's
 `unreachableSeenFor`, how long earlier runs saw it gone, and drops
 `unreachableSeen`, so its next start sees the machine gone afresh with
-what came before kept, and the time it was down unseen. A node killed
-rather than stopped keeps its `unreachableSeen`, so its time down counts
-as seen. A mark with no `unreachableSeen`, left by a stop or an older
-node, gains one as the node starts. The next link to that machine
-settles them: the far end's `Have`
+what came before kept, and the time it was down unseen; a machine
+another link claims is left to that link, and one whose claim fails is
+passed over while the rest are still marked. A node killed rather than
+stopped keeps its `unreachableSeen`, so its time down counts as seen. A
+mark with no `unreachableSeen`, left by a stop, a dialled link or an
+older node, gains one as the node starts, and one a dialled link left
+while the node ran is seen, as it stops, from the drop or from when that
+run began, whichever is later; a node killed before its stop loses that
+run's sight of a dialled drop. Such a mark, or one the start couldn't
+see afresh, is timed meanwhile from its drop, so its lanes may go, then
+count again from the next start for what is left of the hour. A start
+that can't claim a machine says so and runs on. The next link to that
+machine settles
+them: the far end's `Have`
 names its living sessions, those are carried again and unmarked, and the
 rest are let go. While a link stands it touches each file it carried
 once a minute, and a mark keeps the file's time, so a copy whose time
@@ -1379,7 +1391,8 @@ waits parked on this machine this boot, or is out of reach and its
 link dropped within the hour. That hour is of time this node has seen
 it gone, its `unreachableSeenFor` and the time since its
 `unreachableSeen`, each marked on this node's own clock, or the time
-since `unreachableSince` where a mark has neither; never from when the
+since `unreachableSince` where this run hasn't seen it, so a doubt lets
+the lane go; a clock set behind adds nothing seen. Never from when the
 lane's machine says it wrote it, since that clock may be another's and
 an idle lane leaves it old. What earlier runs saw is kept, so a node
 restarted more often than hourly still lets a gone machine's lanes go.

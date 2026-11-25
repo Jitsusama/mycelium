@@ -19,7 +19,7 @@ pub mod folders;
 #[cfg(test)]
 pub mod memory;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::sync::Arc;
 
@@ -171,13 +171,16 @@ pub trait Store: Clone + Send + Sync + 'static {
     /// out of reach since `since`, as this running node first saw at
     /// `seen`, unless this run has marked it so already. A mark an earlier
     /// run or node left keeps its `since` and what earlier runs saw, and
-    /// gains `seen`. Carrying it again clears the mark.
+    /// gains `seen`, never before its `since`, as nothing is seen gone
+    /// before it went. With no `seen`, as a link running apart from the
+    /// node marks it, only `since` is kept. Carrying it again clears the
+    /// mark.
     fn mark_unreachable(
         &self,
         session: &str,
         machine: &str,
         since: i64,
-        seen: i64,
+        seen: Option<i64>,
     ) -> io::Result<()>;
 
     /// Puts away what this run has seen of a session `machine` carries out
@@ -283,10 +286,10 @@ pub fn left(store: &impl Store, machine: &str, at: jiff::Timestamp) {
 }
 
 /// Marks every session `machine` carried here out of reach since `since`,
-/// as this running node saw at `seen`: a link that drops says nothing of
-/// whether they still run, so they stay until a link to that machine comes
-/// back and says which do.
-pub fn out_of_reach(store: &impl Store, machine: &str, since: i64, seen: i64) {
+/// as this running node saw at `seen`, if it runs to see it: a link that
+/// drops says nothing of whether they still run, so they stay until a link
+/// to that machine comes back and says which do.
+pub fn out_of_reach(store: &impl Store, machine: &str, since: i64, seen: Option<i64>) {
     // What it said it is stays, as of when a link last carried it.
     if let Some(mut said) = store.machines().into_iter().find(|one| one.name == machine)
         && said.state != Readiness::Unreachable
@@ -319,11 +322,15 @@ pub fn last_linked(store: &impl Store, machine: &str) -> Option<i64> {
 
 /// Marks out of reach the sessions of every machine no link carries now,
 /// as left behind by a link or node that ended without saying so, since
-/// that machine was last linked, and seen so from now, as this node runs:
-/// it saw none of the time it was down. A mark an earlier run left keeps
-/// what that run saw, so a node restarted again and again doesn't see a
-/// machine gone afresh each time.
-pub fn out_of_reach_of_unclaimed(store: &impl Store) -> io::Result<()> {
+/// that machine was last linked, and seen so from `seen`, when this run of
+/// the node began, or from the drop where that is later: it saw none of
+/// the time it was down. A mark an earlier run left keeps what that run
+/// saw, so a node restarted again and again doesn't see a machine gone
+/// afresh each time. A machine whose claim fails is said and passed over
+/// for the rest, and the first failure returned after them, naming its
+/// machine; one a link claims is left to it, and said where it has marks,
+/// since those then keep no sight of this run's.
+pub fn out_of_reach_of_unclaimed(store: &impl Store, seen: i64) -> io::Result<()> {
     let now = jiff::Timestamp::now().as_millisecond();
     let mut machines: Vec<String> = store
         .presences()
@@ -333,301 +340,84 @@ pub fn out_of_reach_of_unclaimed(store: &impl Store) -> io::Result<()> {
         .collect();
     machines.sort_unstable();
     machines.dedup();
+    let marked: BTreeSet<String> = store
+        .presences()
+        .into_iter()
+        .filter(|presence| presence.unreachable_since.is_some())
+        .filter_map(|presence| presence.elsewhere)
+        .collect();
+    let mut failed = None;
     for machine in machines {
-        if let Some(_claim) = store.claim(&machine)? {
-            let since = last_linked(store, &machine).unwrap_or(now);
-            out_of_reach(store, &machine, since, now);
+        match store.claim(&machine) {
+            Ok(Some(_claim)) => {
+                let since = last_linked(store, &machine).unwrap_or(now);
+                out_of_reach(store, &machine, since, Some(seen));
+            }
+            Ok(None) if marked.contains(&machine) => {
+                eprintln!("left {machine}'s marks out of reach to the link that claims it");
+            }
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("couldn't claim {machine} to mark it out of reach: {error}");
+                failed.get_or_insert_with(|| {
+                    io::Error::new(error.kind(), format!("couldn't claim {machine}: {error}"))
+                });
+            }
         }
     }
-    Ok(())
+    failed.map_or(Ok(()), Err)
 }
 
-/// What a node does with its marks out of reach as it stops at `at`: marks
-/// the sessions of every machine no link carries, then puts away what this
-/// run saw of each, so the time it is down isn't counted as seen. In that
-/// order, since a mark put away and then swept would be seen from the stop
-/// and keep that at the next start. The put-away claims nothing, so it runs
-/// whatever the sweep returns, and a sweep that fails is said after it. A
-/// node killed before it gets here leaves its marks as they stand.
-pub fn stop_seeing_out_of_reach(store: &impl Store, at: i64) -> io::Result<()> {
-    let swept = out_of_reach_of_unclaimed(store);
+/// What a node that `began` this run does with its marks out of reach as
+/// it stops at `at`: marks the sessions of every machine no link carries,
+/// seen from when it began or the drop, whichever is later, as a link
+/// running apart from the node leaves its drops unseen, then puts away
+/// what this run saw of each, so the time it is down isn't counted as
+/// seen. In that order, since a mark put away and then swept would be
+/// seen at the next start from this run. The put-away runs whatever the
+/// sweep returns, and a sweep that fails is said after it. A node killed
+/// before it gets here leaves its marks as they stand.
+pub fn stop_seeing_out_of_reach(store: &impl Store, began: i64, at: i64) -> io::Result<()> {
+    let swept = out_of_reach_of_unclaimed(store, began);
     put_away_out_of_reach(store, at);
     swept
 }
 
 /// Puts away what this run has seen of each session out of reach, as the
-/// node stops at `at`.
+/// node stops at `at`, under its machine's claim, as every mark is made.
+/// A machine a link running apart from the node claims is being carried,
+/// so its marks are that link's to clear as it carries each session, and
+/// are left; one that can't be claimed is left too. Either is said, since
+/// a mark left so keeps this run's sight, and the time the node is down
+/// then counts as seen.
 fn put_away_out_of_reach(store: &impl Store, at: i64) {
-    for presence in store.presences() {
-        if let Some(machine) = presence.elsewhere.as_deref()
-            && presence.unreachable_since.is_some()
-            && let Err(error) = store.put_away_unreachable(&presence.session, machine, at)
-        {
-            eprintln!(
-                "couldn't put away {}'s time out of reach: {error}",
-                presence.session
-            );
+    let mut marked: Vec<(String, String)> = store
+        .presences()
+        .into_iter()
+        .filter(|presence| presence.unreachable_since.is_some())
+        .filter_map(|presence| Some((presence.elsewhere?, presence.session)))
+        .collect();
+    marked.sort_unstable();
+    for each in marked.chunk_by(|one, other| one.0 == other.0) {
+        let machine = &each[0].0;
+        match store.claim(machine) {
+            Ok(Some(_claim)) => {
+                for (_, session) in each {
+                    if let Err(error) = store.put_away_unreachable(session, machine, at) {
+                        eprintln!("couldn't put away {session}'s time out of reach: {error}");
+                    }
+                }
+            }
+            Ok(None) => eprintln!(
+                "left {} of {machine}'s sessions out of reach to the link that claims it",
+                each.len()
+            ),
+            Err(error) => {
+                eprintln!("couldn't claim {machine} to put its time out of reach away: {error}");
+            }
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Changes waiting behind the next are taken with it, each once and
-    /// in the order first seen, and the next waits for what comes after.
-    #[tokio::test]
-    async fn waiting_changes_are_told_once_each() {
-        let (telling, told) = mpsc::unbounded_channel();
-        let mut changes = Changes {
-            changes: told,
-            keep: Box::new(()),
-        };
-        for change in [
-            Change::Presence,
-            Change::Message("m1".to_owned()),
-            Change::Presence,
-            Change::Carries("wren".to_owned()),
-            Change::Message("m1".to_owned()),
-            Change::Presence,
-        ] {
-            telling.send(change).expect("the change is told");
-        }
-        assert_eq!(
-            changes.gathered().await,
-            Some(vec![
-                Change::Presence,
-                Change::Message("m1".to_owned()),
-                Change::Carries("wren".to_owned()),
-            ])
-        );
-        telling.send(Change::Presence).expect("the change is told");
-        assert_eq!(changes.gathered().await, Some(vec![Change::Presence]));
-        drop(telling);
-        assert_eq!(changes.gathered().await, None);
-    }
-
-    /// No more than [`GATHERED_AT_MOST`] are taken at once, so the rest
-    /// wait for the next.
-    #[tokio::test]
-    async fn a_flood_of_changes_is_taken_in_parts() {
-        let (telling, told) = mpsc::unbounded_channel();
-        let mut changes = Changes {
-            changes: told,
-            keep: Box::new(()),
-        };
-        for id in 0..=GATHERED_AT_MOST {
-            telling
-                .send(Change::Message(id.to_string()))
-                .expect("the change is told");
-        }
-        let first = changes.gathered().await.expect("changes are told");
-        assert_eq!(first.len(), GATHERED_AT_MOST);
-        assert_eq!(
-            changes.gathered().await,
-            Some(vec![Change::Message(GATHERED_AT_MOST.to_string())])
-        );
-    }
-
-    /// A machine whose last link was let in after its mark, as a new one
-    /// holding the mark back until its catch-up stands is, and that no
-    /// link carries now, as after a node killed in that link's first
-    /// minute, is out of reach since that link was let in, not since the
-    /// days-old mark.
-    #[test]
-    fn a_machine_no_link_carries_is_out_of_reach_since_it_was_last_let_in() {
-        let store = memory::Memory::default();
-        let (days_ago, let_in) = (1_793_046_604_647, 1_793_305_804_647);
-        store
-            .put_presence("s1", "kestrel", &serde_json::json!({"session": "s1"}))
-            .expect("carried");
-        store.mark_linked("kestrel", days_ago).expect("marked");
-        store.mark_admitted("kestrel", let_in).expect("let in");
-
-        out_of_reach_of_unclaimed(&store).expect("swept");
-        let since = store
-            .presences()
-            .into_iter()
-            .find(|one| one.session == "s1")
-            .and_then(|one| one.unreachable_since);
-        assert_eq!(since, Some(let_in), "out of reach since it was let in");
-    }
-
-    /// Easing times a lane out of reach by the `unreachableSince` and
-    /// `unreachableSeen` in its presence, so the store in memory marks them
-    /// there, as the folders do, once and no later, and a link carrying the
-    /// session again clears them, even where the body it carries names
-    /// times or an owner of its own.
-    #[test]
-    fn a_session_out_of_reach_says_since_when_in_its_presence() {
-        let store = memory::Memory::default();
-        let said = serde_json::json!({"session": "s1"});
-        store.put_presence("s1", "kestrel", &said).expect("carried");
-        let body = |store: &memory::Memory, field: &str| {
-            store
-                .presences()
-                .into_iter()
-                .find(|one| one.session == "s1")
-                .map(|one| one.body[field].clone())
-        };
-        out_of_reach(&store, "kestrel", 7, 8);
-        out_of_reach(&store, "kestrel", 9, 10);
-        assert_eq!(
-            (
-                body(&store, "unreachableSince"),
-                body(&store, "unreachableSeen")
-            ),
-            (Some(serde_json::json!(7)), Some(serde_json::json!(8))),
-            "since the first drop, as first seen"
-        );
-        let carried = serde_json::json!({
-            "session": "s1",
-            "unreachableSince": 3,
-            "unreachableSeen": 4,
-            "owner": {"pid": 1},
-        });
-        store
-            .put_presence("s1", "kestrel", &carried)
-            .expect("carried again");
-        assert_eq!(
-            ["unreachableSince", "unreachableSeen", "owner"].map(|field| body(&store, field)),
-            [Some(Value::Null), Some(Value::Null), Some(Value::Null)],
-            "a link carrying it again says it is in reach, and only its own machine \
-             judges its process"
-        );
-    }
-
-    /// A node killed and started again finds the marks its last run left,
-    /// which say when that run first saw each machine gone, and keeps them;
-    /// a session it marks at this start is seen gone from this start, though
-    /// out of reach since its machine was last linked.
-    #[test]
-    fn a_restart_keeps_when_a_machine_was_first_seen_gone() {
-        let store = memory::Memory::default();
-        for session in ["s1", "s2"] {
-            store
-                .put_presence(session, "kestrel", &serde_json::json!({"session": session}))
-                .expect("carried");
-        }
-        store
-            .mark_unreachable("s1", "kestrel", 7, 8)
-            .expect("marked");
-        store
-            .mark_linked("kestrel", 7)
-            .expect("linked until it dropped");
-
-        let before = jiff::Timestamp::now().as_millisecond();
-        out_of_reach_of_unclaimed(&store).expect("swept");
-        let after = jiff::Timestamp::now().as_millisecond();
-        let seen = |session: &str| {
-            store
-                .presences()
-                .into_iter()
-                .find(|one| one.session == session)
-                .map(|one| one.body["unreachableSeen"].clone())
-        };
-        assert_eq!(
-            seen("s1"),
-            Some(serde_json::json!(8)),
-            "a mark this node's last run saw keeps when it saw it"
-        );
-        let started = seen("s2")
-            .as_ref()
-            .and_then(Value::as_i64)
-            .expect("a session marked at this start says when it was seen");
-        assert!(
-            (before..=after).contains(&started),
-            "seen gone from this start, not before it"
-        );
-
-        store
-            .mark_unreachable("s1", "kestrel", 3, 4)
-            .expect("marked");
-        assert_eq!(
-            seen("s1"),
-            Some(serde_json::json!(8)),
-            "and never seen again"
-        );
-    }
-
-    /// A node stopped puts away what it saw of each machine out of reach,
-    /// after sweeping the machines no link carries, so the hours it is down
-    /// aren't seen: its next start sees the machine gone afresh from then,
-    /// with what it saw before stopping kept. Swept after the put-away, a
-    /// mark would be seen from the stop and keep that at the next start.
-    #[test]
-    fn a_stopped_node_sees_none_of_its_time_down() {
-        let store = memory::Memory::default();
-        for session in ["s1", "s2"] {
-            store
-                .put_presence(session, "kestrel", &serde_json::json!({"session": session}))
-                .expect("carried");
-        }
-        let field = |session: &str, name: &str| {
-            store
-                .presences()
-                .into_iter()
-                .find(|one| one.session == session)
-                .map(|one| one.body[name].clone())
-        };
-        let before = jiff::Timestamp::now().as_millisecond();
-        // s1 dropped a minute ago as this node ran; s2 no link left marked.
-        store
-            .mark_unreachable("s1", "kestrel", 7, before - 60_000)
-            .expect("marked");
-
-        // The stop is said a minute on, so what the sweep saw is a minute.
-        stop_seeing_out_of_reach(&store, before + 60_000).expect("stopped");
-        let after = jiff::Timestamp::now().as_millisecond();
-        assert_eq!(
-            (
-                field("s1", "unreachableSeen"),
-                field("s1", "unreachableSeenFor")
-            ),
-            (Some(Value::Null), Some(serde_json::json!(120_000))),
-            "seen from its drop to the stop, and no longer seen as the node is down"
-        );
-        let swept = field("s2", "unreachableSeenFor")
-            .as_ref()
-            .and_then(Value::as_i64)
-            .expect("the stop's sweep marks it, and the put-away puts that away");
-        assert!(
-            (60_000 - (after - before)..=60_000).contains(&swept),
-            "seen from the stop's sweep to the stop"
-        );
-        assert_eq!(
-            field("s2", "unreachableSeen"),
-            Some(Value::Null),
-            "and no longer seen"
-        );
-        store
-            .put_away_unreachable("s1", "kestrel", before + 600_000)
-            .expect("put away again");
-        assert_eq!(
-            field("s1", "unreachableSeenFor"),
-            Some(serde_json::json!(120_000)),
-            "a mark with nothing seen this run has nothing more to put away"
-        );
-
-        let before = jiff::Timestamp::now().as_millisecond();
-        out_of_reach_of_unclaimed(&store).expect("swept at the next start");
-        let after = jiff::Timestamp::now().as_millisecond();
-        let seen = field("s1", "unreachableSeen")
-            .as_ref()
-            .and_then(Value::as_i64)
-            .expect("seen again from the start");
-        assert!(
-            (before..=after).contains(&seen),
-            "seen gone from this start, not from the stop"
-        );
-        assert_eq!(
-            (
-                field("s1", "unreachableSince"),
-                field("s1", "unreachableSeenFor")
-            ),
-            (Some(serde_json::json!(7)), Some(serde_json::json!(120_000))),
-            "still out of reach since 7, with what was seen before the stop"
-        );
-    }
-}
+mod tests;

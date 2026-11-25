@@ -915,7 +915,15 @@ where
     M: Membership + Clone,
     D: Discovery,
 {
-    store::out_of_reach_of_unclaimed(&store)?;
+    // When this run began, which it sees every machine gone from at the
+    // soonest, as it saw none of the time it was down.
+    let began = jiff::Timestamp::now().as_millisecond();
+    // One machine it can't claim costs only that machine's sight, said as
+    // it fails: a mark left unseen is timed from its drop, and lets its
+    // lanes go, so the node runs on rather than refusing the realm.
+    if let Err(error) = store::out_of_reach_of_unclaimed(&store, began) {
+        eprintln!("the start's sweep of machines out of reach failed: {error}");
+    }
     // Bound before any task is spawned, so a socket that can't be put
     // in place leaves nothing running.
     let workers = given.worker.take().as_ref().map(worker::bind).transpose()?;
@@ -1053,7 +1061,7 @@ where
     let letting_go = std::time::Instant::now();
     // What this run saw of each machine out of reach is put away, so the
     // time the node is down isn't counted as seen at its next start.
-    store::stop_seeing_out_of_reach(&store, jiff::Timestamp::now().as_millisecond())?;
+    store::stop_seeing_out_of_reach(&store, began, jiff::Timestamp::now().as_millisecond())?;
     drop(socket);
     drop(workers);
     // A stop's time is the service manager's to bound, so each is said.

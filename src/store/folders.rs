@@ -530,7 +530,7 @@ impl Store for Folders {
         session: &str,
         machine: &str,
         since: i64,
-        seen: i64,
+        seen: Option<i64>,
     ) -> io::Result<()> {
         let Some((presence, file)) = self.carried(session, machine)? else {
             return Ok(());
@@ -545,11 +545,19 @@ impl Store for Folders {
             return Ok(());
         }
         // A mark an earlier run or an older node left keeps its time and
-        // gains when this run saw it.
-        fields
-            .entry(UNREACHABLE)
-            .or_insert_with(|| Value::from(since));
-        fields.insert(UNREACHABLE_SEEN.to_owned(), Value::from(seen));
+        // gains when this run saw it, which is never before it went.
+        let kept = fields.get(UNREACHABLE).and_then(Value::as_i64);
+        let since = kept.unwrap_or(since);
+        match seen {
+            Some(seen) => {
+                fields.insert(UNREACHABLE.to_owned(), Value::from(since));
+                fields.insert(UNREACHABLE_SEEN.to_owned(), Value::from(seen.max(since)));
+            }
+            None if kept.is_some() => return Ok(()),
+            None => {
+                fields.insert(UNREACHABLE.to_owned(), Value::from(since));
+            }
+        }
         rewrite_mark(&presence, &file, &body)
     }
 
@@ -1514,6 +1522,12 @@ mod tests {
         let secret = dir.path().join("secret.json");
         let held = br#"{"session": "planted", "machine": "kestrel", "text": "ours"}"#;
         fs::write(&secret, held).expect("a file of the account's own");
+        // Seen, so a put-away that read through its link would go on to
+        // rewrite it, or put a file of its own in the link's place.
+        let seen = dir.path().join("seen.json");
+        let held_seen = br#"{"session": "seen", "machine": "kestrel", "unreachableSeen": 1}"#;
+        fs::write(&seen, held_seen).expect("another of the account's own");
+        symlink(&seen, store.presence().join("seen.json")).expect("one as a presence seen");
         let touched = fs::metadata(&secret).and_then(|meta| meta.modified()).ok();
         symlink(&secret, store.messages().join(format!("{id}.json"))).expect("one as a message");
         symlink(&secret, store.presence().join("planted.json")).expect("one as a presence");
@@ -1531,10 +1545,10 @@ mod tests {
             .keep_presence("planted", "kestrel")
             .expect("keeping what isn't carried here is quiet");
         store
-            .mark_unreachable("planted", "kestrel", 1, 1)
+            .mark_unreachable("planted", "kestrel", 1, Some(1))
             .expect("marking what isn't carried here is quiet");
         store
-            .put_away_unreachable("planted", "kestrel", 2)
+            .put_away_unreachable("seen", "kestrel", 2)
             .expect("as is putting it away");
         store
             .put_message(id, &json!({"text": "carried in"}))
@@ -1551,6 +1565,16 @@ mod tests {
             fs::read(&secret).expect("the account's file stands"),
             held,
             "nothing is written through a link"
+        );
+        assert_eq!(
+            fs::read(&seen).expect("the account's other file stands"),
+            held_seen,
+            "nor through one put away"
+        );
+        assert!(
+            fs::symlink_metadata(store.presence().join("seen.json"))
+                .is_ok_and(|meta| meta.file_type().is_symlink()),
+            "which stays the link it was"
         );
         assert_eq!(
             fs::metadata(&secret).and_then(|meta| meta.modified()).ok(),
@@ -1765,10 +1789,10 @@ mod tests {
             .expect("its time is set");
 
         store
-            .mark_unreachable("there", "kestrel", 7, 8)
+            .mark_unreachable("there", "kestrel", 7, Some(8))
             .expect("marked");
         store
-            .mark_unreachable("there", "kestrel", 9, 10)
+            .mark_unreachable("there", "kestrel", 9, Some(10))
             .expect("marked again");
         let held = store.presences();
         assert_eq!(
@@ -1812,7 +1836,7 @@ mod tests {
         older[UNREACHABLE] = json!(5);
         fs::write(&file, older.to_string()).expect("an older mark");
         store
-            .mark_unreachable("there", "kestrel", 9, 10)
+            .mark_unreachable("there", "kestrel", 9, Some(10))
             .expect("seen at this start");
         let held = store.presences();
         assert_eq!(
@@ -1823,6 +1847,100 @@ mod tests {
             (Some(5), json!(10)),
             "an older mark keeps since when and gains when it was seen"
         );
+    }
+
+    /// A stop whose sweep fails still sweeps and puts away what its run saw
+    /// of every other machine, then says the sweep's failure; a machine it
+    /// can't claim keeps this run's sight.
+    #[test]
+    fn a_stop_puts_away_though_its_sweep_fails() {
+        let (_dir, store) = store();
+        // wren is left unseen, as a link apart from the node leaves a drop,
+        // so only the stop's sweep gives it a sight to put away.
+        for (session, machine, seen) in [("s1", "kestrel", Some(3)), ("s2", "wren", None)] {
+            store
+                .put_presence(session, machine, &json!({"session": session}))
+                .expect("carried");
+            store
+                .mark_unreachable(session, machine, 8, seen)
+                .expect("marked");
+        }
+        // kestrel's claim can't be made, so the sweep fails on it, sorted
+        // before wren, and the put-away can't claim it either.
+        fs::create_dir_all(store.claims.join("kestrel.lock")).expect("in its way");
+
+        assert!(
+            crate::store::stop_seeing_out_of_reach(&store, 0, 20).is_err(),
+            "the sweep's failure is said"
+        );
+        let body = |session: &str| {
+            store
+                .presences()
+                .into_iter()
+                .find(|one| one.session == session)
+                .map(|one| one.body)
+                .expect("kept")
+        };
+        let (s1, s2) = (body("s1"), body("s2"));
+        assert_eq!(
+            (
+                s1[UNREACHABLE_SEEN].clone(),
+                s1[UNREACHABLE_SEEN_FOR].clone()
+            ),
+            (json!(8), Value::Null),
+            "kestrel, unclaimed, keeps this run's sight, never before its drop"
+        );
+        assert_eq!(
+            (
+                s2[UNREACHABLE_SEEN].clone(),
+                s2[UNREACHABLE_SEEN_FOR].clone()
+            ),
+            (Value::Null, json!(12)),
+            "and what this run saw of wren is put away all the same"
+        );
+    }
+
+    /// A link running apart from the node marks only when the link went,
+    /// keeping an older mark's time and the file's; a sight is never before
+    /// the drop it kept.
+    #[test]
+    fn a_link_apart_from_the_node_marks_only_when_it_went() {
+        let (_dir, store) = store();
+        store
+            .put_presence("there", "kestrel", &json!({"session": "there"}))
+            .expect("the session elsewhere is kept");
+        let file = store.presence().join("there.json");
+        let vouched = SystemTime::UNIX_EPOCH + Duration::from_secs(1_793_046_604);
+        fs::File::options()
+            .append(true)
+            .open(&file)
+            .and_then(|file| file.set_modified(vouched))
+            .expect("its time is set");
+        let body = || store.presences()[0].body.clone();
+        let marks = || {
+            (
+                body()[UNREACHABLE].clone(),
+                body()[UNREACHABLE_SEEN].clone(),
+            )
+        };
+
+        store
+            .mark_unreachable("there", "kestrel", 7, None)
+            .expect("marked apart from the node");
+        assert_eq!(marks(), (json!(7), Value::Null), "when it went, unseen");
+        assert_eq!(
+            fs::metadata(&file).and_then(|meta| meta.modified()).ok(),
+            Some(vouched),
+            "keeping the file's time"
+        );
+        store
+            .mark_unreachable("there", "kestrel", 9, None)
+            .expect("marked again");
+        assert_eq!(marks(), (json!(7), Value::Null), "the first drop kept");
+        store
+            .mark_unreachable("there", "kestrel", 9, Some(3))
+            .expect("seen by a clock behind");
+        assert_eq!(marks(), (json!(7), json!(7)), "seen no sooner than it went");
     }
 
     #[test]
@@ -1840,7 +1958,7 @@ mod tests {
             .and_then(|file| file.set_modified(vouched))
             .expect("its time is set");
         store
-            .mark_unreachable("there", "kestrel", 7, 8)
+            .mark_unreachable("there", "kestrel", 7, Some(8))
             .expect("marked");
 
         store
@@ -1858,7 +1976,7 @@ mod tests {
         assert_eq!(modified(), Some(vouched), "the file keeps its time");
         let sweep = || {
             let before = jiff::Timestamp::now().as_millisecond();
-            crate::store::out_of_reach_of_unclaimed(&store).expect("swept at a start");
+            crate::store::out_of_reach_of_unclaimed(&store, before).expect("swept at a start");
             before..=jiff::Timestamp::now().as_millisecond()
         };
         let started = sweep();

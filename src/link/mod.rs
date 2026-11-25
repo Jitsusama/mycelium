@@ -395,6 +395,16 @@ pub async fn run(
         declared: declared_of(starting.as_ref()),
         heard_declared: declared_heard::DeclaredHeard::default(),
         lender: lender_of(starting.as_ref()),
+        housed: if matches!(
+            starting
+                .as_ref()
+                .and_then(|starting| starting.asking.as_ref()),
+            Some(Asking::Dialled)
+        ) {
+            Housed::ApartFromItsNode
+        } else {
+            Housed::InItsNode
+        },
         node: starting.map(|starting| starting.node),
         starters,
         answering,
@@ -1090,6 +1100,17 @@ pub fn closed_unheard(error: &io::Error) -> bool {
 /// a presence goes again once its node names one.
 type Sent = (Arc<Value>, Vec<Value>, Option<String>, Option<String>);
 
+/// Where an end runs, which says whether its node sees the link drop.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Housed {
+    /// In its node, as a link the node keeps, so the node sees the drop as
+    /// it is.
+    InItsNode,
+    /// Apart from its node, as a link another machine dialled, in a
+    /// process SSH started, which may run on while the node is stopped.
+    ApartFromItsNode,
+}
+
 /// This end of a link, and what it knows of the other.
 struct End<S> {
     store: S,
@@ -1129,6 +1150,8 @@ struct End<S> {
     worker_wakes: VecDeque<i64>,
     /// The talks this end carries back to the other.
     following: Option<Following>,
+    /// Where this end runs, in its node or apart from it.
+    housed: Housed,
     /// This machine's node's socket, which starts asked of it go to.
     node: Option<PathBuf>,
     /// What answers the lends a worker asks of this machine, if it lends.
@@ -1292,8 +1315,13 @@ impl<S: Store> End<S> {
         if !matches!(result, Ok(Ending::HandedOver)) {
             let _ = self.store.mark_ended(&self.other, left);
         }
-        // This node runs as the link drops, so it sees the drop as it is.
-        store::out_of_reach(&self.store, &self.other, left, left);
+        // A link the node keeps drops as the node runs, so it sees the
+        // drop as it is. One running apart may drop while the node is
+        // stopped, so it marks when the link went and leaves the seeing
+        // to the node: its next start, or its easing, which times a mark
+        // it hasn't seen from the drop.
+        let seen = (self.housed == Housed::InItsNode).then_some(left);
+        store::out_of_reach(&self.store, &self.other, left, seen);
         result
     }
 
@@ -3403,6 +3431,14 @@ mod tests {
             [("kestrel", Readiness::Unreachable)],
             "what it said stays, as of when the link last carried it"
         );
+        let carried = skiff.presences();
+        assert!(
+            !carried.is_empty()
+                && carried
+                    .iter()
+                    .all(|p| p.body["unreachableSeen"] == json!(p.unreachable_since)),
+            "an end not apart from its node sees the drop as it is: {carried:?}"
+        );
         assert_eq!(skiff.endings("kestrel", 0), 1, "and the drop is counted");
     }
 
@@ -3764,6 +3800,50 @@ mod tests {
         assert!(
             asked.is_some() && carrying.is_some(),
             "the link still carries the asks, and asks its node again"
+        );
+    }
+
+    // Our council, on #408's fix-forward (2026-11-24): a link another
+    // machine dialled runs apart from the node and may drop while it is
+    // stopped, so its drop must not be marked as seen.
+    #[tokio::test]
+    async fn a_dialled_end_marks_its_drop_unseen_for_its_node_to_see() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (skiff, kestrel) = (Memory::default(), Memory::default());
+        skiff.start_here("walgit", json!({"session": "walgit"}), true);
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let near_end = end(&skiff, "skiff", near);
+        let starting = dialled_starting(dir.path(), dir.path().join("node.sock"));
+        let (reading, writing) = tokio::io::split(far);
+        let kestrel_end = kestrel.clone();
+        let _far = tokio::spawn(async move {
+            run(
+                kestrel_end,
+                &realm("kestrel"),
+                connection(reading, writing),
+                None,
+                Some(starting),
+            )
+            .await
+            .map(|_| ())
+        });
+        until(&kestrel, |store| !store.presences().is_empty()).await;
+
+        near_end.abort();
+        until(&kestrel, |store| {
+            store
+                .presences()
+                .iter()
+                .all(|p| p.unreachable_since.is_some())
+        })
+        .await;
+        let carried = kestrel.presences();
+        assert!(
+            !carried.is_empty()
+                && carried
+                    .iter()
+                    .all(|p| p.body.get("unreachableSeen").is_none()),
+            "marked when the link went, and left for the node to see: {carried:?}"
         );
     }
 
@@ -4555,7 +4635,7 @@ mod tests {
         skiff
             .put_presence("walgit", "kestrel", &json!({"session": "walgit"}))
             .expect("a copy is kept");
-        store::out_of_reach(&skiff, "kestrel", now(), now());
+        store::out_of_reach(&skiff, "kestrel", now(), Some(now()));
         let (near, far) = tokio::io::duplex(1 << 16);
         let _skiff_end = end(&skiff, "skiff", near);
         let (_far_reading, mut far_writing) = tokio::io::split(far);
