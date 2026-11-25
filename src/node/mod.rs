@@ -20622,7 +20622,7 @@ esac
         .await;
         assert!(
             overlong.is_err_and(|why| why.contains("at most 256 bytes")),
-            "nor name a session longer than any, which is refused unread"
+            "nor name a session longer than any, which is refused before it is weighed"
         );
         let still = run_through(socket.clone(), run_of("skiff", "true"))
             .await

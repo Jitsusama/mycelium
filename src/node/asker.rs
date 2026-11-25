@@ -214,7 +214,9 @@ impl Processes {
     /// Whether this node would take pi host `host`'s word for a spawner:
     /// only on a machine whose process folder it reads, neither a Mac nor
     /// one run unattended, and there only while none may trace another of
-    /// its user and the host's inspector can't be opened. Where such a
+    /// its user and the host's own process stands closed: its command
+    /// line and environment read, its inspector shut, and none of
+    /// [`LOADS_CODE`] set to load code into it. Where such a
     /// machine's node wouldn't, no spawner is ever said for the host, so
     /// what runs below one is told the host's one session, as before
     /// spawners were said; a Mac's sessions are told none.
@@ -867,7 +869,8 @@ const NO_SIGUSR1: &str = "--disable-sigusr1";
 /// options, where a require that finds nothing beside it looks (as a
 /// library's optional require does), the compile cache whose code node
 /// runs as the host's modules, the loader's libraries, and the modules
-/// OpenSSL's configuration loads. A host's unit clears each.
+/// OpenSSL's configuration loads. A host's unit must unset each, as
+/// core.nix's pi host unit does, or its word for a spawner isn't taken.
 const LOADS_CODE: [&str; 8] = [
     "NODE_OPTIONS",
     "NODE_PATH",
