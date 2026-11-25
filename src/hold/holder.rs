@@ -25,7 +25,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinSet;
 
 use super::environment::{Environment, keeping_path};
-use super::journal::{Ended, How, Journal};
+use super::journal::{Ended, How, Journal, TooOften};
 use super::modes::Modes;
 use super::steering::{Heard, Steers, Watching};
 use super::title::Title;
@@ -673,28 +673,27 @@ pub async fn hold(
             let too_often = quit_unasked && quits_too_often(&mut unasked, Instant::now());
             gone_runs = gone_runs_after(gone_runs, gone, began.elapsed());
             // Its wake file is taken either way, so none is left to read a
-            // later park as a restart.
-            let mut restarting =
-                !gone && (restarting(&files.waking) || (quit_unasked && !too_often));
+            // later park as a restart; but one left beside a quit too often
+            // doesn't start it, or a program writing its own would spin.
+            let wakes_itself = !gone && restarting(&files.waking);
+            let mut restarting = !gone && !too_often && (wakes_itself || quit_unasked);
             // Parked before any window is told so, so a key typed the
             // moment it is told wakes it rather than going to no program.
             let mut parked = (!restarting).then(|| terminal.parks());
             if let Some(how) = how {
                 away(&record, &shown, how);
-            } else if too_often && !restarting {
-                // Said on the holder's standard error too, which a node's
-                // holder shares with the node's log, since no window may
-                // be joined to see it; one joining later is shown it as
-                // one is a host away.
-                eprintln!(
-                    "mycelium: {} quit unasked {} times within {} s, so it is parked",
-                    holding.id,
-                    UNASKED_MOST + 1,
-                    UNASKED_WITHIN.as_secs(),
-                );
-                record.parks();
-                shown.show(FOCUS_ON);
-                shown.stands(UNASKED_LINE);
+            } else if too_often {
+                // Said in the journal too, since no window may be joined to
+                // see it, and a terminal's holder has no other log; one
+                // joining later is shown it as one is a host away.
+                holding.journal.too_often(&TooOften {
+                    id: holding.id.to_owned(),
+                    realm: holding.realm.to_owned(),
+                    program: command.join(" "),
+                    quits: UNASKED_MOST + 1,
+                    within: UNASKED_WITHIN,
+                });
+                stands_parked(&record, &shown, UNASKED_LINE);
             } else if !restarting {
                 parks(&record, &shown, PARKED_LINE);
             }
@@ -830,12 +829,22 @@ const GONE_DOUBLINGS: u32 = 8;
 /// record parked. It stands over whatever the ended run's last output shows after
 /// it, as attach saying why it left can be read only once this is said.
 fn away(record: &Record, shown: &Shown, how: Gone) {
+    stands_parked(
+        record,
+        shown,
+        match how {
+            Gone::Away => GONE_LINE,
+            Gone::Unseen => UNSEEN_LINE,
+        },
+    );
+}
+
+/// Parks the program in its record, with `line` standing in every
+/// joined window and each joining until it starts again.
+fn stands_parked(record: &Record, shown: &Shown, line: &[u8]) {
     record.parks();
     shown.show(FOCUS_ON);
-    shown.stands(match how {
-        Gone::Away => GONE_LINE,
-        Gone::Unseen => UNSEEN_LINE,
-    });
+    shown.stands(line);
 }
 
 /// Waits as [`woken`] does, or until `after` has passed, if given: a
@@ -907,8 +916,7 @@ fn unstarted(error: &io::Error) -> Vec<u8> {
 /// quit unasked too often is parked rather than started again: one more
 /// than [`UNASKED_MOST`] within [`UNASKED_WITHIN`], as a test holds it.
 const UNASKED_LINE: &[u8] =
-    b"\r\nIt quit unasked 4 times within 60 s, so it's parked. A key or a message starts \
-      it again.\r\n";
+    b"\r\nIt quit unasked 4 times within 60 s, so it's parked. A key starts it again.\r\n";
 
 /// Says the program is parked, in its record and with `line` in every
 /// joined window, each asked to say when it comes in front, which wakes
@@ -2468,6 +2476,10 @@ mod tests {
             .await;
         let parked = listed_parked(&dir, &mut changes, true).await;
         assert_eq!(parked.pid, 0, "one more quit within a minute parks it");
+        // One joining later is told why too, as the person coming back is.
+        let mut late = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        late.sees("so it's parked. A key starts it again.").await;
+        drop(late);
 
         // Its window stayed, so a key starts it again, as any park's,
         // and with as many unasked quits as at first.
@@ -2535,20 +2547,27 @@ mod tests {
             let at = start + Duration::from_secs(u64::try_from(after).expect("a few"));
             quits_too_often(&mut quits, at);
         }
+        // The first, a whole minute before, counts no more, so with only
+        // two others this one starts again.
         assert!(
             !quits_too_often(&mut quits, start + UNASKED_WITHIN),
             "a quit a whole minute after the first counts it no more"
         );
-        quits.clear();
+        assert_eq!(quits.len(), UNASKED_MOST, "the first is let go: {quits:?}");
+        // Those at one and two seconds, and the minute's, are all still
+        // within a minute of the next.
         assert!(
-            !quits_too_often(&mut quits, start + UNASKED_WITHIN + Duration::from_secs(1)),
-            "once the first has aged out, one more starts again"
+            quits_too_often(
+                &mut quits,
+                start + UNASKED_WITHIN + Duration::from_millis(500)
+            ),
+            "three within the minute before make one more too often"
         );
         assert!(
             !quits_too_often(&mut quits, start + UNASKED_WITHIN * 3),
-            "and a quit long after the rest is the first again"
+            "and a quit after the park is the first again"
         );
-        assert_eq!(quits.len(), 1, "those too old to count are let go");
+        assert_eq!(quits.len(), 1, "only it is counted");
     }
 
     #[test]

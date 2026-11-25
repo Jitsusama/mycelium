@@ -16,6 +16,7 @@ use std::os::unix::net::UnixDatagram;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+use std::time::Duration;
 
 use super::holder::{PARKED, RELEASED, UNASKED, UNASKED_SIGNAL};
 
@@ -143,6 +144,57 @@ impl Ended {
     }
 }
 
+/// A held program parked for quitting unasked too often, rather than
+/// started again: said apart from its run's end, which reads as any
+/// unasked quit's, since a terminal's holder has no log but the journal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TooOften {
+    /// The hold's id.
+    pub id: String,
+    /// The realm it is held in.
+    pub realm: String,
+    /// The program that ran, as it was named.
+    pub program: String,
+    /// How many times it quit unasked, this last included.
+    pub quits: usize,
+    /// Within how long.
+    pub within: Duration,
+}
+
+impl TooOften {
+    /// What it says, in a line.
+    #[must_use]
+    pub fn line(&self) -> String {
+        format!(
+            "held {} in {}: {} quit unasked {} times within {} s, so it is parked until a \
+             key in its window starts it",
+            self.id,
+            self.realm,
+            one_line(&self.program),
+            self.quits,
+            self.within.as_secs()
+        )
+    }
+
+    /// Its entry in the journal's own form, warning, since a program left
+    /// parked by its own quits needs someone to look.
+    #[must_use]
+    pub fn entry(&self) -> String {
+        [
+            ("MESSAGE", self.line()),
+            ("PRIORITY", "4".to_owned()),
+            ("SYSLOG_IDENTIFIER", "mycelium".to_owned()),
+            ("MYCELIUM_HELD", one_line(&self.id)),
+            ("MYCELIUM_REALM", one_line(&self.realm)),
+            ("MYCELIUM_PROGRAM", one_line(&self.program)),
+            ("MYCELIUM_PARKED", "too-often".to_owned()),
+        ]
+        .iter()
+        .flat_map(|(field, value)| [*field, "=", value.as_str(), "\n"])
+        .collect()
+    }
+}
+
 /// `text` with no line breaks, which the journal's simple form can't
 /// hold in a value.
 fn one_line(text: &str) -> String {
@@ -179,6 +231,9 @@ fn signal_name(signal: i32) -> &'static str {
 pub trait Journal: Send + Sync {
     /// Says `ended`.
     fn ended(&self, ended: &Ended);
+
+    /// Says the program was parked for quitting unasked too often.
+    fn too_often(&self, parked: &TooOften);
 }
 
 /// The machine's journal, or the holder's standard error where there is
@@ -218,6 +273,13 @@ impl Journal for SystemJournal {
             let _ = writeln!(io::stderr(), "mycelium: {}", ended.line());
         }
     }
+
+    fn too_often(&self, parked: &TooOften) {
+        if self.send(&parked.entry()).is_err() {
+            // As with an end, standard error is all that's left.
+            let _ = writeln!(io::stderr(), "mycelium: {}", parked.line());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -232,6 +294,29 @@ mod tests {
             program: "pi".to_owned(),
             how,
         }
+    }
+
+    #[test]
+    fn a_park_for_quitting_too_often_warns_naming_its_bound_and_what_wakes_it() {
+        let parked = TooOften {
+            id: "trial1".to_owned(),
+            realm: "harbour".to_owned(),
+            program: "pi\n--session tern".to_owned(),
+            quits: 4,
+            within: Duration::from_secs(60),
+        };
+        let entry = parked.entry();
+        assert!(
+            entry.contains("PRIORITY=4\n") && entry.contains("MYCELIUM_PARKED=too-often\n"),
+            "it warns, marked as this park: {entry:?}"
+        );
+        assert!(
+            entry.contains(
+                "MESSAGE=held trial1 in harbour: pi --session tern quit unasked 4 times \
+                 within 60 s, so it is parked until a key in its window starts it\n"
+            ),
+            "its line says the bound and the key, on one line: {entry:?}"
+        );
     }
 
     #[test]

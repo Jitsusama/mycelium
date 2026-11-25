@@ -4200,9 +4200,11 @@ its exit, and is started again the same way; it warns too, its
 journal line naming the signal. One such quit with three others in
 the minute before it is parked instead, so a program that quits as it
 starts can't start forever: every window, and each joining while it
-is parked, is told why, and so is the holder's standard error. A key
-or a message starts it again, as any park's does, with as many quits
-as at first.
+is parked, is told why, and the journal warns that it was parked,
+with `MYCELIUM_PARKED=too-often`. A key in its window starts it
+again, with as many quits as at first, and a wake file left beside
+the quit doesn't. A message doesn't wake it, since nothing marks it
+parked for one to find.
 
 A program that exits with 69 (sysexits' `EX_UNAVAILABLE`) having
 written `<id>.gone`, told its path in `MYCELIUM_GONE`, is kept as a
