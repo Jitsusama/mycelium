@@ -99,9 +99,16 @@ fn said(limit: Option<u64>) -> String {
 /// The most this system takes as a soft limit on open files whatever the
 /// hard limit says, where it has one: on macOS the kernel refuses a soft
 /// limit above `kern.maxfilesperproc`, an unlimited one included, as Go's
-/// runtime reads it too.
+/// runtime reads it too, or 10240 where it can't be read.
 #[cfg(target_os = "macos")]
 fn ceiling() -> Option<u64> {
+    most_per_process().or(Some(MACOS_OPEN_MAX))
+}
+
+/// `kern.maxfilesperproc`, as macOS says it, or none where it says
+/// nothing a limit could be.
+#[cfg(target_os = "macos")]
+fn most_per_process() -> Option<u64> {
     let mut most: libc::c_int = 0;
     let mut size = size_of::<libc::c_int>();
     #[expect(
@@ -119,12 +126,10 @@ fn ceiling() -> Option<u64> {
             0,
         )
     };
-    let read = (read == 0).then_some(most);
-    Some(
-        read.and_then(|most| u64::try_from(most).ok())
-            .filter(|most| *most > 0)
-            .unwrap_or(MACOS_OPEN_MAX),
-    )
+    (read == 0)
+        .then_some(most)
+        .and_then(|most| u64::try_from(most).ok())
+        .filter(|most| *most > 0)
 }
 
 #[cfg(not(target_os = "macos"))]
