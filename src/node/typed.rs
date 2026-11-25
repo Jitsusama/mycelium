@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use jiff::{SignedDuration, Timestamp};
@@ -23,6 +23,14 @@ const STANDS: SignedDuration = SignedDuration::from_secs(60);
 
 /// How many random bytes a token holds.
 const TOKEN_BYTES: usize = 16;
+
+/// How large the log grows before it is rolled to one older copy beside
+/// it, so no asker grows it without bound.
+const LOG_LONGEST: u64 = 4 << 20;
+
+/// The most of a session, cell or ask's name the log keeps: far longer
+/// than any real one, so one sent to grow the log is cut.
+const FIELD_LONGEST: usize = 256;
 
 /// What a token is bound to: the cell answered, the ask answered and the
 /// digest of the words that answer it.
@@ -52,6 +60,8 @@ struct Minted {
 pub struct Typed {
     minted: Mutex<HashMap<String, Minted>>,
     log: PathBuf,
+    /// Held while the log is written or rolled.
+    logging: Mutex<()>,
     placements: Placements,
 }
 
@@ -67,6 +77,7 @@ impl Typed {
         Self {
             minted: Mutex::new(HashMap::new()),
             log,
+            logging: Mutex::new(()),
             placements,
         }
     }
@@ -184,23 +195,26 @@ impl Typed {
     }
 
     /// Keeps what was `did` in the log, as one line written at once, so
-    /// two kept together never interleave: never the token or the words.
+    /// two kept together never interleave: never the token or the words,
+    /// and each name cut to [`FIELD_LONGEST`].
     fn keep(&self, did: &str, session: &str, bound: &Bound, why: Option<&str>) {
         let mut line = serde_json::json!({
             "at": Timestamp::now().to_string(),
             "did": did,
-            "session": session,
-            "address": bound.address,
-            "want": bound.want,
+            "session": clipped(session),
+            "address": clipped(&bound.address),
+            "want": clipped(&bound.want),
         });
         if let (Some(why), Some(fields)) = (why, line.as_object_mut()) {
             fields.insert("why".to_owned(), why.into());
         }
-        let written = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log)
-            .and_then(|mut log| log.write_all(format!("{line}\n").as_bytes()));
+        let written = {
+            let _logging = self
+                .logging
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            appended(&self.log, &format!("{line}\n"))
+        };
         if let Err(error) = written {
             eprintln!(
                 "mycelium: a typed answer isn't kept in {}: {error}",
@@ -216,6 +230,49 @@ impl Typed {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+}
+
+/// `said`, cut to at most [`FIELD_LONGEST`] bytes at a character's edge.
+fn clipped(said: &str) -> &str {
+    let mut end = said.len().min(FIELD_LONGEST);
+    while !said.is_char_boundary(end) {
+        end -= 1;
+    }
+    &said[..end]
+}
+
+/// Appends `line` to `log`, rolling a log past [`LOG_LONGEST`] to one
+/// older copy beside it first, and ending a last line a write cut short,
+/// so each line kept reads whole.
+fn appended(log: &Path, line: &str) -> std::io::Result<()> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(log)?;
+    let mut length = file.metadata()?.len();
+    if length >= LOG_LONGEST {
+        let mut older = log.as_os_str().to_owned();
+        older.push(".1");
+        std::fs::rename(log, PathBuf::from(older))?;
+        file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(log)?;
+        length = 0;
+    }
+    let mut last = [0_u8; 1];
+    let cut_short = length > 0
+        && file.seek(SeekFrom::Start(length - 1)).is_ok()
+        && file.read_exact(&mut last).is_ok()
+        && last[0] != b'\n';
+    let whole = if cut_short {
+        format!("\n{line}")
+    } else {
+        line.to_owned()
+    };
+    file.write_all(whole.as_bytes())
 }
 
 /// The SHA-256 of `words`, as UTF-8, in 64 lowercase hex digits.
@@ -410,5 +467,43 @@ mod tests {
         typed
             .spend(&second, Some(ASKER), &bound("yes"), None)
             .expect("the second stands");
+    }
+
+    #[test]
+    fn a_try_with_long_names_is_kept_cut_and_the_log_rolls_past_its_bound() {
+        let (dir, typed) = typed();
+        let log = dir.path().join("typed-answers.jsonl");
+        let long = Bound {
+            address: "é".repeat(FIELD_LONGEST),
+            want: "w".repeat(FIELD_LONGEST * 4),
+            digest: digest("yes"),
+        };
+        assert!(typed.spend("no-such", Some(ASKER), &long, None).is_err());
+        let kept = std::fs::read_to_string(&log).expect("a line is kept");
+        let line: serde_json::Value =
+            serde_json::from_str(kept.trim_end()).expect("it reads whole");
+        assert_eq!(line["want"].as_str().map(str::len), Some(FIELD_LONGEST));
+        assert!(
+            line["address"]
+                .as_str()
+                .is_some_and(|cut| cut.len() <= FIELD_LONGEST)
+        );
+        // A last line a write cut short is ended before the next.
+        std::fs::write(&log, "{\"cut\":").expect("a torn line");
+        typed.refused("s-own", &bound("yes"), "why");
+        let kept = std::fs::read_to_string(&log).expect("read");
+        assert_eq!(kept.lines().count(), 2);
+        assert!(
+            serde_json::from_str::<serde_json::Value>(kept.lines().nth(1).expect("it")).is_ok()
+        );
+        let past = usize::try_from(LOG_LONGEST).expect("a size");
+        std::fs::write(&log, "x\n".repeat(past / 2)).expect("a log at its bound");
+        typed.refused("s-own", &bound("yes"), "why");
+        assert_eq!(
+            std::fs::read_to_string(&log).expect("read").lines().count(),
+            1,
+            "it rolls, so the new log holds the one line"
+        );
+        assert!(dir.path().join("typed-answers.jsonl.1").exists());
     }
 }

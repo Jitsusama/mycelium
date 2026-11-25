@@ -65,6 +65,7 @@ use turns::{Asked, Turns};
 mod arrival;
 mod asker;
 pub use asker::Processes;
+mod binaries;
 mod cell;
 #[cfg(target_os = "linux")]
 mod viewed;
@@ -4711,6 +4712,12 @@ impl<S: Store> Shared<S> {
     /// so the replies carried back land where the person's launcher reads
     /// them.
     async fn steer(&self, address: &str, said: &serde_json::Value) -> Reply {
+        // A token is spent before anything else is weighed, so one sent
+        // with any act, a carry's among them, answers nothing and is gone.
+        let typed = said.get("token").is_some();
+        if typed {
+            self.spend_typed(address, said).await?;
+        }
         match said.get("act").and_then(serde_json::Value::as_str) {
             Some(ordered::ACT) => return self.ordered_carry(address, said).await,
             Some(ordered::ITSELF) => return self.own_carry(address, said).await,
@@ -4719,8 +4726,7 @@ impl<S: Store> Shared<S> {
         // A typed answer is the person's own words by its token alone, which
         // the steer written never carries, as `Steer::new` keeps only the
         // fields the harness reads.
-        let checked = if said.get("token").is_some() {
-            self.spend_typed(address, said)?;
+        let checked = if typed {
             true
         } else {
             // A Mac's `ps` takes tens of milliseconds, too long to hold the
@@ -5169,17 +5175,20 @@ impl<S: Store> Shared<S> {
                 "this node mints no typed answer: it runs with --no-typed-answers".to_owned(),
             );
         };
-        let minted = match self.may_mint(session, &bound).await {
-            Ok(asker) => typed.mint(session, asker, bound.clone()),
-            Err(why) => Err(why),
-        };
-        match minted {
-            Ok((token, until)) => Ok(Response::Minted { token, until }),
-            Err(why) => {
-                typed.refused(session, &bound, &why);
-                Err(why)
+        let asker = self.may_mint(session, &bound).await;
+        let session = session.to_owned();
+        // The log is written to disk, so off the runtime's own threads.
+        tokio::task::spawn_blocking(move || {
+            match asker.and_then(|asker| typed.mint(&session, asker, bound.clone())) {
+                Ok((token, until)) => Ok(Response::Minted { token, until }),
+                Err(why) => {
+                    typed.refused(&session, &bound, &why);
+                    Err(why)
+                }
             }
-        }
+        })
+        .await
+        .map_err(|error| format!("the mint couldn't be weighed: {error}"))?
     }
 
     /// Keeps hold `held` as one the person placed, where the asker placed
@@ -5198,10 +5207,10 @@ impl<S: Store> Shared<S> {
             .map(|()| Response::Placed)
     }
 
-    /// Keeps hold `held` as the person's where process `asker` placed it
-    /// from their own terminal ([`terminal::persons_terminal`]) or is the
-    /// launcher's own ([`terminal::launchers_own`]); a hold anything else
-    /// placed, parked, or that no holder here runs is refused.
+    /// Keeps hold `held` as the person's where process `asker` may place
+    /// it ([`asker::may_place`]) and it is the asker's
+    /// ([`terminal::placement_of`]). A hold anything else placed, parked, or that
+    /// no holder here runs is refused.
     async fn keep_persons(&self, held: &str, asker: i32) -> Result<(), String> {
         let Some(typed) = self.typed.clone() else {
             return Err(
@@ -5214,37 +5223,19 @@ impl<S: Store> Shared<S> {
         let Processes::Folder(procs) = self.processes.as_ref().clone() else {
             return Err("this machine can't tell who placed a hold".to_owned());
         };
-        let folder = self.held.clone();
+        let (folder, processes) = (self.held.clone(), self.processes.as_ref().clone());
         let held = held.to_owned();
         tokio::task::spawn_blocking(move || {
             let placed = typed.placements().placed();
-            let persons = terminal::persons_terminal(&procs, asker, terminal::ROOT, &placed);
-            if let Err(why) = persons
-                && !terminal::launchers_own(&procs, asker, terminal::ROOT)
-            {
-                return Err(format!(
-                    "{held} is kept as the person's only when placed from their own \
-                     terminal or by the launcher, and this asks from neither: {why}"
-                ));
-            }
-            let Some(one) = hold::held(&folder).into_iter().find(|one| one.id == held) else {
-                return Err(format!("no holder here runs {held}"));
+            let system = binaries::System::here();
+            let terminals = terminal::Terminals {
+                system: &system,
+                placed: &placed,
             };
-            let (Ok(holder), Ok(program)) = (i32::try_from(one.holder), i32::try_from(one.pid))
-            else {
-                return Err(format!("{held}'s holder or program can't be named"));
-            };
-            if program == 0 {
-                return Err(format!("{held} is parked, so its program wasn't placed"));
-            }
-            let Some(started) = terminal::stat(&procs, holder).map(|stat| stat.started) else {
-                return Err(format!("{held}'s holder can't be read"));
-            };
-            let placed = terminal::Placed {
-                holder,
-                holder_started: started,
-                program,
-            };
+            asker::may_place(asker, &processes, terminals)
+                .map_err(|why| format!("{held} isn't kept as the person's: {why}"))?;
+            let placed =
+                terminal::placement_of(&procs, &system, &hold::held(&folder), &held, asker)?;
             typed.placements().keep(placed, &procs)
         })
         .await
@@ -5295,8 +5286,9 @@ impl<S: Store> Shared<S> {
                 "who owns the sessions here can't be proved, so no typed answer is minted"
                     .to_owned()
             })?;
+            let system = binaries::System::here();
             let terminals = terminal::Terminals {
-                owner: terminal::ROOT,
+                system: &system,
                 placed: &placed,
             };
             asker::may_mint(
@@ -5334,8 +5326,10 @@ impl<S: Store> Shared<S> {
     /// as the person's own only where the steer is exactly an answer from
     /// the person with its token, to an ask the store keeps as no hold,
     /// from the process it was minted to, for that cell, ask and words,
-    /// within its minute. The token is spent by this try, taken or not.
-    fn spend_typed(&self, address: &str, said: &serde_json::Value) -> Result<(), String> {
+    /// within its minute. The token is spent by this try, taken or not:
+    /// its log's `spent` says it was taken, and the steer it came with is
+    /// then delivered as any other, or refused as any other.
+    async fn spend_typed(&self, address: &str, said: &serde_json::Value) -> Result<(), String> {
         /// The fields a typed answer carries, and no others.
         const TYPED: [&str; 6] = ["act", "want", "value", "other", "from", "token"];
         let Some(typed) = self.typed.clone() else {
@@ -5352,18 +5346,22 @@ impl<S: Store> Shared<S> {
         let Some(token) = text("token") else {
             return Err("a typed answer's token is a string".to_owned());
         };
+        let given = |field: &str| fields.is_some_and(|fields| fields.contains_key(field));
+        // Each of value and other is a string where given, and exactly
+        // one is, so the digest binds every word delivered.
         let words = match (text("value"), text("other")) {
-            (Some(words), None) | (None, Some(words)) => Some(words),
+            (Some(words), None) if !given("other") => Some(words),
+            (None, Some(words)) if !given("value") => Some(words),
             _ => None,
         };
         let want = text("want").unwrap_or_default();
         let extra =
             fields.and_then(|fields| fields.keys().find(|field| !TYPED.contains(&field.as_str())));
-        let held = self
-            .store
-            .message(want)
+        // An ask the store doesn't keep can't be told no hold, so it is
+        // refused, never taken on trust.
+        let asked = self.store.message(want).as_ref().and_then(mesh::message);
+        let held = asked
             .as_ref()
-            .and_then(mesh::message)
             .is_some_and(|message| message.intent == Some(Intent::Hold));
         let refused = if let Some(extra) = extra {
             Some(format!(
@@ -5374,7 +5372,12 @@ impl<S: Store> Shared<S> {
         } else if want.is_empty() {
             Some("a typed answer names the ask it answers, as want".to_owned())
         } else if words.is_none() {
-            Some("a typed answer carries its words as one of value or other".to_owned())
+            Some("a typed answer carries its words as one string, value or other".to_owned())
+        } else if asked.is_none() {
+            Some(
+                "a typed answer answers an ask this node keeps, and it keeps none by that id"
+                    .to_owned(),
+            )
         } else if held {
             Some(
                 "a typed answer never answers a hold: the person ends one from their own login"
@@ -5389,7 +5392,11 @@ impl<S: Store> Shared<S> {
             want: want.to_owned(),
             digest: typed::digest(words.unwrap_or_default()),
         };
-        typed.spend(token, asker, &bound, refused)
+        let token = token.to_owned();
+        // The log is written to disk, so off the runtime's own threads.
+        tokio::task::spawn_blocking(move || typed.spend(&token, asker, &bound, refused))
+            .await
+            .map_err(|error| format!("the typed answer couldn't be weighed: {error}"))?
     }
 
     /// The fence `session` shows it runs in, by its owner's process,

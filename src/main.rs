@@ -3354,15 +3354,19 @@ fn hold(
 /// Tells the node that this process placed hold `id`, so where the kernel
 /// shows it on the person's own terminal, the node keeps the hold as
 /// theirs and its pi may be minted a typed answer (PROTOCOL.md's A Typed
-/// Answer). A node not running, or one that refuses, leaves the hold as
-/// it is, held but no one's, so nothing is said of it.
+/// Answer). A node not running, or one that mints none, leaves the hold
+/// as it is, held but no one's, so nothing is said of it; one that
+/// refuses it as the person's is said, so the person knows its pi won't
+/// be minted one before a typed answer is refused.
 fn say_placed(realm: &str, id: &str) {
     if let Ok(mut node) =
         Client::connect_within(&place::socket(realm), std::time::Duration::from_secs(5))
-    {
-        let _ = node.ask(&Request::Placed {
+        && let Ok(Err(why)) = node.ask(&Request::Placed {
             held: id.to_owned(),
-        });
+        })
+        && !why.starts_with("this node mints no typed answer")
+    {
+        eprintln!("mycelium: {id} isn't kept as yours, so its pi gets no typed answer: {why}");
     }
 }
 

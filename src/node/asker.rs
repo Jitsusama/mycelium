@@ -1275,24 +1275,74 @@ pub fn may_mint(
             "{session}'s pi host's word isn't taken here, so no typed answer is minted"
         ));
     }
-    let unread =
-        || "a process above the one asking can't be read, so no typed answer is minted".to_owned();
-    for forebear in processes.lineage(pid).into_iter().skip(1) {
-        let status = fs::read_to_string(procs.join(forebear.to_string()).join("status"))
-            .map_err(|_| unread())?;
-        let (name, _) = named(&status).ok_or_else(unread)?;
-        if [PI, PI_HOST, SPAWNER].contains(&name) {
-            return Err(format!(
-                "a {name} runs above the one asking, so a pi a command started mints no typed \
-                 answer"
-            ));
-        }
+    if let Some(name) = agent_among(procs, &processes.lineage(pid)[1..]).map_err(|()| {
+        "a process above the one asking can't be read, so no typed answer is minted".to_owned()
+    })? {
+        return Err(format!(
+            "a {name} runs above the one asking, so a pi a command started mints no typed answer"
+        ));
     }
-    terminal::persons_terminal(procs, pid, terminals.owner, terminals.placed).map_err(|why| {
+    terminal::persons_terminal(procs, pid, terminals).map_err(|why| {
         format!(
             "the pi asking isn't on the person's own terminal ({why}), so no typed answer is minted"
         )
     })
+}
+
+/// The name of the first of `among` that is a pi, a pi host or a spawner,
+/// by the name the kernel gives it; or none; or `Err` where one can't be
+/// read.
+fn agent_among(procs: &Path, among: &[i32]) -> Result<Option<&'static str>, ()> {
+    for process in among {
+        let status =
+            fs::read_to_string(procs.join(process.to_string()).join("status")).map_err(|_| ())?;
+        let (name, _) = named(&status).ok_or(())?;
+        if let Some(agent) = [PI, PI_HOST, SPAWNER]
+            .into_iter()
+            .find(|agent| *agent == name)
+        {
+            return Ok(Some(agent));
+        }
+    }
+    Ok(None)
+}
+
+/// Whether process `asker` may place a hold as the person's (PROTOCOL.md's
+/// A Typed Answer): neither it nor any of its forebears is a pi, a pi host
+/// or a spawner, so no agent's command places one, and it asks from the
+/// foreground of the person's own terminal as `terminals` tell it, or is
+/// the launcher's own process. Only a machine whose process folder the
+/// node reads proves it.
+///
+/// # Errors
+///
+/// Where any of that doesn't hold, or can't be read, saying which.
+pub fn may_place(
+    asker: i32,
+    processes: &Processes,
+    terminals: terminal::Terminals<'_>,
+) -> Result<(), String> {
+    let Processes::Folder(procs) = processes else {
+        return Err("this machine can't tell who placed a hold".to_owned());
+    };
+    match agent_among(procs, &processes.lineage(asker)) {
+        Err(()) => {
+            return Err("the one placing it, or a process above it, can't be read".to_owned());
+        }
+        Ok(Some(name)) => {
+            return Err(format!(
+                "a {name} places it or runs above the one that does, so an agent placed it"
+            ));
+        }
+        Ok(None) => {}
+    }
+    match terminal::persons_terminal(procs, asker, terminals) {
+        Ok(()) => Ok(()),
+        Err(_) if terminal::launchers_own(procs, asker, terminals.system) => Ok(()),
+        Err(why) => Err(format!(
+            "it is placed from neither the person's own terminal nor the launcher: {why}"
+        )),
+    }
 }
 
 /// Whether process `asker` is the person's own login, as `processes` tell
@@ -3043,10 +3093,14 @@ mod tests {
         std::os::unix::fs::symlink(&binary, process.join("exe")).expect("it is linked");
     }
 
-    /// The account that owns what a test makes, standing in for root's.
-    fn owner_of(made: &Path) -> u32 {
-        use std::os::unix::fs::MetadataExt as _;
-        fs::metadata(made).expect("it is read").uid()
+    /// A system whose kitty, mycelium and Quickshell are in `binaries`,
+    /// standing in for the folders its generations name.
+    fn system_of(binaries: &Path) -> super::super::binaries::System {
+        use super::super::binaries::Binary::{Kitty, Mycelium, Quickshell};
+        [Kitty, Mycelium, Quickshell].into_iter().fold(
+            super::super::binaries::System::default(),
+            |system, binary| system.with(binary, binaries.to_owned()),
+        )
     }
 
     fn claim(session: &str, pid: i32, ticks: Option<u64>, host: Option<&str>) -> Claim {
@@ -3175,8 +3229,9 @@ mod tests {
         on_terminal(procs.path(), (41, "zsh", 200), (40, 41, 41), (TTY, 58));
         on_terminal(procs.path(), (58, "pi", 500), (41, 58, 41), (TTY, 58));
         traced_by_forebears(procs.path(), "0");
+        let system = system_of(binaries.path());
         let terminals = terminal::Terminals {
-            owner: owner_of(binaries.path()),
+            system: &system,
             placed: &[],
         };
         let claims = [
@@ -3295,9 +3350,11 @@ mod tests {
             holder: 30,
             holder_started: 300,
             program: 31,
+            program_started: 550,
         }];
+        let system = system_of(binaries.path());
         let terminals = terminal::Terminals {
-            owner: owner_of(binaries.path()),
+            system: &system,
             placed: &placed,
         };
         let here = folder(at);
@@ -3328,6 +3385,64 @@ mod tests {
                 ),
             }
         }
+    }
+
+    #[test]
+    fn a_hold_is_placed_as_the_persons_only_by_what_they_typed_or_the_launcher_started() {
+        // 45 is a command the person typed under kitty's shell; 60 one a
+        // pi's command ran, in pi's own group; 21 one the launcher ran;
+        // 70 an agent's, on no terminal.
+        let procs = procs(&[
+            (20, "quickshell", 1, "app.slice/quickshell.service"),
+            (21, "mycelium", 20, "app.slice/quickshell.service"),
+            (40, "kitty", 1, "app.slice/kitty.scope"),
+            (41, "zsh", 40, "app.slice/kitty.scope"),
+            (45, "mycelium", 41, "app.slice/kitty.scope"),
+            (58, "pi", 41, "agents.slice/mycelium-pi-a.scope"),
+            (59, "bash", 58, "agents.slice/mycelium-pi-a.scope"),
+            (60, "mycelium", 59, "agents.slice/mycelium-pi-a.scope"),
+            (70, "mycelium", 1, "agents.slice/mycelium-pi-b.scope"),
+        ]);
+        let at = procs.path();
+        let binaries = tempfile::tempdir().expect("a stand-in for the store");
+        runs_binary(at, 20, binaries.path(), ".quickshell-wrapped");
+        runs_binary(at, 40, binaries.path(), ".kitty-wrapped");
+        on_terminal(at, (21, "mycelium", 210), (20, 21, 21), (0, -1));
+        on_terminal(at, (41, "zsh", 200), (40, 41, 41), (TTY, 45));
+        on_terminal(at, (45, "mycelium", 450), (41, 45, 41), (TTY, 45));
+        on_terminal(at, (58, "pi", 500), (41, 58, 41), (TTY, 58));
+        on_terminal(at, (59, "bash", 590), (58, 58, 41), (TTY, 58));
+        on_terminal(at, (60, "mycelium", 600), (59, 58, 41), (TTY, 58));
+        on_terminal(at, (70, "mycelium", 700), (1, 70, 70), (0, -1));
+        let system = system_of(binaries.path());
+        let terminals = terminal::Terminals {
+            system: &system,
+            placed: &[],
+        };
+        let here = folder(at);
+        assert_eq!(may_place(45, &here, terminals), Ok(()));
+        assert_eq!(may_place(21, &here, terminals), Ok(()));
+        for (asker, says) in [
+            (60, "a pi places it or runs above"),
+            (58, "a pi places it"),
+            (70, "neither the person's own terminal nor the launcher"),
+        ] {
+            let placed = may_place(asker, &here, terminals);
+            assert!(
+                placed.as_ref().is_err_and(|why| why.contains(says)),
+                "{asker}: {placed:?}"
+            );
+        }
+        assert!(may_place(45, &Processes::Listed, terminals).is_err());
+        let none = super::super::binaries::System::default();
+        let unnamed = terminal::Terminals {
+            system: &none,
+            placed: &[],
+        };
+        assert!(
+            may_place(45, &here, unnamed).is_err(),
+            "a kitty no generation names serves none of the person's terminals"
+        );
     }
 
     #[test]
