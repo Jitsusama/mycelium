@@ -161,6 +161,38 @@ done
 put nix/long-files-waiting.txt "crowd "
 expect fails "begin or end with a space" "a list line with a space at an end is refused"
 
+# A crowded folder named from a space outside ASCII and a hash, listed so:
+# an entry to the counts, which read bytes whatever the locale, though a
+# grep reading UTF-8 would take the line for a comment and the folder for
+# one unlisted. A case runs only where grep reads its space as one under
+# en_US.UTF-8, since elsewhere it would pass whether or not the counts read
+# bytes, and a C library may class the no-break space as none. Where grep
+# reads neither, for want of a UTF-8 locale or of multibyte classes, that
+# fails here.
+ran=0
+for named in no-break=$'\302\240' ideographic=$'\343\200\200'; do
+  spaced=$(LC_ALL=en_US.UTF-8 grep -c '^[[:space:]]' <<< "${named#*=}#" || true)
+  if [[ ${spaced} != 1 ]]; then
+    echo "counts-test: the ${named%%=*} case is skipped, since grep reads no" \
+      "${named%%=*} space as one under en_US.UTF-8"
+    continue
+  fi
+  ran=$((ran + 1))
+  tree
+  crowd="${named#*=}#crowd"
+  for ((n = 1; n <= 41; n++)); do
+    put "${crowd}/${n}.md" "${n}"
+  done
+  put nix/long-files-waiting.txt "${crowd}"
+  LC_ALL=en_US.UTF-8 expect passes "" \
+    "a line opening with a space outside ASCII (${named%%=*}) is an entry, whatever the locale"
+done
+if ((ran == 0)); then
+  echo "FAIL the locale cases can't run: grep reads neither space as one under" \
+    "en_US.UTF-8 (no UTF-8 locale, or a grep without multibyte classes)" >&2
+  failed=1
+fi
+
 if ((failed == 0)); then
   echo "counts-test: every case holds"
 fi
