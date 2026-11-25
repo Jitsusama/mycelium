@@ -591,11 +591,6 @@ fn ran_in(session: &Session) -> Option<PathBuf> {
     })
 }
 
-/// The refusal of a relayed start naming a session other than as
-/// [`starts::reopens`] takes it.
-const RELAYED_REOPENS_ALONE: &str =
-    "a reopening relayed here names its session by --session and its id alone";
-
 /// Whether `session` has ended parked, which reads its inbox as it wakes.
 fn parked_presence(session: &Session) -> bool {
     session.state == SessionState::Ended
@@ -5521,27 +5516,47 @@ impl<S: Store> Shared<S> {
         sessions: &[Session],
         seen: &Seen<'_>,
     ) -> Result<(), String> {
+        if !sessions
+            .iter()
+            .any(|one| one.id == session && one.machine == self.machine)
+        {
+            return Err(format!(
+                "no session {} ended on {}, so nothing is reopened here",
+                session.escape_debug(),
+                self.machine
+            ));
+        }
+        self.unclaimed_here(session, sessions, seen)
+    }
+
+    /// Refuses a start of `session` here where something brings it back
+    /// already, as [`Self::reopened_here`] says, so no second pi writes
+    /// over the first: it is still live, parked with a holder a steer
+    /// would wake, held by a holder here, carried away or waiting for its
+    /// turn. A session this machine never ran may still be held or
+    /// coming back, as one carried here is.
+    fn unclaimed_here(
+        &self,
+        session: &str,
+        sessions: &[Session],
+        seen: &Seen<'_>,
+    ) -> Result<(), String> {
         let shown = session.escape_debug();
         let machine = &self.machine;
-        let Some(one) = sessions
+        let one = sessions
             .iter()
-            .find(|one| one.id == session && one.machine == *machine)
-        else {
-            return Err(format!(
-                "no session {shown} ended on {machine}, so nothing is reopened here"
-            ));
-        };
+            .find(|one| one.id == session && one.machine == *machine);
         // Read as the holder reads its own resumes, so `--session=<id>`,
         // `--session-id`, a shell's script or a log's path name it too.
         let held = seen
             .held
             .iter()
             .any(|held| hold::turn::resumes(&held.command, session));
-        if one.state != SessionState::Ended {
+        if one.is_some_and(|one| one.state != SessionState::Ended) {
             Err(format!(
                 "{shown} is still live on {machine}, so it isn't reopened"
             ))
-        } else if self.parked_here(one) {
+        } else if one.is_some_and(|one| self.parked_here(one)) {
             Err(format!(
                 "{shown} is parked on {machine}, and its holder wakes it, so it isn't reopened"
             ))
@@ -7647,14 +7662,18 @@ impl<S: Store> Shared<S> {
         // told here, so each is held to a session that ended here, and
         // none is reopened twice at once. No carry is shaped as one, so
         // a start saying it carries is held so too. One that fails to
-        // start holds it no longer, so it may be asked again. One naming
-        // its session any other way is refused, so none passes by them.
-        let Some(session) = starts::reopens(&asked.command).map(str::to_owned) else {
-            if starts::names_a_session(&asked.command) {
-                return Err(RELAYED_REOPENS_ALONE.to_owned());
-            }
-            return self.relayed_start(from, asked).await;
+        // start holds it no longer, so it may be asked again. Any other
+        // start, which its asker fenced, is held to each session it may
+        // name, by whatever program and in whatever shape, so none
+        // passes by them: refused where one is coming back already, and
+        // never started twice at once.
+        let (sessions, ended_here) = match starts::reopens(&asked.command) {
+            Some(session) => (vec![session.to_owned()], true),
+            None => (hold::turn::sessions_named(&asked.command), false),
         };
+        if sessions.is_empty() {
+            return self.relayed_start(from, asked).await;
+        }
         // A resend under the name of a start that landed, or is landing,
         // is answered that start, which starts nothing more, rather than
         // refused for the session it started being live. Joined here, not
@@ -7676,35 +7695,63 @@ impl<S: Store> Shared<S> {
         // holder's record, or nothing, where it failed and let go. Read
         // first, an ask could judge the holders from before the start
         // and take the hold just after it was let go (followup 52).
-        let number = self
-            .lock()
-            .reopening
-            .hold(&session, std::time::Instant::now())
-            .ok_or_else(|| format!("{session} is being reopened on {} already", self.machine))?;
-        if let Err(why) = self.reopenable(&session) {
-            self.lock().reopening.let_go(&session, number);
+        let holds = self.hold_reopenings(&sessions)?;
+        if let Err(why) = self.reopenable(&sessions, ended_here) {
+            self.let_reopenings_go(&holds);
             return Err(why);
         }
         // Held only across its start: once that answers, its holder's
         // record says it is held, or it failed and may be asked again.
         let started = self.relayed_start(from, asked).await;
-        if self.lock().reopening.let_go(&session, number) {
-            // Said, since two pi may now run on one session: no holder's
-            // record stood when any later ask was judged.
-            eprintln!(
-                "mycelium: a reopening of {} outlived its {} s, so another may have begun \
-                 beside it",
-                session.escape_debug(),
-                REOPENING_HELD.as_secs()
-            );
-        }
+        self.let_reopenings_go(&holds);
         started
     }
 
-    /// Whether `session` may be reopened here, as [`Self::reopened_here`]
-    /// judges it from what stands now: the carries, the holders and the
-    /// turns waiting.
-    fn reopenable(&self, session: &str) -> Result<(), String> {
+    /// Holds each of `sessions` as being reopened here, answering each
+    /// with the number that lets its hold go, or refusing, holding none,
+    /// where one is held already.
+    fn hold_reopenings<'a>(&self, sessions: &'a [String]) -> Result<Vec<(&'a str, u64)>, String> {
+        let now = std::time::Instant::now();
+        let mut inner = self.lock();
+        let mut holds = Vec::new();
+        for session in sessions {
+            let Some(number) = inner.reopening.hold(session, now) else {
+                for (held, number) in holds {
+                    inner.reopening.let_go(held, number);
+                }
+                return Err(format!(
+                    "{} is being reopened on {} already",
+                    session.escape_debug(),
+                    self.machine
+                ));
+            };
+            holds.push((session.as_str(), number));
+        }
+        Ok(holds)
+    }
+
+    /// Lets each of `holds` go, [`Self::hold_reopenings`] took, saying where one
+    /// outlived its while: two pi may now run on its session, since no
+    /// holder's record stood when any later ask was judged.
+    fn let_reopenings_go(&self, holds: &[(&str, u64)]) {
+        let mut inner = self.lock();
+        for (session, number) in holds {
+            if inner.reopening.let_go(session, *number) {
+                eprintln!(
+                    "mycelium: a reopening of {} outlived its {} s, so another may have begun \
+                     beside it",
+                    session.escape_debug(),
+                    REOPENING_HELD.as_secs()
+                );
+            }
+        }
+    }
+
+    /// Whether each of `sessions` may be started here, as
+    /// [`Self::reopened_here`] judges it where it must have `ended_here`,
+    /// else [`Self::unclaimed_here`], from what stands now: the carries,
+    /// the holders and the turns waiting.
+    fn reopenable(&self, sessions: &[String], ended_here: bool) -> Result<(), String> {
         // Where the carries can't be read, which session is away can't be
         // told, so none is reopened. Why is said on this node's stderr,
         // since it names this machine's files and errors, which are
@@ -7720,13 +7767,19 @@ impl<S: Store> Shared<S> {
         })?;
         let held = hold::held(&self.held);
         let inner = self.lock();
-        let sessions = inner.state.sessions();
+        let known = inner.state.sessions();
         let coming_back = ended::coming_back(away, inner.turns.waiting());
         let seen = Seen {
             held: &held,
             coming_back: &coming_back,
         };
-        self.reopened_here(session, &sessions, &seen)
+        sessions.iter().try_for_each(|session| {
+            if ended_here {
+                self.reopened_here(session, &known, &seen)
+            } else {
+                self.unclaimed_here(session, &known, &seen)
+            }
+        })
     }
 
     /// Starts what `from` relayed here, once any reopening in it is
@@ -20479,6 +20532,23 @@ esac
         );
     }
 
+    /// A start of `command` tern's node relays to skiff, as a reopening
+    /// is, saying it `carries` or not.
+    fn reopening(command: &[&str], carries: bool) -> Request {
+        Request::Relayed {
+            from: "tern".to_owned(),
+            start: Start {
+                work: work(vec![Need::Machine("skiff".to_owned())]),
+                folder: None,
+                strict: false,
+                command: command.iter().map(|word| (*word).to_owned()).collect(),
+                may_cost: false,
+                carries,
+                once: None,
+            },
+        }
+    }
+
     // An asking node lets a bare reopening through unfenced, so the node
     // it reaches takes one only for a session that ended there.
     #[tokio::test]
@@ -20499,21 +20569,9 @@ esac
             json!({"session": "s-live", "addresses": ["LIVE01"], "at": "2026-11-19T06:00:00Z"}),
             true,
         );
-        let relayed_as = |session: &str, model: bool, carries: bool| Request::Relayed {
-            from: "tern".to_owned(),
-            start: Start {
-                work: work(vec![Need::Machine("skiff".to_owned())]),
-                folder: None,
-                strict: false,
-                command: ["pi", "--session", session]
-                    .into_iter()
-                    .chain(model.then_some(["--model", "m-1"]).into_iter().flatten())
-                    .map(str::to_owned)
-                    .collect(),
-                may_cost: false,
-                carries,
-                once: None,
-            },
+        let relayed_as = |session: &str, model: bool, carries: bool| {
+            let model: &[&str] = if model { &["--model", "m-1"] } else { &[] };
+            reopening(&[&["pi", "--session", session], model].concat(), carries)
         };
         let relayed = |session: &str| relayed_as(session, false, false);
         store.start_here(
@@ -20549,23 +20607,6 @@ esac
             Err("no session s-unknown ended on skiff, so nothing is reopened here".to_owned()),
             "s-unknown didn't end here"
         );
-        // Round council-20261125T103525593-000003: one naming its session
-        // any other way is refused, rather than started past those holds.
-        for command in [
-            ["pi", "--session=s-held"].as_slice(),
-            &["pi", "--session-id", "s-held"],
-            &["pi", "--session", "s-held", "--continue"],
-        ] {
-            let Request::Relayed { from, mut start } = relayed("s-held") else {
-                panic!("a relayed start is relayed");
-            };
-            start.command = command.iter().map(|word| (*word).to_owned()).collect();
-            assert_eq!(
-                ask(socket.clone(), Request::Relayed { from, start }).await,
-                Err(RELAYED_REOPENS_ALONE.to_owned()),
-                "{command:?} is refused"
-            );
-        }
         for (session, refused) in [
             (
                 "s-live",
@@ -20603,6 +20644,72 @@ esac
         );
     }
 
+    // Rounds council-20261125T103525593-000003 and
+    // council-20261125T115239116-000008: any other start, by whatever
+    // program and in whatever shape, is held to each session it names as
+    // surely as a reopening, though its asker fenced it, so it need not
+    // have ended here.
+    #[tokio::test]
+    async fn any_other_start_relayed_here_is_held_to_each_session_it_names() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        for (session, address, live) in [
+            ("s-ended", "ENDED1", false),
+            ("s-live", "LIVE01", true),
+            ("s-held", "HELD01", false),
+        ] {
+            let presence = json!({"session": session, "addresses": [address],
+                                  "at": "2026-11-19T06:00:00Z"});
+            store.start_here(session, presence, live);
+        }
+        let holders = held_of(&socket);
+        fs::create_dir_all(&holders).expect("the holders' folder is made");
+        let holding = json!({"id": "h-held", "command": ["pi", "--session", "s-held"],
+                             "folder": "/", "holder": std::process::id(), "pid": 0,
+                             "parked": false, "since": "2026-11-19T06:00:00Z", "windows": []});
+        fs::write(holders.join("h-held.json"), holding.to_string()).expect("its record");
+        fs::write(hold::socket(&holders, "h-held"), b"").expect("its socket stands");
+        asks_below(&socket, 7001);
+        let held_already = "s-held is held on skiff already, so it isn't reopened";
+        for (command, refused) in [
+            (["pi", "--session=s-held"].as_slice(), held_already),
+            (&["pi", "--session-id", "s-held"], held_already),
+            (
+                &["pi", "--session", "s-held", "--thinking", "high"],
+                held_already,
+            ),
+            (&["sh", "-c", "exec pi --session s-held"], held_already),
+            (
+                &["/nix/store/x-pi/bin/pi", "--session", "s-held"],
+                held_already,
+            ),
+            (
+                &["env", "pi", "--session", "s-new", "--session", "s-live"],
+                "s-live is still live on skiff, so it isn't reopened",
+            ),
+        ] {
+            assert_eq!(
+                ask(socket.clone(), reopening(command, false)).await,
+                Err(refused.to_owned()),
+                "{command:?} is refused"
+            );
+        }
+        for command in [
+            ["pi", "--session", "s-ended", "--thinking", "high"].as_slice(),
+            &["pi", "--session-id", "s-unknown"],
+        ] {
+            assert_eq!(
+                ask(socket.clone(), reopening(command, false)).await,
+                Err("skiff's node starts no sessions".to_owned()),
+                "{command:?} is started, nothing bringing its session back"
+            );
+        }
+    }
+
     // Followup 109: carries that can't be read refuse every reopening,
     // saying so without this machine's path or error, which are nothing
     // to the asker, and the refusal holds the session no longer either.
@@ -20619,18 +20726,7 @@ esac
             json!({"session": "s-ended", "addresses": ["ENDED1"], "at": "2026-11-19T06:00:00Z"}),
             false,
         );
-        let relayed = |session: &str| Request::Relayed {
-            from: "tern".to_owned(),
-            start: Start {
-                work: work(vec![Need::Machine("skiff".to_owned())]),
-                folder: None,
-                strict: false,
-                command: ["pi", "--session", session].map(str::to_owned).to_vec(),
-                may_cost: false,
-                carries: false,
-                once: None,
-            },
-        };
+        let relayed = |session: &str| reopening(&["pi", "--session", session], false);
         asks_below(&socket, 7001);
         let carries = socket.with_file_name("carries.jsonl");
         fs::create_dir(&carries).expect("a folder where the carries are read");
@@ -20659,18 +20755,7 @@ esac
         let (_stop, _node, _client) =
             orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
         declares_runs(&socket, true);
-        let relayed = |session: &str| Request::Relayed {
-            from: "tern".to_owned(),
-            start: Start {
-                work: work(vec![Need::Machine("skiff".to_owned())]),
-                folder: None,
-                strict: false,
-                command: ["pi", "--session", session].map(str::to_owned).to_vec(),
-                may_cost: false,
-                carries: false,
-                once: None,
-            },
-        };
+        let relayed = |session: &str| reopening(&["pi", "--session", session], false);
         // s-parked's holder still runs; s-marked's does too, named by its
         // marker alone, which a message wakes it through (round 7's F17);
         // s-orphan's marker stands, but the holder it names has gone, as

@@ -52,6 +52,25 @@ pub fn resumes(command: &[String], session: &str) -> bool {
     })
 }
 
+/// Every session `command` may resume, whatever program runs it: each
+/// word it names one by, first to last, and the id that word ends in
+/// where it may be a log's path, as [`resumed`] reads it. It errs toward
+/// naming too many, as [`resumes`] does, since each is only held to what
+/// stands, where one missed would start a second pi.
+#[must_use]
+pub fn sessions_named(command: &[String]) -> Vec<String> {
+    let mut sessions = Vec::new();
+    for word in named(command) {
+        let id = trimmed(&word);
+        for session in std::iter::once(word).chain(id) {
+            if !session.is_empty() && !sessions.contains(&session) {
+                sessions.push(session);
+            }
+        }
+    }
+    sessions
+}
+
 /// Each word naming a session `command` resumes, first to last, as
 /// [`resumed`] finds the first, before it is read as a log's path.
 fn named(command: &[String]) -> Vec<String> {
@@ -259,6 +278,34 @@ mod tests {
 
     fn words(all: &[&str]) -> Vec<String> {
         all.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    // Round council-20261125T115239116-000008: a relayed start is held
+    // to every session it names, by whatever program, in whatever shape.
+    #[test]
+    fn every_session_a_command_names_is_found_whatever_runs_it() {
+        let cases: [(&[&str], &[&str]); 7] = [
+            (&["pi", "--session", "s-1", "--thinking", "high"], &["s-1"]),
+            (&["env", "A=b", "pi", "--session=s-1", "go"], &["s-1"]),
+            (&["/nix/store/x-pi/bin/pi", "--session-id", "s-2"], &["s-2"]),
+            (
+                &["sh", "-c", "exec pi --session \"$1\"", "sh", "s-3"],
+                &["s-3"],
+            ),
+            (
+                &["pi", "--session", "/l/2026-11-14T22-23-37-209Z_s-4.jsonl"],
+                &["/l/2026-11-14T22-23-37-209Z_s-4.jsonl", "s-4"],
+            ),
+            (&["pi", "--session", "a", "--session", "a"], &["a"]),
+            (&["pi", "QUEST_WORKFLOW_FIRST_TEXT=fix --session s-5"], &[]),
+        ];
+        for (command, sessions) in cases {
+            assert_eq!(
+                sessions_named(&words(command)),
+                words(sessions),
+                "{command:?}"
+            );
+        }
     }
 
     #[test]
