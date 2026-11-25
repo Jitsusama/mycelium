@@ -5227,7 +5227,7 @@ impl<S: Store> Shared<S> {
         let held = held.to_owned();
         tokio::task::spawn_blocking(move || {
             let placed = typed.placements().placed();
-            let system = binaries::System::here();
+            let system = typed.system();
             let terminals = terminal::Terminals {
                 system: &system,
                 placed: &placed,
@@ -5275,18 +5275,19 @@ impl<S: Store> Shared<S> {
             .as_ref()
             .map(|typed| typed.placements().placed())
             .unwrap_or_default();
-        let (processes, hosts, logs, owned) = (
+        let (processes, hosts, logs, owned, typed) = (
             self.processes.clone(),
             self.hosts.clone(),
             self.logs.clone(),
             session.to_owned(),
+            self.typed.clone(),
         );
         tokio::task::spawn_blocking(move || {
             let owners = asker::proved(&claims, &processes, &hosts, &logs).map_err(|_| {
                 "who owns the sessions here can't be proved, so no typed answer is minted"
                     .to_owned()
             })?;
-            let system = binaries::System::here();
+            let system = typed.map_or_else(binaries::System::here, |typed| typed.system());
             let terminals = terminal::Terminals {
                 system: &system,
                 placed: &placed,
@@ -24019,6 +24020,103 @@ esac
         assert!(
             fs::read_dir(off_dir.path()).is_ok_and(|mut kept| kept.next().is_none()),
             "a node told not to mint keeps no log"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hold_is_kept_as_the_persons_only_where_they_place_it_themselves() {
+        use asker::tests::{TTY, on_terminal, procs, runs_binary, system_of};
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        // A hold record whose holder no longer runs is read as none, so
+        // the test's own process stands in for the holder.
+        let holder = i32::try_from(std::process::id()).expect("a pid");
+        // 45 is what the person typed under kitty's shell; 58 a pi on the
+        // same terminal and 60 a command it ran; 70 an agent's, on no
+        // terminal; the holder holds pi 31, started after 45.
+        let machine = procs(&[
+            (40, "kitty", 1, "app.slice/kitty.scope"),
+            (41, "zsh", 40, "app.slice/kitty.scope"),
+            (45, "mycelium", 41, "app.slice/kitty.scope"),
+            (58, "pi", 41, "agents.slice/mycelium-pi-a.scope"),
+            (60, "mycelium", 58, "agents.slice/mycelium-pi-a.scope"),
+            (70, "mycelium", 1, "agents.slice/mycelium-pi-b.scope"),
+            (holder, "mycelium", 1, "app.slice/mycelium-hold.scope"),
+            (31, "pi", holder, "app.slice/mycelium-hold.scope"),
+        ]);
+        let at = machine.path();
+        let binaries = tempfile::tempdir().expect("a stand-in for the store");
+        runs_binary(at, 40, binaries.path(), ".kitty-wrapped");
+        runs_binary(at, holder, binaries.path(), "mycelium");
+        on_terminal(at, (41, "zsh", 200), (40, 41, 41), (TTY, 45));
+        on_terminal(at, (45, "mycelium", 450), (41, 45, 41), (TTY, 45));
+        on_terminal(at, (58, "pi", 500), (41, 58, 41), (TTY, 58));
+        on_terminal(at, (60, "mycelium", 600), (58, 58, 41), (TTY, 58));
+        on_terminal(at, (70, "mycelium", 700), (1, 70, 70), (0, -1));
+        on_terminal(at, (holder, "mycelium", 460), (1, holder, holder), (0, -1));
+        on_terminal(at, (31, "pi", 470), (holder, 31, 31), (TTY + 1, 31));
+        let held = dir.path().join("held");
+        fs::create_dir_all(&held).expect("its folder is made");
+        let record = hold::Held {
+            id: "a1".to_owned(),
+            command: vec!["pi".to_owned()],
+            folder: PathBuf::from("/"),
+            holder: std::process::id(),
+            pid: 31,
+            parked: false,
+            since: String::new(),
+            windows: Vec::new(),
+        };
+        fs::write(
+            held.join("a1.json"),
+            serde_json::to_vec(&record).expect("it writes"),
+        )
+        .expect("its record is kept");
+        fs::write(hold::socket(&held, "a1"), "").expect("its socket stands");
+
+        let store = Memory::default();
+        let mut shared = typing(dir.path(), &store, true);
+        let typed = Arc::new(
+            typed::Typed::new(dir.path().join("typed-answers.jsonl"))
+                .seeing(system_of(binaries.path())),
+        );
+        shared.typed = Some(Arc::clone(&typed));
+        shared.processes = Arc::new(Processes::Folder(at.to_owned()));
+        shared.held = held;
+        for (asker, says) in [
+            (58, "a pi places it"),
+            (60, "a pi places it or runs above"),
+            (70, "neither the person's own terminal nor the launcher"),
+        ] {
+            shared.client = Some(asker);
+            let refused = shared.placed_by_the_person("a1").await;
+            assert!(
+                refused.as_ref().is_err_and(|why| why.contains(says)),
+                "{asker}: {refused:?}"
+            );
+        }
+        assert!(
+            typed.placements().placed().is_empty(),
+            "no agent's ask keeps a hold as the person's"
+        );
+        shared.client = Some(45);
+        let unnamed = shared.placed_by_the_person("b2").await;
+        assert!(
+            unnamed
+                .as_ref()
+                .is_err_and(|why| why.contains("named by no hold record")),
+            "{unnamed:?}"
+        );
+        let placed = shared.placed_by_the_person("a1").await;
+        assert!(matches!(placed, Ok(Response::Placed)), "{placed:?}");
+        assert_eq!(
+            typed.placements().placed(),
+            vec![terminal::Placed {
+                holder,
+                holder_started: 460,
+                program: 31,
+                program_started: 470,
+            }],
+            "the person's own placing keeps the hold they began"
         );
     }
 

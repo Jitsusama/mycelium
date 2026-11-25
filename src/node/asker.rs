@@ -1847,8 +1847,10 @@ fn mounts_otherwise(procs: &Path, pid: i32) -> bool {
     mounts("self").is_some_and(|own| mounts(&pid.to_string()) != Some(own))
 }
 
+// Its stand-in processes are the node's own tests' too, so a placement
+// is proved there through the node as here through the rule.
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::collections::BTreeMap;
     use std::path::Path;
 
@@ -1935,7 +1937,7 @@ mod tests {
 
     /// A stand-in for `/proc` telling each of `processes`, by its id, its
     /// name, its parent and the control group it runs in.
-    fn procs(processes: &[(i32, &str, i32, &str)]) -> tempfile::TempDir {
+    pub(in crate::node) fn procs(processes: &[(i32, &str, i32, &str)]) -> tempfile::TempDir {
         let procs = tempfile::tempdir().expect("a stand-in for /proc");
         for (pid, name, parent, below) in processes {
             let process = procs.path().join(pid.to_string());
@@ -3064,7 +3066,7 @@ mod tests {
     /// Writes, for process `pid` in `procs`, that `name` started at
     /// `ticks` with this parent, group and session, on terminal `tty`,
     /// whose foreground is group `foreground`.
-    fn on_terminal(
+    pub(in crate::node) fn on_terminal(
         procs: &Path,
         (pid, name, ticks): (i32, &str, u64),
         (parent, group, session): (i32, i32, i32),
@@ -3085,7 +3087,7 @@ mod tests {
 
     /// Writes, for process `pid` in `procs`, that it runs a file named
     /// `file` in `binaries`, which the test's own account owns.
-    fn runs_binary(procs: &Path, pid: i32, binaries: &Path, file: &str) {
+    pub(in crate::node) fn runs_binary(procs: &Path, pid: i32, binaries: &Path, file: &str) {
         let process = procs.join(pid.to_string());
         fs::create_dir_all(&process).expect("its folder is made");
         let binary = binaries.join(file);
@@ -3095,7 +3097,7 @@ mod tests {
 
     /// A system whose kitty, mycelium and Quickshell are in `binaries`,
     /// standing in for the folders its generations name.
-    fn system_of(binaries: &Path) -> super::super::binaries::System {
+    pub(in crate::node) fn system_of(binaries: &Path) -> super::super::binaries::System {
         use super::super::binaries::Binary::{Kitty, Mycelium, Quickshell};
         [Kitty, Mycelium, Quickshell].into_iter().fold(
             super::super::binaries::System::default(),
@@ -3279,7 +3281,7 @@ mod tests {
     }
 
     /// A terminal's device number.
-    const TTY: i32 = 34_816;
+    pub(in crate::node) const TTY: i32 = 34_816;
 
     #[test]
     fn a_typed_answer_is_minted_only_to_a_pi_in_the_foreground_of_the_persons_own_terminal() {

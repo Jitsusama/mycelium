@@ -15,6 +15,7 @@ use std::sync::{Mutex, MutexGuard};
 use jiff::{SignedDuration, Timestamp};
 use sha2::{Digest, Sha256};
 
+use super::binaries::System;
 use super::terminal::Placements;
 
 /// How long a token stands once minted, past which it is refused: long
@@ -63,6 +64,10 @@ pub struct Typed {
     /// Held while the log is written or rolled.
     logging: Mutex<()>,
     placements: Placements,
+    /// The binaries told the system's, where a test stands them in;
+    /// none reads this machine's own at each ask, as a switch changes
+    /// them.
+    system: Option<System>,
 }
 
 /// The file beside the typed answers' log the person's placements are
@@ -79,7 +84,24 @@ impl Typed {
             log,
             logging: Mutex::new(()),
             placements,
+            system: None,
         }
+    }
+
+    /// The same, telling the binaries in `system` the system's in place
+    /// of this machine's own.
+    #[cfg(test)]
+    pub fn seeing(self, system: System) -> Self {
+        Self {
+            system: Some(system),
+            ..self
+        }
+    }
+
+    /// The binaries told the system's now: this machine's own, as its
+    /// generations name them, where no test stands them in.
+    pub fn system(&self) -> System {
+        self.system.clone().unwrap_or_else(System::here)
     }
 
     /// The holds the person placed this boot.
