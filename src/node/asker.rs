@@ -3652,7 +3652,7 @@ mod tests {
             eprintln!("skipped: this kernel tells no process's children");
             return;
         };
-        let mut sleeping = std::process::Command::new("sleep")
+        let mut sleeping = Command::new("sleep")
             .arg("30")
             .spawn()
             .expect("sleep starts");
