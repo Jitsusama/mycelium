@@ -2239,9 +2239,9 @@ none is proved. A session whose node said it `Ended` is judged as it
 was last carried here, kept for a week once let go, in the node's own
 state rather than the mesh's folders, so no session here sees it; one
 this node keeps no record of from the last week is reopened from fenced
-ground only by the person. A name a reopening took on the session's
+ground only by the person. A name a reopening asked of the session's
 machine without its
-asker's fence and that went unanswered is asked there again only by
+asker's fence and that went unanswered, which the asking node keeps, is asked there again only by
 a reopening of a session there, let through without its fence again.
 A reopening let
 through to a machine on looser ground goes there without its asker's

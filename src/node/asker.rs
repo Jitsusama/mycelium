@@ -869,7 +869,7 @@ const NO_SIGUSR1: &str = "--disable-sigusr1";
 /// options, where a require that finds nothing beside it looks (as a
 /// library's optional require does), the compile cache whose code node
 /// runs as the host's modules, the loader's libraries, and the modules
-/// OpenSSL's configuration loads. A host's unit must clear each, as
+/// OpenSSL's configuration loads. A host's unit must unset each, as
 /// core.nix's pi host unit does, or its word for a spawner isn't taken.
 const LOADS_CODE: [&str; 8] = [
     "NODE_OPTIONS",
