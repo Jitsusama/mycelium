@@ -3024,9 +3024,11 @@ Before each, the lender reads spend-watch's word,
 `spend-watch/budgets.json` in the account's runtime folder. Where it
 is missing, unreadable, written more than 15 minutes ago or more than
 a minute ahead, or says nothing of the budget, spend-watch is silent
-and every model is refused 503. Where it says an allowance of the
-budget's is refused, spent to its `allowance`, or as a `share` used
-whole, the lend is refused 429.
+and every model is refused 503. Where it lists the budget as
+`undeclared`, one it has seen spent but was never told of, so with no
+allowance to keep it, every model is refused 503 too. Where it says
+an allowance of the budget's is refused, spent to its `allowance`, or
+as a `share` used whole, the lend is refused 429.
 
 ### The Forge
 

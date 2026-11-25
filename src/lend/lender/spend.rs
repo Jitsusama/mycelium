@@ -313,8 +313,9 @@ impl<const MOST: usize> Capped<MOST> {
 /// Whether spend-watch, in `runtime`'s [`SPEND_WATCH`], lets a model's
 /// request spend the budget `named` there: refused 503 where it is
 /// silent, its word missing, unreadable, more than [`SPEND_WATCH_WITHIN`]
-/// old or silent of `named`, and 429 where it says `named` is past an
-/// allowance, as one its provider refuses or one spent.
+/// old or silent of `named`, 503 too where it has only seen `named`
+/// spent and declares no such budget, and 429 where it says `named` is
+/// past an allowance, as one its provider refuses or one spent.
 pub(super) fn spend_watch_allows(runtime: Option<&Path>, named: &str) -> Result<(), Refusal> {
     let silent = |why: String| {
         refused(
@@ -342,6 +343,15 @@ pub(super) fn spend_watch_allows(runtime: Option<&Path>, named: &str) -> Result<
         .iter()
         .find(|budget| budget.name == named)
         .ok_or_else(|| silent(format!("it says nothing of the budget {named}")))?;
+    // spend-watch lists a budget it has seen spent but was never told of,
+    // with no allowances, so a misspelt name would otherwise be lent as
+    // if nothing capped it.
+    if standing.undeclared {
+        return Err(refused(
+            503,
+            format!("spend-watch declares no budget {named}, so no model is lent"),
+        ));
+    }
     match standing
         .allowances
         .iter()
@@ -369,6 +379,10 @@ struct Said {
 #[derive(Deserialize)]
 struct Standing {
     name: String,
+    /// Whether spend-watch has only seen it spent, and was never told of
+    /// it.
+    #[serde(default)]
+    undeclared: bool,
     #[serde(default)]
     allowances: Vec<Allowance>,
 }

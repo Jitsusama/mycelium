@@ -129,6 +129,13 @@ async fn spend_watch_silent_or_stale_or_past_an_allowance_lends_no_model() {
     lending.spend_watch_says(&json!([{"name": "elsewhere", "allowances": []}]));
     let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
     assert_eq!(refusal(&mut answers).await, 503, "silent of its budget");
+    lending.spend_watch_says(&json!([{"name": "proxy", "undeclared": true}]));
+    let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
+    assert_eq!(
+        refusal(&mut answers).await,
+        503,
+        "a budget it has only seen spent"
+    );
     lending.spend_watch_says(&proxy(100.0));
     let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
     assert_eq!(refusal(&mut answers).await, 429, "a budget spent");
