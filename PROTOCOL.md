@@ -2612,7 +2612,7 @@ practice.
 
 `"Steer"` puts `steer`, in the harness's own shape (`text`, an `act` of
 `pause`, `resume`, `fill`, `stop`, `close`, `carry`, `ordered-carry`,
-`move` or `answer`, a carry's `to`, the machine it goes to, with an
+`move`, `answer` or `park`, a carry's `to`, the machine it goes to, with an
 ordered carry's `why` and `by` (as A Carry an Orchestrator Orders says),
 or a move's, `attended`,
 `background` or `pi`, an answer's `want` or `look`, the ask or the look
@@ -2621,7 +2621,9 @@ as `other`, `at`, `from` and a talk's `id`), into the
 steer inbox of the session going by `address` on the machine it runs on:
 `~/.local/state/pi/agentic-harness.pi/steer/<ADDRESS>/`, or the folder
 `--steer` names, under a temporary name renamed to end in `.json`. A
-session on another machine is steered through the link reaching it. A
+`park` says when it was asked as `at` and carries only `at` and `from`
+beside its act, or is refused; the session parks itself as it reads
+it. A session on another machine is steered through the link reaching it. A
 parked session counts as running on its machine, since it reads its
 inbox as it wakes, so what is said is there before it is woken. The node
 there then wakes it, when it parked this boot, by writing its holder's

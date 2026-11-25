@@ -38,9 +38,11 @@ const FIELDS: [&str; 13] = [
 /// send, and move takes it into a host or back out of one, as `to` says;
 /// answer answers an open ask, by the `want` it raised, with a choice's
 /// `value` or the person's words as `other`, or a look on the person's
-/// list, by its `look` id, with a choice's `value` only. An ordered carry
-/// is an orchestrator's, never the person's (`carry::ordered`).
-const ACTS: [&str; 9] = [
+/// list, by its `look` id, with a choice's `value` only; park puts a
+/// session to sleep until something wakes it, saying when it was asked
+/// as `at` and nothing else. An ordered carry is an orchestrator's, never
+/// the person's (`carry::ordered`).
+const ACTS: [&str; 10] = [
     "pause",
     "resume",
     "fill",
@@ -49,8 +51,13 @@ const ACTS: [&str; 9] = [
     "carry",
     "move",
     "answer",
+    PARK,
     ordered::ACT,
 ];
+
+/// The act that parks a session, as the harness's parking steer reads it:
+/// `{"act": "park", "at": <when>, "from": <who>}`, and nothing more.
+const PARK: &str = "park";
 
 /// The fields only an ordered carry carries.
 const ORDERING: [&str; 2] = ["by", "why"];
@@ -116,6 +123,18 @@ impl Steer {
         }
         if act == Some("fill") && text.trim().is_empty() {
             return Err("a fill has words to put in the prompt".to_owned());
+        }
+        if act == Some(PARK) {
+            let at = body.get("at").and_then(Value::as_str).unwrap_or("");
+            if at.trim().is_empty() {
+                return Err("a park says when it was asked, as `at`".to_owned());
+            }
+            if let Some(other) = body
+                .keys()
+                .find(|field| !["act", "at", "from"].contains(&field.as_str()))
+            {
+                return Err(format!("a park carries only act, at and from, not {other}"));
+            }
         }
         // Only words go into a turn under way, so only a talk says now,
         // and only as true, since words wait for the turn without it.
@@ -611,6 +630,31 @@ mod tests {
         }
         let talking = Steer::new("AB12", &json!({"text": "hi", "id": "talk-1"})).expect("a steer");
         assert_eq!(talking.talk(), Some("talk-1"), "its talk");
+    }
+
+    #[test]
+    fn a_park_says_when_it_was_asked_and_nothing_else() {
+        for said in [
+            json!({"act": "park"}),
+            json!({"act": "park", "at": " "}),
+            json!({"act": "park", "at": 7}),
+            json!({"act": "park", "at": "t", "text": "sleep"}),
+            json!({"act": "park", "at": "t", "id": "talk-1"}),
+            json!({"act": "park", "at": "t", "now": true}),
+        ] {
+            assert!(Steer::new("AB12", &said).is_err(), "{said} is refused");
+        }
+        let parking = json!({"act": "park", "at": "2026-11-24T22:00:00.000Z", "from": "joel"});
+        let parked = Steer::new("AB12", &parking).expect("a park saying when");
+        assert_eq!(
+            Value::Object(parked.body.clone()),
+            parking,
+            "a park goes to the harness as it was said"
+        );
+        assert!(
+            !parked.only_wakes() && claims_the_person(&parking),
+            "a park is delivered, and as the person's"
+        );
     }
 
     #[test]
