@@ -3465,7 +3465,11 @@ mod tests {
         let me = i32::try_from(std::process::id()).expect("an id");
         children.entry(me).or_default();
         for (parent, pids) in children {
-            let told: String = pids.iter().map(|pid| format!("{pid} ")).collect();
+            let told = pids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" ");
             let thread = procs
                 .join(parent.to_string())
                 .join("task")
