@@ -3104,7 +3104,7 @@ mod tests {
             "typed is kept to its bound"
         );
         let (_, mut joined) = shown.join();
-        shown.show(&[b'\x08', b' ', b'\x08'].repeat(ECHO_HELD / 3));
+        shown.show(&ERASED.repeat(ECHO_HELD / ERASED.len()));
         assert_eq!(sent(&mut joined), "", "an echo up to its bound is held");
         shown.show(b"\x08 \x08\x08 \x08");
         let cleared = std::str::from_utf8(STARTING_CLEARED).expect("plain bytes");
