@@ -3266,12 +3266,16 @@ where each of these holds, and otherwise refuses, saying which:
   runs on a terminal, in its foreground group, and that its session's
   leader runs on the same one, a child of either the system's kitty
   or a holder the person placed (below). A binary is told by the file
-  its `exe` names, owned by root as the store's are, its name
-  `kitty`, `mycelium` or `quickshell`, or one Nix's wrapper renames
-  `.<name>-wrapped`; never by the name a process gives itself, which
-  any process can change. So a pi under `setsid`, `script(1)`, a
-  program calling itself kitty, or in a shell's background gets none,
-  and a hosted session's host, on no terminal, never does.
+  its `exe` names, its name `kitty`, `mycelium` or `quickshell`, or
+  one Nix's wrapper renames `.<name>-wrapped`, in a folder that a
+  system generation's profile names for it, that profile owned by
+  root; an older generation counts until it is collected. Never by
+  the name a process gives itself, which any process can change, nor
+  by a file's owner alone, since every store path is root's. So a pi
+  under `setsid`, `script(1)`, a program calling itself kitty, or in
+  a shell's background gets none, a hosted session's host, on no
+  terminal, never does, and a machine with no system profiles mints
+  none.
 - `session` was never seen strict (`fences.json`), and its presence
   doesn't name its `fence` strict. A session started to read a
   stranger's words never asks: the harness knows that, and the node
@@ -3283,8 +3287,12 @@ where the node keeps that the person placed it: its pid, its start
 time and the program it held then. `{"Placed": {"held"}}` asks the
 node to keep hold `held` so, answered `"Placed"`. It keeps it only
 where the asking process passes the terminal rule above, or is the
-launcher's own, its parent the system's Quickshell, and the hold runs
-here unparked; `mycelium holds add` says it after each hold, and a
+launcher's own, its parent the system's Quickshell, with no pi, pi
+host or pi-spawner among its forebears; where the hold runs here
+unparked in exactly one record, its holder runs the system's
+`mycelium`, the program it holds is the holder's child, and the
+holder began no earlier than the asker, so a process can place only
+a hold begun since it was; `mycelium holds add` says it after each hold, and a
 `Start` by either is kept the same way. An agent's hold is placed by
 nobody, nor is a program its holder starts again, as a wake does, so
 neither mints. They are kept in `placed-by-the-person.json` beside
@@ -3299,19 +3307,25 @@ The token is spent by an `answer` steer to `address`, as
 token is one it minted, unspent and before `until`; the asking
 process is the one it was minted to, by pid and start time; and
 `address`, `want` and the digest of the words match the mint. A token
-is spent by its first try, taken or not, so it is never tried twice.
-Never taken, whatever the token: a steer with any other field (an
-`endsHold`, a `look`, a `now`), an answer whose `want` names a
+is spent by its first try, taken or not, before anything else of the
+steer is weighed, so it is never tried twice. Never taken, whatever
+the token: a steer with any other field (an `endsHold`, a `look`, a
+`now`), words that aren't one string, an answer whose `want` names a
 message the store keeps as a hold, since the person alone ends a hold
-from their own login, and any act but `answer`, so no token pauses,
+from their own login, or one the store doesn't keep at all, since it
+can't then be told no hold, and any act but `answer`, so no token pauses,
 carries, merges, lends or rules on a risk. The
 steer reaches the cell without its token, wherever the cell is, as
 the person's own steers do.
 
 Each mint, spend and refusal is a line in `typed-answers.jsonl`
 beside `carries.jsonl`: `at`, `did` (`minted`, `spent` or
-`refused`), `session`, `address`, `want` and, for a refusal, `why`.
-It never holds the token or the words.
+`refused`), `session`, `address`, `want` and, for a refusal, `why`,
+the three names each cut to 256 bytes at a character's edge. It
+never holds the token or the words.
+Past 4 MiB it is rolled to `typed-answers.jsonl.1`, the one before
+that dropped, and a last line a crash left torn is ended before the
+next is written, so each line stays whole.
 
 This is a fence against habit and mistakes, as the check of who
 steers is: within one account, code an agent brought into pi's own
