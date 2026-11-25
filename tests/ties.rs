@@ -54,8 +54,15 @@ const TIME_GROWS_AT_MOST: f64 = 5.0;
 
 /// The most ten thousand cells' records may take of the processor's time,
 /// a stop for the worst; the target, 100 ms on the machine the bar is set
-/// for, is said, not held.
-const WITHIN: Duration = Duration::from_secs(1);
+/// for, is said, not held. It is a release build's, which the package's
+/// own check tests; a debug build, as plain `cargo test` makes, is held by
+/// its growth alone, since its unoptimised code took 1.4 s for the same
+/// records on a cloud builder on 25 November.
+const WITHIN: Option<Duration> = if cfg!(debug_assertions) {
+    None
+} else {
+    Some(Duration::from_secs(1))
+};
 
 /// How many times each build is timed at least, the sizes in turn so a
 /// busy moment slows each alike, and the fastest of each taken.
@@ -107,7 +114,10 @@ fn ten_thousand_cells_make_their_tie_records_within_the_bar() {
     let all = least[2];
     let held = most_held[2];
     assert!(held < AT_MOST, "ten thousand cells' ties held {held} bytes");
-    assert!(all < WITHIN, "ten thousand cells' ties took {all:?}");
+    assert!(
+        WITHIN.is_none_or(|within| all < within),
+        "ten thousand cells' ties took {all:?}"
+    );
     let time = grew(&|at| least[at].as_secs_f64());
     let memory = grew(&|at| f64::from(u32::try_from(most_held[at]).expect("under 4 GB held")));
     eprintln!("from a thousand cells, time a cell grew {time:.2} times, memory {memory:.2}");
