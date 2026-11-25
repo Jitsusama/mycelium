@@ -1123,6 +1123,24 @@ fn a_noncharacter_in_a_chain_parts_no_run_of_joiners() {
         "\u{6E2F}\u{200D}\u{6E7E}",
         "a noncharacter parted a joiner from the letter before it"
     );
+    // But what draws nothing goes in the same pass as the joiners are
+    // judged, as PROTOCOL says: before a joiner it is looked past, as
+    // what is kept, and after one it parts it, as the very next
+    // character, whatever it is.
+    for (said, cleaned) in [
+        (
+            "\u{6E2F}\u{200B}\u{200D}\u{6E7E}",
+            "\u{6E2F}\u{200D}\u{6E7E}",
+        ),
+        ("\u{6E2F}\u{200D}\u{200B}\u{6E7E}", "\u{6E2F}\u{6E7E}"),
+        ("\u{6E2F}\u{200D}\u{AD}\u{6E7E}", "\u{6E2F}\u{6E7E}"),
+        (
+            "\u{6E2F}\u{200D}\u{FDD0}\u{6E7E}",
+            "\u{6E2F}\u{200D}\u{6E7E}",
+        ),
+    ] {
+        assert_eq!(unmarked(said), cleaned, "{said:?} cleaned unlike PROTOCOL");
+    }
 }
 
 #[test]

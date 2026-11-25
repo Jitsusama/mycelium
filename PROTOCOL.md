@@ -3636,11 +3636,12 @@ name holds a colon; it is read in lower case, so keys differing only
 in case are one folder. `for` and `folder` are drawn on one line: each
 control character and line or paragraph separator in them is read as
 a space and each mark turning text's direction is dropped. `for` also
-drops each character that draws nothing and each of Unicode's 66
-noncharacters, keeping one selector only after a character drawn as
-part of a word past ASCII (none a space, a braille blank or a
-noncharacter), and a joiner only between two, the first perhaps
-followed by its selector, and at most three zero-width joiners
+drops each of Unicode's 66 noncharacters first, then each character
+that draws nothing, keeping one selector only after a character drawn
+as part of a word past ASCII (none a space or a braille blank), and a
+joiner only between two, the first perhaps followed by its selector
+and the second the very next character, so one dropped after a joiner
+parts it, and at most three zero-width joiners
 (U+200D) from the start or from one character, other than a skin tone
 or either half of a flag, given a cell by unicode-width 0.2.3's
 per-character width (most spacing marks are, though none extending a
