@@ -1091,6 +1091,41 @@ fn a_peer_s_name_chained_from_emoji_counts_a_cell_pair_for_each_four() {
 }
 
 #[test]
+fn a_noncharacter_in_a_chain_parts_no_run_of_joiners() {
+    // A noncharacter goes before the joiners are judged, as PROTOCOL
+    // cleans a `for`, so one between emoji, which unicode-width gives a
+    // cell, can't start a run afresh and then leave it joined past the
+    // cap once it's gone, nor part a joiner from the letter before it.
+    let four = "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}";
+    let flags = "\u{1F1E8}\u{1F1E6}\u{200D}".repeat(3) + "\u{1F1E8}\u{1F1E6}";
+    let kept = |text: &str| unmarked(text).matches('\u{200D}').count();
+    for (parted, after) in [
+        ("\u{FDD0}", "\u{1F3FB}\u{200D}"),
+        ("\u{FDD0}", "\u{301}\u{200D}"),
+        ("\u{FFFE}", "\u{1F3FB}\u{200D}"),
+    ] {
+        // Whole, not counted: one that started a run afresh keeps as many
+        // joiners, but where the run should have been parted.
+        let chain = format!("{four}{parted}{after}").repeat(10);
+        assert_eq!(
+            unmarked(&chain),
+            unmarked(&chain.replace(parted, "")),
+            "a noncharacter parted a run of joiners: {chain:?}"
+        );
+    }
+    assert_eq!(
+        kept(&format!("{flags}\u{FDD0}\u{200D}{flags}")),
+        3,
+        "a noncharacter started a chain of flags afresh"
+    );
+    assert_eq!(
+        unmarked("\u{6E2F}\u{FDD0}\u{200D}\u{6E7E}"),
+        "\u{6E2F}\u{200D}\u{6E7E}",
+        "a noncharacter parted a joiner from the letter before it"
+    );
+}
+
+#[test]
 fn a_cut_keeps_the_longest_start_that_fits_as_measured_whole() {
     // Measured by Unicode's widths directly, a start at a time, as the
     // cut measured before it settled what it had walked.

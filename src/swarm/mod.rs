@@ -212,12 +212,16 @@ const MARKS: [char; 2] = ['\u{fdd0}', '\u{fdd1}'];
 /// mark [`aligned`] reads and a title can't move a column, and with no
 /// space or [`BRAILLE_BLANK`] of its own at either end, so a title's
 /// leading spaces can't pass for a row's indent once it runs on and set
-/// a figure under a header.
+/// a figure under a header. Noncharacters go first, so the joiners
+/// kept are judged against what is kept, as PROTOCOL cleans a `for`: one
+/// dropped after would have started a run of joiners afresh, and leave
+/// the run it parted joined past the cap.
 pub(crate) fn unmarked(text: &str) -> String {
-    crate::forage::one_line(text)
+    let drawn: String = text
         .chars()
         .filter(|each| !crate::forage::noncharacter(*each))
-        .collect::<String>()
+        .collect();
+    crate::forage::one_line(&drawn)
         .trim_matches(|each: char| each.is_whitespace() || each == BRAILLE_BLANK)
         .to_owned()
 }
