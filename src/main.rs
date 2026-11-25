@@ -466,8 +466,9 @@ enum Action {
     /// What is said goes into the steer inbox of the session going by
     /// ADDRESS, on whichever machine it runs. The steer is read from
     /// input, as the harness writes one: `{"text": "..."}`, with `act`
-    /// and `id` if it pauses, resumes, stops, closes or opens a talk, and
-    /// `to` for a carry.
+    /// and `id` if it pauses, resumes, stops, closes or opens a talk,
+    /// `to` for a carry, and `{"act": "park", "at": "..."}` alone if it
+    /// parks the session, its program ended, to wake when spoken to.
     #[command(after_help = "Example:\n  echo '{\"text\": \"ship it\"}' | mycelium steer HARBOR")]
     Steer {
         /// The session's address.

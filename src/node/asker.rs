@@ -446,15 +446,16 @@ pub fn shown_fence(
         .find(|claim| claim.session == session)
         .ok_or_else(unproved)?;
     let ticks = claim.start_ticks.ok_or_else(unproved)?;
+    let beside = Beside {
+        tree: &Tree::of(procs),
+        owners: &owners,
+        weighs_bubblewrap: true,
+        began: &Began::default(),
+    };
     if let Some(host) = &claim.host {
-        let beside = Beside {
-            tree: &Tree::of(procs),
-            owners: &owners,
-            weighs_bubblewrap: true,
-        };
         return hosted_fence(procs, hosts, host, pid, ticks, session, &beside);
     }
-    shown_of(procs, &Tree::of(procs), pid, ticks, session)
+    shown_of(procs, &beside, pid, ticks, session)
 }
 
 /// The fence each session here shows it runs in, as [`shown_fence`] tells
@@ -468,12 +469,22 @@ pub fn shown_fence(
 /// weighs it ([`shown_fence`]). Below a host whose record names this
 /// session alone it is weighed, since no sibling can explain it, so a
 /// record forged for a pi that hosts nothing is kept fenced.
+///
+/// It runs each time the sessions here move, many times a minute, so each
+/// environment is read once for each process, as `began` keeps it, and
+/// processes are looked through only below each owner ([`Tree::of`]).
 pub fn shown_fences(
     claims: &[Claim],
     processes: &Processes,
     hosts: &Path,
     logs: &Path,
+    began: &Began,
 ) -> std::collections::BTreeMap<String, Kind> {
+    began.keep_only(
+        claims
+            .iter()
+            .filter_map(|claim| claim.pid.zip(claim.start_ticks)),
+    );
     let Processes::Folder(procs) = processes.kernel() else {
         return std::collections::BTreeMap::new();
     };
@@ -485,6 +496,7 @@ pub fn shown_fences(
         tree: &tree,
         owners: &owners,
         weighs_bubblewrap: false,
+        began,
     };
     owners
         .iter()
@@ -493,11 +505,53 @@ pub fn shown_fences(
             let ticks = claim.start_ticks?;
             let shown = match &claim.host {
                 Some(host) => hosted_fence(procs, hosts, host, *pid, ticks, session, &beside),
-                None => shown_of(procs, &tree, *pid, ticks, session),
+                None => shown_of(procs, &beside, *pid, ticks, session),
             };
             Some((session.clone(), shown.ok()?))
         })
         .collect()
+}
+
+/// The fence each process began in, by its id and start, as its
+/// environment named it when first read: a process's environment is the
+/// one it was started with, which pi never changes, so it is read once
+/// for each process rather than at every look, when a hundred sessions
+/// read hundreds of kilobytes each time any of them moves.
+#[derive(Debug, Default)]
+pub struct Began(Mutex<HashMap<(i32, u64), Kind>>);
+
+impl Began {
+    /// The fence process `pid`, started `ticks` after boot and owning
+    /// `session`, began in, as [`began_in`] reads it the first time.
+    fn of(&self, procs: &Path, (pid, ticks): (i32, u64), session: &str) -> Result<Kind, String> {
+        let kept = self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&(pid, ticks))
+            .copied();
+        if let Some(kind) = kept {
+            return Ok(kind);
+        }
+        // A process read here that isn't the one started at `ticks` is
+        // kept under a start no process will have again, so it is never
+        // read as any other's.
+        let kind = began_in(procs, pid, session)?;
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert((pid, ticks), kind);
+        Ok(kind)
+    }
+
+    /// Forgets each process but `claimed`, so those ended let go.
+    fn keep_only(&self, claimed: impl Iterator<Item = (i32, u64)>) {
+        let claimed: std::collections::BTreeSet<(i32, u64)> = claimed.collect();
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|process, _| claimed.contains(process));
+    }
 }
 
 /// Whether the agent asking from process `asker` shows, by the kernel
@@ -546,13 +600,13 @@ pub fn hosts_are_the_harnesses(hosts: &Path, home: &Path) -> bool {
 /// environment of a process that took its id after says nothing of it.
 fn shown_of(
     procs: &Path,
-    tree: &Tree,
+    beside: &Beside<'_>,
     pid: i32,
     ticks: u64,
     session: &str,
 ) -> Result<Kind, String> {
-    let began = began_in(procs, pid, session)?;
-    let fenced_below = tree.fences_below(pid);
+    let began = beside.began.of(procs, (pid, ticks), session)?;
+    let fenced_below = beside.tree.fences_below(pid);
     // Read again last, so what was read before was that process's.
     if started(procs, pid) != Some(ticks) {
         return Err(format!(
@@ -660,7 +714,7 @@ fn hosted_fence(
         .into_iter()
         .flatten()
         .all(|one| one.get("id").and_then(Value::as_str) == Some(session));
-    let kind = kind.max(began_in(procs, pid, session)?);
+    let kind = kind.max(beside.began.of(procs, (pid, ticks), session)?);
     let weighs = beside.weighs_bubblewrap || alone;
     let kind = if weighs && !fenced_beside && beside.tree.fences_below(pid) {
         kind.max(Kind::Fence)
@@ -688,6 +742,8 @@ struct Beside<'a> {
     /// look weighs it and the look kept for good doesn't, unless the
     /// host's record names no other session.
     weighs_bubblewrap: bool,
+    /// The fence each process began in, as read before.
+    began: &'a Began,
 }
 
 /// The text of a file in the hosts folder, opened without blocking and
@@ -754,17 +810,37 @@ fn host_record(hosts: &Path, pid: i32, ticks: u64) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|_| "can't be read as a record".to_owned())
 }
 
-/// The machine's processes, each by its id with its name and parent, as
-/// one look through them found them.
-struct Tree(Vec<(i32, String, i32)>);
+/// The machine's processes, as far as a look below a pi needs them.
+enum Tree {
+    /// Each process by its id with its name and parent, as one look
+    /// through them all found them.
+    Listed(Vec<(i32, String, i32)>),
+    /// Each process's children asked of the kernel where they are wanted,
+    /// as `<pid>/task/<thread>/children` in this folder tells them.
+    Asked(PathBuf),
+}
 
 impl Tree {
-    /// The processes in `procs`, at most [`LOOKED_THROUGH`] of them.
+    /// The processes in `procs`: asked below each process where its
+    /// kernel tells a process's children, as Linux's does where it is
+    /// built to, which reads a few files below each pi rather than every
+    /// process's, thousands on a busy machine; otherwise all of them, at
+    /// most [`LOOKED_THROUGH`].
     fn of(procs: &Path) -> Self {
+        let me = std::process::id().to_string();
+        if procs
+            .join(&me)
+            .join("task")
+            .join(&me)
+            .join("children")
+            .exists()
+        {
+            return Self::Asked(procs.to_owned());
+        }
         let Ok(entries) = fs::read_dir(procs) else {
-            return Self(Vec::new());
+            return Self::Listed(Vec::new());
         };
-        Self(
+        Self::Listed(
             entries
                 .flatten()
                 .take(LOOKED_THROUGH)
@@ -778,18 +854,57 @@ impl Tree {
         )
     }
 
+    /// The children of process `parent`, each by its id and name: those
+    /// any of its threads started, as each child's parent is the process
+    /// and the kernel lists it under the thread that started it.
+    fn children_of(&self, parent: i32) -> Vec<(i32, String)> {
+        match self {
+            Self::Listed(all) => all
+                .iter()
+                .filter(|(_, _, of)| *of == parent)
+                .map(|(child, named, _)| (*child, named.clone()))
+                .collect(),
+            Self::Asked(procs) => {
+                let threads = procs.join(parent.to_string()).join("task");
+                let Ok(threads) = fs::read_dir(threads) else {
+                    return Vec::new();
+                };
+                threads
+                    .flatten()
+                    .filter_map(|thread| fs::read_to_string(thread.path().join("children")).ok())
+                    .flat_map(|children| {
+                        children
+                            .split_whitespace()
+                            .filter_map(|child| child.parse::<i32>().ok())
+                            .collect::<Vec<_>>()
+                    })
+                    .take(LOOKED_THROUGH)
+                    .filter_map(|child| {
+                        let status =
+                            fs::read_to_string(procs.join(child.to_string()).join("status"))
+                                .ok()?;
+                        let (named, of) = named(&status)?;
+                        // One that ended and whose id was taken again
+                        // since is another's child.
+                        (of == parent).then(|| (child, named.to_owned()))
+                    })
+                    .collect()
+            }
+        }
+    }
+
     /// Whether the agent fence's bubblewrap runs below process `pid`: one
     /// reached from it through [`FENCED_THROUGH`] alone, at any depth.
     fn fences_below(&self, pid: i32) -> bool {
         let mut below = vec![pid];
         let mut seen = std::collections::BTreeSet::from([pid]);
         while let Some(parent) = below.pop() {
-            for (child, named, _) in self.0.iter().filter(|(_, _, of)| *of == parent) {
+            for (child, named) in self.children_of(parent) {
                 if named == BWRAP {
                     return true;
                 }
-                if FENCED_THROUGH.contains(&named.as_str()) && seen.insert(*child) {
-                    below.push(*child);
+                if FENCED_THROUGH.contains(&named.as_str()) && seen.insert(child) {
+                    below.push(child);
                 }
             }
         }
@@ -3328,6 +3443,115 @@ mod tests {
         );
     }
 
+    /// Writes, for each process in `procs`, the children its kernel tells
+    /// under its one thread, from each one's parent, and marks `procs` as
+    /// a kernel that tells them, as Linux's does.
+    fn tells_children(procs: &Path) {
+        let mut children: BTreeMap<i32, String> = BTreeMap::new();
+        for entry in fs::read_dir(procs)
+            .expect("the processes are read")
+            .flatten()
+        {
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
+                continue;
+            };
+            let Ok(status) = fs::read_to_string(entry.path().join("status")) else {
+                continue;
+            };
+            if let Some((_, parent)) = named(&status) {
+                children
+                    .entry(parent)
+                    .or_default()
+                    .push_str(&format!("{pid} "));
+            }
+        }
+        let me = std::process::id().to_string();
+        children.entry(me.parse().expect("an id")).or_default();
+        for (parent, told) in children {
+            let thread = procs
+                .join(parent.to_string())
+                .join("task")
+                .join(parent.to_string());
+            fs::create_dir_all(&thread).expect("its thread's folder is made");
+            fs::write(thread.join("children"), told).expect("its children are written");
+        }
+    }
+
+    #[test]
+    fn a_bubblewrap_is_found_below_a_pi_by_the_kernels_word_on_children_as_by_a_look_at_all() {
+        for (below, fenced) in [
+            (vec![(70, "bash", 58), (71, "bwrap", 70)], true),
+            (
+                vec![(69, "pi-spawner", 58), (70, "bash", 69), (71, "bwrap", 70)],
+                true,
+            ),
+            (
+                vec![(70, "bash", 58), (71, "node", 70), (72, "bwrap", 71)],
+                false,
+            ),
+            (vec![(71, "bwrap", 1)], false),
+        ] {
+            let (procs, _logs, _hosts) = fenced_pi("HOME=/home/jsama\0", &below);
+            let listed = Tree::of(procs.path());
+            assert!(
+                matches!(listed, Tree::Listed(_)),
+                "no kernel's word, so every one"
+            );
+            assert_eq!(listed.fences_below(58), fenced, "{below:?}, looked through");
+            tells_children(procs.path());
+            let asked = Tree::of(procs.path());
+            assert!(
+                matches!(asked, Tree::Asked(_)),
+                "the kernel's word, where it gives it"
+            );
+            assert_eq!(asked.fences_below(58), fenced, "{below:?}, asked");
+        }
+        // An id told as a child that another's process has taken since.
+        let (procs, _logs, _hosts) =
+            fenced_pi("HOME=/home/jsama\0", &[(70, "bash", 58), (71, "bwrap", 1)]);
+        tells_children(procs.path());
+        let thread = procs.path().join("70/task/70");
+        fs::create_dir_all(&thread).expect("its thread's folder is made");
+        fs::write(thread.join("children"), "71 ").expect("told");
+        assert!(
+            !Tree::of(procs.path()).fences_below(58),
+            "a child whose parent is now another's is that one's"
+        );
+    }
+
+    #[test]
+    fn a_processs_environment_is_read_once_for_as_long_as_it_is_claimed() {
+        let (procs, logs, hosts) = fenced_pi("PI_SANDBOX=strict\0", &[]);
+        let claims = [claim("s-own", 58, Some(500), None)];
+        let shown = |claims: &[Claim], began: &Began| {
+            shown_fences(
+                claims,
+                &folder(procs.path()),
+                hosts.path(),
+                logs.path(),
+                began,
+            )
+        };
+        let strict = BTreeMap::from([("s-own".to_owned(), Kind::Strict)]);
+        let began = Began::default();
+        assert_eq!(shown(&claims, &began), strict);
+        fs::remove_file(procs.path().join("58").join("environ")).expect("it is gone");
+        assert_eq!(
+            shown(&claims, &began),
+            strict,
+            "read once, not at each look"
+        );
+        assert!(
+            shown(&claims, &Began::default()).is_empty(),
+            "read afresh, it can't be"
+        );
+        assert!(shown(&[], &began).is_empty());
+        assert!(
+            shown(&claims, &began).is_empty(),
+            "one no longer claimed is forgotten, so read again"
+        );
+    }
+
     #[test]
     fn a_bubblewrap_a_command_starts_says_nothing_of_the_agents_fence() {
         let tested = fenced_pi(
@@ -3553,9 +3777,16 @@ mod tests {
             "a fenced session the record names, proved on another pi, explains nothing below"
         );
         let kept = || {
-            shown_fences(&claims, &folder(hosted.0.path()), &hosts, hosted.1.path())
-                .get("s-own")
-                .copied()
+            let began = Began::default();
+            shown_fences(
+                &claims,
+                &folder(hosted.0.path()),
+                &hosts,
+                hosted.1.path(),
+                &began,
+            )
+            .get("s-own")
+            .copied()
         };
         // What the look kept for good finds leaves the bubblewrap out
         // where the record names a sibling, since a sibling's may
@@ -3676,15 +3907,20 @@ mod tests {
     #[test]
     fn a_process_that_ends_while_it_is_read_shows_no_fence() {
         let (procs, _logs, _hosts) = fenced_pi("PI_SANDBOX=strict\0", &[]);
-        let tree = Tree::of(procs.path());
+        let beside = Beside {
+            tree: &Tree::of(procs.path()),
+            owners: &[],
+            weighs_bubblewrap: true,
+            began: &Began::default(),
+        };
         assert_eq!(
-            shown_of(procs.path(), &tree, 58, 500, "s-own"),
+            shown_of(procs.path(), &beside, 58, 500, "s-own"),
             Ok(Kind::Strict),
             "while it runs as it was proved to"
         );
         started(procs.path(), 58, "pi", 900);
         assert_eq!(
-            shown_of(procs.path(), &tree, 58, 500, "s-own"),
+            shown_of(procs.path(), &beside, 58, 500, "s-own"),
             Err(
                 "s-own's process 58 ended while it was read, so the fence it runs in can't be \
                  told"
@@ -3707,8 +3943,15 @@ mod tests {
             claim("s-told", 58, Some(500), Some("work-background")),
             claim("s-ghost", 59, Some(1), None),
         ];
-        let shown =
-            |claims: &[Claim]| shown_fences(claims, &folder(procs.path()), &hosts, logs.path());
+        let shown = |claims: &[Claim]| {
+            shown_fences(
+                claims,
+                &folder(procs.path()),
+                &hosts,
+                logs.path(),
+                &Began::default(),
+            )
+        };
         assert_eq!(
             shown(&claims),
             BTreeMap::from([

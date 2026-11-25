@@ -148,7 +148,7 @@ const LEAVING_EVERY: Duration = Duration::from_secs(60);
 
 /// How often at most the machine's processes are looked through for the
 /// fences its sessions show, as their presences change: each look reads
-/// every process's status, and presences change many times a second.
+/// below each pi, and presences change many times a second.
 const FENCES_SEEN_EVERY: Duration = Duration::from_secs(2);
 
 /// The longest a session is held as being reopened by a relayed start
@@ -5292,16 +5292,18 @@ impl<S: Store> Shared<S> {
     /// watches when one rose.
     async fn see_fences(self) {
         let mut told = self.said.sessions.subscribe();
+        let began = Arc::new(asker::Began::default());
         loop {
             let looked = tokio::time::Instant::now();
-            let (claims, processes, hosts, logs) = (
+            let (claims, processes, hosts, logs, began) = (
                 self.claims(),
                 self.processes.clone(),
                 self.hosts.clone(),
                 self.logs.clone(),
+                Arc::clone(&began),
             );
             let shown = tokio::task::spawn_blocking(move || {
-                asker::shown_fences(&claims, &processes, &hosts, &logs)
+                asker::shown_fences(&claims, &processes, &hosts, &logs, &began)
             })
             .await
             .unwrap_or_default();
