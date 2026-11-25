@@ -1134,8 +1134,16 @@ fn a_noncharacter_in_a_chain_parts_no_run_of_joiners() {
     // judged, as PROTOCOL says: before a joiner it is looked past, as
     // what is kept, and after one it parts it, as the very next
     // character left. A direction mark, gone before, as a noncharacter
-    // is, parts nothing.
+    // is, parts nothing. A space past ASCII is a space, as PROTOCOL says
+    // of White_Space, so a joiner after one goes, and one at an end is
+    // trimmed.
     for (said, cleaned) in [
+        (
+            "\u{6E2F}\u{3000}\u{200D}\u{6E7E}",
+            "\u{6E2F}\u{3000}\u{6E7E}",
+        ),
+        ("\u{6E2F}\u{200D}\u{A0}\u{6E7E}", "\u{6E2F}\u{A0}\u{6E7E}"),
+        ("\u{3000}\u{6E2F}\u{A0}", "\u{6E2F}"),
         (
             "\u{6E2F}\u{200D}\u{200E}\u{6E7E}",
             "\u{6E2F}\u{200D}\u{6E7E}",

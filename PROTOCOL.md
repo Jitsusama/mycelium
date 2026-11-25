@@ -3638,8 +3638,9 @@ control character and line or paragraph separator in them is read as
 a space and each mark turning text's direction is dropped. From what
 is left, `for` also drops each of Unicode's 66 noncharacters first,
 then each character that draws nothing, keeping one selector only
-after a character drawn as part of a word past ASCII (none a space or
-a braille blank), and a joiner only between two, the first perhaps
+after a character drawn as part of a word past ASCII (none a space,
+here any character Unicode gives White_Space, such as U+00A0 or
+U+3000, nor a braille blank), and a joiner only between two, the first perhaps
 followed by its selector and the second the very next character left,
 so one dropped in this pass after a joiner parts it, though a
 direction mark or noncharacter, gone before, doesn't; and at most
@@ -3650,8 +3651,8 @@ per-character width (most spacing marks are, though none extending a
 grapheme, such as U+09BE; no nonspacing mark, conjoining jamo vowel or
 final, or selector is) and following no zero-width joiner kept, to the
 next, the rest dropped, a non-joiner (U+200C) never counted, each
-judged against what is kept so far; and then is trimmed of spaces
-and braille blanks (U+2800), and cut to its first 120 characters,
+judged against what is kept so far; and then is trimmed of such
+spaces and braille blanks (U+2800), and cut to its first 120 characters,
 then cleaned again, so it ends in no space and no joiner left joining
 nothing; `folder` is 1 to 1024 bytes. A
 `for` said as null or as anything but text is unsaid, and one unsaid,
