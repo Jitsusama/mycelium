@@ -1033,10 +1033,13 @@ fn a_peer_s_name_chained_from_emoji_counts_a_cell_pair_for_each_four() {
     // Four emoji joined as no sequence still count two cells and draw
     // eight, a bound the cap keeps rather than closes. A nonspacing mark
     // between them draws nothing, and a skin tone carries on the emoji
-    // before it, so neither starts the count afresh, nor does a flag's
-    // second half: a run holds four emoji at most, and each four cost two
+    // before it, so neither starts the count afresh, nor does either half
+    // of a flag: a run holds four emoji at most, and each four cost two
     // cells, as Unicode's widths count them. Each emoji carries its mark,
-    // so one that restarted the count would keep every joiner.
+    // so one that restarted the count would keep every joiner. The count
+    // runs from the text's start, so a chain of flags, which nothing in
+    // it restarts, keeps three joiners in all; a toned emoji after a
+    // dropped joiner follows no joiner kept, so it starts a new run.
     let marked = "\u{1F469}\u{301}\u{200D}".repeat(20);
     let toned = "\u{1F469}\u{1F3FB}\u{200D}".repeat(20);
     let flagged = "\u{1F1E8}\u{1F1E6}\u{200D}".repeat(20);
@@ -1045,6 +1048,12 @@ fn a_peer_s_name_chained_from_emoji_counts_a_cell_pair_for_each_four() {
         kept(&marked),
         15,
         "a mark between emoji is joined past, three joiners a run"
+    );
+    assert_eq!(kept(&toned), 15, "a toned emoji is a run's start");
+    assert_eq!(
+        kept(&flagged),
+        3,
+        "a flag's half started a run, or the count didn't run from the start"
     );
     // A spacing mark takes a cell of its own, so it starts a run afresh,
     // as PROTOCOL says: the joiner after it is the run's first.

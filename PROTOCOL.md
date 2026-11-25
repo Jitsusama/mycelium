@@ -3641,15 +3641,16 @@ noncharacters, keeping one selector only after a character drawn as
 part of a word past ASCII (none a space, a braille blank or a
 noncharacter), and a joiner only between two, the first perhaps
 followed by its selector, and at most three zero-width joiners
-(U+200D) from one character, other than a skin tone or either half of
-a flag, given a cell by unicode-width 0.2.3's per-character width (most
-spacing marks are, though none extending a grapheme, such as U+09BE; no
-nonspacing mark, conjoining jamo vowel or final, or selector is) and
-following no zero-width joiner kept, to the next, the rest dropped, a non-joiner
-(U+200C) never counted, each judged against what is kept so far; and
-then is trimmed of spaces and braille blanks (U+2800), and cut to its
-first 120 characters, then cleaned again, so it ends in no space and
-no joiner left joining nothing; `folder` is 1 to 1024 bytes. A
+(U+200D) from the start or from one character, other than a skin tone
+or either half of a flag, given a cell by unicode-width 0.2.3's
+per-character width (most spacing marks are, though none extending a
+grapheme, such as U+09BE; no nonspacing mark, conjoining jamo vowel or
+final, or selector is) and following no zero-width joiner kept, to the
+next, the rest dropped, a non-joiner (U+200C) never counted, each
+judged against what is kept so far; and then is trimmed of spaces
+and braille blanks (U+2800), and cut to its first 120 characters,
+then cleaned again, so it ends in no space and no joiner left joining
+nothing; `folder` is 1 to 1024 bytes. A
 `for` said as null or as anything but text is unsaid, and one unsaid,
 empty or cleaned to nothing is left out of the cell record. A cell's
 first 16 shares are read, those past these bounds are passed over,
