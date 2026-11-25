@@ -38,7 +38,7 @@ use crate::lend::forge::BORROWER;
 use crate::lend::serve::{HANDED_ON, MOST_BODY, MOST_HEAD};
 use crate::lend::{BACKLOG, Lend, Lent};
 
-use spend::{Meter, dollars, micros, spend_watch_allows};
+use spend::{Meter, dollars, millionths, spend_watch_allows, usd};
 
 /// The most of an answer's body one [`Lent::Body`] carries.
 const PIECE: usize = 16 * 1024;
@@ -358,8 +358,8 @@ impl Lender {
                     return Err(refused(
                         429,
                         format!(
-                            "{machine} has spent ${:.2} of its ${:.2} today, too little left \
-                             for this request's most, ${:.2}",
+                            "{machine} has spent ${} of its ${} today, too little left for \
+                             this request's most, ${}",
                             dollars(tally.spent),
                             dollars(spending.most),
                             dollars(spending.reserved)
@@ -657,8 +657,8 @@ fn say(machine: &str, used: &Used, took: Duration, outcome: &str) {
         "request_bytes": used.request_bytes,
         "response_bytes": used.response_bytes,
         "status": used.status,
-        "charged_usd": used.charged.map(dollars),
-        "spent_usd_today": used.spent_today.map(dollars),
+        "charged_usd": used.charged.map(usd),
+        "spent_usd_today": used.spent_today.map(usd),
         "duration_ms": u64::try_from(took.as_millis()).unwrap_or(u64::MAX),
         "outcome": outcome,
     });
@@ -968,16 +968,12 @@ fn spending(
     used.model = modelled
         .as_ref()
         .and_then(|modelled| modelled.model.clone());
-    let usd_a_day = usd_a_day
-        .filter(|most| most.is_finite() && *most >= 0.0)
-        .ok_or_else(|| {
-            refused(
-                403,
-                format!(
-                    "this machine's lend caps no spend of {machine}'s, so it lends it no model"
-                ),
-            )
-        })?;
+    let most_a_day = usd_a_day.and_then(millionths).ok_or_else(|| {
+        refused(
+            403,
+            format!("this machine's lend caps no spend of {machine}'s, so it lends it no model"),
+        )
+    })?;
     let watched = budget.spend_watch.as_deref().ok_or_else(|| {
         refused(
             403,
@@ -1018,7 +1014,7 @@ fn spending(
     let asked = u64::try_from(body.len()).unwrap_or(u64::MAX);
     used.meter = Some(Meter::default());
     Ok(Spending {
-        most: micros(usd_a_day * 1_000_000.0),
+        most: most_a_day,
         reserved: price.reserved(asked, most),
         price,
         asked,

@@ -30,13 +30,36 @@ const MOST_METERED_LINE: usize = 256 * 1024;
 /// a longer one is charged its reservation.
 const MOST_METERED: usize = 8 * 1024 * 1024;
 
-impl Price {
-    fn cache_write(self) -> f64 {
-        self.cache_write.unwrap_or(self.input * 1.25)
-    }
+/// What a model's tokens cost, each in millionths of a dollar a million
+/// tokens, so every charge is whole numbers, worked out exactly.
+#[derive(Clone, Copy)]
+struct Rates {
+    input: u64,
+    output: u64,
+    cache_write: u64,
+    cache_read: u64,
+}
 
-    fn cache_read(self) -> f64 {
-        self.cache_read.unwrap_or(self.input)
+impl Price {
+    /// Its prices in whole millionths, where every one is a price: a cache
+    /// write a quarter more than `input` where none is given, rounded up,
+    /// and a cache read `input`.
+    fn rates(self) -> Option<Rates> {
+        let input = millionths(self.input)?;
+        let cache_write = match self.cache_write {
+            Some(given) => millionths(given)?,
+            None => input.checked_add(input.div_ceil(4))?,
+        };
+        let cache_read = match self.cache_read {
+            Some(given) => millionths(given)?,
+            None => input,
+        };
+        Some(Rates {
+            input,
+            output: millionths(self.output)?,
+            cache_write,
+            cache_read,
+        })
     }
 
     /// The most tokens a request may ask it to answer with.
@@ -44,69 +67,81 @@ impl Price {
         self.most_output
     }
 
-    /// Whether every price is one: finite and not below nothing, so none
-    /// can reserve less than a request may cost.
+    /// Whether every price is one: finite, not below nothing and within
+    /// what a count of millionths holds, so none can reserve less than a
+    /// request may cost.
     pub(super) fn is_one(self) -> bool {
-        [
-            self.input,
-            self.output,
-            self.cache_write(),
-            self.cache_read(),
-        ]
-        .iter()
-        .all(|each| each.is_finite() && *each >= 0.0)
+        self.rates().is_some()
     }
 
     /// The most a request can cost, in millionths of a dollar: each of
     /// the `asked` bytes of its body as a token at the dearest a token
     /// asked can cost, as no token is shorter than a byte, and its `most`
-    /// tokens answered.
+    /// tokens answered. A price that isn't one reserves everything.
     pub(super) fn reserved(self, asked: u64, most: u64) -> u64 {
-        let dearest = self.input.max(self.cache_write()).max(self.cache_read());
-        micros(dearest * tokens(asked) + self.output * tokens(most))
+        let Some(rates) = self.rates() else {
+            return u64::MAX;
+        };
+        let dearest = rates.input.max(rates.cache_write).max(rates.cache_read);
+        micros(&[(dearest, asked), (rates.output, most)])
     }
 
     /// What `usage` cost, in millionths of a dollar, its tokens asked
-    /// counted as `asked` where the answer said none.
+    /// counted as `asked` where the answer said none. A price that isn't
+    /// one charges everything.
     pub(super) fn charged(self, usage: &Usage, asked: u64) -> u64 {
-        let input = usage.input.unwrap_or(asked);
-        micros(
-            self.input * tokens(input)
-                + self.cache_write() * tokens(usage.cache_write)
-                + self.cache_read() * tokens(usage.cache_read)
-                + self.output * tokens(usage.output),
-        )
+        let Some(rates) = self.rates() else {
+            return u64::MAX;
+        };
+        micros(&[
+            (rates.input, usage.input.unwrap_or(asked)),
+            (rates.cache_write, usage.cache_write),
+            (rates.cache_read, usage.cache_read),
+            (rates.output, usage.output),
+        ])
     }
 }
 
-/// A count of tokens, to be priced.
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "no request's tokens come near 2^52"
-)]
-fn tokens(count: u64) -> f64 {
-    count as f64
+/// Dollars as whole millionths, where they are a price: finite, not
+/// below nothing and within a `u64`, rounded to the nearest millionth,
+/// as no price or cap is given finer. Read from the dollars written out
+/// to six places, so no float is cast.
+pub(super) fn millionths(dollars: f64) -> Option<u64> {
+    let written = format!("{dollars:.6}");
+    let (whole, part) = written.split_once('.')?;
+    let digits = |text: &str| {
+        text.bytes()
+            .all(|byte| byte.is_ascii_digit())
+            .then(|| text.parse::<u64>().ok())
+            .flatten()
+    };
+    digits(whole)?
+        .checked_mul(1_000_000)?
+        .checked_add(digits(part)?)
 }
 
-/// Dollars a million tokens times tokens, in millionths of a dollar,
-/// rounded up, so a charge is never under what it cost.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "a cost is never below nothing, and one past u64's millionths of a dollar is \
-              saturated, as `as` does"
-)]
-pub(super) fn micros(cost: f64) -> u64 {
-    cost.ceil().max(0.0) as u64
+/// Each rate, in millionths of a dollar a million tokens, times its
+/// tokens, summed, in millionths of a dollar: rounded up, so a charge is
+/// never under what it cost, and saturated past what a `u64` holds.
+fn micros(priced: &[(u64, u64)]) -> u64 {
+    let cost = priced.iter().fold(0_u128, |sum, &(rate, tokens)| {
+        sum.saturating_add(u128::from(rate).saturating_mul(u128::from(tokens)))
+    });
+    u64::try_from(cost.div_ceil(1_000_000)).unwrap_or(u64::MAX)
 }
 
-/// Millionths of a dollar as dollars, for a line or a refusal.
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "a day's spend is far below 2^52 millionths of a dollar"
-)]
-pub(super) fn dollars(micros: u64) -> f64 {
-    micros as f64 / 1_000_000.0
+/// Millionths of a dollar as dollars and cents, for a line or a refusal,
+/// the part of a cent past them left off.
+pub(super) fn dollars(micros: u64) -> String {
+    format!("{}.{:02}", micros / 1_000_000, micros % 1_000_000 / 10_000)
+}
+
+/// Millionths of a dollar as a number of dollars, to the millionth, for
+/// a lend's line.
+pub(super) fn usd(micros: u64) -> serde_json::Value {
+    format!("{}.{:06}", micros / 1_000_000, micros % 1_000_000)
+        .parse::<serde_json::Number>()
+        .map_or(serde_json::Value::Null, serde_json::Value::Number)
 }
 
 /// A model's tokens an answer said it used.
