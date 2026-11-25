@@ -63,10 +63,15 @@ impl From<StartsAsked> for StartsAct {
 
 /// Says a line on stderr as `eprintln!` does, but never panics where
 /// nobody reads it any more, as a caller's `2>&1 | head` leaves it, so the
-/// exit code the command means still reaches its caller.
+/// exit code the command means still reaches its caller. The line goes
+/// out in one write, since stderr is unbuffered and `writeln!` writes
+/// each piece of its format apart: in a held window, the holder drawing
+/// its own line between those pieces split the line in two.
 macro_rules! tell {
     ($($said:tt)*) => {{
-        let _ = writeln!(io::stderr().lock(), $($said)*);
+        let mut line = format!($($said)*);
+        line.push('\n');
+        let _ = io::stderr().lock().write_all(line.as_bytes());
     }};
 }
 
