@@ -474,7 +474,8 @@ Three seams shape a link:
   is theirs and links as any machine of the realm does. A worker is
   asked and asks nothing back. Its end's starts, steers, updates,
   carries, ends and runs are refused (what it asks: a carry to a
-  worker is Carrying a Quest's to judge), its follows are ignored, and a presence of its
+  worker is Carrying a Quest's to judge), its follows are ignored,
+  and a presence of its
   naming another machine isn't kept, nor one answering to an id or
   address a session living or parked here or through another link
   answers to, nor a reply to an ask it wasn't
