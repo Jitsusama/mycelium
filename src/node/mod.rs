@@ -24025,6 +24025,92 @@ esac
     }
 
     #[tokio::test]
+    async fn a_typed_answer_steers_its_session_once_and_its_token_goes_nowhere() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let store = Memory::default();
+        let mut shared = typing(dir.path(), &store, true);
+        shared.steers = dir.path().join("steer");
+        let since = "2026-11-25T15:00:00Z";
+        let session: Session = serde_json::from_value(json!({
+            "id": "s-tern", "address": "TERN02", "machine": "skiff", "groups": [],
+            "state": "idle", "at": since,
+            "wants": {"kind": "question", "since": since, "said": "ship it?"},
+        }))
+        .expect("a session");
+        shared.lock().state.set_sessions(vec![session]);
+        let want = "question@2026-11-25T15:00:00.000Z";
+        let typed = shared.typed.clone().expect("it mints");
+        let token = || {
+            let bound = typed::Bound {
+                address: "TERN02".to_owned(),
+                want: want.to_owned(),
+                digest: typed::digest("yes"),
+            };
+            typed.mint("s-own", (4242, 77), bound).expect("it mints").0
+        };
+        let answer = |token: &str| {
+            json!({"act": "answer", "want": want, "value": "yes", "from": "person",
+                   "token": token})
+        };
+        let inbox = || -> Vec<Value> {
+            fs::read_dir(dir.path().join("steer/TERN02"))
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|entry| entry.path().extension().is_some_and(|it| it == "json"))
+                        .map(|entry| {
+                            let text = fs::read_to_string(entry.path()).expect("it reads");
+                            serde_json::from_str(&text).expect("a steer")
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let once = token();
+        assert!(
+            matches!(
+                shared.steer("tern02", &answer(&once)).await,
+                Ok(Response::Steered { ref machine, .. }) if machine == "skiff"
+            ),
+            "the person's typed answer steers the session it answers"
+        );
+        let delivered = inbox();
+        assert_eq!(delivered.len(), 1, "it is delivered once: {delivered:?}");
+        assert_eq!(
+            delivered[0],
+            json!({"act": "answer", "want": want, "value": "yes", "from": "person"}),
+            "the session is told the answer, and never its token"
+        );
+        let again = shared.steer("tern02", &answer(&once)).await;
+        assert!(
+            again
+                .as_ref()
+                .is_err_and(|why| why.contains("no token like it")),
+            "a token steers once: {again:?}"
+        );
+        // A token sent with another act is spent before the act is weighed,
+        // so it carries nothing and can't be sent again as an answer.
+        let carried = token();
+        let mut carry = answer(&carried);
+        carry["act"] = json!("carry");
+        let refused = shared.steer("tern02", &carry).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.contains("an answer from the person")),
+            "{refused:?}"
+        );
+        let spent = shared.steer("tern02", &answer(&carried)).await;
+        assert!(
+            spent
+                .as_ref()
+                .is_err_and(|why| why.contains("no token like it")),
+            "a token refused is spent: {spent:?}"
+        );
+        assert_eq!(inbox().len(), 1, "nothing refused reaches the session");
+    }
+
+    #[tokio::test]
     async fn a_typed_answer_is_minted_by_no_node_told_not_to_nor_to_a_nameless_asker() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let store = Memory::default();
