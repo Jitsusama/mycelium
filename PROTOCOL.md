@@ -469,10 +469,13 @@ Three seams shape a link:
   machine's own, so it counts for nothing. A provider writes it only
   when it knows, never for a machine merely out of reach. A refusal
   said too is taken over it.
-  A machine reached so is a worker: it is asked and asks
-  nothing back. Its end's starts, steers, updates, carries, ends and
-  runs are refused (what it asks: a carry to a worker is Carrying a
-  Quest's to judge), its follows are ignored, and a presence of its
+  A machine reached so is a worker, but for one the node made for
+  the person, whose make was told `person` (`MYCELIUM_ASKER`), which
+  is theirs and links as any machine of the realm does. A worker is
+  asked and asks nothing back. Its end's starts, steers, updates,
+  carries, ends and runs are refused (what it asks: a carry to a
+  worker is Carrying a Quest's to judge), its follows are ignored,
+  and a presence of its
   naming another machine isn't kept, nor one answering to an id or
   address a session living or parked here or through another link
   answers to, nor a reply to an ask it wasn't
