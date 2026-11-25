@@ -3100,8 +3100,13 @@ digits, no folder and no carry. Two run at once at most, one for each
 worker. The node runs `PROGRAM answer QUEST COMMIT` with its own
 environment, reading nothing and saying nothing back, and answers
 `Started` at once, held as `gate-` and the commit's first twelve
-digits; how the run ended goes to the node's log alone. Anything
-else is refused, saying why and a word for it, such as `unlisted`.
+digits; how the run ended goes to the node's log alone. The run
+leads a process group of its own, which is killed with it as it ends,
+so nothing it started outlives it. It runs for 125 minutes at most,
+the two hours the gate's asker waits and the result's crossing: past
+that its group is sent `TERM`, and ten seconds on `KILL`, and its
+place is free again. Anything else is refused, saying why and a word
+for it, such as `unlisted`.
 
 The gate's files are in the quest's scratch, in
 `handover/gates/COMMIT/`. Of a worker the node answers, it asks for

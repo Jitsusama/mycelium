@@ -2105,7 +2105,7 @@ impl<S: Store> End<S> {
                     eprintln!("gate: couldn't start {worker}'s gate: {error}");
                     Err(format!("{} couldn't start the gate", self.here))
                 }
-                Ok(mut running) => {
+                Ok(running) => {
                     eprintln!(
                         "gate: answering {worker}'s gate of {} in {}",
                         answer.commit(),
@@ -2117,18 +2117,17 @@ impl<S: Store> End<S> {
                         folder: PathBuf::new(),
                         attach: Vec::new(),
                     };
-                    // Its place is held until it ends.
+                    // Its place is held until it ends, at the latest at
+                    // its limit.
                     tokio::spawn(async move {
-                        let ended = running.wait().await;
+                        let ended =
+                            crate::gate::ended(running, crate::gate::LIMIT, crate::gate::GRACE)
+                                .await;
                         eprintln!(
-                            "gate: {}'s gate of {} in {} ended: {}",
+                            "gate: {}'s gate of {} in {} ended: {ended}",
                             answer.worker(),
                             answer.commit(),
                             answer.quest(),
-                            ended.map_or_else(
-                                |error| error.to_string(),
-                                |status| status.to_string()
-                            )
                         );
                     });
                     Ok(Response::Started(started))
