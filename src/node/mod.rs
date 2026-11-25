@@ -2,7 +2,7 @@
 //! stores of the machines discovery finds, holds the sessions and messages
 //! in memory, and serves the local socket every client reads.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
@@ -105,11 +105,6 @@ const START_WAITS_MOST: i64 = 60_000;
 /// The most starts one `Takes` weighs, so one line can't ask the node to
 /// place, and log, without end: past all a cell's resumes in an hour.
 const TAKES_MOST: usize = starts::RESUMED_AN_HOUR;
-
-/// The most holds a node remembers starting on other machines
-/// ([`Inner::held_away`]), the oldest forgotten first: far past the
-/// holds the person keeps open at once.
-const HELD_AWAY_MOST: usize = 1024;
 
 /// How long a link waits before dialling again after it dropped, at first
 /// and at most; each failure in a row doubles the wait.
@@ -2459,11 +2454,6 @@ struct Inner {
     /// The sessions a relayed start is reopening here now, and since
     /// when, kept only while the node runs (see [`Reopening`]).
     reopening: Reopening,
-    /// Each hold this node started on another machine, by its id and the
-    /// machine it's held on, newest last, kept only while the node runs
-    /// and at most [`HELD_AWAY_MOST`]: a hold no session runs in is
-    /// shown by no presence, so its end is sent where it was started.
-    held_away: VecDeque<(String, String)>,
 }
 
 /// What a node sees bringing its ended sessions back, for judging a
@@ -3138,25 +3128,6 @@ impl Inner {
             crossed: flow::settled(&flows.log, realm),
             ..Self::default()
         }
-    }
-
-    /// Remembers that hold `held` was started on `machine`, forgetting
-    /// the oldest past [`HELD_AWAY_MOST`].
-    fn held_away(&mut self, held: &str, machine: &str) {
-        self.held_away.retain(|(id, _)| id != held);
-        if self.held_away.len() >= HELD_AWAY_MOST {
-            self.held_away.pop_front();
-        }
-        self.held_away
-            .push_back((held.to_owned(), machine.to_owned()));
-    }
-
-    /// The machine this node started hold `held` on, if it remembers one.
-    fn started_away(&self, held: &str) -> Option<String> {
-        self.held_away
-            .iter()
-            .find(|(id, _)| id == held)
-            .map(|(_, machine)| machine.clone())
     }
 }
 
@@ -5020,29 +4991,30 @@ impl<S: Store> Shared<S> {
                 ending,
             });
         }
-        let started = self.lock().started_away(held);
         let mut machines: Vec<&str> = sessions
             .iter()
             .filter(|session| {
                 session.machine != self.machine && session.held.as_deref() == Some(held)
             })
             .map(|session| session.machine.as_str())
-            .chain(started.as_deref())
             .collect();
         machines.sort_unstable();
         machines.dedup();
+        // A hold no session runs in, as one whose pi quit, is shown by no
+        // presence, so its end goes where this node's book says it
+        // started it, which judges it there.
+        let started = self.starts.landed_on(held);
+        if machines.is_empty()
+            && let Some(machine) = started.as_deref().filter(|on| *on != self.machine)
+        {
+            machines.push(machine);
+        }
         match machines.as_slice() {
             [] => Err(format!(
                 "nothing is held as {held} here, nor on any machine in reach"
             )),
             [machine] => match asker {
-                hold::end::Asker::Person => {
-                    let ended = self.asks.end(machine, held, asker).await;
-                    if ended.is_ok() {
-                        self.lock().held_away.retain(|(id, _)| id != held);
-                    }
-                    ended
-                }
+                hold::end::Asker::Person => self.asks.end(machine, held, asker).await,
                 hold::end::Asker::Session(address) => Err(format!(
                     "{held} is held on {machine}, and {address}'s end is proved only where \
                      both run: only the person ends it from here"
@@ -7541,18 +7513,6 @@ impl<S: Store> Shared<S> {
     /// `at`, in milliseconds of the wall clock. A carried session placed
     /// on a worker is told in the log ([`Self::says_carried_to_a_worker`]).
     async fn placed_held(&self, asked: Start, by: By, reopens: bool, at: i64) -> Reply {
-        let placed = self.placed_held_anywhere(asked, by, reopens, at).await;
-        if let Ok(Response::Started(started)) = &placed
-            && started.machine != self.machine
-        {
-            self.lock().held_away(&started.held, &started.machine);
-        }
-        placed
-    }
-
-    /// Starts a held program as [`Self::placed_held`] does, without
-    /// remembering where.
-    async fn placed_held_anywhere(&self, asked: Start, by: By, reopens: bool, at: i64) -> Reply {
         if reopens {
             return self
                 .placed((asked, at), None, held_screen(None), true)

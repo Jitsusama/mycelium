@@ -331,15 +331,18 @@ impl Asks {
 
     /// Asks `machine` to end the session held there as `held` for good,
     /// for `by`, as this machine's node judged who asks, through the link
-    /// reaching it, answering how it ended. An end gives the session a
-    /// grace to save what it holds, so it is waited on for as long as the
-    /// link stands.
+    /// reaching it, answering how it ended. An end gives the session
+    /// [`crate::hold::end::GRACE`] to save what it holds before it is
+    /// killed, so it is waited on that long past what any ask has to be
+    /// answered in, and no longer: a machine that says nothing by then
+    /// may still end it, but the person isn't kept waiting on it.
     pub async fn end(&self, machine: &str, held: &str, by: Asker) -> Reply {
         let asked = Asked::End {
             held: held.to_owned(),
             by,
         };
-        self.send(machine, asked, None).await?
+        let within = crate::hold::end::GRACE + ANSWERED_WITHIN;
+        self.send(machine, asked, Some(within)).await?
     }
 
     /// Sends `asked` to `machine` through the link reaching it, and waits

@@ -845,6 +845,20 @@ impl Starts {
         Starters(starters)
     }
 
+    /// The machine the newest start the book keeps as `held` landed on,
+    /// if it keeps one: the book is kept on disk, so a node started
+    /// again still knows where it started each hold, as far back as
+    /// [`KEPT_MOST`] starts.
+    #[must_use]
+    pub fn landed_on(&self, held: &str) -> Option<String> {
+        self.lock()
+            .kept
+            .iter()
+            .rev()
+            .find(|one| one.held.as_deref() == Some(held))
+            .and_then(|one| one.machine.clone())
+    }
+
     /// Counts one more ask under the name `once`, by `by` for the cell
     /// `cell`, as joining the start still landing under it, as the list
     /// of starts shows it; the count its line keeps is its lead's.
@@ -1964,6 +1978,28 @@ mod tests {
             .admit(agent("OSPREY", NOW + 3))
             .expect_err("and read back so after a restart");
         started(&again, agent("SKIFFS", NOW + 3), "h");
+    }
+
+    // The node ends a hold no presence shows where its book says it
+    // started it, so the book must say so after the node starts again,
+    // the newest start under the id winning.
+    #[test]
+    fn the_book_says_where_a_hold_landed_after_it_is_read_again() {
+        let (dir, starts) = book();
+        let person = || asked(By::Person, None, NOW);
+        let admitted = starts.admit(person()).expect("the person may start");
+        starts.keep(admitted, Ok(("osprey".to_owned(), "h-1".to_owned())), 0);
+        let admitted = starts.admit(person()).expect("the person may start");
+        starts.keep(admitted, Err("it didn't start".to_owned()), 0);
+        started(&starts, agent("OSPREY", NOW), "h-2");
+        let admitted = starts.admit(person()).expect("the person may start");
+        starts.keep(admitted, Ok(("wren".to_owned(), "h-1".to_owned())), 0);
+        let again = Starts::at(dir.path().join("starts.jsonl"));
+        for read in [&starts, &again] {
+            assert_eq!(read.landed_on("h-1").as_deref(), Some("wren"), "the newest");
+            assert_eq!(read.landed_on("h-2").as_deref(), Some("kestrel"));
+            assert_eq!(read.landed_on("h-3"), None, "no start landed as it");
+        }
     }
 
     #[test]
