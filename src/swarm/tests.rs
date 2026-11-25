@@ -983,24 +983,19 @@ fn a_peer_s_name_chained_from_emoji_counts_a_cell_pair_for_each_four() {
         fit(&cleaned, 20).ends_with('…'),
         "a name chained from emoji passed a cut whole"
     );
-    // Four emoji joined as no sequence is still count two cells and draw
+    // Four emoji joined as no sequence still count two cells and draw
     // eight, a bound the cap keeps rather than closes. A mark between them
-    // draws nothing, so it can't start the count afresh: from one drawn
-    // character that follows no joiner to the next, three joiners at most.
+    // draws nothing, and a skin tone carries on the emoji before it, so
+    // neither starts the count afresh: a run holds four emoji at most,
+    // and each four cost two cells, as Unicode's widths count them.
     let marked =
         "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{301}\u{200D}".repeat(20);
-    let cleaned: Vec<char> = unmarked(&marked).chars().collect();
-    let mut joined = 0;
-    for (at, each) in cleaned.iter().enumerate() {
-        let after_joiner = at > 0 && cleaned[at - 1] == '\u{200D}';
-        if *each == '\u{200D}' {
-            joined += 1;
-        } else if !after_joiner && unicode_width::UnicodeWidthChar::width(*each) > Some(0) {
-            joined = 0;
-        }
+    let toned = "\u{1F469}\u{1F3FB}\u{200D}".repeat(20);
+    for (chain, emoji) in [(marked.as_str(), 80), (toned.as_str(), 20)] {
+        let cleaned = unmarked(chain);
         assert!(
-            joined <= 3,
-            "a mark let a run keep {joined} joiners: {cleaned:?}"
+            cells(cleaned.as_str()) >= 2 * emoji / 4,
+            "a mark or a skin tone let a run keep more than three joiners: {cleaned:?}"
         );
     }
 }
@@ -1165,6 +1160,13 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
         wrapped("abc\u{2764}\u{FE0F}", "", "", 4),
         "abc\n\u{2764}\u{FE0F}\n",
         "a selector was parted from its emoji, or dropped"
+    );
+    // A conjunct written with a joiner (a virama, then the joiner) is
+    // no pile running on, so it moves down whole, its joiner kept.
+    assert_eq!(
+        wrapped("abc\u{915}\u{94D}\u{200D}\u{937}", "", "", 4),
+        "abc\n\u{915}\u{94D}\u{200D}\u{937}\n",
+        "a conjunct was split at its joiner, or its joiner dropped"
     );
 }
 

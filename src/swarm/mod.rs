@@ -570,9 +570,12 @@ pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> Stri
             // nothing, and its base above is drawn wrong, so the break
             // steps back to before the character it belongs to. Where
             // that leaves nothing, or it walked back over marks to their
-            // base while the pile runs on past the cut, the cut stopped at
-            // its cap on steps in a pile of marks or joiners, and the rest
-            // of the pile goes, so a word isn't split at its pile's base.
+            // base while the pile runs on past the cut in a mark, the cut
+            // stopped at its cap on steps in a pile of marks, and the rest
+            // of the pile goes, so a word isn't split at its pile's base. A
+            // joiner after the cut runs no pile on: a mark then a joiner
+            // is how a conjunct is written, so the conjunct moves down
+            // whole.
             let mut back = taken.len();
             while back > 0
                 && (left[back..].chars().next().is_some_and(draws_nothing)
@@ -587,7 +590,7 @@ pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> Stri
                 && left[taken.len()..]
                     .chars()
                     .next()
-                    .is_some_and(draws_nothing);
+                    .is_some_and(|each| each != '\u{200D}' && draws_nothing(each));
             let rest = if back > 0 && !capped {
                 taken = &left[..back];
                 &left[back..]

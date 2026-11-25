@@ -56,8 +56,10 @@ tokio = { version = "1", features = [
 # How many of a terminal's cells a name or line takes, as Unicode's East
 # Asian Width and emoji presentation say: two for a wide character or an
 # emoji, none for a joiner or combining mark, so a table lines up in any
-# script on a terminal that draws by them.
-unicode-width = "0.2"
+# script on a terminal that draws by them. Pinned exactly, since the
+# swarm's `starts_afresh` copies this release's rules for joining a
+# character to the one before it: check that list whenever this moves.
+unicode-width = "=0.2.3"
 
 # When a process started on macOS, which only libproc's proc_pidinfo says:
 # `ps` is setuid and can't run inside a Nix build. Its bindings are written
