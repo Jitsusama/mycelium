@@ -37,7 +37,7 @@ use super::ground;
 use crate::balance::{Flag, HELD_FROM, Reading, WINDOW};
 use crate::declared::{Declared, Kind};
 use crate::facts::Machine;
-use crate::placement::{self, Loads, Placement, Work};
+use crate::placement::{self, Loads, Need, Placement, Work};
 use crate::record::{Session, State};
 use crate::room::Limit;
 
@@ -759,19 +759,10 @@ fn carried(
         // or not by when it was read, and the best takes it rather than
         // one drawn at random from those near it: a carry is one session
         // at a time, with nothing alike to spread.
-        let to = match placement::decide_as(
-            &work,
-            &peers,
-            here.loads,
-            &[],
-            now,
-            &placement::Weights::STARTING,
-        )
-        .placement
-        {
-            Placement::Placed { machine, .. } => machine,
-            Placement::Pending { misses } | Placement::Refused { misses } => {
-                why_not.push(format!("{who}: {}", placement::said(&misses)));
+        let to = match placed(&work, &peers, here.loads, now) {
+            Ok(to) => to,
+            Err(why) => {
+                why_not.push(format!("{who}: {why}"));
                 continue;
             }
         };
@@ -793,6 +784,35 @@ fn carried(
         why_not.extend(left_out);
         why_not.join("; ")
     })
+}
+
+/// Where `work` goes of `peers`, or why none takes it: the person's own
+/// machines first, then each worker that takes carries, by name, since
+/// placement keeps work that names no worker off every worker.
+fn placed(work: &Work, peers: &[Machine], loads: &Loads, now: Timestamp) -> Result<String, String> {
+    let (own, workers): (Vec<Machine>, Vec<Machine>) = peers
+        .iter()
+        .cloned()
+        .partition(|machine| ground::Lent::of(machine) == ground::Lent::Not);
+    let named = workers.iter().map(|worker| {
+        let mut named = work.clone();
+        named.needs.push(Need::Machine(worker.name.clone()));
+        (named, std::slice::from_ref(worker))
+    });
+    let mut refused = Vec::new();
+    for (work, machines) in std::iter::once((work.clone(), own.as_slice()))
+        .filter(|(_, machines)| !machines.is_empty())
+        .chain(named)
+    {
+        let weights = &placement::Weights::STARTING;
+        match placement::decide_as(&work, machines, loads, &[], now, weights).placement {
+            Placement::Placed { machine, .. } => return Ok(machine),
+            Placement::Pending { misses } | Placement::Refused { misses } => {
+                refused.push(placement::said(&misses));
+            }
+        }
+    }
+    Err(refused.join("; "))
 }
 
 /// Those of `peers` the start bringing back a session in the fence `kind`
@@ -2045,6 +2065,13 @@ pub(super) mod tests {
             carries(&chose(&paid, &[cell("s1")], &history)),
             Some(("s1", "tern")),
             "a worker that says it takes carries takes one"
+        );
+        let mut both = paid;
+        both.push(machine("wren", 30.0));
+        assert_eq!(
+            carries(&chose(&both, &[cell("s1")], &hot_for(&both, 11))),
+            Some(("s1", "wren")),
+            "one of the person's own with room goes before a worker with more"
         );
         let mut linked = realm();
         linked[1].worker = true;
