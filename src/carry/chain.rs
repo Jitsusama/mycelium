@@ -199,21 +199,26 @@ impl Orchestrations {
     /// logs folder can't be read, each lapsing claim is kept as it is
     /// until a later lapse can tell where it goes, rather than lost; a
     /// log that can't be opened still reads as continuing none.
+    ///
+    /// Answers what became of each claim that lapsed, so a record that
+    /// keeps the change can say so: [`Lapsed::Handed`] to the session
+    /// that took it, or [`Lapsed::Forgotten`]. A claim kept as the logs
+    /// can't be read is in neither.
     pub fn lapse<Continues: Fn(&str) -> Option<String>>(
         &mut self,
         standing: &BTreeMap<String, Option<String>>,
         continues: impl FnOnce() -> Option<Continues>,
-    ) {
+    ) -> Vec<Lapsed> {
         let (kept, lapsing): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut self.sessions)
             .into_iter()
             .partition(|(session, _)| standing.contains_key(session));
         self.sessions = kept;
         if lapsing.is_empty() {
-            return;
+            return Vec::new();
         }
         let Some(continues) = continues() else {
             self.sessions.extend(lapsing);
-            return;
+            return Vec::new();
         };
         // Every standing session that continues a lapsing claim counts,
         // one that claimed for itself too: that it continues the claimer
@@ -237,28 +242,54 @@ impl Orchestrations {
                 at = before;
             }
         }
-        for (claimer, heirs) in heirs {
-            let ([heir], Some(claim)) = (heirs.as_slice(), lapsing.get(claimer)) else {
-                continue;
+        let mut lapsed = Vec::new();
+        for (claimer, claim) in &lapsing {
+            let forgotten = |why: String| Lapsed::Forgotten {
+                claimer: claimer.clone(),
+                heads: claim.heads.clone(),
+                why,
+            };
+            let heir = match heirs.get(claimer.as_str()).map(Vec::as_slice) {
+                None | Some([]) => {
+                    lapsed.push(forgotten("no standing session continues it".to_owned()));
+                    continue;
+                }
+                Some([heir]) => *heir,
+                Some(several) => {
+                    lapsed.push(forgotten(format!(
+                        "{} standing sessions continue it, so which goes on can't be told",
+                        several.len()
+                    )));
+                    continue;
+                }
             };
             // Its own claim stands, and isn't overwritten by the one it
             // continues.
-            if self.sessions.contains_key(*heir) {
+            if self.sessions.contains_key(heir) {
+                lapsed.push(forgotten(format!(
+                    "{heir}, which continues it, holds a claim of its own"
+                )));
                 continue;
             }
             let address = standing
-                .get(*heir)
+                .get(heir)
                 .cloned()
                 .flatten()
                 .unwrap_or_else(|| claim.address.clone());
             self.sessions.insert(
-                (*heir).to_owned(),
+                heir.to_owned(),
                 Claim {
                     address,
                     ..claim.clone()
                 },
             );
+            lapsed.push(Lapsed::Handed {
+                claimer: claimer.clone(),
+                heir: heir.to_owned(),
+                heads: claim.heads.clone(),
+            });
         }
+        lapsed
     }
 
     /// The quest the session `session` heads, by this record.
@@ -419,6 +450,53 @@ impl Logs {
     }
 }
 
+/// What became of a claim whose session no longer stands, as
+/// [`Orchestrations::lapse`] tells it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lapsed {
+    /// Passed whole to `heir`, the one standing session continuing it.
+    Handed {
+        /// The session that claimed it.
+        claimer: String,
+        /// The session that holds it now.
+        heir: String,
+        /// The quest it heads.
+        heads: String,
+    },
+    /// Let go of, for the reason `why`.
+    Forgotten {
+        /// The session that claimed it.
+        claimer: String,
+        /// The quest it headed.
+        heads: String,
+        /// Why no session took it.
+        why: String,
+    },
+}
+
+impl std::fmt::Display for Lapsed {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Handed {
+                claimer,
+                heir,
+                heads,
+            } => write!(
+                out,
+                "the claim to head {heads} passed from {claimer}, which no longer stands, to {heir}, whose log continues it"
+            ),
+            Self::Forgotten {
+                claimer,
+                heads,
+                why,
+            } => write!(
+                out,
+                "the claim to head {heads} lapsed, as {claimer} no longer stands and {why}"
+            ),
+        }
+    }
+}
+
 /// The most of a log's first line read: pi's header is a few hundred
 /// bytes, so one longer is no header, and isn't read on.
 const FIRST_LINE_MOST: u64 = 64 * 1024;
@@ -429,12 +507,15 @@ const FIRST_LINE_MOST: u64 = 64 * 1024;
 /// writer, and a device is never read from.
 fn first_line(path: &Path) -> Option<String> {
     use io::{BufRead as _, Read as _};
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let log = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
-        .open(path)
-        .ok()?;
+    use rustix::fs::{Mode, OFlags};
+    let log = fs::File::from(
+        rustix::fs::open(
+            path,
+            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .ok()?,
+    );
     if !log.metadata().ok()?.is_file() {
         return None;
     }
@@ -494,7 +575,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
 
-    use super::{CONTINUED_MOST, Logs, Orchestrations, agrees};
+    use super::{CONTINUED_MOST, Lapsed, Logs, Orchestrations, agrees};
     use crate::carry::ordered::{Known, Link, Order};
 
     const STEWARD: Known = Known {
@@ -756,6 +837,56 @@ mod tests {
                 .map(|order| order.by),
             Ok("WCJQSG".to_owned()),
             "so the chain still leads to it"
+        );
+    }
+
+    #[test]
+    fn what_became_of_each_lapsing_claim_is_answered() {
+        let mut record = nested();
+        let continued = logs(&[("s-steward-2", "s-steward")]);
+        let said = record.lapse(&standing(&[("s-steward-2", Some("WCJQSG"))]), || {
+            Some(|session: &str| continued.get(session).cloned())
+        });
+        assert_eq!(
+            said,
+            [
+                Lapsed::Handed {
+                    claimer: "s-steward".to_owned(),
+                    heir: "s-steward-2".to_owned(),
+                    heads: "QEST-20261007-WCJQSG".to_owned(),
+                },
+                Lapsed::Forgotten {
+                    claimer: "s-weigh".to_owned(),
+                    heads: "QEST-20261111-OSPHT4".to_owned(),
+                    why: "no standing session continues it".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(
+            said[0].to_string(),
+            "the claim to head QEST-20261007-WCJQSG passed from s-steward, which no longer \
+             stands, to s-steward-2, whose log continues it"
+        );
+
+        let mut twice = nested();
+        let continued = logs(&[("s-a", "s-weigh"), ("s-b", "s-weigh")]);
+        let said = twice.lapse(
+            &standing(&[("s-steward", Some("WCJQSG")), ("s-a", None), ("s-b", None)]),
+            || Some(|session: &str| continued.get(session).cloned()),
+        );
+        assert_eq!(
+            said.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            [
+                "the claim to head QEST-20261111-OSPHT4 lapsed, as s-weigh no longer stands and \
+              2 standing sessions continue it, so which goes on can't be told"
+            ]
+        );
+
+        let mut unread = nested();
+        assert_eq!(
+            unread.lapse(&BTreeMap::new(), || None::<fn(&str) -> Option<String>>),
+            [],
+            "a claim kept as the logs can't be read is in neither"
         );
     }
 

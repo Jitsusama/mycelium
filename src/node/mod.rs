@@ -5695,10 +5695,14 @@ impl<S: Store> Shared<S> {
 
     /// Changes the record of orchestrations as `change` says and keeps it,
     /// holding it so two changes at once never undo each other; refused,
-    /// changing nothing, where `change` refuses.
+    /// changing nothing, where `change` refuses. What became of each
+    /// claim `change` let lapse is said once the record is kept, so a
+    /// claim that moved or went has a line of its own in the node's log.
     async fn rerecord(
         &self,
-        change: impl FnOnce(&mut chain::Orchestrations) -> Result<(), String> + Send + 'static,
+        change: impl FnOnce(&mut chain::Orchestrations) -> Result<Vec<chain::Lapsed>, String>
+        + Send
+        + 'static,
     ) -> Reply {
         let (file, claiming) = (self.orchestrations.clone(), self.claiming.clone());
         tokio::task::spawn_blocking(move || {
@@ -5708,10 +5712,13 @@ impl<S: Store> Shared<S> {
             let mut record = chain::Orchestrations::read(&file).map_err(|error| {
                 format!("the record of orchestrations can't be read, so none is changed: {error}")
             })?;
-            change(&mut record)?;
+            let lapsed = change(&mut record)?;
             record.keep(&file).map_err(|error| {
                 format!("the record of orchestrations couldn't be kept: {error}")
             })?;
+            for lapsed in lapsed {
+                eprintln!("{lapsed}");
+            }
             Ok(Response::Orchestrated)
         })
         .await
@@ -5768,7 +5775,7 @@ impl<S: Store> Shared<S> {
         let standing = self.standing_addressed(&sessions);
         let (logs, unreadable) = (self.logs.clone(), Arc::clone(&self.unreadable));
         self.rerecord(move |record| {
-            record.lapse(&standing, || continuing(&logs, &unreadable));
+            let lapsed = record.lapse(&standing, || continuing(&logs, &unreadable));
             match heads {
                 None if quests.is_empty() => {
                     record.release(&asker);
@@ -5783,6 +5790,7 @@ impl<S: Store> Shared<S> {
                     record.claim(known, &heads, &quests, jiff::Timestamp::now())
                 }
             }
+            .map(|()| lapsed)
         })
         .await
     }
@@ -5851,7 +5859,7 @@ impl<S: Store> Shared<S> {
         tokio::task::spawn_blocking(move || asker::persons_own(client, &processes, "free a quest"))
             .await
             .map_err(|error| format!("who asks couldn't be told: {error}"))??;
-        self.rerecord(move |record| record.free(&quest).map(|_| ()))
+        self.rerecord(move |record| record.free(&quest).map(|_| Vec::new()))
             .await
     }
 
