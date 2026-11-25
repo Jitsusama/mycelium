@@ -3111,9 +3111,13 @@ folder only the node's account or the system's may change, made 0755
 if it isn't there. It answers only a process the kernel names as of
 account UID, refusing any other with one `{"Err": ...}` line, and the
 main socket answers none of these asks. A worker socket that can't be
-put in place, as where its folder can't be made, is said on the
-node's standard error, and the node runs on without it: its own
-sessions still reach it, and only the workers' can't.
+put in place, for any of these reasons, a folder that can't be made or
+one another account may change among them, is said on the node's
+standard error, and the node binds nothing there and runs on without
+it: its own sessions still reach it, and only the workers' can't,
+until the node starts again with its folder in place. The folder is
+the machine's to make before the node starts, so the node doesn't
+try again.
 
 Where UID is the node's own account, every program it holds is told
 the socket in `MYCELIUM_WORKER_SOCKET`, which the harness speaks

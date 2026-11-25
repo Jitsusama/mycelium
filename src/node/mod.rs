@@ -924,21 +924,26 @@ fn tell_hosted(here: &facts::Machine) {
 
 /// The worker socket the node serves, bound, and the worker it answers:
 /// both none where it was given none, or where its socket can't be put in
-/// place, which is said, so the node serves its own socket without it.
-fn serve_workers(given: Option<Worker>) -> (Option<Worker>, Option<worker::Listening>) {
+/// place, for any of bind's reasons, a folder another account may change
+/// among them, so nothing is bound there; and then the words that say
+/// why, for the node to say as it serves its own socket without it.
+fn serve_workers(
+    given: Option<Worker>,
+) -> (Option<Worker>, Option<worker::Listening>, Option<String>) {
     let Some(serving) = given else {
-        return (None, None);
+        return (None, None, None);
     };
     match worker::bind(&serving) {
-        Ok(listening) => (Some(serving), Some(listening)),
+        Ok(listening) => (Some(serving), Some(listening), None),
         Err(error) => {
-            eprintln!(
-                "the worker socket {} isn't served, so the sessions of account {} \
-                 can't reach this node, though its own can: {error}",
+            let said = format!(
+                "the worker socket {} isn't served, so no session of account {} \
+                 reaches this node through it, though the node's own socket still \
+                 serves: {error}",
                 serving.socket.display(),
                 serving.uid
             );
-            (None, None)
+            (None, None, Some(said))
         }
     }
 }
@@ -975,7 +980,10 @@ where
     // is missing, costs only the workers' sessions, said as it fails: the
     // node runs on for its own, rather than leaving the machine with no
     // node at all.
-    let (serving, workers) = serve_workers(given.worker.take());
+    let (serving, workers, said) = serve_workers(given.worker.take());
+    if let Some(said) = said {
+        eprintln!("{said}");
+    }
     // Said by the node, never left to its environment, so what it holds
     // is told the socket it serves and no other.
     if let Some(starter) = given.starter.as_mut() {
@@ -22017,11 +22025,46 @@ esac
             told, "unset",
             "a session it starts is told no worker socket it doesn't serve"
         );
-        assert!(
-            !worker.exists(),
-            "no worker socket was put in place: {}",
-            worker.display()
-        );
+        assert!(worker.ends_with("worker/socket"), "{}", worker.display());
+    }
+
+    #[tokio::test]
+    async fn a_worker_socket_that_cant_be_placed_binds_nothing_and_says_why() {
+        let own = rustix::process::geteuid().as_raw();
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        // A folder another account may change, refused for its safety,
+        // and one that can't be made, as a file stands in its way.
+        let open = dir.path().join("open");
+        fs::create_dir(&open).expect("the folder is made");
+        fs::set_permissions(&open, fs::Permissions::from_mode(0o777)).expect("opened");
+        fs::write(dir.path().join("blocked"), "").expect("a file in the way");
+        for (folder, why) in [
+            (open, "may be changed by others"),
+            (dir.path().join("blocked"), "File exists"),
+        ] {
+            let socket = folder.join("socket");
+            let (serving, listening, said) = serve_workers(Some(Worker {
+                socket: socket.clone(),
+                uid: own + 1,
+            }));
+            assert_eq!(serving, None, "{why}");
+            assert!(listening.is_none(), "{why}");
+            assert!(
+                fs::symlink_metadata(&socket).is_err(),
+                "nothing is bound: {why}"
+            );
+            let said = said.expect("why is said");
+            assert!(
+                said.starts_with(&format!(
+                    "the worker socket {} isn't served, so no session of account {} ",
+                    socket.display(),
+                    own + 1
+                )) && said.contains(why),
+                "{said}"
+            );
+        }
+        let (serving, listening, said) = serve_workers(None);
+        assert!(serving.is_none() && listening.is_none() && said.is_none());
     }
 
     /// A stand-in holder in `dir` that writes a line to the file it
