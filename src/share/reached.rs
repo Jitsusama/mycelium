@@ -262,18 +262,31 @@ pub fn reach(
             let why = format!("no link reaches {to} from {machine}, so {quest} can't reach it");
             return Ok(reached(Some(Reason::NoLink), Some(why)));
         }
-        // A node that has never said it holds the quest by the bound, a
-        // short one included, hasn't taken it up, whatever it lacks.
-        if theirs.is_none()
-            && let Some(since) = linked_since
-            && (past(linked_since, HOLDS_SAID_WITHIN) || waited >= within)
-        {
-            let why = format!(
-                "{to}'s node hasn't said it holds {quest} within {} s of its link: it may \
-                 be too old to share one, or too busy to say yet",
-                waited.saturating_sub(since).as_secs()
-            );
-            return Ok(reached(Some(Reason::NotShared), Some(why)));
+        // A node that has never said it holds the quest, through a link
+        // standing half a minute or by the bound, a short one included and
+        // its link down then or not, hasn't taken it up, whatever it lacks.
+        if theirs.is_none() {
+            let standing = linked_since.map(|since| waited.saturating_sub(since));
+            if standing.is_some_and(|standing| standing >= HOLDS_SAID_WITHIN) {
+                let why = format!(
+                    "{to}'s node hasn't said it holds {quest} within {} s of its link: it \
+                     may be too old to share one, or too busy to say yet",
+                    HOLDS_SAID_WITHIN.as_secs()
+                );
+                return Ok(reached(Some(Reason::NotShared), Some(why)));
+            }
+            if waited >= within {
+                let link = standing.map_or_else(
+                    || "its link down at the end".to_owned(),
+                    |standing| format!("its link standing {} s of it", standing.as_secs()),
+                );
+                let why = format!(
+                    "{to}'s node hasn't said it holds {quest} in the {} s waited, {link}: it \
+                     may be too old to share one, too busy to say yet, or not yet reached",
+                    waited.as_secs()
+                );
+                return Ok(reached(Some(Reason::NotShared), Some(why)));
+            }
         }
         if waited >= within {
             let first = lacks.first().map_or("nothing", String::as_str);
@@ -517,8 +530,8 @@ mod tests {
     }
 
     /// A clock that moves on `step` at each pause, with a link to skiff
-    /// or not, to a worker or not, doing `between` at each pause.
-    /// while the link drops for the times in `down`.
+    /// or not, to a worker or not, doing `between` at each pause, while
+    /// the link drops for the times in `down`.
     struct Clock<F: FnMut(Duration)> {
         at: Duration,
         step: Duration,
@@ -706,7 +719,7 @@ mod tests {
 
     /// A worker still taking the quest in, holding none of its files as
     /// kestrel does, is waited for as behind, not read as a machine that
-    /// never took the quest up once its link has stood half a minute.
+    /// never took the quest up at the bound.
     #[test]
     fn a_worker_holding_none_yet_is_waited_for_as_behind() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -818,6 +831,40 @@ mod tests {
         .expect("waited");
         assert_eq!(reached.reason, Some(Reason::NotShared), "{reached:?}");
         assert!((reached.waited - 10.0).abs() < f64::EPSILON, "{reached:?}");
+        assert_eq!(
+            reached.why.as_deref(),
+            Some(
+                "skiff's node hasn't said it holds QEST-20261115-5XF89V in the 10 s waited, \
+                 its link standing 9 s of it: it may be too old to share one, too busy to say \
+                 yet, or not yet reached"
+            )
+        );
+    }
+
+    #[test]
+    fn a_link_down_at_the_bound_still_says_a_quest_not_taken_up() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let places = kestrel(dir.path());
+        let mut watching = clock(true);
+        // Down for the bound's last two seconds, too few to say no link.
+        watching.down = Duration::from_secs(8)..Duration::from_secs(12);
+        let reached = reach(
+            &places,
+            QUEST,
+            ("kestrel", "skiff"),
+            Duration::from_secs(10),
+            &mut watching,
+        )
+        .expect("waited");
+        assert_eq!(reached.reason, Some(Reason::NotShared), "{reached:?}");
+        assert_eq!(
+            reached.why.as_deref(),
+            Some(
+                "skiff's node hasn't said it holds QEST-20261115-5XF89V in the 10 s waited, \
+                 its link down at the end: it may be too old to share one, too busy to say \
+                 yet, or not yet reached"
+            )
+        );
     }
 
     #[test]
