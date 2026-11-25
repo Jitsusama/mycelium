@@ -2,7 +2,7 @@
 //! stores of the machines discovery finds, holds the sessions and messages
 //! in memory, and serves the local socket every client reads.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
@@ -5534,49 +5534,62 @@ impl<S: Store> Shared<S> {
     /// over the first: it is still live, parked with a holder a steer
     /// would wake, held by a holder here, carried away or waiting for its
     /// turn. A session this machine never ran may still be held or
-    /// coming back, as one carried here is. pi opens a session by an id
-    /// it begins where none here has that id, as
-    /// [`starts::begins_another`] says, so each session known here, held
-    /// or coming back whose id `session` begins is judged as though named.
+    /// coming back, as one carried here is. Each session
+    /// [`Self::begun_by`] `session` is judged as though named, and a
+    /// refusal of one names `session` as asked, never the id it begins,
+    /// so no asker learns the ids here by guessing their starts.
     fn unclaimed_here(
         &self,
         session: &str,
         sessions: &[Session],
         seen: &Seen<'_>,
     ) -> Result<(), String> {
+        for id in &self.begun_by(session, sessions, seen) {
+            self.unclaimed_as_named(id, session, sessions, seen)?;
+        }
+        self.unclaimed_as_named(session, session, sessions, seen)
+    }
+
+    /// The sessions pi would open for `session` here though it names none
+    /// by that id: pi opens a session by an id it begins where none here
+    /// has that id, as [`starts::begins_another`] says, so each session
+    /// known on this machine, held or coming back whose id `session`
+    /// begins, in order. Only ids are begun, never a word holding a `/`,
+    /// since a holder's command may name its log by its path, which is
+    /// this machine's and nothing to an asker.
+    fn begun_by(&self, session: &str, sessions: &[Session], seen: &Seen<'_>) -> BTreeSet<String> {
         let machine = &self.machine;
-        if !sessions
+        if sessions
             .iter()
             .any(|one| one.id == session && one.machine == *machine)
         {
-            let begun: HashSet<String> = sessions
-                .iter()
-                .filter(|one| one.machine == *machine)
-                .map(|one| one.id.clone())
-                .chain(seen.coming_back.iter().cloned())
-                .chain(
-                    seen.held
-                        .iter()
-                        .flat_map(|held| hold::turn::sessions_named(&held.command)),
-                )
-                .filter(|id| id.len() > session.len() && id.starts_with(session))
-                .collect();
-            for id in &begun {
-                self.unclaimed_as_named(id, sessions, seen)?;
-            }
+            return BTreeSet::new();
         }
-        self.unclaimed_as_named(session, sessions, seen)
+        sessions
+            .iter()
+            .filter(|one| one.machine == *machine)
+            .map(|one| one.id.clone())
+            .chain(seen.coming_back.iter().cloned())
+            .chain(
+                seen.held
+                    .iter()
+                    .flat_map(|held| hold::turn::sessions_named(&held.command)),
+            )
+            .filter(|id| id.len() > session.len() && id.starts_with(session) && !id.contains('/'))
+            .collect()
     }
 
     /// Refuses a start of `session` here, by that very id, where
-    /// [`Self::unclaimed_here`] says something brings it back already.
+    /// [`Self::unclaimed_here`] says something brings it back already,
+    /// saying it as `asked`.
     fn unclaimed_as_named(
         &self,
         session: &str,
+        asked: &str,
         sessions: &[Session],
         seen: &Seen<'_>,
     ) -> Result<(), String> {
-        let shown = session.escape_debug();
+        let shown = asked.escape_debug();
         let machine = &self.machine;
         let one = sessions
             .iter()
@@ -7701,13 +7714,15 @@ impl<S: Store> Shared<S> {
         // start, which its asker fenced, is held to each session it names
         // as `sessions_named` finds them, so none of the shapes pi and the
         // harness write passes by them: refused where one is coming back
-        // already, and never started twice at once. A carry's arrival goes as before,
+        // already, and never started twice at once. A carry's arrival
+        // from the machine relaying it, word for word, goes as before,
         // judged by the carry itself, since this node's own carry of its
         // session away would read as coming back, refusing one carried
-        // back within the hour.
+        // back within the hour. A start only shaped as one is held as any
+        // other.
         let (sessions, ended_here) = match starts::reopens(&asked.command) {
             Some(session) => (vec![session.to_owned()], true),
-            None if crate::carry::arrives(&asked.command).is_some() => (Vec::new(), false),
+            None if Self::carried_back(from, &asked) => (Vec::new(), false),
             None => (hold::turn::sessions_named(&asked.command), false),
         };
         if sessions.is_empty() {
@@ -7734,10 +7749,13 @@ impl<S: Store> Shared<S> {
         // holder's record, or nothing, where it failed and let go. Read
         // first, an ask could judge the holders from before the start
         // and take the hold just after it was let go (followup 52).
-        let holds = self.hold_reopenings(&sessions)?;
-        if let Err(why) = self.reopenable(&sessions, ended_here) {
-            self.let_reopenings_go(&holds);
-            return Err(why);
+        let mut holds = self.hold_reopenings(&sessions, None)?;
+        match self.reopenable(&sessions, ended_here) {
+            Ok(begun) => holds.extend(begun),
+            Err(why) => {
+                self.let_reopenings_go(&holds);
+                return Err(why);
+            }
         }
         // Held only across its start: once that answers, its holder's
         // record says it is held, or it failed and may be asked again.
@@ -7746,25 +7764,43 @@ impl<S: Store> Shared<S> {
         started
     }
 
+    /// Whether `asked`, relayed by `from`, is a carry of a session from
+    /// there: word for word the start [`crate::carry::arriving`] gives
+    /// one, ordered or not, whose script starts pi only once `pi-carry
+    /// arrive` has taken the carry, so the carry judges it. One only
+    /// shaped as a carry, as [`crate::carry::arrives`] reads one, may
+    /// start pi whatever `pi-carry` says, so it is no carry here.
+    fn carried_back(from: &str, asked: &Start) -> bool {
+        crate::carry::ordered_arrival(&asked.command)
+            .map(|ordered| ordered.arrives)
+            .or_else(|| crate::carry::unordered_arrival(&asked.command))
+            .is_some_and(|arrives| arrives.from.eq_ignore_ascii_case(from))
+    }
+
     /// Holds each of `sessions` as being reopened here, answering each
     /// with the number that lets its hold go, or refusing, holding none,
-    /// where one is held already.
-    fn hold_reopenings<'a>(&self, sessions: &'a [String]) -> Result<Vec<(&'a str, u64)>, String> {
+    /// where one is held already, saying so of it, or of `asked` where
+    /// the sessions are those an asked id begins.
+    fn hold_reopenings(
+        &self,
+        sessions: &[String],
+        asked: Option<&str>,
+    ) -> Result<Vec<(String, u64)>, String> {
         let now = std::time::Instant::now();
         let mut inner = self.lock();
-        let mut holds = Vec::new();
+        let mut holds: Vec<(String, u64)> = Vec::new();
         for session in sessions {
             let Some(number) = inner.reopening.hold(session, now) else {
                 for (held, number) in holds {
-                    inner.reopening.let_go(held, number);
+                    inner.reopening.let_go(&held, number);
                 }
                 return Err(format!(
                     "{} is being reopened on {} already",
-                    session.escape_debug(),
+                    asked.unwrap_or(session).escape_debug(),
                     self.machine
                 ));
             };
-            holds.push((session.as_str(), number));
+            holds.push((session.clone(), number));
         }
         Ok(holds)
     }
@@ -7772,7 +7808,7 @@ impl<S: Store> Shared<S> {
     /// Lets each of `holds` go, [`Self::hold_reopenings`] took, saying where one
     /// outlived its while: two pi may now run on its session, since no
     /// holder's record stood when any later ask was judged.
-    fn let_reopenings_go(&self, holds: &[(&str, u64)]) {
+    fn let_reopenings_go(&self, holds: &[(String, u64)]) {
         let mut inner = self.lock();
         for (session, number) in holds {
             if inner.reopening.let_go(session, *number) {
@@ -7790,7 +7826,11 @@ impl<S: Store> Shared<S> {
     /// [`Self::reopened_here`] judges it where it must have `ended_here`,
     /// else [`Self::unclaimed_here`], from what stands now: the carries,
     /// the holders and the turns waiting.
-    fn reopenable(&self, sessions: &[String], ended_here: bool) -> Result<(), String> {
+    fn reopenable(
+        &self,
+        sessions: &[String],
+        ended_here: bool,
+    ) -> Result<Vec<(String, u64)>, String> {
         // Where the carries can't be read, which session is away can't be
         // told, so none is reopened. Why is said on this node's stderr,
         // since it names this machine's files and errors, which are
@@ -7804,21 +7844,79 @@ impl<S: Store> Shared<S> {
                 self.machine
             )
         })?;
-        let held = hold::held(&self.held);
-        let inner = self.lock();
-        let known = inner.state.sessions();
-        let coming_back = ended::coming_back(away, inner.turns.waiting());
-        let seen = Seen {
-            held: &held,
-            coming_back: &coming_back,
+        // Each session an asked id begins is held as a named one is, and
+        // only then is each judged, from what stands once all are held,
+        // so an ask judged while another's start runs reads what that
+        // start left (followup 52), whichever id either named.
+        let begun = if ended_here {
+            Vec::new()
+        } else {
+            self.hold_begun(sessions, away.clone())?
         };
-        sessions.iter().try_for_each(|session| {
-            if ended_here {
-                self.reopened_here(session, &known, &seen)
-            } else {
-                self.unclaimed_here(session, &known, &seen)
+        let held = hold::held(&self.held);
+        let judged = {
+            let inner = self.lock();
+            let known = inner.state.sessions();
+            let coming_back = ended::coming_back(away, inner.turns.waiting());
+            let seen = Seen {
+                held: &held,
+                coming_back: &coming_back,
+            };
+            sessions.iter().try_for_each(|session| {
+                if ended_here {
+                    self.reopened_here(session, &known, &seen)
+                } else {
+                    self.unclaimed_here(session, &known, &seen)
+                }
+            })
+        };
+        match judged {
+            Ok(()) => Ok(begun),
+            Err(why) => {
+                self.let_reopenings_go(&begun);
+                Err(why)
             }
-        })
+        }
+    }
+
+    /// Holds each session one of `sessions` begins but doesn't name, as
+    /// [`Self::begun_by`] finds them from what stands now with `away`
+    /// carried away, answering the holds, or refusing, holding none, in
+    /// the words of the id asked where one is being reopened already.
+    fn hold_begun(
+        &self,
+        sessions: &[String],
+        away: HashSet<String>,
+    ) -> Result<Vec<(String, u64)>, String> {
+        let held = hold::held(&self.held);
+        let begun: Vec<(&String, BTreeSet<String>)> = {
+            let inner = self.lock();
+            let known = inner.state.sessions();
+            let coming_back = ended::coming_back(away, inner.turns.waiting());
+            let seen = Seen {
+                held: &held,
+                coming_back: &coming_back,
+            };
+            sessions
+                .iter()
+                .map(|session| (session, self.begun_by(session, &known, &seen)))
+                .collect()
+        };
+        let mut holds: Vec<(String, u64)> = Vec::new();
+        for (asked, ids) in begun {
+            let ids: Vec<String> = ids
+                .into_iter()
+                .filter(|id| !sessions.contains(id) && !holds.iter().any(|(held, _)| held == id))
+                .collect();
+            match self.hold_reopenings(&ids, Some(asked.as_str())) {
+                Ok(taken) => holds.extend(taken),
+                Err(why) => {
+                    self.let_reopenings_go(&holds);
+                    return Err(why);
+                }
+            }
+        }
+        Ok(holds)
     }
 
     /// Starts what `from` relayed here, once any reopening in it is
@@ -20712,6 +20810,14 @@ esac
                              "parked": false, "since": "2026-11-19T06:00:00Z", "windows": []});
         fs::write(holders.join("h-held.json"), holding.to_string()).expect("its record");
         fs::write(hold::socket(&holders, "h-held"), b"").expect("its socket stands");
+        // A holder resuming its session by its log's path, which is this
+        // machine's and nothing to an asker.
+        let by_path = json!({"id": "h-path", "command": ["pi", "--session",
+                             "/h/.pi/agent/sessions/--h-src--/2026-11-19_s-path.jsonl"],
+                             "folder": "/", "holder": std::process::id(), "pid": 0,
+                             "parked": false, "since": "2026-11-19T06:00:00Z", "windows": []});
+        fs::write(holders.join("h-path.json"), by_path.to_string()).expect("its record");
+        fs::write(hold::socket(&holders, "h-path"), b"").expect("its socket stands");
         asks_below(&socket, 7001);
         let held_already = "s-held is held on skiff already, so it isn't reopened";
         for (command, refused) in [
@@ -20730,14 +20836,16 @@ esac
                 &["env", "pi", "--session", "s-new", "--session", "s-live"],
                 "s-live is still live on skiff, so it isn't reopened",
             ),
-            // pi opens the one an id begins where none has that id.
+            // pi opens the one an id begins where none has that id, which
+            // is refused in the words asked, so no asker learns the ids
+            // here by guessing their starts.
             (
                 &["pi", "--session", "s-he", "--thinking", "high"],
-                held_already,
+                "s-he is held on skiff already, so it isn't reopened",
             ),
             (
                 &["pi", "--session=s-liv"],
-                "s-live is still live on skiff, so it isn't reopened",
+                "s-liv is still live on skiff, so it isn't reopened",
             ),
         ] {
             assert_eq!(
@@ -20746,9 +20854,12 @@ esac
                 "{command:?} is refused"
             );
         }
+        // Only ids are begun: a holder's log path is no session `/h/`
+        // begins, so it is started, and its reply names no path.
         for command in [
             ["pi", "--session", "s-ended", "--thinking", "high"].as_slice(),
             &["pi", "--session-id", "s-unknown"],
+            &["pi", "--session", "/h/"],
         ] {
             assert_eq!(
                 ask(socket.clone(), reopening(command, false)).await,
@@ -20758,10 +20869,43 @@ esac
         }
     }
 
-    // Round council-20261125T123352606-000013: a session carried away
-    // lately is coming back, so a start naming it is refused, but its own
-    // carry back here within the hour is judged by the carry, not taken
-    // for its way back.
+    // Round council-20261125T130323682-000017: a session an asked id
+    // begins is held while its start runs, as a named one is, so a start
+    // of it by its whole id and one by its start never run at once, and
+    // the hold goes once the ask is refused.
+    #[tokio::test]
+    async fn a_session_an_asked_id_begins_is_held_as_a_named_one_is() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let skiff = easing_skiff(&socket, &[]).await;
+        let whole = skiff
+            .hold_reopenings(&["s-harbour".to_owned()], None)
+            .expect("its whole id is held");
+        assert_eq!(
+            skiff.reopenable(&["s-harb".to_owned()], false),
+            Err("s-harb is being reopened on skiff already".to_owned()),
+            "one by its start waits on one by its whole id"
+        );
+        skiff.let_reopenings_go(&whole);
+        for again in ["first", "second"] {
+            assert_eq!(
+                skiff.reopenable(&["s-harb".to_owned()], false),
+                Err("s-harb is still live on skiff, so it isn't reopened".to_owned()),
+                "judged {again}, s-harb's hold went with its refusal"
+            );
+        }
+        let begun = skiff
+            .reopenable(&["s-quiet".to_owned()], false)
+            .expect("nothing here is begun by s-quiet");
+        assert!(begun.is_empty(), "s-quiet begins nothing: {begun:?}");
+    }
+
+    // Rounds council-20261125T123352606-000013 and
+    // council-20261125T130323682-000017: a session carried away lately is
+    // coming back, so a start naming it is refused, but its own carry back
+    // here within the hour, ordered or not, is judged by the carry, not
+    // taken for its way back. A start only shaped as a carry, which would
+    // start pi whatever `pi-carry` said, is held as any other.
     #[tokio::test]
     async fn a_session_carried_away_is_refused_a_start_but_not_its_carry_back() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -20788,7 +20932,29 @@ esac
             ),
             "a session carried away gets no second pi"
         );
-        let back = [
+        let done = crate::carry::Done {
+            session: "s-away".to_owned(),
+            started_before: None,
+        };
+        let ordered = crate::carry::Ordered {
+            by: "WCJQSG".to_owned(),
+            why: "it needs the lens".to_owned(),
+        };
+        for (by, carries) in [(None, true), (Some(&ordered), false)] {
+            let back = crate::carry::arriving("QEST-20261112-HARBOR", "tern", "skiff", &done, by);
+            let words: Vec<&str> = back.command.iter().map(String::as_str).collect();
+            let carried = ask(socket.clone(), reopening(&words, carries)).await;
+            // Every refusal judging a session says it isn't, or nothing
+            // is, reopened, or that it is being reopened.
+            assert!(
+                carried
+                    .as_ref()
+                    .err()
+                    .is_none_or(|why| !why.contains("reopened")),
+                "its carry back is no way back to refuse: {carried:?}"
+            );
+        }
+        let shaped = [
             "sh",
             "-c",
             r#"pi-carry arrive "$1" --from "$2" --session "$3"; exec pi --session "$3""#,
@@ -20798,14 +20964,17 @@ esac
             "s-away",
             "carry on",
         ];
-        let carried = ask(socket, reopening(&back, true)).await;
-        assert!(
-            carried
-                .as_ref()
-                .err()
-                .is_none_or(|why| !why.contains("coming back")),
-            "its carry back is no way back to refuse: {carried:?}"
-        );
+        for carries in [false, true] {
+            assert_eq!(
+                ask(socket.clone(), reopening(&shaped, carries)).await,
+                Err(
+                    "s-away is coming back on skiff, carried or waiting for its turn, so it \
+                     isn't reopened"
+                        .to_owned()
+                ),
+                "a start only shaped as a carry is held to the session it names"
+            );
+        }
     }
 
     // Followup 109: carries that can't be read refuse every reopening,
