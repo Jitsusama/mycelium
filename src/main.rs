@@ -2136,13 +2136,19 @@ fn gates_given(
 /// How the node eases its machine, kept under `state`, if it `eases` at
 /// all: whether it `carries`, and where it asks the harness to park the
 /// sessions it `sleeps`.
-fn eases_given(node: &Node, state: &Path) -> Option<Eases> {
-    node.eases.then(|| Eases {
+fn eases_given(
+    eases: bool,
+    carries: bool,
+    sleeps: Option<PathBuf>,
+    onto: Vec<String>,
+    state: &Path,
+) -> Option<Eases> {
+    eases.then(|| Eases {
         folder: state.join("eases"),
         every: carry::easing::EVERY,
-        carries: node.eases_carry,
-        sleeps: node.eases_sleep.clone(),
-        onto: node.eases_onto.iter().cloned().collect(),
+        carries,
+        sleeps,
+        onto: onto.into_iter().collect(),
     })
 }
 
@@ -2225,7 +2231,13 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
         placements: Some(mycelium::placements::Log::at(state.join("placements"))),
         health: node.health_socket,
         scratch,
-        eases: eases_given(&node, &state),
+        eases: eases_given(
+            node.eases,
+            node.eases_carry,
+            node.eases_sleep,
+            node.eases_onto,
+            &state,
+        ),
         settles: Some(settles_kept(&state, &membership.name)),
         lends_from: node.lends_from,
         lend: node.lend,
@@ -3766,13 +3778,14 @@ mod tests {
     use clap::{CommandFactory as _, Parser as _};
 
     use std::io;
+    use std::path::Path;
 
     use mycelium::wire::Request;
 
     use super::{
-        Action, Command, HELP_WIDTH, SAID_MOST, SWARM_WIDTH, SwarmAsked, Tree, held_through,
-        in_place, kit, orchestrates, processes_here, reader_left, room_of, said_text, swarm_asked,
-        tree, width, within, write_line,
+        Action, Command, HELP_WIDTH, SAID_MOST, SWARM_WIDTH, SwarmAsked, Tree, eases_given,
+        held_through, in_place, kit, orchestrates, processes_here, reader_left, room_of, said_text,
+        swarm_asked, tree, width, within, write_line,
     };
 
     #[test]
@@ -4100,7 +4113,8 @@ mod tests {
         let Ok(Some(Action::Node(named))) = named.map(|asked| asked.action) else {
             panic!("one that eases names its workers");
         };
-        let onto = eases_given(&named, Path::new("/state")).map(|eases| eases.onto);
+        let state = Path::new("/state");
+        let onto = eases_given(true, false, None, named.eases_onto, state).map(|eases| eases.onto);
         assert_eq!(
             onto,
             Some(["osprey".to_owned(), "tern".to_owned()].into()),
