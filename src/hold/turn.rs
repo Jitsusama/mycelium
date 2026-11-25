@@ -29,6 +29,21 @@ const RESUMING: [&str; 2] = ["--session", "--session-id"];
 /// `.../2026-11-14T22-23-37-209Z_<id>.jsonl`, is the id that path ends in.
 #[must_use]
 pub fn resumed(command: &[String]) -> Option<String> {
+    trimmed(&named(command)?)
+}
+
+/// Whether `command` resumes `session`: as [`resumed`] reads it, or by
+/// the very word it names, since [`resumed`] reads an `_` or a `.` as a
+/// log path's, and an id may hold either. So `pi --session a_b` resumes
+/// `a_b`, though [`resumed`] says `b`.
+#[must_use]
+pub fn resumes(command: &[String], session: &str) -> bool {
+    named(command).is_some_and(|word| word == session || trimmed(&word).as_deref() == Some(session))
+}
+
+/// The word naming the session `command` resumes, as [`resumed`] finds
+/// it, before it is read as a log's path.
+fn named(command: &[String]) -> Option<String> {
     let words: Vec<String> = command
         .iter()
         .enumerate()
@@ -51,7 +66,13 @@ pub fn resumed(command: &[String]) -> Option<String> {
             .contains(word)
             .then(|| words.get(at + 1).copied())
             .flatten()
-    })?;
+    });
+    named.map(str::to_owned)
+}
+
+/// The id `named` gives, where it may be a log's path, as
+/// `.../2026-11-14T22-23-37-209Z_<id>.jsonl` is.
+fn trimmed(named: &str) -> Option<String> {
     let id = Path::new(named).file_stem()?.to_str()?.rsplit('_').next()?;
     (!id.is_empty() && !id.starts_with('-')).then(|| id.to_owned())
 }
@@ -255,6 +276,38 @@ mod tests {
             (words(&["pi", "--session", "--model"]), None),
         ];
         resumes(cases);
+    }
+
+    // Round council-20261125T054114584-000006 (F5): an id holding an
+    // `_` or a `.` is read as a log path's, so its holder went unseen.
+    #[test]
+    fn a_command_resumes_an_id_holding_what_a_path_would() {
+        for id in ["a_b", "a.b", "01a1-gh"] {
+            assert!(
+                super::resumes(&words(&["pi", "--session", id]), id),
+                "pi --session {id} resumes {id}"
+            );
+            assert!(
+                super::resumes(
+                    &words(&["sh", "-c", &format!("exec pi --session={id}")]),
+                    id
+                ),
+                "so does a script naming it"
+            );
+        }
+        let log = "/h/.pi/agent/sessions/--h-src--/2026-11-14T22-23-37-209Z_01a1-gh.jsonl";
+        assert!(
+            super::resumes(&words(&["pi", "--session", log]), "01a1-gh"),
+            "a log's path resumes the id it ends in"
+        );
+        assert!(
+            !super::resumes(&words(&["pi", "--session", "a_b"]), "a"),
+            "and nothing but what it names"
+        );
+        assert!(
+            !super::resumes(&words(&["pi"]), "a_b"),
+            "one naming none resumes none"
+        );
     }
 
     fn resumes<const N: usize>(cases: [(Vec<String>, Option<&str>); N]) {
