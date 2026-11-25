@@ -569,8 +569,10 @@ pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> Stri
             // A selector or a mark left to start the next line draws on
             // nothing, and its base above is drawn wrong, so the break
             // steps back to before the character it belongs to. Where
-            // that leaves nothing, the cut stopped at its cap on steps in
-            // a pile of marks or joiners, and the rest of the pile goes.
+            // that leaves nothing, or it walked back over marks to their
+            // base while the pile runs on past the cut, the cut stopped at
+            // its cap on steps in a pile of marks or joiners, and the rest
+            // of the pile goes, so a word isn't split at its pile's base.
             let mut back = taken.len();
             while back > 0
                 && (left[back..].chars().next().is_some_and(draws_nothing)
@@ -581,7 +583,12 @@ pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> Stri
                     .next_back()
                     .map_or(0, |(at, _)| at);
             }
-            let rest = if back > 0 {
+            let capped = left[back..taken.len()].chars().skip(1).any(draws_nothing)
+                && left[taken.len()..]
+                    .chars()
+                    .next()
+                    .is_some_and(draws_nothing);
+            let rest = if back > 0 && !capped {
                 taken = &left[..back];
                 &left[back..]
             } else {

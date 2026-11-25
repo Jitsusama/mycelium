@@ -983,6 +983,26 @@ fn a_peer_s_name_chained_from_emoji_counts_a_cell_pair_for_each_four() {
         fit(&cleaned, 20).ends_with('…'),
         "a name chained from emoji passed a cut whole"
     );
+    // Four emoji joined as no sequence is still count two cells and draw
+    // eight, a bound the cap keeps rather than closes. A mark between them
+    // draws nothing, so it can't start the count afresh: from one drawn
+    // character that follows no joiner to the next, three joiners at most.
+    let marked =
+        "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{301}\u{200D}".repeat(20);
+    let cleaned: Vec<char> = unmarked(&marked).chars().collect();
+    let mut joined = 0;
+    for (at, each) in cleaned.iter().enumerate() {
+        let after_joiner = at > 0 && cleaned[at - 1] == '\u{200D}';
+        if *each == '\u{200D}' {
+            joined += 1;
+        } else if !after_joiner && unicode_width::UnicodeWidthChar::width(*each) > Some(0) {
+            joined = 0;
+        }
+        assert!(
+            joined <= 3,
+            "a mark let a run keep {joined} joiners: {cleaned:?}"
+        );
+    }
 }
 
 #[test]
@@ -1130,11 +1150,21 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
     }
     // Wrapped, the rest of a pile goes too, rather than taking lines of
     // nothing that push the words after it out of what is shown.
-    let wrap = wrapped(&format!("a{} b", "\u{301}".repeat(10_000)), "", "", 80);
-    assert!(
-        wrap.lines().count() == 1 && wrap.ends_with(" b\n"),
-        "a pile spread over lines: {} of them",
-        wrap.lines().count()
+    // Whichever of its word's letters the pile follows, so the word isn't
+    // split at the pile's base.
+    for word in ["a", "ab", "Reef"] {
+        let wrap = wrapped(&format!("{word}{} b", "\u{301}".repeat(10_000)), "", "", 80);
+        assert!(
+            wrap.lines().count() == 1 && wrap.starts_with(word) && wrap.ends_with(" b\n"),
+            "a pile after {word} spread over lines: {} of them",
+            wrap.lines().count()
+        );
+    }
+    // A selector that doesn't fit still moves with its emoji to the next.
+    assert_eq!(
+        wrapped("abc\u{2764}\u{FE0F}", "", "", 4),
+        "abc\n\u{2764}\u{FE0F}\n",
+        "a selector was parted from its emoji, or dropped"
     );
 }
 

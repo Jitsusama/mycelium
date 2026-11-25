@@ -1388,7 +1388,8 @@ pub(crate) fn one_line(text: &str) -> String {
         .collect();
     let mut kept: Vec<char> = Vec::with_capacity(plain.len());
     // The joiners kept in the run at hand, which a character that follows
-    // no joiner and neither selects nor modifies ends.
+    // no joiner, draws something and neither selects nor modifies ends, so
+    // a mark between emoji can't start the count afresh.
     let mut joined = 0;
     for (at, &each) in plain.iter().enumerate() {
         let before = kept.last().copied();
@@ -1405,7 +1406,11 @@ pub(crate) fn one_line(text: &str) -> String {
             kept.push(each);
             if each == '\u{200D}' {
                 joined += 1;
-            } else if before != Some('\u{200D}') && !selects(each) && !modifies(each) {
+            } else if before != Some('\u{200D}')
+                && !selects(each)
+                && !modifies(each)
+                && unicode_width::UnicodeWidthChar::width(each).is_some_and(|cells| cells > 0)
+            {
                 joined = 0;
             }
         }
@@ -1416,7 +1421,9 @@ pub(crate) fn one_line(text: &str) -> String {
 /// The most joiners in one of Unicode's emoji sequences, as in a family of
 /// four, or a kiss between two with their skin tones. A terminal draws
 /// only a sequence it knows as one glyph, yet Unicode's widths count a
-/// joined run of any length as two cells.
+/// joined run of any length as two cells. This bounds that, not closes
+/// it: four emoji joined as no sequence is still count two cells and draw
+/// eight, so a chain of them draws at most four times what it counts.
 const MOST_JOINED: usize = 3;
 
 /// Whether `each` is an emoji modifier, a skin tone, which is drawn as
