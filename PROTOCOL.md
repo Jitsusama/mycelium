@@ -2301,18 +2301,22 @@ while the carries can't be read. Once taken, the session is
 held as being reopened while its start runs, and another reopening of
 it meanwhile is refused as `<id> is being reopened on <machine>
 already`; a start whose asker hung up holds it at most two minutes.
-Any other start relayed here but a carry's arrival from the machine
-relaying it, word for word as a carry writes it, which starts pi only
-once `pi-carry arrive` has taken the carry, is held, in the same
+A carry's arrival from the machine relaying it, word for word as a
+carry writes it, which starts pi only once `pi-carry arrive` has taken
+the carry, is judged by the carry, but its session is still held
+while its start runs, and refused as being reopened where another
+start holds it. Any other start relayed here is held, in the same
 words, to each session it names by `--session` or `--session-id`,
 alone or with `=`, under any program or in a shell's `-c` script with
-its positional parameters, to the id a log's path ends in, and to
-each session here that such an id begins, since pi opens one so:
-refused where one comes back by itself or is being reopened, and held
-while its start runs, though it need not have ended here, since its
-asker fenced it. A start only shaped as a carry is held so too. A
-refusal of a session an id begins names the id as asked, and only
-ids are begun, never a log's path. An id a script works out as it
+its positional parameters, and to the id a log's path ends in. Each
+word it names as written is held, too, to each session here that
+word begins, and to each another start holds that it begins, since pi
+opens one so; it is refused where another start holds a shorter id
+the word begins. Each is refused where one comes back by itself or
+is being reopened, and held while its start runs, though it need not
+have ended here, since its asker fenced it. A start only shaped as a
+carry is held so too. A refusal of a session a word begins names the
+word as asked, and a log path's tail begins nothing. An id a script works out as it
 runs, or a resume naming none, as `pi --continue`, is not judged. A
 reopening let through without its asker's fence is asked only of a
 node whose link says `reopens`, since one older would take it as any

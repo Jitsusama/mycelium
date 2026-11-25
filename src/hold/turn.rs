@@ -73,6 +73,20 @@ pub fn sessions_named(command: &[String]) -> Vec<String> {
     sessions
 }
 
+/// Each word [`sessions_named`] finds, as `command` writes it, never the
+/// id a log's path ends in: the words pi may take for the start of an
+/// id, which a path's tail never is.
+#[must_use]
+pub fn words_named(command: &[String]) -> Vec<String> {
+    let mut words: Vec<String> = Vec::new();
+    for word in named(command) {
+        if !word.is_empty() && !words.contains(&word) {
+            words.push(word);
+        }
+    }
+    words
+}
+
 /// Each word naming a session `command` resumes, first to last, as
 /// [`resumed`] finds the first, before it is read as a log's path.
 fn named(command: &[String]) -> Vec<String> {
