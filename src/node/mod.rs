@@ -782,6 +782,9 @@ pub struct Given {
     pub serves: BTreeMap<String, served::Source>,
     /// The providers' programs asked what machines they could make.
     pub providers: Vec<String>,
+    /// The addresses of the sessions that may keep a machine made for the
+    /// person beside the person ([`Shared::keep_for_the_person`]).
+    pub keepers: Vec<String>,
     /// Where it keeps each machine it makes and lets go.
     pub book: Book,
     /// The realms its messages may go to and come from, and where it
@@ -1239,6 +1242,8 @@ struct Keeping<S> {
     book: Book,
     store: S,
     unbook: Box<dyn FnOnce() + Send>,
+    /// When it ends, as a keep may move it.
+    ends: watch::Receiver<jiff::Timestamp>,
 }
 
 /// Tells `to_dial` of each machine `book` says this node made before it
@@ -1364,11 +1369,11 @@ async fn keep_made(
         book,
         store,
         unbook,
+        ends,
     }: Keeping<impl Store>,
     unwanted: Arc<Notify>,
     linked: impl Future<Output = Linked>,
 ) {
-    let left = jiff::Timestamp::now().duration_until(made.until);
     // A link lets its machine go itself once its work has handed over.
     let (release, gone) = tokio::select! {
         linked = linked => match linked {
@@ -1378,9 +1383,7 @@ async fn keep_made(
         () = unwanted.notified() => {
             (Some("nothing started on it once it was made".to_owned()), false)
         }
-        () = tokio::time::sleep(Duration::try_from(left).unwrap_or_default()) => {
-            (Some("its time was up".to_owned()), false)
-        }
+        () = time_up(ends) => (Some("its time was up".to_owned()), false),
     };
     store::left(&store, &made.machine, jiff::Timestamp::now());
     unbook();
@@ -1407,6 +1410,23 @@ async fn keep_made(
             "{} was let go, but the book doesn't say so: {error}",
             made.machine
         );
+    }
+}
+
+/// Waits for the end `ends` says, and for the one it says instead each
+/// time a keep moves it; once nothing can move it, for the last.
+async fn time_up(mut ends: watch::Receiver<jiff::Timestamp>) {
+    loop {
+        let left = jiff::Timestamp::now().duration_until(*ends.borrow_and_update());
+        let up = tokio::time::sleep(Duration::try_from(left).unwrap_or_default());
+        tokio::select! {
+            () = up => return,
+            moved = ends.changed() => if moved.is_err() {
+                let left = jiff::Timestamp::now().duration_until(*ends.borrow());
+                tokio::time::sleep(Duration::try_from(left).unwrap_or_default()).await;
+                return;
+            },
+        }
     }
 }
 
@@ -1889,6 +1909,8 @@ struct Shared<S> {
     served: Arc<Served>,
     /// The providers' programs asked what machines they could make.
     providers: Arc<[String]>,
+    /// The sessions that may keep the person's machine beside the person.
+    keepers: Arc<[String]>,
     /// The builders this machine sends Nix builds to, kept heard.
     builders: Arc<Builders>,
     /// What this machine's cells murmured in the quests' webs, kept read.
@@ -2079,6 +2101,7 @@ impl<S: Clone> Clone for Shared<S> {
             said: self.said.clone(),
             served: self.served.clone(),
             providers: self.providers.clone(),
+            keepers: self.keepers.clone(),
             builders: self.builders.clone(),
             murmurs: self.murmurs.clone(),
             book: self.book.clone(),
@@ -2398,6 +2421,39 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Steers for Shared<S> {
     }
 }
 
+/// How far off a machine's end is when it is kept already: a keep ends
+/// it in the year 9999, and no make lasts a century.
+const KEPT_PAST: jiff::SignedDuration = jiff::SignedDuration::from_hours(100 * 365 * 24);
+
+/// How long past its provider's time to keep it a machine's end is held
+/// off, so it can't be let go as the provider answers.
+const KEEP_MARGIN: Duration = Duration::from_secs(60);
+
+/// Who asks that `machine` be kept, where `who` may: the person, or a
+/// session whose address is among the node's `keepers`.
+fn may_keep<'a>(machine: &str, who: &'a Asker, keepers: &[String]) -> Result<&'a str, String> {
+    match &who.unknown_because {
+        // A keeper may be written in any case; the node's addresses are
+        // upper case.
+        None if who.told == made::PERSON
+            || keepers
+                .iter()
+                .any(|keeper| keeper.eq_ignore_ascii_case(&who.told)) =>
+        {
+            Ok(&who.told)
+        }
+        None => Err(format!(
+            "{machine} is kept only as the person asks, or a keeper this node names, \
+             and {} is neither",
+            who.told
+        )),
+        Some(why) => Err(format!(
+            "{machine} is kept only as the person asks, or a keeper this node names, \
+             and who asks can't be told: {why}"
+        )),
+    }
+}
+
 /// `value` as JSON, or null for what can't be, which a node's own records
 /// never are.
 fn json_of(value: &impl serde::Serialize) -> serde_json::Value {
@@ -2451,6 +2507,12 @@ struct Inner {
     /// promised it holds at most, where it promised any, weighed while
     /// the machine's own configuration says none ([`placement::full`]).
     promised: BTreeMap<String, u32>,
+    /// Each booked machine's end, by name, with its place, which a keep
+    /// moves ([`Shared::keep_for_the_person`]) and what keeps it
+    /// ([`keep_made`]) waits for.
+    ends: HashMap<String, (String, watch::Sender<jiff::Timestamp>)>,
+    /// The machines a keep is running for now, so two never race.
+    keeps: HashSet<String>,
     /// The sessions a relayed start is reopening here now, and since
     /// when, kept only while the node runs (see [`Reopening`]).
     reopening: Reopening,
@@ -3215,6 +3277,7 @@ impl<S: Store> Shared<S> {
             updater,
             serves,
             providers,
+            keepers,
             book,
             flows,
             parked,
@@ -3294,6 +3357,7 @@ impl<S: Store> Shared<S> {
             builders: Arc::new(Builders::start(builders)),
             murmurs: Arc::new(Murmurs::start(scratch, hello.machine.clone())),
             providers: providers.into(),
+            keepers: keepers.into(),
             book,
             to_dial,
             held: held_here,
@@ -4722,6 +4786,7 @@ impl<S: Store> Shared<S> {
             Request::Starts { .. } => Err("starts are answered by `starts_asked`".to_owned()),
             Request::Spawned { .. } => Err("a spawner is answered by `spawned`".to_owned()),
             Request::Update { .. } => Err("an update is answered by `update`".to_owned()),
+            Request::Keep { .. } => Err("a keep is answered by `keep`".to_owned()),
             Request::Carry { .. } => Err("carrying is answered by `carried`".to_owned()),
             Request::Health => Err("health is answered by `own_health::tell`".to_owned()),
             Request::Turn { .. } => Err("a turn is answered by `take_turn`".to_owned()),
@@ -4786,6 +4851,170 @@ impl<S: Store> Shared<S> {
         .await?;
         eprintln!("updated {machine}: {ending}");
         Ok(Response::Updated(ending))
+    }
+
+    /// Keeps `machine`, which this node made for the person, with no end
+    /// it is held to, through its provider, where the person or one of
+    /// the node's keepers asks: an agent may keep the person's machine
+    /// only where the node's configuration names it. The provider may
+    /// stop and start the machine, which ends what it held, so a keep is
+    /// refused while a session there runs a turn, unless `force`. Each
+    /// keep is said in the node's log, and booked, so the machine is let
+    /// go at its new end, and at it again once the node starts again.
+    async fn keep_for_the_person(&self, machine: &str, force: bool) -> Reply {
+        let kept = self.keep_held(machine, force).await;
+        if let Err(why) = &kept {
+            eprintln!("{machine} isn't kept: {why}");
+        }
+        kept
+    }
+
+    /// Keeps `machine` as [`Shared::keep_for_the_person`] says, through
+    /// what holds it here: a keep with nothing holding the machine would
+    /// leave it with no end and nothing to let it go, so it is refused,
+    /// and the machine's end is held off while its provider keeps it, so
+    /// the machine isn't let go partway.
+    async fn keep_held(&self, machine: &str, force: bool) -> Reply {
+        let who = self.asker_of_a_make().await;
+        let asker = may_keep(machine, &who, &self.keepers)?;
+        let standing = self
+            .book
+            .standing()
+            .map_err(|error| format!("the book of machines made can't be read: {error}"))?;
+        let Some(mut made) = standing
+            .made
+            .into_iter()
+            .rev()
+            .find(|made| made.machine == machine)
+        else {
+            return Err(format!(
+                "this node made no {machine} it still keeps, so it keeps none; \
+                 ask the node that made it"
+            ));
+        };
+        let turning: Vec<String> = self
+            .lock()
+            .state
+            .sessions()
+            .iter()
+            .filter(|one| one.machine == machine && one.state == SessionState::Busy)
+            .map(|one| one.address.clone())
+            .collect();
+        if !turning.is_empty() && !force {
+            return Err(format!(
+                "{machine} may be stopped as it is kept, and {} runs a turn there, \
+                 so it isn't kept yet; ask again once none does, or force it",
+                turning.join(", ")
+            ));
+        }
+        // Kept already, it is answered so rather than stopped again.
+        if made.until > jiff::Timestamp::now() + KEPT_PAST {
+            return Ok(Response::Kept(Box::new(made)));
+        }
+        // Only a program it is given now is run, never a path the book
+        // kept, which an upgrade moves and the store may have taken.
+        let Some(provider) = still_asked(&self.providers, &made.provider) else {
+            return Err(format!(
+                "{machine} was made by {}, which this node no longer asks, so it isn't kept; \
+                 it ends at its time",
+                made.provider
+            ));
+        };
+        made.provider.clone_from(provider);
+        let before = self.hold_off_its_end(&made)?;
+        eprintln!(
+            "{asker} asks that {machine} be kept with no end{}",
+            if turning.is_empty() {
+                String::new()
+            } else {
+                format!(", forced while {} runs a turn there", turning.join(", "))
+            }
+        );
+        let kept = made::keep(&made).await;
+        let kept = self.kept_where_held(&made, before, kept)?;
+        self.book.made(&kept).map_err(|error| {
+            format!(
+                "{machine} is kept until {}, but the book doesn't say so, so a node started \
+                 again lets it go at {before}: {error}",
+                kept.until
+            )
+        })?;
+        eprintln!(
+            "{machine} is kept as {} at {} {} an hour, until {}, as {asker} asked",
+            kept.shape, kept.costs.hourly, kept.costs.currency, kept.until
+        );
+        Ok(Response::Kept(Box::new(kept)))
+    }
+
+    /// Holds off the end of `made`, which something here must hold, for
+    /// as long as its provider has to keep it, answering the end it had;
+    /// one keep of a machine runs at once.
+    fn hold_off_its_end(&self, made: &Made) -> Result<jiff::Timestamp, String> {
+        let machine = &made.machine;
+        let mut inner = self.lock();
+        let held = inner
+            .ends
+            .get(machine)
+            .filter(|held| held.0 == made.place)
+            .map(|(_, ends)| *ends.borrow());
+        let Some(before) = held else {
+            return Err(format!(
+                "nothing on this node holds {machine} at {} now, so it isn't kept: kept, it \
+                 would have no end and nothing to let it go",
+                made.place
+            ));
+        };
+        if !inner.keeps.insert(machine.clone()) {
+            return Err(format!(
+                "{machine} is being kept already; ask again once that keep answers"
+            ));
+        }
+        let past_the_keep = jiff::Timestamp::now() + made::MADE_WITHIN + KEEP_MARGIN;
+        if let Some((_, ends)) = inner.ends.get(machine) {
+            ends.send_replace(before.max(past_the_keep));
+        }
+        Ok(before)
+    }
+
+    /// What a keep of `made` that ended as `kept` leaves booked: its new
+    /// end, where it kept the machine with an end no sooner than `before`
+    /// and something here still holds it; otherwise `before` again, or,
+    /// let go as it was kept, what to do of the machine its provider kept.
+    fn kept_where_held(
+        &self,
+        made: &Made,
+        before: jiff::Timestamp,
+        kept: Result<Made, String>,
+    ) -> Result<Made, String> {
+        let machine = &made.machine;
+        let mut inner = self.lock();
+        inner.keeps.remove(machine);
+        let ends = inner.ends.get(machine).filter(|held| held.0 == made.place);
+        let again = |why: String| {
+            if let Some((_, ends)) = ends {
+                ends.send_replace(before);
+            }
+            Err(format!("{why}; it stays booked as it was, until {before}"))
+        };
+        let kept = match kept {
+            Ok(kept) if kept.until < before => {
+                return again(format!(
+                    "{} said it keeps {machine} until {}, before its booking's end",
+                    made.provider, kept.until
+                ));
+            }
+            Ok(kept) => kept,
+            Err(why) => return again(why),
+        };
+        let Some((_, ends)) = ends else {
+            return Err(format!(
+                "{machine} was let go as it was kept, so nothing here holds it, though its \
+                 provider kept it until {}: release it there, as `{} release {}`",
+                kept.until, made.provider, made.place
+            ));
+        };
+        ends.send_replace(kept.until);
+        Ok(kept)
     }
 
     /// Carries `quest` to machine `to` in one act, where the person's own
@@ -8296,11 +8525,16 @@ impl<S: Store> Shared<S> {
     /// Where a machine made is kept: this node's book and store, and its
     /// booking, let go with it.
     fn keeping(&self, made: &Made) -> Keeping<S> {
+        let (moves, ends) = watch::channel(made.until);
+        self.lock()
+            .ends
+            .insert(made.machine.clone(), (made.place.clone(), moves));
         let (shared, made) = (self.clone(), made.clone());
         Keeping {
             book: self.book.clone(),
             store: self.store.clone(),
             unbook: Box::new(move || shared.unbook(&made)),
+            ends,
         }
     }
 
@@ -8315,6 +8549,13 @@ impl<S: Store> Shared<S> {
         {
             inner.booked.remove(&made.machine);
             inner.promised.remove(&made.machine);
+        }
+        if inner
+            .ends
+            .get(&made.machine)
+            .is_some_and(|(place, _)| *place == made.place)
+        {
+            inner.ends.remove(&made.machine);
         }
     }
 
@@ -8750,6 +8991,9 @@ async fn answered<S: Store>(shared: &Shared<S>, request: Result<Request, String>
             session,
         }) => shared.spawned((pid, started), session).await.into(),
         Ok(Request::Update { machine }) => shared.update(&machine).await.into(),
+        Ok(Request::Keep { machine, force }) => {
+            shared.keep_for_the_person(&machine, force).await.into()
+        }
         Ok(Request::Offers) => Answer::Ok(Response::Offers(shared.offers().await)),
         // A receptor's cell is named `<source>@<machine>`, and only the
         // node holding it speaks as it, so no client is a name with @.
@@ -9451,6 +9695,7 @@ mod tests {
             updater: "/nowhere".into(),
             serves: BTreeMap::new(),
             providers: Vec::new(),
+            keepers: Vec::new(),
             book: Book::at("/nowhere/made.jsonl".into()),
             flows: Flows::default(),
             parked: "/nowhere/parked".into(),
@@ -9798,6 +10043,7 @@ mod tests {
             updater,
             serves,
             providers,
+            keepers: Vec::new(),
             book,
             flows: Flows::default(),
             parked,
@@ -24489,6 +24735,293 @@ esac
         assert!(
             matches!(&answer, Some(Err(error)) if error.kind() == io::ErrorKind::TimedOut),
             "it fails as not answered in time: {answer:?}"
+        );
+    }
+
+    #[test]
+    fn the_persons_machine_is_kept_only_as_the_person_or_a_keeper_asks() {
+        let keepers = ["QK4T7Z".to_owned()];
+        let asked = |told: &str, unknown_because: Option<&str>| Asker {
+            told: told.to_owned(),
+            unknown_because: unknown_because.map(str::to_owned),
+        };
+        assert_eq!(
+            may_keep("wren", &asked(made::PERSON, None), &keepers),
+            Ok(made::PERSON),
+            "the person keeps their own machine"
+        );
+        assert_eq!(
+            may_keep("wren", &asked("QK4T7Z", None), &keepers),
+            Ok("QK4T7Z"),
+            "and so does a keeper the node names"
+        );
+        let harbour = asked("HARBOR", None);
+        let other = may_keep("wren", &harbour, &keepers);
+        assert!(
+            other
+                .as_ref()
+                .is_err_and(|why| why.contains("HARBOR is neither")),
+            "another agent doesn't: {other:?}"
+        );
+        let nobody = asked(made::UNKNOWN, Some("no session"));
+        let unknown = may_keep("wren", &nobody, &keepers);
+        assert!(
+            unknown
+                .as_ref()
+                .is_err_and(|why| why.contains("who asks can't be told: no session")),
+            "nor one whose session isn't proved, saying why: {unknown:?}"
+        );
+    }
+
+    /// Skiff's node in the work realm, asked as the person, booking in
+    /// `dir`, with the person's machine wren made by a stand-in provider
+    /// that notes in `dir/asked` each keep and answers it kept for good.
+    fn keeping_wren(dir: &Path) -> (Shared<Memory>, Book, Made) {
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let book = Book::at(dir.join("made.jsonl")).of_realm("work");
+        let provider = dir.join("provider");
+        let given = Given {
+            book: book.clone(),
+            providers: vec![
+                provider.display().to_string(),
+                dir.join("early").display().to_string(),
+            ],
+            ..bare("/nowhere/steer".into(), None)
+        };
+        let (mut shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            given,
+            to_dial,
+        );
+        shared.client = None;
+        shared.vouched = Some(Arc::new(Vouched {
+            by: By::Person,
+            charged: None,
+            unfenced: None,
+        }));
+        crate::stand_in::program(
+            &provider,
+            &format!(
+                "#!/bin/sh\necho \"$*\" >> '{asked}'\n\
+                 echo '{{\"place\": \"wren-place\", \"machine\": \"wren\", \
+                 \"until\": \"9999-01-01T00:00:00Z\", \"shape\": \"standard\", \
+                 \"costs\": {{\"hourly\": \"0.21\", \"currency\": \"USD\"}}}}'\n",
+                asked = dir.join("asked").display()
+            ),
+        );
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let made = Made {
+            asker: Some(made::PERSON.to_owned()),
+            ..made_by(&provider.display().to_string(), "wren", later)
+        };
+        book.made(&made).expect("the make is booked");
+        (shared, book, made)
+    }
+
+    #[tokio::test]
+    async fn a_kept_machine_is_booked_and_let_go_at_its_new_end() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (shared, book, made) = keeping_wren(dir.path());
+        let keeping = shared.keeping(&made);
+
+        let kept = shared.keep_for_the_person("wren", false).await;
+
+        let forever: jiff::Timestamp = "9999-01-01T00:00:00Z".parse().expect("a time");
+        assert!(
+            matches!(&kept, Ok(Response::Kept(kept)) if kept.until == forever),
+            "it answers the machine as kept, with no end: {kept:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("asked")).expect("its provider was asked"),
+            "keep wren-place --lasting 0\n",
+            "its provider is asked to keep its place with no end"
+        );
+        let standing = book.standing().expect("the book reads").made;
+        assert!(
+            standing.len() == 1 && standing[0].until == forever && standing[0].shape == "standard",
+            "the book holds it once, as kept, so a node started again keeps it: {standing:?}"
+        );
+        assert_eq!(
+            *keeping.ends.borrow(),
+            forever,
+            "what keeps it lets it go at its new end, not its old"
+        );
+        let again = shared.keep_for_the_person("wren", false).await;
+        assert!(
+            matches!(&again, Ok(Response::Kept(kept)) if kept.until == forever),
+            "asked again, it is answered as kept: {again:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("asked")).expect("its provider was asked"),
+            "keep wren-place --lasting 0\n",
+            "and its provider isn't asked again, which could stop it"
+        );
+        // What holds it waits on the end the keep moved, as it is moved.
+        let up = tokio::spawn(time_up(keeping.ends));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!up.is_finished(), "it waits for an end in 9999");
+        if let Some((_, ends)) = shared.lock().ends.get("wren") {
+            ends.send_replace(jiff::Timestamp::now());
+        }
+        tokio::time::timeout(PATIENCE, up)
+            .await
+            .expect("an end moved sooner is waited for, not the old one")
+            .expect("it waits");
+    }
+
+    #[tokio::test]
+    async fn a_keep_is_refused_where_nothing_holds_it_or_it_would_end_sooner() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (shared, book, made) = keeping_wren(dir.path());
+        let unheld = shared.keep_for_the_person("wren", false).await;
+        assert!(
+            unheld
+                .as_ref()
+                .is_err_and(|why| why.contains("nothing on this node holds wren")),
+            "with nothing to let it go, it isn't kept: {unheld:?}"
+        );
+        let keeping = shared.keeping(&made);
+        shared.lock().keeps.insert("wren".to_owned());
+        let racing = shared.keep_for_the_person("wren", false).await;
+        assert!(
+            racing
+                .as_ref()
+                .is_err_and(|why| why.contains("being kept already")),
+            "two keeps never race: {racing:?}"
+        );
+        assert!(
+            !dir.path().join("asked").exists(),
+            "nor is its provider asked"
+        );
+        shared.lock().keeps.clear();
+
+        let gone = Made {
+            provider: "/nowhere/gone-provider".to_owned(),
+            ..made.clone()
+        };
+        book.made(&gone).expect("the make is booked");
+        let unasked = shared.keep_for_the_person("wren", false).await;
+        assert!(
+            unasked
+                .as_ref()
+                .is_err_and(|why| why.contains("no longer asks")),
+            "only a program the node is given is run: {unasked:?}"
+        );
+
+        let early = dir.path().join("early");
+        crate::stand_in::program(
+            &early,
+            "#!/bin/sh\necho '{\"place\": \"wren-place\", \"machine\": \"wren\", \
+             \"until\": \"2001-01-01T00:00:00Z\", \"shape\": \"standard\", \
+             \"costs\": {\"hourly\": \"0.21\", \"currency\": \"USD\"}}'\n",
+        );
+        let sooner = Made {
+            provider: early.display().to_string(),
+            ..made.clone()
+        };
+        book.made(&sooner).expect("the make is booked");
+        let ended = shared.keep_for_the_person("wren", false).await;
+        assert!(
+            ended
+                .as_ref()
+                .is_err_and(|why| why.contains("before its booking's end")),
+            "an end sooner than its booking's isn't taken: {ended:?}"
+        );
+        assert_eq!(
+            *keeping.ends.borrow(),
+            made.until,
+            "and it is let go at its booked end, as before"
+        );
+        assert!(shared.lock().keeps.is_empty(), "the keep is over");
+    }
+
+    #[test]
+    fn only_the_person_or_a_keeper_in_any_case_may_keep() {
+        let asks = |told: &str| Asker {
+            told: told.to_owned(),
+            unknown_because: None,
+        };
+        let keepers = ["qk4t7z".to_owned()];
+        assert_eq!(
+            may_keep("wren", &asks(made::PERSON), &keepers),
+            Ok(made::PERSON)
+        );
+        assert_eq!(may_keep("wren", &asks("QK4T7Z"), &keepers), Ok("QK4T7Z"));
+        let wrent1 = asks("WRENT1");
+        let agent = may_keep("wren", &wrent1, &keepers);
+        assert!(
+            agent
+                .as_ref()
+                .is_err_and(|why| why.contains("WRENT1 is neither")),
+            "an agent no keeper names may not: {agent:?}"
+        );
+        let unknown = Asker {
+            told: made::UNKNOWN.to_owned(),
+            unknown_because: Some("it says no address".to_owned()),
+        };
+        assert!(
+            may_keep("wren", &unknown, &keepers).is_err(),
+            "nor may one the node can't tell"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_keep_waits_for_turns_there_unless_forced_and_keeps_only_what_was_made() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (shared, book, made) = keeping_wren(dir.path());
+        let _keeping = shared.keeping(&made);
+        let quest = "QEST-20261118-WRENSS";
+        shared.lock().state.set_sessions(vec![
+            on_quest("s-turning", "WRENT1", "wren", "busy", quest),
+            on_quest("s-far", "WRENT2", "osprey", "busy", quest),
+        ]);
+        let asked = dir.path().join("asked");
+
+        let waits = shared.keep_for_the_person("wren", false).await;
+        assert!(
+            waits.as_ref().is_err_and(
+                |why| why.contains("WRENT1 runs a turn there") && !why.contains("WRENT2")
+            ),
+            "it isn't kept while a session there runs a turn: {waits:?}"
+        );
+        assert!(!asked.exists(), "and its provider isn't asked");
+        let none = shared.keep_for_the_person("tern", false).await;
+        assert!(
+            none.as_ref().is_err_and(|why| why.contains("made no tern")),
+            "a machine it didn't make isn't kept: {none:?}"
+        );
+
+        let forced = shared.keep_for_the_person("wren", true).await;
+        assert!(
+            matches!(&forced, Ok(Response::Kept(_))),
+            "forced, it is kept though a turn runs: {forced:?}"
+        );
+        let agents = Made {
+            asker: Some("QK4T7Z".to_owned()),
+            machine: "kestrel".to_owned(),
+            place: "kestrel-place".to_owned(),
+            // Its own end, not the kept one's, so it is asked to be kept.
+            until: jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1),
+            ..book.standing().expect("the book reads").made[0].clone()
+        };
+        book.made(&agents).expect("the make is booked");
+        let _kestrel = shared.keeping(&agents);
+        let refused = shared.keep_for_the_person("kestrel", false).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.contains("wasn't made for the person")),
+            "an agent's machine is kept only to its end: {refused:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(&asked).expect("its provider was asked"),
+            "keep wren-place --lasting 0\n",
+            "only the forced keep reached the provider"
         );
     }
 

@@ -25,7 +25,7 @@ use crate::offer::{Costs, Offer};
 
 /// How long a program has to make a machine: a provider makes one in
 /// seconds, and a minute or two when it is busy.
-const MADE_WITHIN: Duration = Duration::from_secs(5 * 60);
+pub const MADE_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The variable a provider's program reads who asked for the machine in:
 /// the address of a session the node proved asks, [`PERSON`] for the
@@ -137,6 +137,86 @@ pub async fn make(offer: &Offer, lasting: Duration, asker: &str) -> Result<Made,
     })
 }
 
+/// What a program says it kept: the make's words, with the shape and
+/// costs it now runs at.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeptSaid {
+    place: String,
+    machine: String,
+    until: jiff::Timestamp,
+    shape: String,
+    costs: Costs,
+}
+
+/// Asks `made`'s program to keep it with no end it is held to, as the
+/// person's machine is kept: `PROGRAM keep PLACE --lasting 0`, told the
+/// asker its make was told. The program may stop and start it on the
+/// way, which ends what it held, and says where it is, its shape, its
+/// costs and its new end, as one JSON line.
+///
+/// # Errors
+///
+/// When `made` wasn't made for the person, or its program can't be run,
+/// ends with a failure or not within [`MADE_WITHIN`], or says something
+/// other than that it kept this machine at this place, saying which.
+pub async fn keep(made: &Made) -> Result<Made, String> {
+    if made.asker.as_deref() != Some(PERSON) {
+        return Err(format!(
+            "{} wasn't made for the person, so it is kept only to its end",
+            made.machine
+        ));
+    }
+    let program = &made.provider;
+    let mut command = tokio::process::Command::new(program);
+    command
+        .args(["keep", &made.place, "--lasting", "0"])
+        .env(ASKER, PERSON)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let ran = tokio::time::timeout(MADE_WITHIN, command.output())
+        .await
+        .map_err(|_| {
+            format!(
+                "{program} keep {} said nothing within {}s",
+                made.place,
+                MADE_WITHIN.as_secs()
+            )
+        })?
+        .map_err(|error| format!("{program} keep couldn't run: {error}"))?;
+    if !ran.status.success() {
+        let said = String::from_utf8_lossy(&ran.stderr);
+        return Err(format!(
+            "{program} keep {} ended {}: {}",
+            made.place,
+            ran.status,
+            said.trim()
+        ));
+    }
+    let text = String::from_utf8_lossy(&ran.stdout);
+    let said: KeptSaid = serde_json::from_str(text.trim()).map_err(|error| {
+        format!(
+            "{program} keep {} said {}, which isn't what it kept: {error}",
+            made.place,
+            text.trim()
+        )
+    })?;
+    if said.place != made.place || said.machine != made.machine {
+        return Err(format!(
+            "{program} keep {} said it kept {} at {}, not {} at {}",
+            made.place, said.machine, said.place, made.machine, made.place
+        ));
+    }
+    Ok(Made {
+        shape: said.shape,
+        until: said.until,
+        costs: said.costs,
+        ..made.clone()
+    })
+}
+
 /// Where a node keeps each make and release, a JSON line each, newest
 /// last. Every realm's node on a machine keeps the same book, so each
 /// make names the realm whose node made it.
@@ -232,6 +312,9 @@ impl Book {
                 continue;
             };
             if let Some(made) = kept.made {
+                // A machine made again at its place, as a keep books it,
+                // stands as it was booked last.
+                kept_by.retain(|was| was.machine != made.machine || was.place != made.place);
                 kept_by.push(made);
             } else if let Some(released) = kept.released {
                 kept_by.retain(|made| {
@@ -517,6 +600,124 @@ mod tests {
              a release taking only the machine of its name at its place, \
              another realm's makes and releases left to it, those that name \
              no realm kept apart, and the line cut short counted"
+        );
+    }
+
+    #[test]
+    fn a_machine_made_again_at_its_place_stands_as_booked_last() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let book = Book::at(dir.path().join("made.jsonl")).of_realm("work");
+        let now = jiff::Timestamp::now();
+        let made = made_at("wren", "p1", now + jiff::SignedDuration::from_hours(12));
+        let kept = Made {
+            until: "9999-01-01T00:00:00Z".parse().expect("a time"),
+            shape: "standard".to_owned(),
+            ..made.clone()
+        };
+        book.made(&made).expect("a make is kept");
+        book.made(&kept).expect("a keep is kept");
+        assert_eq!(
+            book.standing().expect("the book reads").made,
+            vec![kept.clone()],
+            "a keep books the machine again, and only as it was kept"
+        );
+        book.released(&kept, "its work handed over")
+            .expect("a release is kept");
+        assert_eq!(
+            book.standing().expect("the book reads").made,
+            Vec::new(),
+            "one release lets go a machine booked twice"
+        );
+    }
+
+    /// A make for the person by `program`, at place `sbx-1` as `lent-1`.
+    fn made_for_the_person(program: String) -> Made {
+        Made {
+            provider: program,
+            asker: Some(PERSON.to_owned()),
+            ..made_at("lent-1", "sbx-1", jiff::Timestamp::now())
+        }
+    }
+
+    /// The line a program answers a keep with, saying `lent-1` stands at
+    /// `place` with no end, as a standard room at 0.21 USD an hour.
+    fn kept_at(place: &str) -> String {
+        format!(
+            "echo '{{\"place\": \"{place}\", \"machine\": \"lent-1\", \
+             \"until\": \"9999-01-01T00:00:00Z\", \"shape\": \"standard\", \
+             \"costs\": {{\"hourly\": \"0.21\", \"currency\": \"USD\"}}}}'"
+        )
+    }
+
+    #[tokio::test]
+    async fn a_program_keeps_the_persons_machine_saying_how_it_now_runs() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let told = dir.path().join("told");
+        let program = provider(
+            dir.path(),
+            &format!(
+                "echo \"$* ${ASKER}\" > {}\n{}",
+                told.display(),
+                kept_at("sbx-1")
+            ),
+        );
+        let made = made_for_the_person(program);
+        let kept = keep(&made).await.expect("it is kept");
+        assert_eq!(
+            fs::read_to_string(&told).expect("it was asked"),
+            "keep sbx-1 --lasting 0 person\n",
+            "the program is asked to keep the place with no end, as the person"
+        );
+        assert_eq!(
+            kept,
+            Made {
+                shape: "standard".to_owned(),
+                until: "9999-01-01T00:00:00Z".parse().expect("a time"),
+                costs: Costs {
+                    hourly: "0.21".to_owned(),
+                    currency: "USD".to_owned(),
+                },
+                ..made
+            },
+            "it is booked at its new shape, costs and end, for the same asker"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_persons_machine_is_kept_and_only_as_itself() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let asked = dir.path().join("asked");
+        let program = provider(
+            dir.path(),
+            &format!("touch {}\n{}", asked.display(), kept_at("sbx-2")),
+        );
+        for asker in [None, Some("QK4T7Z"), Some(UNKNOWN)] {
+            let made = Made {
+                asker: asker.map(str::to_owned),
+                ..made_for_the_person(program.clone())
+            };
+            let error = keep(&made).await.expect_err("it isn't kept");
+            assert!(
+                error.contains("wasn't made for the person"),
+                "a machine made for {asker:?} is kept only to its end: {error}"
+            );
+        }
+        assert!(!asked.exists(), "no program is asked to keep another's");
+        let error = keep(&made_for_the_person(program))
+            .await
+            .expect_err("another place isn't taken as kept");
+        assert!(
+            error.contains("not lent-1 at sbx-1"),
+            "a keep saying another place keeps the booking as it was: {error}"
+        );
+        let other = tempfile::tempdir().expect("a temporary folder");
+        let failing = provider(other.path(), "echo 'stopped; no standard room' >&2\nexit 1");
+        let error = keep(&made_for_the_person(failing))
+            .await
+            .expect_err("a failed keep keeps nothing");
+        assert!(
+            error.ends_with("stopped; no standard room"),
+            "it says what the program said: {error}"
         );
     }
 
