@@ -195,11 +195,14 @@ impl Orchestrations {
     /// which goes on can't be told. Any other lapses, so an orchestrator
     /// started afresh, which continues no session, may claim its quests
     /// again. `continues` is asked only where some claim lapses, so the
-    /// logs are read only then, and once.
+    /// logs are read only then, and once. Where it gives nothing, as the
+    /// logs folder can't be read, each lapsing claim is kept as it is
+    /// until a later lapse can tell where it goes, rather than lost; a
+    /// log that can't be opened still reads as continuing none.
     pub fn lapse<Continues: Fn(&str) -> Option<String>>(
         &mut self,
         standing: &BTreeMap<String, Option<String>>,
-        continues: impl FnOnce() -> Continues,
+        continues: impl FnOnce() -> Option<Continues>,
     ) {
         let (kept, lapsing): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut self.sessions)
             .into_iter()
@@ -208,12 +211,15 @@ impl Orchestrations {
         if lapsing.is_empty() {
             return;
         }
-        let continues = continues();
+        let Some(continues) = continues() else {
+            self.sessions.extend(lapsing);
+            return;
+        };
+        // Every standing session that continues a lapsing claim counts,
+        // one that claimed for itself too: that it continues the claimer
+        // still makes which goes on unclear to tell.
         let mut heirs: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for session in standing.keys() {
-            if self.sessions.contains_key(session) {
-                continue;
-            }
             let mut at = session.clone();
             for _ in 0..CONTINUED_MOST {
                 let Some(before) = continues(&at) else {
@@ -235,6 +241,11 @@ impl Orchestrations {
             let ([heir], Some(claim)) = (heirs.as_slice(), lapsing.get(claimer)) else {
                 continue;
             };
+            // Its own claim stands, and isn't overwritten by the one it
+            // continues.
+            if self.sessions.contains_key(*heir) {
+                continue;
+            }
             let address = standing
                 .get(*heir)
                 .cloned()
@@ -322,25 +333,67 @@ pub const CONTINUED_MOST: usize = 8;
 pub struct Logs {
     /// Each log found, by the session its name says it keeps.
     found: BTreeMap<String, PathBuf>,
+    /// Each folder in it that couldn't be read, and why, passed over.
+    unread: Vec<String>,
 }
 
 impl Logs {
-    /// The logs under `logs`, as they are now; none where it can't be
-    /// read.
+    /// The logs under `logs`, as they are now; none where it isn't
+    /// there, as on a machine pi never ran on. A folder gone between
+    /// the scan's steps is taken as gone, and a file beside the folders
+    /// is passed over. A folder in it that can't be read is passed over
+    /// too, named in [`Self::unread`], so one stray folder costs only
+    /// the logs it holds, never every claim's.
+    ///
+    /// # Errors
+    ///
+    /// Where `logs` is there but can't be read, so which log continues
+    /// which can't be told: read as none, a claim that should pass on
+    /// would lapse instead.
+    pub fn scan(logs: &Path) -> io::Result<Self> {
+        let mut scanned = Self::default();
+        let folders = match fs::read_dir(logs) {
+            Ok(folders) => folders,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(scanned),
+            Err(error) => return Err(error),
+        };
+        for folder in folders {
+            let folder = folder?.path();
+            let read = fs::read_dir(&folder).and_then(|files| {
+                files
+                    .map(|file| file.map(|file| (file.file_name(), file.path())))
+                    .collect::<io::Result<Vec<_>>>()
+            });
+            let files = match read {
+                Ok(files) => files,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    continue;
+                }
+                Err(error) => {
+                    scanned
+                        .unread
+                        .push(format!("{}: {error}", folder.display()));
+                    continue;
+                }
+            };
+            for (name, path) in files {
+                if let Some(session) = name.to_str().and_then(session_of_log) {
+                    scanned.found.insert(session.to_owned(), path);
+                }
+            }
+        }
+        Ok(scanned)
+    }
+
+    /// Each folder the scan passed over as it couldn't be read, with why.
     #[must_use]
-    pub fn scan(logs: &Path) -> Self {
-        let found = fs::read_dir(logs)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|folder| fs::read_dir(folder.path()).ok())
-            .flat_map(Iterator::flatten)
-            .filter_map(|file| {
-                let session = session_of_log(file.file_name().to_str()?)?.to_owned();
-                Some((session, file.path()))
-            })
-            .collect();
-        Self { found }
+    pub fn unread(&self) -> &[String] {
+        &self.unread
     }
 
     /// The session the log of `session` continues, as its own first line
@@ -619,7 +672,7 @@ mod tests {
         let read = Cell::new(false);
         record.lapse(standing, || {
             read.set(true);
-            |session: &str| continued.get(session).cloned()
+            Some(|session: &str| continued.get(session).cloned())
         });
         read.get()
     }
@@ -843,6 +896,46 @@ mod tests {
     }
 
     #[test]
+    fn a_lapsing_claim_passes_to_neither_where_one_of_two_continuations_claimed_its_own() {
+        let mut record = nested();
+        record
+            .claim(
+                Known {
+                    session: "s-steward-2",
+                    address: "WCJQSG",
+                },
+                "QEST-20261115-TERNXX",
+                &[],
+                at(),
+            )
+            .expect("it claims");
+        let own = record.sessions.get("s-steward-2").cloned();
+        lapsed(
+            &mut record,
+            &standing(&[
+                ("s-steward-2", None),
+                ("s-steward-fork", None),
+                ("s-weigh", None),
+            ]),
+            &logs(&[
+                ("s-steward-2", "s-steward"),
+                ("s-steward-fork", "s-steward"),
+            ]),
+        );
+        assert_eq!(
+            record.sessions.keys().collect::<Vec<_>>(),
+            ["s-steward-2", "s-weigh"],
+            "the other continuation doesn't take it alone, since which goes on still \
+             can't be told"
+        );
+        assert_eq!(
+            record.sessions.get("s-steward-2").cloned(),
+            own,
+            "and the one that claimed keeps its own"
+        );
+    }
+
+    #[test]
     fn the_person_frees_a_quest_whoever_holds_it() {
         let mut record = nested();
         assert_eq!(
@@ -912,7 +1005,7 @@ mod tests {
             "{\"type\":\"session\",\"version\":3,\"id\":\"s-steward\"}\n",
         )
         .expect("written");
-        let found = Logs::scan(logs.path());
+        let found = Logs::scan(logs.path()).expect("scanned");
         assert_eq!(found.continues("s-weigh-2"), Some("s-weigh".to_owned()));
         assert_eq!(
             found.continues("s-steward"),
@@ -940,7 +1033,9 @@ mod tests {
         )
         .expect("written");
         assert_eq!(
-            Logs::scan(logs.path()).continues("01a1667f-f5bc-7ba6-9290-033e899fff34"),
+            Logs::scan(logs.path())
+                .expect("scanned")
+                .continues("01a1667f-f5bc-7ba6-9290-033e899fff34"),
             Some("01a12d21-3813-76ee-b875-6702b23f353a".to_owned()),
             "the session the parent's log file is named for"
         );
@@ -972,7 +1067,8 @@ mod tests {
         )
         .expect("written");
         fs::write(one.join("notes.txt"), "not a log\n").expect("written");
-        let found = Logs::scan(logs.path());
+        fs::write(logs.path().join("README"), "beside the folders\n").expect("written");
+        let found = Logs::scan(logs.path()).expect("a file beside the folders is passed over");
         // Whatever lands after the scan isn't seen, so the folder was read
         // once, as the scan was made.
         fs::write(
@@ -998,6 +1094,84 @@ mod tests {
                 ("s-steward-3".to_owned(), "s-steward-2".to_owned()),
             ]),
             "and a set of sessions reads as one"
+        );
+    }
+
+    #[test]
+    fn no_logs_folder_reads_as_no_logs() {
+        let logs = tempfile::tempdir().expect("a temporary folder");
+        let found = Logs::scan(&logs.path().join("never-made")).expect("scanned");
+        assert_eq!(found.continues("s-steward-2"), None);
+    }
+
+    #[test]
+    fn a_logs_folder_that_cant_be_read_is_refused_not_read_as_empty() {
+        let logs = tempfile::tempdir().expect("a temporary folder");
+        let file = logs.path().join("sessions");
+        fs::write(&file, "not a folder\n").expect("written");
+        assert_eq!(
+            Logs::scan(&file).map(|_| ()).map_err(|error| error.kind()),
+            Err(std::io::ErrorKind::NotADirectory),
+            "logs that can't be listed can't say what continues what"
+        );
+    }
+
+    #[test]
+    fn a_folder_that_cant_be_read_is_passed_over_and_named() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let logs = tempfile::tempdir().expect("a temporary folder");
+        let session = "01a1667f-f5bc-7ba6-9290-033e899fff34";
+        let readable = logs.path().join("--home-joel-src--");
+        fs::create_dir_all(&readable).expect("made");
+        fs::write(
+            readable.join(format!("2026-11-24T10-00-00-000Z_{session}.jsonl")),
+            format!("{{\"id\":\"{session}\",\"parentSession\":\"s-steward\"}}\n"),
+        )
+        .expect("written");
+        let shut = logs.path().join("--root--");
+        fs::create_dir_all(&shut).expect("made");
+        fs::set_permissions(&shut, fs::Permissions::from_mode(0o000)).expect("unreadable");
+        // An account that reads past modes reads it, so names none.
+        let unreadable = fs::read_dir(&shut).is_err();
+        let scanned = Logs::scan(logs.path());
+        fs::set_permissions(&shut, fs::Permissions::from_mode(0o700)).expect("readable");
+        let scanned = scanned.expect("one folder unread costs only its own logs");
+        assert_eq!(scanned.continues(session).as_deref(), Some("s-steward"));
+        assert_eq!(
+            scanned.unread().iter().any(|why| why.contains("--root--")),
+            unreadable,
+            "{:?}",
+            scanned.unread()
+        );
+    }
+
+    #[test]
+    fn a_lapsing_claim_is_kept_where_the_logs_cant_be_read() {
+        let mut record = nested();
+        let before = record.clone();
+        record.lapse(
+            &standing(&[("s-steward-2", Some("WCJQSG")), ("s-weigh", Some("OSPHT4"))]),
+            || None::<fn(&str) -> Option<String>>,
+        );
+        assert_eq!(
+            record, before,
+            "where which session goes on can't be told, nothing is lost or handed on"
+        );
+        lapsed(
+            &mut record,
+            &standing(&[("s-steward-2", Some("WCJQSG")), ("s-weigh", Some("OSPHT4"))]),
+            &logs(&[("s-steward-2", "s-steward")]),
+        );
+        assert_eq!(
+            record
+                .sessions
+                .get("s-steward-2")
+                .map(|claim| claim.heads.as_str()),
+            before
+                .sessions
+                .get("s-steward")
+                .map(|claim| claim.heads.as_str()),
+            "a kept claim passes on once the logs can be read"
         );
     }
 

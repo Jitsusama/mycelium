@@ -451,10 +451,33 @@ fn plain_quest(quest: &str) -> bool {
 }
 
 /// What each log under `logs` continues, the folder scanned once, as a
-/// lapse of the record of orchestrations asks only where a claim lapses.
-fn continuing(logs: &Path) -> impl Fn(&str) -> Option<String> + use<> {
-    let found = chain::Logs::scan(logs);
-    move |session| found.continues(session)
+/// lapse of the record of orchestrations asks only where a claim lapses;
+/// none where the folder can't be read, so what lapses is kept until it
+/// can be. That, and each folder in it passed over as unreadable, is
+/// said once, so claims kept with no end name their cause.
+fn continuing(
+    logs: &Path,
+    unreadable: &through::Unreadable,
+) -> Option<impl Fn(&str) -> Option<String> + use<>> {
+    let say = |why: String| {
+        if unreadable.first(&why) {
+            eprintln!("{why}");
+        }
+    };
+    let found = chain::Logs::scan(logs)
+        .inspect_err(|error| {
+            say(format!(
+                "claims that lapse are kept, as the logs under {} can't be read: {error}",
+                logs.display()
+            ));
+        })
+        .ok()?;
+    for why in found.unread() {
+        say(format!(
+            "the sessions logged in a folder that can't be read continue none: {why}"
+        ));
+    }
+    Some(move |session: &str| found.continues(session))
 }
 
 /// Whether `session` stands where a carry reaches it: running, or parked
@@ -5625,9 +5648,9 @@ impl<S: Store> Shared<S> {
         let sessions = self.lock().state.sessions();
         let address = self.address_of(&sessions, &asker).to_owned();
         let standing = self.standing_addressed(&sessions);
-        let logs = self.logs.clone();
+        let (logs, unreadable) = (self.logs.clone(), Arc::clone(&self.unreadable));
         self.rerecord(move |record| {
-            record.lapse(&standing, || continuing(&logs));
+            record.lapse(&standing, || continuing(&logs, &unreadable));
             match heads {
                 None if quests.is_empty() => {
                     record.release(&asker);
@@ -5657,9 +5680,10 @@ impl<S: Store> Shared<S> {
         let sessions = self.lock().state.sessions();
         let standing = self.standing_addressed(&sessions);
         let (file, logs) = (self.orchestrations.clone(), self.logs.clone());
+        let unreadable = Arc::clone(&self.unreadable);
         let record = tokio::task::spawn_blocking(move || {
             let mut record = chain::Orchestrations::read(&file)?;
-            record.lapse(&standing, || continuing(&logs));
+            record.lapse(&standing, || continuing(&logs, &unreadable));
             io::Result::Ok(record)
         })
         .await
@@ -5755,7 +5779,7 @@ impl<S: Store> Shared<S> {
             format!("this node's record of orchestrations can't be read, so no carry is ordered: {error}")
         })?;
         record.lapse(&self.standing_addressed(sessions), || {
-            continuing(&self.logs)
+            continuing(&self.logs, &self.unreadable)
         });
         Ok(record)
     }
@@ -9044,6 +9068,40 @@ mod tests {
     /// five seconds failed a dial and a start on a Mac building its system
     /// beside the tests, so it's the link tests' thirty.
     const PATIENCE: Duration = Duration::from_secs(30);
+
+    #[test]
+    fn logs_that_cant_be_read_continue_nothing_and_say_so_once() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let logs = dir.path().join("sessions");
+        fs::write(&logs, "not a folder\n").expect("written");
+        let unreadable = through::Unreadable::default();
+        assert!(
+            continuing(&logs, &unreadable).is_none(),
+            "read as empty, a claim that should pass on would lapse"
+        );
+        let why = format!(
+            "claims that lapse are kept, as the logs under {} can't be read: {}",
+            logs.display(),
+            fs::read_dir(&logs).expect_err("not a folder")
+        );
+        assert!(!unreadable.first(&why), "it was said: {why}");
+    }
+
+    #[test]
+    fn logs_that_read_say_what_each_continues() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let session = "01a1667f-f5bc-7ba6-9290-033e899fff34";
+        let folder = dir.path().join("--home-joel--");
+        fs::create_dir_all(&folder).expect("made");
+        fs::write(
+            folder.join(format!("2026-11-24T10-00-00-000Z_{session}.jsonl")),
+            format!("{{\"id\":\"{session}\",\"parentSession\":\"s-steward\"}}\n"),
+        )
+        .expect("written");
+        let continues = continuing(dir.path(), &through::Unreadable::default())
+            .expect("logs that read are read");
+        assert_eq!(continues(session).as_deref(), Some("s-steward"));
+    }
 
     /// A holder in `dir` that says it holds at once, writing down in the
     /// file it answers beside it what it was given to hold. A child process
