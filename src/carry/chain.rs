@@ -362,8 +362,10 @@ pub const CONTINUED_MOST: usize = 8;
 /// read.
 #[derive(Debug, Default)]
 pub struct Logs {
-    /// Each log found, by the session its name says it keeps.
-    found: BTreeMap<String, PathBuf>,
+    /// Each log found, by the session its name says it keeps; none for
+    /// a session two logs are named for, as a log planted under another
+    /// folder can't be told from its own.
+    found: BTreeMap<String, Option<PathBuf>>,
     /// Each folder in it that couldn't be read, and why, passed over.
     unread: Vec<String>,
 }
@@ -414,7 +416,11 @@ impl Logs {
             };
             for (name, path) in files {
                 if let Some(session) = name.to_str().and_then(session_of_log) {
-                    scanned.found.insert(session.to_owned(), path);
+                    scanned
+                        .found
+                        .entry(session.to_owned())
+                        .and_modify(|log| *log = None)
+                        .or_insert(Some(path));
                 }
             }
         }
@@ -428,12 +434,12 @@ impl Logs {
     }
 
     /// The session the log of `session` continues, as its own first line
-    /// names it. None where it has no log here, where that line names
-    /// another session, or where it continues none.
+    /// names it. None where it has no log here or two, where that line
+    /// names another session, or where it continues none.
     #[must_use]
     pub fn continues(&self, session: &str) -> Option<String> {
         let header: serde_json::Value =
-            serde_json::from_str(&first_line(self.found.get(session)?)?).ok()?;
+            serde_json::from_str(&first_line(self.found.get(session)?.as_ref()?)?).ok()?;
         (header.get("id")?.as_str()? == session)
             .then(|| header.get("parentSession")?.as_str().map(parent_of))
             .flatten()
@@ -1241,6 +1247,35 @@ mod tests {
                 .expect("a FIFO among the logs never holds the read"),
             (None, None),
             "a FIFO is never read, and a first line past the most is no header"
+        );
+    }
+
+    #[test]
+    fn a_session_two_logs_are_named_for_continues_none() {
+        let logs = tempfile::tempdir().expect("a temporary folder");
+        let (own, planted) = (
+            logs.path().join("--home-joel-src-mycelium--"),
+            logs.path().join("--home-joel--"),
+        );
+        for folder in [&own, &planted] {
+            fs::create_dir_all(folder).expect("made");
+        }
+        fs::write(
+            own.join("2026-11-23T11-31-00-000Z_s-weigh.jsonl"),
+            "{\"id\":\"s-weigh\"}\n",
+        )
+        .expect("written");
+        fs::write(
+            planted.join("2026-11-23T12-00-00-000Z_s-weigh.jsonl"),
+            "{\"id\":\"s-weigh\",\"parentSession\":\"s-steward\"}\n",
+        )
+        .expect("written");
+        assert_eq!(
+            Logs::scan(logs.path())
+                .expect("scanned")
+                .continues("s-weigh"),
+            None,
+            "which log is its own can't be told, so neither names what it continues"
         );
     }
 
