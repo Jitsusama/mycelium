@@ -25,7 +25,7 @@ use crate::offer::{Costs, Offer};
 
 /// How long a program has to make a machine: a provider makes one in
 /// seconds, and a minute or two when it is busy.
-const MADE_WITHIN: Duration = Duration::from_secs(5 * 60);
+pub const MADE_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The variable a provider's program reads who asked for the machine in:
 /// the address of a session the node proved asks, [`PERSON`] for the
@@ -689,11 +689,7 @@ mod tests {
         let asked = dir.path().join("asked");
         let program = provider(
             dir.path(),
-            &format!(
-                "touch {}\n{}",
-                asked.display(),
-                kept_at("sbx-2")
-            ),
+            &format!("touch {}\n{}", asked.display(), kept_at("sbx-2")),
         );
         for asker in [None, Some("QK4T7Z"), Some(UNKNOWN)] {
             let made = Made {
