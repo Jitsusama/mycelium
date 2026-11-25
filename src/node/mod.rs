@@ -5026,8 +5026,13 @@ impl<S: Store> Shared<S> {
             [machine] => match asker {
                 hold::end::Asker::Person => self.asks.end(machine, held, asker).await,
                 hold::end::Asker::Session(address) => Err(format!(
-                    "{held} is held on {machine}, and {address}'s end is proved only where \
-                     both run: only the person ends it from here"
+                    "{held} {} {machine}, and {address}'s end is proved only where both \
+                     run: only the person ends it from here",
+                    if by_book {
+                        "was started, by this node's book, on"
+                    } else {
+                        "is held on"
+                    }
                 )),
             },
             many => Err(format!(
@@ -16790,7 +16795,7 @@ esac
         );
         assert!(
             ended.as_ref().is_err_and(|why| why.starts_with(&routed)),
-            "a hold started on kestrel is ended there, under its id: {ended:?}"
+            "a hold started on kestrel is sent there, under its id, to judge: {ended:?}"
         );
 
         for (stop, node) in [near, far] {
