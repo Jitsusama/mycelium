@@ -2306,9 +2306,10 @@ carry writes it, which starts pi only once `pi-carry arrive` has taken
 the carry, is judged by the carry, but its session is still held
 while its start runs, and refused as being reopened where another
 start holds it, or holds a word as written that begins it. Any other
-start relayed here is held, in the same words, to each session it names by `--session` or `--session-id`,
-alone or with `=`, under any program or in a shell's `-c` script with
-its positional parameters, and to the id a log's path ends in. Each
+start relayed here is held, in the same words, to each session it
+names by `--session` or `--session-id`, alone or with `=`, under any
+program or in a shell's `-c` script with its positional parameters,
+and to the id a log's path ends in. Each
 word it names as written is held, too, to each session here that
 word begins, and to each another start holds that it begins, since pi
 opens one so; it is refused where another start holds, as written, a
@@ -2319,10 +2320,11 @@ is being reopened, and held while its start runs, though it need not
 have ended here, since its asker fenced it. A start only shaped as a
 carry is held so too. A refusal of a session a word begins names the
 word as asked, and a log path's tail begins nothing. An id a script
-works out as it runs, or a resume naming none, as `pi --continue`, is not judged. A
-reopening let through without its asker's fence is asked only of a
-node whose link says `reopens`, since one older would take it as any
-relayed start, so one asked of an older node is refused as
+works out as it runs, or a resume naming none, as `pi --continue`,
+is not judged. A reopening let through without its asker's fence is
+asked only of a node whose link says `reopens`, since one older
+would take it as any relayed start, so one asked of an older node is
+refused as
 `<machine>'s mycelium is too old to judge a reopening`, and one no
 link reaches as `no link reaches <machine> now to judge a
 reopening`. The person's, one held to its asker's ground, and one on
