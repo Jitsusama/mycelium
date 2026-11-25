@@ -761,6 +761,15 @@ pub struct Judgement {
     pub chance: f64,
 }
 
+impl Judgement {
+    /// Which tier it ranked in, first first, as placement ranks the
+    /// machines that qualify before their headroom.
+    #[must_use]
+    pub const fn tier(&self) -> u8 {
+        tiered(self.unheard, self.saturated, self.over)
+    }
+}
+
 /// Places `work` among `machines`, each carrying its `loads`.
 #[must_use]
 pub fn place(work: &Work, machines: &[Machine], loads: &Loads) -> Placement {
@@ -968,7 +977,13 @@ fn decide_at(
 /// any, and its headroom, from its disk alone, isn't comparable with a
 /// room's.
 const fn tier(one: &Judged) -> u8 {
-    match (one.unheard, one.saturated, one.over) {
+    tiered(one.unheard, one.saturated, one.over)
+}
+
+/// The tier of a machine [`tier`] says, from whether it is `unheard`,
+/// `saturated` and `over`.
+const fn tiered(unheard: bool, saturated: bool, over: bool) -> u8 {
+    match (unheard, saturated, over) {
         (false, false, false) => 0,
         (false, false, true) => 1,
         (false, true, _) => 2,
@@ -2446,6 +2461,53 @@ pub(crate) mod tests {
             passed[0].because,
             [Because::Unheard],
             "and is passed for being unheard, not for an old pressure"
+        );
+    }
+
+    // Easing ranks the workers it places one at a time by each
+    // judgement's tier, so a judgement keeps the tier its machine was
+    // ranked in.
+    #[test]
+    fn a_judgement_keeps_the_tier_its_machine_ranked_in() {
+        let mut unheard = machine("wren", "linux", 60, &[]);
+        unheard.room = None;
+        let machines = [
+            pressed(machine("kestrel", "linux", 60, &[]), 40.0),
+            over(
+                pressed(machine("osprey", "linux", 60, &[]), 40.0),
+                &[Limit::Cpu],
+            ),
+            pressed(machine("skiff", "linux", 60, &[]), 85.0),
+            over(
+                pressed(machine("tern", "linux", 60, &[]), 85.0),
+                &[Limit::Cpu],
+            ),
+            unheard,
+        ];
+        let decision = decide_at(
+            &needing(Vec::new()),
+            &machines,
+            &Loads::new(),
+            &[],
+            now(),
+            &mut first,
+            &Weights::STARTING,
+        );
+        let tiers: Vec<(&str, u8)> = decision
+            .judged
+            .iter()
+            .map(|one| (one.machine.as_str(), one.tier()))
+            .collect();
+        assert_eq!(
+            tiers,
+            [
+                ("kestrel", 0),
+                ("osprey", 1),
+                ("skiff", 2),
+                ("tern", 2),
+                ("wren", 3)
+            ],
+            "heard and clear, then over, then saturated whether over or not, then unheard"
         );
     }
 

@@ -842,12 +842,11 @@ fn placed(work: &Work, peers: &[Machine], loads: &Loads, now: Timestamp) -> Resu
             }
         }
     }
-    let tier = |one: &placement::Judgement| (one.unheard, one.saturated, one.over);
     taking
         .into_iter()
         .min_by(|one, other| {
-            tier(one)
-                .cmp(&tier(other))
+            one.tier()
+                .cmp(&other.tier())
                 .then_with(|| other.headroom.total_cmp(&one.headroom))
                 .then_with(|| one.machine.cmp(&other.machine))
         })
