@@ -5534,8 +5534,43 @@ impl<S: Store> Shared<S> {
     /// over the first: it is still live, parked with a holder a steer
     /// would wake, held by a holder here, carried away or waiting for its
     /// turn. A session this machine never ran may still be held or
-    /// coming back, as one carried here is.
+    /// coming back, as one carried here is. pi opens a session by an id
+    /// it begins where none here has that id, as
+    /// [`starts::begins_another`] says, so each session known here, held
+    /// or coming back whose id `session` begins is judged as though named.
     fn unclaimed_here(
+        &self,
+        session: &str,
+        sessions: &[Session],
+        seen: &Seen<'_>,
+    ) -> Result<(), String> {
+        let machine = &self.machine;
+        if !sessions
+            .iter()
+            .any(|one| one.id == session && one.machine == *machine)
+        {
+            let begun: HashSet<String> = sessions
+                .iter()
+                .filter(|one| one.machine == *machine)
+                .map(|one| one.id.clone())
+                .chain(seen.coming_back.iter().cloned())
+                .chain(
+                    seen.held
+                        .iter()
+                        .flat_map(|held| hold::turn::sessions_named(&held.command)),
+                )
+                .filter(|id| id.len() > session.len() && id.starts_with(session))
+                .collect();
+            for id in &begun {
+                self.unclaimed_as_named(id, sessions, seen)?;
+            }
+        }
+        self.unclaimed_as_named(session, sessions, seen)
+    }
+
+    /// Refuses a start of `session` here, by that very id, where
+    /// [`Self::unclaimed_here`] says something brings it back already.
+    fn unclaimed_as_named(
         &self,
         session: &str,
         sessions: &[Session],
@@ -7663,12 +7698,16 @@ impl<S: Store> Shared<S> {
         // none is reopened twice at once. No carry is shaped as one, so
         // a start saying it carries is held so too. One that fails to
         // start holds it no longer, so it may be asked again. Any other
-        // start, which its asker fenced, is held to each session it may
-        // name, by whatever program and in whatever shape, so none
-        // passes by them: refused where one is coming back already, and
-        // never started twice at once.
+        // start, which its asker fenced, is held to each session it names
+        // as `sessions_named` finds them, so none of the shapes pi and the
+        // harness write passes by them: refused where one is coming back
+        // already, and never started twice at once. A carry's arrival goes as before,
+        // judged by the carry itself, since this node's own carry of its
+        // session away would read as coming back, refusing one carried
+        // back within the hour.
         let (sessions, ended_here) = match starts::reopens(&asked.command) {
             Some(session) => (vec![session.to_owned()], true),
+            None if crate::carry::arrives(&asked.command).is_some() => (Vec::new(), false),
             None => (hold::turn::sessions_named(&asked.command), false),
         };
         if sessions.is_empty() {
@@ -20691,6 +20730,15 @@ esac
                 &["env", "pi", "--session", "s-new", "--session", "s-live"],
                 "s-live is still live on skiff, so it isn't reopened",
             ),
+            // pi opens the one an id begins where none has that id.
+            (
+                &["pi", "--session", "s-he", "--thinking", "high"],
+                held_already,
+            ),
+            (
+                &["pi", "--session=s-liv"],
+                "s-live is still live on skiff, so it isn't reopened",
+            ),
         ] {
             assert_eq!(
                 ask(socket.clone(), reopening(command, false)).await,
@@ -20708,6 +20756,56 @@ esac
                 "{command:?} is started, nothing bringing its session back"
             );
         }
+    }
+
+    // Round council-20261125T123352606-000013: a session carried away
+    // lately is coming back, so a start naming it is refused, but its own
+    // carry back here within the hour is judged by the carry, not taken
+    // for its way back.
+    #[tokio::test]
+    async fn a_session_carried_away_is_refused_a_start_but_not_its_carry_back() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        let away = json!({"at": jiff::Timestamp::now().to_string(), "session": "s-away",
+                          "quest": "QEST-20261112-HARBOR", "to": "tern"});
+        fs::write(socket.with_file_name("carries.jsonl"), format!("{away}\n"))
+            .expect("its carry is kept");
+        asks_below(&socket, 7001);
+        assert_eq!(
+            ask(
+                socket.clone(),
+                reopening(&["pi", "--session", "s-away", "--thinking", "high"], false)
+            )
+            .await,
+            Err(
+                "s-away is coming back on skiff, carried or waiting for its turn, so it isn't \
+                 reopened"
+                    .to_owned()
+            ),
+            "a session carried away gets no second pi"
+        );
+        let back = [
+            "sh",
+            "-c",
+            r#"pi-carry arrive "$1" --from "$2" --session "$3"; exec pi --session "$3""#,
+            crate::carry::PI_CARRY,
+            "QEST-20261112-HARBOR",
+            "tern",
+            "s-away",
+            "carry on",
+        ];
+        let carried = ask(socket, reopening(&back, true)).await;
+        assert!(
+            carried
+                .as_ref()
+                .err()
+                .is_none_or(|why| !why.contains("coming back")),
+            "its carry back is no way back to refuse: {carried:?}"
+        );
     }
 
     // Followup 109: carries that can't be read refuse every reopening,

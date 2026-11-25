@@ -2301,12 +2301,16 @@ while the carries can't be read. Once taken, the session is
 held as being reopened while its start runs, and another reopening of
 it meanwhile is refused as `<id> is being reopened on <machine>
 already`; a start whose asker hung up holds it at most two minutes.
-Any other start relayed here is held, in the same words, to each
-session it may name, by `--session` or `--session-id`, alone or with
-`=`, whatever program runs it and within a shell's `-c` script, and to
-the id a log's path ends in: refused where one comes back by itself
+Any other start relayed here but a carry's arrival, which its carry
+judges, is held, in the same words, to each session it names by
+`--session` or `--session-id`, alone or with `=`, under any program
+or in a shell's `-c` script with its positional parameters, to the id
+a log's path ends in, and to each session here that such an id
+begins, since pi opens one so: refused where one comes back by itself
 or is being reopened, and held while its start runs, though it need
-not have ended here, since its asker fenced it. A
+not have ended here, since its asker fenced it. An id a script works
+out as it runs, or a resume naming none, as `pi --continue`, is not
+judged. A
 reopening let through without its asker's fence is asked only of a
 node whose link says `reopens`, since one older would take it as any
 relayed start, so one asked of an older node is refused as

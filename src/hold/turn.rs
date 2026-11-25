@@ -52,11 +52,13 @@ pub fn resumes(command: &[String], session: &str) -> bool {
     })
 }
 
-/// Every session `command` may resume, whatever program runs it: each
-/// word it names one by, first to last, and the id that word ends in
-/// where it may be a log's path, as [`resumed`] reads it. It errs toward
-/// naming too many, as [`resumes`] does, since each is only held to what
-/// stands, where one missed would start a second pi.
+/// Every session `command` names by `--session` or `--session-id`, under
+/// any program or in a shell's `-c` script with its positional
+/// parameters filled in: each such word, first to last, and the id that
+/// word ends in where it may be a log's path, as [`resumed`] reads it.
+/// It errs toward naming too many, as [`resumes`] does, since each is
+/// only held to what stands. An id a script works out as it runs, or a
+/// resume naming none, as `--continue`, is not found.
 #[must_use]
 pub fn sessions_named(command: &[String]) -> Vec<String> {
     let mut sessions = Vec::new();
