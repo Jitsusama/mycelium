@@ -770,34 +770,25 @@ pub fn within_home(folder: PathBuf, home: &Path) -> PathBuf {
 }
 
 /// Whether work begun in `folder` stays on this machine rather than going
-/// where placement chooses. Only work in a repository's own checkout
-/// where the person keeps them, `~/src/<repo>` or
+/// where placement chooses. Only work in a checkout the person keeps
+/// where a place is listed ([`places::checkouts`]) may go: a
+/// repository's own checkout at `~/src/<repo>` or
 /// `~/src/<host>/<owner>/<repo>` under `home`, fetching from a remote,
-/// may go, since a person's machines keep those at the same places, from
-/// the same remotes; a machine that hasn't it refuses the strict start,
-/// which then begins here. Everything else stays, since no other machine
-/// has it as it is here: the checkout nearest `folder` a tree cut from a
-/// repository kept elsewhere (a quest's tree, a zone's, a bare
-/// repository's trunk with its sparse checkout, a submodule), a clone
-/// kept anywhere else (a quest's scratch clone, each machine's own), one
-/// with no remote, and a folder in no checkout. What a checkout holds
-/// uncommitted isn't looked at: work on that is asked `--on` this one.
+/// or the trunk's tree of a bare repository kept under home, since a
+/// person's machines keep those at the same places, from the same
+/// remotes; a machine that hasn't it refuses the strict start, which
+/// then begins here. Everything else stays, since no other machine has it
+/// as it is here: the checkout nearest `folder` a tree cut from a
+/// repository kept elsewhere (a quest's tree, a zone's, a submodule), a
+/// clone kept anywhere else (a quest's scratch clone, each machine's
+/// own), one with no remote, and a folder in no checkout. What a checkout
+/// holds uncommitted isn't looked at: work on that is asked `--on` this
+/// one.
 fn stays(folder: &Path, home: &Path, disk: &impl Disk) -> bool {
-    let src = home.join("src");
+    let kept = places::checkouts(home, disk);
+    // A trunk's tree is cut from its bare repository, which fetches.
     let shared = |top: &Path| {
-        let Ok(within) = top.strip_prefix(&src) else {
-            return false;
-        };
-        // A host's folder holds its owners', so is no checkout itself.
-        let kept = match within.components().count() {
-            1 => true,
-            3 => within
-                .components()
-                .next()
-                .is_some_and(|host| !disk.is_checkout(&src.join(host))),
-            _ => false,
-        };
-        kept && !disk.is_cut_tree(top) && disk.origin(top).is_some()
+        kept.iter().any(|one| one == top) && (disk.is_cut_tree(top) || disk.origin(top).is_some())
     };
     folder
         .ancestors()
@@ -1513,13 +1504,17 @@ pub(crate) mod tests {
                 "/home/kestrel/scratch/rows",
                 "/home/kestrel/notes",
                 "/srv/rows",
+                "/home/kestrel/reef",
+                "/home/kestrel/reef/trees/trunk/areas",
             ],
             &[
                 "/home/kestrel",
                 "/home/kestrel/trees/tidy",
                 "/home/kestrel/src/loose",
+                "/home/kestrel/reef/trees/trunk",
             ],
         )
+        .bare("/home/kestrel/reef/git", "/home/kestrel/reef/trees/trunk")
         .fetching("/home/kestrel/src/rows", origin)
         .fetching("/home/kestrel/src/example.com/kestrel/reef", origin)
         .fetching("/home/kestrel/src/rows/.worktrees/tidy", origin)
@@ -1552,6 +1547,10 @@ pub(crate) mod tests {
         assert!(
             needs("src/example.com/kestrel/reef", None).is_empty(),
             "one kept under its host and owner too"
+        );
+        assert!(
+            needs("reef/trees/trunk/areas", None).is_empty(),
+            "so does a bare repository's trunk, cut from it as it is"
         );
         for (folder, why) in [
             ("trees/tidy/docs", "a tree cut from a repository elsewhere"),

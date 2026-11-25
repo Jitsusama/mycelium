@@ -781,6 +781,22 @@ pub fn place(work: &Work, machines: &[Machine], loads: &Loads) -> Placement {
     decide(work, machines, loads).placement
 }
 
+/// Whether `decision` placed its work on a machine heard lately but past
+/// its room, over a limit of its queue's or saturated. Machines are
+/// ranked by those tiers first, so then every heard machine that takes
+/// it is past its room, and a machine made for it would have more. One
+/// unheard isn't judged past it, as nothing says so.
+#[must_use]
+pub fn placed_past_room(decision: &Decision) -> bool {
+    let Placement::Placed { machine, .. } = &decision.placement else {
+        return false;
+    };
+    decision
+        .judged
+        .iter()
+        .any(|one| one.machine == *machine && !one.unheard && (one.over || one.saturated))
+}
+
 /// Each of `machines` that holds as many sessions as it holds at most,
 /// refused for it: its live sessions, as `holding` counts them by
 /// machine, and the starts `loads` says were placed there that it doesn't
@@ -3014,6 +3030,36 @@ pub(crate) mod tests {
             at_home,
             "work asked on the person's own machine is placed as asked"
         );
+    }
+
+    // Work placed past every heard machine's room is placed where a
+    // machine made for it would have more; not where one has room, nor
+    // where nothing heard says.
+    #[test]
+    fn work_is_placed_past_room_only_where_every_heard_machine_is_past_it() {
+        let work = needing(Vec::new());
+        let past = |machines: &[Machine]| {
+            placed_past_room(&decide_as(
+                &work,
+                machines,
+                &Loads::new(),
+                &[],
+                now(),
+                &Weights::STARTING,
+            ))
+        };
+        let mut over = pressed(machine("kestrel", "linux", 60, &[]), 20.0);
+        over.room.as_mut().expect("a room").over = Some(vec![crate::room::Limit::Cpu]);
+        let saturated = pressed(machine("osprey", "linux", 60, &[]), 95.0);
+        let roomy = pressed(machine("tern", "linux", 60, &[]), 20.0);
+        assert!(past(&[over.clone()]), "over its room");
+        assert!(past(&[saturated.clone()]), "saturated");
+        assert!(past(&[over.clone(), saturated]), "both past it");
+        assert!(!past(&[over.clone(), roomy]), "one has room");
+        let mut unheard = over;
+        unheard.room.as_mut().expect("a room").said_at = "2026-10-28T06:00:00Z".to_owned();
+        assert!(!past(&[unheard]), "nothing heard lately says so");
+        assert!(!past(&[]), "placed nowhere");
     }
 
     #[test]

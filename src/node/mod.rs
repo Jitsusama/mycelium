@@ -4578,6 +4578,19 @@ impl<S: Store> Shared<S> {
         screen: Screen,
         admits: &Admits,
     ) -> Placement {
+        self.decided(work, counts, fence, screen, admits).placement
+    }
+
+    /// Where `work` is placed, as [`Shared::place`] places it, keeping it
+    /// in the placements' log, and how each machine was judged for it.
+    fn decided(
+        &self,
+        work: &Work,
+        counts: Counts,
+        fence: Option<crate::declared::Kind>,
+        screen: Screen,
+        admits: &Admits,
+    ) -> placement::Decision {
         let (record, now) = self.weigh(work, counts, fence, screen, admits);
         if let Some(log) = &self.placements {
             let day = now.to_zoned(jiff::tz::TimeZone::system()).date();
@@ -4587,7 +4600,7 @@ impl<S: Store> Shared<S> {
                 eprintln!("a placement wasn't kept: {error}");
             }
         }
-        record.decision.placement
+        record.decision
     }
 
     /// Where `work` would be placed, as [`Shared::place`] judges it, with
@@ -4601,10 +4614,21 @@ impl<S: Store> Shared<S> {
         screen: Screen,
         admits: &Admits,
     ) -> Placement {
+        self.would_decide(work, fence, screen, admits).placement
+    }
+
+    /// Where `work` would be placed, as [`Shared::would_place`] says it,
+    /// and how each machine was judged for it.
+    fn would_decide(
+        &self,
+        work: &Work,
+        fence: Option<crate::declared::Kind>,
+        screen: Screen,
+        admits: &Admits,
+    ) -> placement::Decision {
         self.weigh(work, Counts::Never, fence, screen, admits)
             .0
             .decision
-            .placement
     }
 
     /// The placement of `work`, as [`Shared::place`] says it, and when it
@@ -7715,12 +7739,19 @@ impl<S: Store> Shared<S> {
         self.awaits_redial((&asked, at), fence, screen).await;
         let admits = self.admits().await;
         let within = relayed_within(at, jiff::Timestamp::now().as_millisecond());
+        let decision = self.decided(&asked.work, Counts::Always, fence, screen, &admits);
+        let past_room = !reopens && asked.may_cost && placement::placed_past_room(&decision);
         let (misses, nowhere) =
-            match self.place(&asked.work, Counts::Always, fence, screen, &admits) {
+            match decision.placement {
                 Placement::Placed { machine, .. } if reopens && machine != self.machine => {
                     return self.asked_there(&machine, asked, true, within).await;
                 }
                 Placement::Placed { machine, .. } => {
+                    let ground = (at, fence, screen, &admits);
+                    if past_room && let Some(cloud) = self.in_the_cloud_past_room(&asked, ground).await
+                    {
+                        return cloud;
+                    }
                     let fenced = (starts_in(fence, screen), within);
                     let reply = self.start_on(machine.clone(), asked.clone(), fenced).await;
                     let chosen = (machine.as_str(), self.machine.as_str());
@@ -7795,16 +7826,75 @@ impl<S: Store> Shared<S> {
         fence: Option<crate::declared::Kind>,
     ) -> Reply {
         let who = self.asker_of_a_make().await;
+        let offer = self.offer_to_make(&asked.work, misses, fence).await?;
+        self.start_made_of(asked, &offer, &who, fence).await
+    }
+
+    /// The cheapest offer a machine may be made of for `work`, asked in
+    /// the fence `fence`, which `misses` say no machine of the realm
+    /// takes.
+    ///
+    /// # Errors
+    ///
+    /// Where none would do, saying why, the machines' `misses` first.
+    async fn offer_to_make(
+        &self,
+        work: &Work,
+        misses: &[Miss],
+        fence: Option<crate::declared::Kind>,
+    ) -> Result<Offer, String> {
         let mut offers = self.offers().await;
         // Why the realm's machines refused it comes first, so the asker
         // doesn't read a provider's lack as the whole reason.
         offers.offers = self
             .offered_on_ground(offers.offers, fence)
             .map_err(|why| format!("nowhere: {}, and {why}", placement::said(misses)))?;
-        let offer = placement::to_make(&asked.work, &offers.offers, &self.machines())
-            .map_err(|offered| nothing_offered(misses, &offered, &offers.unanswered))?
-            .clone();
-        self.start_made_of(asked, &offer, &who, fence).await
+        placement::to_make(work, &offers.offers, &self.machines())
+            .map_err(|offered| nothing_offered(misses, &offered, &offers.unanswered))
+            .cloned()
+    }
+
+    /// `asked`, which may cost, started in the cloud, as every machine of
+    /// the realm heard lately is past its room
+    /// ([`placement::placed_past_room`]), so new work goes where there is
+    /// room rather than onto a machine already past it: on a cloud
+    /// machine linked that has room, else on one made for it. None where
+    /// neither would do, or where the cloud machine hasn't the folder the
+    /// start names, before anything started there, so it goes to the
+    /// machine placement chose, as before; else its answer, so a start
+    /// whose answer was lost is never asked again.
+    async fn in_the_cloud_past_room(
+        &self,
+        asked: &Start,
+        (at, fence, screen, admits): (i64, Option<crate::declared::Kind>, Screen, &Admits),
+    ) -> Option<Reply> {
+        let mut cloud = asked.clone();
+        cloud.work.needs.push(Need::Cloud);
+        let decision = self.would_decide(&cloud.work, fence, screen, admits);
+        let reply = match &decision.placement {
+            Placement::Placed { machine, .. } if !placement::placed_past_room(&decision) => {
+                let within = relayed_within(at, jiff::Timestamp::now().as_millisecond());
+                let fenced = (starts_in(fence, screen), within);
+                self.start_on(machine.clone(), cloud, fenced).await
+            }
+            _ => match self.offer_to_make(&cloud.work, &[], fence).await {
+                Ok(offer) => {
+                    let who = self.asker_of_a_make().await;
+                    self.start_made_of(cloud, &offer, &who, fence).await
+                }
+                Err(why) => {
+                    eprintln!("no cloud machine takes a start past every machine's room: {why}");
+                    return None;
+                }
+            },
+        };
+        match (&reply, &asked.folder) {
+            (Err(why), Some(folder)) if start::lacks_folder_on_any(why, folder) => {
+                eprintln!("a start past every machine's room went to the cloud, but {why}");
+                None
+            }
+            _ => Some(reply),
+        }
     }
 
     /// The `offers` a machine may be made of for a start asked in the

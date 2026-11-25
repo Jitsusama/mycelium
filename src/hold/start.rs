@@ -346,6 +346,16 @@ pub fn lacks_folder(said: &str, machine: &str, folder: &Path) -> bool {
     said == lacking || said.ends_with(&format!(": {lacking}"))
 }
 
+/// Whether `said` is [`lacks_folder`] of whichever machine says it, for a
+/// start asked of one whose name the asker didn't choose, as a machine
+/// made for it is named by its provider.
+#[must_use]
+pub fn lacks_folder_on_any(said: &str, folder: &Path) -> bool {
+    said.strip_suffix(&no_folder("", folder))
+        .and_then(|before| before.rsplit(' ').next())
+        .is_some_and(|machine| !machine.is_empty() && lacks_folder(said, machine, folder))
+}
+
 /// Whether `folder` is `home` itself, however it's named.
 fn is_home(folder: &Path, home: &Path) -> bool {
     folder == home
@@ -916,5 +926,13 @@ mod tests {
         );
         let silent = "tern didn't answer within 90s";
         assert!(!lacks_folder(silent, "tern", folder), "nor no answer");
+
+        // Whichever machine said it, as one made is named by its provider.
+        assert!(lacks_folder_on_any(&refused, folder));
+        assert!(lacks_folder_on_any(&relayed, folder), "wrapped: {relayed}");
+        assert!(!lacks_folder_on_any(&refused, Path::new("src/other")));
+        assert!(!lacks_folder_on_any(silent, folder));
+        let unsaid = no_folder("", folder);
+        assert!(!lacks_folder_on_any(&unsaid, folder), "no machine said it");
     }
 }

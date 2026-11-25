@@ -77,7 +77,7 @@ pub fn on(home: &Path, disk: &impl Disk) -> Vec<Place> {
 /// `<repo>` or `<host>/<owner>/<repo>`, and the trunk's tree of each bare
 /// repository at `~/<name>` or `~/<name>/<name>`, hidden folders passed
 /// over, each once.
-fn checkouts(home: &Path, disk: &impl Disk) -> Vec<PathBuf> {
+pub(crate) fn checkouts(home: &Path, disk: &impl Disk) -> Vec<PathBuf> {
     let mut found = Vec::new();
     for top in disk.folders(&home.join("src")) {
         if disk.is_checkout(&top) {
