@@ -62,11 +62,11 @@ pub const UNASKED: i32 = 79;
 /// The signal a held pi dies by when it quit though nobody asked it to
 /// while a name lookup it can't cut short held its exit, so it is ended
 /// as [`UNASKED`] is, started again at once.
-const UNASKED_SIGNAL: i32 = libc::SIGUSR2;
+const UNASKED_SIGNAL: i32 = rustix::process::Signal::USR2.as_raw();
 
 /// Whether a run that ended as `status` quit though nobody asked it to:
 /// with [`UNASKED`], or killed by [`UNASKED_SIGNAL`].
-fn unasked(status: ExitStatus) -> bool {
+fn ended_unasked(status: ExitStatus) -> bool {
     status.code() == Some(UNASKED) || status.signal() == Some(UNASKED_SIGNAL)
 }
 
@@ -658,7 +658,7 @@ pub async fn hold(
             // code, so the program's word that it parked keeps it so.
             let said_parked = fs::remove_file(&files.parked).is_ok();
             let parking = said_parked || status.code() == Some(PARKED);
-            let quit_unasked = !gone && !parking && unasked(status);
+            let quit_unasked = !gone && !parking && ended_unasked(status);
             // Told to end, a program that parked as it saved stays down.
             if telling || (!gone && !parking && !quit_unasked) {
                 break status;
@@ -1721,6 +1721,7 @@ impl Drop for Joined<'_> {
 mod tests {
     use std::path::PathBuf;
 
+    use rustix::process::Signal;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
     use tokio::sync::{mpsc, oneshot};
     use tokio::task::JoinHandle;
@@ -2418,13 +2419,20 @@ mod tests {
     #[test]
     fn only_its_own_code_or_signal_says_a_program_quit_unasked() {
         let exited = |code: i32| ExitStatus::from_raw(code << 8);
-        assert!(unasked(exited(UNASKED)), "its code");
-        assert!(unasked(ExitStatus::from_raw(UNASKED_SIGNAL)), "its signal");
+        assert!(ended_unasked(exited(UNASKED)), "its code");
+        assert!(
+            ended_unasked(ExitStatus::from_raw(UNASKED_SIGNAL)),
+            "its signal"
+        );
         for meant in [0, 1, PARKED, GONE] {
-            assert!(!unasked(exited(meant)), "exit {meant} was meant");
+            assert!(!ended_unasked(exited(meant)), "exit {meant} was meant");
         }
-        for signal in [libc::SIGTERM, libc::SIGKILL, libc::SIGHUP, libc::SIGUSR1] {
-            assert!(!unasked(ExitStatus::from_raw(signal)), "signal {signal}");
+        for signal in [Signal::TERM, Signal::KILL, Signal::HUP, Signal::USR1] {
+            let signal = signal.as_raw();
+            assert!(
+                !ended_unasked(ExitStatus::from_raw(signal)),
+                "signal {signal}"
+            );
         }
     }
 

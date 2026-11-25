@@ -140,6 +140,10 @@ fn one_line(text: &str) -> String {
 /// A signal's name as `kill -l` says it, for those a program is likeliest
 /// to end by, or a question mark.
 fn signal_name(signal: i32) -> &'static str {
+    // Their numbers differ between Linux and macOS, so they come from
+    // the system's own.
+    const USR1: i32 = rustix::process::Signal::USR1.as_raw();
+    const USR2: i32 = rustix::process::Signal::USR2.as_raw();
     match signal {
         1 => "HUP",
         2 => "INT",
@@ -153,8 +157,8 @@ fn signal_name(signal: i32) -> &'static str {
         13 => "PIPE",
         14 => "ALRM",
         15 => "TERM",
-        libc::SIGUSR1 => "USR1",
-        libc::SIGUSR2 => "USR2",
+        USR1 => "USR1",
+        USR2 => "USR2",
         _ => "?",
     }
 }
