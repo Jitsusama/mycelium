@@ -5219,13 +5219,13 @@ impl<S: Store> Shared<S> {
         tokio::task::spawn_blocking(move || {
             let placed = typed.placements().placed();
             let persons = terminal::persons_terminal(&procs, asker, terminal::ROOT, &placed);
-            if let Err(why) = persons {
-                if !terminal::launchers_own(&procs, asker, terminal::ROOT) {
-                    return Err(format!(
-                        "{held} is kept as the person's only when placed from their own \
-                         terminal or by the launcher, and this asks from neither: {why}"
-                    ));
-                }
+            if let Err(why) = persons
+                && !terminal::launchers_own(&procs, asker, terminal::ROOT)
+            {
+                return Err(format!(
+                    "{held} is kept as the person's only when placed from their own \
+                     terminal or by the launcher, and this asks from neither: {why}"
+                ));
             }
             let Some(one) = hold::held(&folder).into_iter().find(|one| one.id == held) else {
                 return Err(format!("no holder here runs {held}"));

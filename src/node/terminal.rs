@@ -495,11 +495,15 @@ mod tests {
             vec![first, second],
             "one whose holder ended is forgotten, the rest read again"
         );
-        assert!(
-            Placements::read(file.clone(), Some("boot-b".to_owned()))
-                .placed()
-                .is_empty()
+        assert_eq!(
+            Placements::read(file.clone(), Some("boot-b".to_owned())).placed(),
+            Vec::<Placed>::new(),
+            "none is read from another boot"
         );
-        assert!(Placements::read(file, None).placed().is_empty());
+        assert_eq!(
+            Placements::read(file, None).placed(),
+            Vec::<Placed>::new(),
+            "none is read where the boot can't be told"
+        );
     }
 }
