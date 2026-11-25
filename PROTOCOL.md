@@ -2883,8 +2883,9 @@ upstream's 421 is answered 502.
 
 The lending machine's node is started with `--lend FILE`, a file
 sealed as `declared.json` is, read again at every lend:
-`{"vms": [{"prefix", "budget", "requests_a_day"}], "budgets": {NAME:
-{"upstream", "host", "paths", "auth_header", "key"}}}`. A link's end
+`{"vms": [{"prefix", "budget", "requests_a_day", "usd_a_day"}],
+"budgets": {NAME: {"upstream", "host", "paths", "auth_header", "key",
+"prices", "spend_watch"}}}`. A link's end
 answers each lend the other machine asks by it, and a node started
 without one refuses every lend 403. A machine is known by its link's
 name, which a worker reached by `--via` says itself in its first hello,
@@ -2900,7 +2901,8 @@ a query of those but `/`, and `=` and `&` besides; 400 for a header
 or body that
 can't be read, 413 for a body past 32 MiB, and 429 once the machine
 has made its `requests_a_day` that day, by UTC. A budget bounds how
-many requests and to which paths, not what each costs. The count is
+many requests and to which paths, and a model's what each costs, as
+What a Model's Lend May Spend says. The count is
 kept in `counts-DAY.json` in `lend/` under the account's state folder,
 whatever the node's `--state`, since `mycelium lend cut` asks no node,
 and changed under a lock on `lend/counts.lock`, so two nodes lending
@@ -2942,7 +2944,48 @@ refused or not, is written to the node's log as one line,
 `service`, `budget`, `model`, `upstream` host, `request_bytes`,
 `response_bytes`, `status`, `duration_ms` and `outcome`, and never its
 body, headers or key. `upstream` is null where the lend was refused
-before it was sent there, so a line naming one is one that was.
+before it was sent there, so a line naming one is one that was. A
+model's line says `charged_usd` and `spent_usd_today` besides, once
+it is settled.
+
+#### What a Model's Lend May Spend
+
+A model's lend spends money, so the lender, which alone sees the
+upstream's answer whole, caps it. A `vms` entry's `usd_a_day` is what
+each of its machines may spend a day, by UTC; one naming none is
+refused every model 403. A models budget's `prices` name each model
+it may be asked, `{MODEL: {"input", "output", "cache_write",
+"cache_read", "most_output"}}`, in dollars a million tokens, its
+cache's written at a quarter more than `input` and read at `input`
+where it names none; a model it doesn't name, or one priced below
+nothing, is refused 403. Its `spend_watch` names the budget in
+spend-watch whose money it spends; one naming none is refused 403.
+
+A model's request must name its `model` and its `max_tokens`, at most
+the model's `most_output`, or it is refused 400. Before it is sent,
+under the lock its count is kept by, it reserves the most it can
+cost, its body's every byte as a token asked at the dearest of the
+three input prices and `max_tokens` answered, and is refused 429 where
+that with the day's spend would pass `usd_a_day`. So requests asked
+at once can't all pass a cap none alone would. The day's spend, kept
+in millionths of a dollar in `spent-DAY.json` beside the counts, holds
+every reservation until it settles. A lend given back gives back its
+reservation. One asked whole is charged what its answer says it used,
+read only from `usage` at the top of the upstream's JSON or of its
+`message`, in the body whole or in a stream's `data:` lines, counting
+the most each count said, once the answer said it was done; never
+clamped to its reservation, so a cap is passed only by what was truly
+spent. One whose upstream refused it, 400 or more with no usage, is
+charged nothing. Any other, as a stream cut partway, is charged its
+reservation.
+
+Before each, the lender reads spend-watch's word,
+`spend-watch/budgets.json` in the account's runtime folder. Where it
+is missing, unreadable, written more than 15 minutes ago or more than
+a minute ahead, or says nothing of the budget, spend-watch is silent
+and every model is refused 503. Where it says an allowance of the
+budget's is refused, spent to its `allowance`, or as a `share` used
+whole, the lend is refused 429.
 
 ### The Forge
 

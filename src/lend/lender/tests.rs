@@ -9,7 +9,10 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot};
 
+use super::spend::SPEND_WATCH;
 use super::*;
+
+mod spending;
 
 /// Longer than any of these waits should take, so a test fails rather
 /// than hangs.
@@ -128,7 +131,39 @@ impl Lending {
         }))
     }
 
+    /// A lender over `lend`, each machine it names capped at $10 a day
+    /// where it names no cap, each budget of models pricing `a-model` and
+    /// spending spend-watch's `proxy` where it prices none, and
+    /// spend-watch saying `proxy` is within its allowance.
     fn with(lend: &serde_json::Value) -> Self {
+        let mut lend = lend.clone();
+        for vm in lend["vms"].as_array_mut().into_iter().flatten() {
+            if vm.get("usd_a_day").is_none() {
+                vm["usd_a_day"] = json!(10.0);
+            }
+        }
+        for budget in lend["budgets"]
+            .as_object_mut()
+            .into_iter()
+            .flat_map(|all| all.values_mut())
+        {
+            let models = budget.get("kind").is_none_or(|kind| kind == "models");
+            if models && budget.get("prices").is_none() {
+                budget["prices"] = json!({"a-model": a_model()});
+                budget["spend_watch"] = json!("proxy");
+            }
+        }
+        let lending = Self::bare(&lend);
+        lending.spend_watch_says(&json!([{
+            "name": "proxy",
+            "allowances": [{"label": "Week", "unit": "dollars", "state": "ok",
+                            "allowance": 100.0, "spent": 1.0}],
+        }]));
+        lending
+    }
+
+    /// A lender over `lend` as it is, with no word from spend-watch.
+    fn bare(lend: &serde_json::Value) -> Self {
         let folder = tempfile::tempdir().expect("a folder");
         let file = folder.path().join("lend.json");
         fs::write(&file, lend.to_string()).expect("the lend is written");
@@ -149,7 +184,39 @@ impl Lending {
     fn state(&self) -> PathBuf {
         self.folder.path().join("state")
     }
+
+    /// Has spend-watch say `budgets` stand as they do, now.
+    fn spend_watch_says(&self, budgets: &serde_json::Value) {
+        self.spend_watch_said(jiff::Timestamp::now(), budgets);
+    }
+
+    /// Has spend-watch have said `budgets` stand as they do, `at`.
+    fn spend_watch_said(&self, at: jiff::Timestamp, budgets: &serde_json::Value) {
+        let file = self.folder.path().join(SPEND_WATCH);
+        fs::create_dir_all(file.parent().expect("its folder")).expect("spend-watch's folder");
+        let said = json!({"v": 1, "at": at.to_string(), "budgets": budgets});
+        fs::write(file, said.to_string()).expect("spend-watch's word is written");
+    }
+
+    /// What `machine` has spent today, in millionths of a dollar.
+    fn spent(&self, machine: &str) -> u64 {
+        let day = jiff::Timestamp::now().strftime("%Y-%m-%d").to_string();
+        kept(&self.state().join(format!("spent-{day}.json")))
+            .expect("the day's spend reads")
+            .get(machine)
+            .copied()
+            .unwrap_or_default()
+    }
 }
+
+/// What `a-model` costs: $3 a million tokens asked, $15 a million
+/// answered, at most 1000 answered.
+fn a_model() -> serde_json::Value {
+    json!({"input": 3.0, "output": 15.0, "most_output": 1000})
+}
+
+/// A model call's body, as pi sends it.
+const ASKED: &[u8] = br#"{"model":"a-model","max_tokens":64,"messages":[]}"#;
 
 /// A model call as pi's shim hands it on, with what pi sent of its own
 /// credentials beside it.
@@ -164,7 +231,7 @@ fn lend(path: &str) -> Lend {
             ("x-api-key".to_owned(), "the-vms-key".to_owned()),
             ("host".to_owned(), "elsewhere.example".to_owned()),
         ],
-        body: STANDARD.encode(br#"{"model":"a-model","messages":[]}"#),
+        body: STANDARD.encode(ASKED),
     }
 }
 
@@ -225,7 +292,7 @@ async fn a_lend_is_carried_with_this_machines_key_and_none_of_the_borrowers() {
             "{kept} stays with the borrower: {head}"
         );
     }
-    assert_eq!(asked.body, br#"{"model":"a-model","messages":[]}"#);
+    assert_eq!(asked.body, ASKED);
     asked
         .answer
         .send(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n".to_vec())
@@ -788,8 +855,10 @@ async fn a_lend_file_that_cant_be_read_lends_nothing() {
 
 #[tokio::test]
 async fn a_relay_that_stops_taking_a_request_still_lets_a_cut_end_its_lend() {
+    // Its most, four megabytes asked, is past $10.
     let lending = Lending::with(&json!({
-        "vms": [{"prefix": "agents-", "budget": "models", "requests_a_day": 3}],
+        "vms": [{"prefix": "agents-", "budget": "models", "requests_a_day": 3,
+                 "usd_a_day": 100.0}],
         "budgets": {"models": {
             "upstream": "relay/wedged.sock",
             "host": "models.example",
@@ -805,7 +874,10 @@ async fn a_relay_that_stops_taking_a_request_still_lets_a_cut_end_its_lend() {
         &lending.lender,
         "agents-1",
         Lend {
-            body: STANDARD.encode(vec![b'x'; request]),
+            body: STANDARD.encode(format!(
+                r#"{{"model":"a-model","max_tokens":64,"messages":"{}"}}"#,
+                "x".repeat(request)
+            )),
             ..lend("/v1/messages")
         },
     );
