@@ -9312,7 +9312,7 @@ mod tests {
         .expect("written");
         let continues = continuing(dir.path(), &through::Unreadable::default())
             .expect("logs that read are read");
-        assert_eq!(continues(session).as_deref(), Some("s-steward"));
+        assert_eq!(continues(session), Ok(Some("s-steward".to_owned())));
     }
 
     /// A holder in `dir` that says it holds at once, writing down in the
