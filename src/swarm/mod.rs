@@ -472,29 +472,43 @@ pub(crate) fn address(team: &Value) -> &str {
         .unwrap_or_default()
 }
 
-/// Each team's short name, as [`short_names`] gives it, unless it cleans
-/// to the address of another team or of a living session. A steer or a
-/// page typed with such a name reaches what has that address first, so
-/// a page never draws, nor a hint offers, a name that reaches another.
+/// Each of the swarm's teams' short names, as [`shorts_beside`] keeps
+/// them beside its living sessions.
 pub(crate) fn shorts_of(swarm: &Swarm) -> BTreeMap<String, String> {
-    let taken: Vec<&str> = swarm
-        .teams
+    let living = swarm
+        .sessions
         .iter()
-        .map(address)
-        .chain(
-            swarm
-                .sessions
-                .iter()
-                .filter(|session| Standing::of(session).is_some())
-                .filter_map(|session| session["address"].as_str()),
-        )
-        .collect();
-    let mut shorts = short_names(&swarm.teams);
+        .filter(|session| Standing::of(session).is_some())
+        .filter_map(|session| Some((session["address"].as_str()?, session["id"].as_str())));
+    shorts_beside(&swarm.teams, living)
+}
+
+/// Each team's short name, as [`short_names`] gives it, unless it cleans
+/// to another team's address, or to the address of a session among
+/// `living`, by its address and id, that doesn't lead it. A steer typed
+/// with such a name reaches what has that address first, as the session
+/// a team's lead is leaves it to the team, so a page never draws, nor a
+/// hint offers, a name that reaches another.
+pub(crate) fn shorts_beside<'a>(
+    teams: &[Value],
+    living: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
+) -> BTreeMap<String, String> {
+    let living: Vec<(&str, Option<&str>)> = living.into_iter().collect();
+    let mut shorts = short_names(teams);
     shorts.retain(|team, short| {
         let short = unmarked(short);
-        !taken
+        let lead = teams
             .iter()
-            .any(|other| !other.eq_ignore_ascii_case(team) && other.eq_ignore_ascii_case(&short))
+            .find(|each| address(each) == team)
+            .and_then(|each| each["lead"].as_str());
+        let a_team = teams
+            .iter()
+            .map(address)
+            .any(|other| other != team && other.eq_ignore_ascii_case(&short));
+        let a_session = living.iter().any(|(other, id)| {
+            other.eq_ignore_ascii_case(&short) && !(id.is_some() && *id == lead)
+        });
+        !a_team && !a_session
     });
     shorts
 }

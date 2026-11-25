@@ -1809,6 +1809,29 @@ fn a_network_with_no_leader_never_changes_a_teams_short_name() {
 }
 
 #[test]
+fn a_teams_short_name_that_is_a_sessions_address_is_never_shown() {
+    // Typed after swarm, it would reach the session BUSY, not Kelp.
+    let teams = [json!({"key": "team:KELP01", "title": "Kelp Beds", "swarm": "busy"})];
+    let sessions = [session(
+        "BUSY",
+        1,
+        "Busy one",
+        "busy",
+        &["orchestration.kelp01"],
+    )];
+    let mycelium = Mycelium::of("work", &teams, &sessions, &[]);
+    let kelp = mycelium
+        .networks
+        .iter()
+        .find(|each| each.name == "orchestration.kelp01")
+        .expect("Kelp's network");
+    assert_ne!(
+        kelp.short, "busy",
+        "networks showed a name that steers the session BUSY"
+    );
+}
+
+#[test]
 fn a_name_matching_none_or_several_networks_is_said_plainly() {
     let mycelium = mycelium();
     assert_eq!(

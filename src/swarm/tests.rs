@@ -231,6 +231,22 @@ fn a_name_matching_none_or_several_is_said_plainly() {
         team(&hidden, "HARBOR", &look()).is_ok(),
         "a short name cleaned to a team's address does not hide it"
     );
+    // Nor is Reef drawn or offered by it, which typed would reach Harbour.
+    let shown = overview(&hidden, &look());
+    assert!(
+        !shown
+            .lines()
+            .any(|line| line.contains("Reef") && line.contains("harbor")),
+        "Reef was drawn by a name that reaches Harbour:\n{shown}"
+    );
+    assert_eq!(
+        typed(&hidden)
+            .iter()
+            .filter(|name| *name == "harbor")
+            .count(),
+        1,
+        "harbor was offered for a team besides Harbour"
+    );
 }
 
 #[test]
@@ -260,7 +276,16 @@ fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
     for (given, said) in [
         ("--names", "a name swarm reads as an option"),
         ("-ojson", "or as its output"),
-        ("team", "or as the person saying what follows"),
+    ] {
+        acting.teams[1]["swarm"] = json!(given);
+        if hint(&acting).as_deref() != Some("HARBOR") {
+            misread.push(said);
+        }
+    }
+    // One swarm reads as other than a name is no short name at all, so
+    // the team is given by its title, as one with none is.
+    for (given, said) in [
+        ("team", "a name read as the person saying what follows"),
         // Resume, as no session is addressed by it, so the act is what
         // refuses it, not the address a cleaned name would take.
         ("re\u{200B}sume", "or as an act once it is cleaned"),
@@ -270,11 +295,13 @@ fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
         ),
     ] {
         acting.teams[1]["swarm"] = json!(given);
-        if hint(&acting).as_deref() != Some("HARBOR") {
+        if hint(&acting).as_deref() != Some("Harbour") {
             misread.push(said);
         }
     }
-    // Kelp stays within it, so Harbour still leads.
+    // Kelp stays within it, so Harbour still leads, by a short name a
+    // shell would split, so its address is what the hint would give.
+    acting.teams[1]["swarm"] = json!("harbour pause");
     acting.teams[2]["within"] = json!("PAUSE");
     acting.teams[1]["key"] = json!("team:PAUSE");
     if hint(&acting).as_deref() != Some("<team>") {
@@ -282,7 +309,7 @@ fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
     }
     assert!(
         misread.is_empty(),
-        "each is given as the address, or as no example: {misread:?}"
+        "each is given as the address, the title or no example: {misread:?}"
     );
     acting.teams[1]["key"] = json!("team:HAR BOR");
     acting.teams[2]["within"] = json!("HAR BOR");
@@ -446,6 +473,49 @@ fn a_short_name_that_is_another_s_address_is_never_drawn_or_offered() {
     assert!(
         !shown.contains("busy"),
         "a page drew a name that reaches another:\n{shown}"
+    );
+    assert!(
+        !typed(&swarm).contains(&"busy".to_owned()),
+        "a shell was offered a name that reaches another"
+    );
+}
+
+#[test]
+fn a_team_s_own_address_as_its_short_name_is_drawn_only_where_its_lead_has_it() {
+    // A team keyed by a working session's address, led by another: typed,
+    // its short name would reach the session BUSY, not the team.
+    let mut swarm = swarm();
+    swarm.teams[1]["key"] = json!("team:BUSY");
+    swarm.teams[2]["within"] = json!("BUSY");
+    swarm.teams[1]["swarm"] = json!("busy");
+    let shown = overview(&swarm, &look());
+    assert!(
+        !shown.contains("busy"),
+        "a page drew a name that reaches the session BUSY:\n{shown}"
+    );
+    // Led by BUSY, the team is what typing its address reaches.
+    swarm.teams[1]["lead"] = json!("s-busy");
+    assert!(
+        typed(&swarm).contains(&"busy".to_owned()),
+        "a team led by the session of its address lost its short name"
+    );
+}
+
+#[test]
+fn a_short_name_that_cleans_to_an_act_is_never_drawn() {
+    // Drawn, it reads as resume, which swarm does rather than reach Harbour.
+    let mut swarm = swarm();
+    swarm.teams[1]["swarm"] = json!("re\u{200B}sume");
+    let shown = overview(&swarm, &look());
+    assert!(
+        !shown
+            .lines()
+            .any(|line| line.trim_start().starts_with("resume ")),
+        "a page drew an act as a team's name:\n{shown}"
+    );
+    assert!(
+        !typed(&swarm).contains(&"resume".to_owned()),
+        "a shell was offered an act as a team's name"
     );
 }
 

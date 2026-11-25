@@ -711,7 +711,7 @@ fn joined(
             shared.then(|| network_of(name, shape, cells))
         })
         .collect();
-    titled_by_teams(&mut networks, teams, quests);
+    titled_by_teams(&mut networks, teams, sessions, quests);
     titled_by_quests(&mut networks, quests);
     titled_by_repos(&mut networks, sessions);
     networks.extend(shared_trees(sessions, formed));
@@ -862,9 +862,21 @@ fn owned_network(name: &str, renamed: &BTreeMap<String, String>) -> Option<Strin
 /// hear its group while none answers to it, is still a network: titled
 /// as its quest is among `quests`, and short-named as a team of that
 /// title would be where that takes no real team's short name. A team's
-/// own short name is the swarm's, which a network with no leader never
-/// changes, so the name typed to steer it is the one shown.
-fn titled_by_teams(networks: &mut [Network], teams: &[Value], quests: &BTreeMap<String, String>) {
+/// own short name is the swarm's, kept beside the living `sessions` as
+/// its pages keep it, which a network with no leader never changes, so
+/// the name typed to steer it is the one shown and reaches it.
+fn titled_by_teams(
+    networks: &mut [Network],
+    teams: &[Value],
+    sessions: &[Cell],
+    quests: &BTreeMap<String, String>,
+) {
+    let living = || {
+        sessions
+            .iter()
+            .filter(|cell| matches!(cell.is, Is::Session))
+            .map(|cell| (cell.name.as_str(), cell.id.as_deref()))
+    };
     let leaderless: Vec<Value> = networks
         .iter()
         .filter(|each| each.shape == Shape::Orchestration)
@@ -881,10 +893,10 @@ fn titled_by_teams(networks: &mut [Network], teams: &[Value], quests: &BTreeMap<
             }))
         })
         .collect();
-    let mut shorts = swarm::short_names(teams);
+    let mut shorts = swarm::shorts_beside(teams, living());
     let taken: BTreeSet<String> = shorts.values().cloned().collect();
     let all: Vec<Value> = teams.iter().chain(&leaderless).cloned().collect();
-    let mut beside = swarm::short_names(&all);
+    let mut beside = swarm::shorts_beside(&all, living());
     for stand_in in &leaderless {
         let address = swarm::address(stand_in);
         if let Some(short) = beside
