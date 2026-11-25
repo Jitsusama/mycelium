@@ -3351,8 +3351,6 @@ pub(super) mod tests {
         let placed = [terminal::Placed {
             holder: 30,
             holder_started: 300,
-            program: 31,
-            program_started: 550,
         }];
         let system = system_of(binaries.path());
         let terminals = terminal::Terminals {

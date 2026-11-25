@@ -5243,16 +5243,23 @@ impl<S: Store> Shared<S> {
                     .to_owned(),
             );
         };
-        self.keep_persons(held, pid)
+        // The person's `mycelium hold` starts its holder as its own child,
+        // so a holder an agent started is never the asker's.
+        self.keep_persons(held, pid, terminal::Began::By(pid))
             .await
             .map(|()| Response::Placed)
     }
 
     /// Keeps hold `held` as the person's where process `asker` may place
-    /// it ([`asker::may_place`]) and it is the asker's
-    /// ([`terminal::placement_of`]). A hold anything else placed, parked, or that
-    /// no holder here runs is refused.
-    async fn keep_persons(&self, held: &str, asker: i32) -> Result<(), String> {
+    /// it ([`asker::may_place`]) and its holder `began` as the asker's
+    /// ([`terminal::placement_of`]). A hold anything else placed, or that
+    /// no holder here runs, is refused.
+    async fn keep_persons(
+        &self,
+        held: &str,
+        asker: i32,
+        began: terminal::Began,
+    ) -> Result<(), String> {
         let Some(typed) = self.typed.clone() else {
             return Err(
                 "this node mints no typed answer, so it keeps no hold as the \
@@ -5276,7 +5283,7 @@ impl<S: Store> Shared<S> {
             asker::may_place(asker, &processes, terminals)
                 .map_err(|why| format!("{held} isn't kept as the person's: {why}"))?;
             let placed =
-                terminal::placement_of(&procs, &system, &hold::held(&folder), &held, asker)?;
+                terminal::placement_of(&procs, &system, &hold::held(&folder), &held, began)?;
             typed.placements().keep(placed, &procs)
         })
         .await
@@ -5413,10 +5420,8 @@ impl<S: Store> Shared<S> {
             Some("a typed answer names the ask it answers, as want".to_owned())
         } else if words.is_none() {
             Some("a typed answer carries its words as one string, value or other".to_owned())
-        } else if let Err(why) = standing {
-            Some(why)
         } else {
-            None
+            standing.err()
         };
         let asker = self.client.zip(self.client_started);
         let bound = typed::Bound {
@@ -8126,7 +8131,7 @@ impl<S: Store> Shared<S> {
         let command = asked.command;
         // Through the login shell, each start of it: the holder has only
         // the node's environment, where a woken `pi` wouldn't be found.
-        let held = tokio::task::spawn_blocking(move || {
+        let start::Begun { id: held, holder } = tokio::task::spawn_blocking(move || {
             starter.start(&realm, &begins, (&within, &command), true)
         })
         .await
@@ -8135,8 +8140,11 @@ impl<S: Store> Shared<S> {
         // A start the person asked, from their own terminal or the
         // launcher, is kept as theirs. Any other is an agent's, whose
         // refusal here is its due, not a fault, so nothing is said of it.
+        // The node started the holder itself, so it names it, never a
+        // record another process could have written over.
         if let Some(asker) = self.client {
-            let _ = self.keep_persons(&held, asker).await;
+            let began = terminal::Began::As(holder);
+            let _ = self.keep_persons(&held, asker, began).await;
         }
         Ok(Response::Started(Started {
             folder,
@@ -24086,7 +24094,7 @@ esac
         let holder = i32::try_from(std::process::id()).expect("a pid");
         // 45 is what the person typed under kitty's shell; 58 a pi on the
         // same terminal and 60 a command it ran; 70 an agent's, on no
-        // terminal; the holder holds pi 31, started after 45.
+        // terminal; the holder, 45's own child, holds pi 31.
         let machine = procs(&[
             (40, "kitty", 1, "app.slice/kitty.scope"),
             (41, "zsh", 40, "app.slice/kitty.scope"),
@@ -24094,7 +24102,7 @@ esac
             (58, "pi", 41, "agents.slice/mycelium-pi-a.scope"),
             (60, "mycelium", 58, "agents.slice/mycelium-pi-a.scope"),
             (70, "mycelium", 1, "agents.slice/mycelium-pi-b.scope"),
-            (holder, "mycelium", 1, "app.slice/mycelium-hold.scope"),
+            (holder, "mycelium", 45, "app.slice/mycelium-hold.scope"),
             (31, "pi", holder, "app.slice/mycelium-hold.scope"),
         ]);
         let at = machine.path();
@@ -24106,7 +24114,7 @@ esac
         on_terminal(at, (58, "pi", 500), (41, 58, 41), (TTY, 58));
         on_terminal(at, (60, "mycelium", 600), (58, 58, 41), (TTY, 58));
         on_terminal(at, (70, "mycelium", 700), (1, 70, 70), (0, -1));
-        on_terminal(at, (holder, "mycelium", 460), (1, holder, holder), (0, -1));
+        on_terminal(at, (holder, "mycelium", 460), (45, holder, holder), (0, -1));
         on_terminal(at, (31, "pi", 470), (holder, 31, 31), (TTY + 1, 31));
         let held = dir.path().join("held");
         fs::create_dir_all(&held).expect("its folder is made");
@@ -24167,8 +24175,6 @@ esac
             vec![terminal::Placed {
                 holder,
                 holder_started: 460,
-                program: 31,
-                program_started: 470,
             }],
             "the person's own placing keeps the hold they began"
         );

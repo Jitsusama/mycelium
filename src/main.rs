@@ -3342,7 +3342,7 @@ fn hold(
         // A terminal's hold has the person's own path already.
         kit: None,
     };
-    let id = starter.start(realm, &folder, (&[], command), false)?;
+    let id = starter.start(realm, &folder, (&[], command), false)?.id;
     say_placed(realm, &id);
     if detached {
         writeln!(io::stdout().lock(), "{id}")

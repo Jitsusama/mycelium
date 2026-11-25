@@ -11,8 +11,10 @@
 //! generations names its folder ([`super::binaries`]). A holder counts only where
 //! the node kept, when it was placed, that the person placed it
 //! ([`Placements`]): from their own terminal, by this same rule, or from
-//! the launcher's own process. So an agent's hold, a wake and a session
-//! carried in each mint nothing.
+//! the launcher's own process. So an agent's hold and a session carried
+//! in each mint nothing, while a program a placed holder starts again, as
+//! a wake does, is still the person's: the holder runs only the command
+//! it was placed with.
 
 use std::fs;
 use std::io::Write as _;
@@ -72,20 +74,25 @@ pub fn stat(procs: &Path, pid: i32) -> Option<Stat> {
     stat_of(&fs::read_to_string(procs.join(pid.to_string()).join("stat")).ok()?)
 }
 
-/// A hold the person placed: its holder, by its id and start, and the
-/// program it held then, by its id and start, which leads its terminal's
-/// session.
+/// A hold the person placed: its holder, by its id and start, whose
+/// program, parked or running, leads its terminal's session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Placed {
     /// The holder's process.
     pub holder: i32,
-    /// When the holder started, in clock ticks since boot.
+    /// When the holder started, in clock ticks since boot, so another by
+    /// a reused id isn't it.
     pub holder_started: u64,
-    /// The program it held when it was placed. A program it starts again,
-    /// as a wake does, isn't this one, so it was placed by nobody.
-    pub program: i32,
-    /// When the program started, so another by a reused id isn't it.
-    pub program_started: u64,
+}
+
+/// How the one placing a hold began its holder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Began {
+    /// Started by this process, as `mycelium hold` starts its holder
+    /// as its own child.
+    By(i32),
+    /// As this process, which the node started itself.
+    As(u32),
 }
 
 /// How the person's terminals are told: by the binaries `system` names,
@@ -129,8 +136,6 @@ pub fn persons_terminal(procs: &Path, pid: i32, terminals: Terminals<'_>) -> Res
             let held = Placed {
                 holder: leader.parent,
                 holder_started: holder.started,
-                program: asking.session,
-                program_started: leader.started,
             };
             if terminals.placed.contains(&held) {
                 Ok(())
@@ -167,12 +172,14 @@ fn reaches_its_leader(procs: &Path, pid: i32, leader: i32) -> Result<(), String>
     Err("it is too far below its session's leader to be told".to_owned())
 }
 
-/// The placement of hold `id` by process `asker`, as `procs` tells it,
-/// from the hold records `held`: exactly one record names it, so none
-/// written beside it stands in; its holder runs a mycelium `system` names
-/// and started no earlier than the asker, which started it; and its
-/// program runs, a child of that holder. A record any process of the
-/// account could write so names only a hold the asker itself began.
+/// The placement of hold `id`, its holder `began` by the one placing it,
+/// as `procs` tells it, from the hold records `held`: exactly one record
+/// names it, so none written beside it stands in; and its holder runs a
+/// mycelium `system` names and is the one `began` names, the child of
+/// the one placing it or the very process the node started. A record
+/// any process of the account could write over so names only a holder
+/// the one placing it began. Its program may be parked, as a resumed
+/// session's is until its turn, since the holder is what is placed.
 ///
 /// # Errors
 ///
@@ -182,7 +189,7 @@ pub fn placement_of(
     system: &System,
     held: &[crate::hold::Held],
     id: &str,
-    asker: i32,
+    began: Began,
 ) -> Result<Placed, String> {
     let mut named = held.iter().filter(|one| one.id == id);
     let (Some(one), None) = (named.next(), named.next()) else {
@@ -190,34 +197,25 @@ pub fn placement_of(
             "{id} is named by no hold record here, or by more than one"
         ));
     };
-    let (Ok(holder), Ok(program)) = (i32::try_from(one.holder), i32::try_from(one.pid)) else {
-        return Err(format!("{id}'s holder or program can't be named"));
+    let Ok(holder) = i32::try_from(one.holder) else {
+        return Err(format!("{id}'s holder can't be named"));
     };
-    if program == 0 || one.parked {
-        return Err(format!("{id} is parked, so its program wasn't placed"));
-    }
-    let unread = || format!("{id}'s holder, its program or the one placing it can't be read");
-    let (asking, holding, running) = (
-        stat(procs, asker).ok_or_else(unread)?,
-        stat(procs, holder).ok_or_else(unread)?,
-        stat(procs, program).ok_or_else(unread)?,
-    );
+    let holding = stat(procs, holder).ok_or_else(|| format!("{id}'s holder can't be read"))?;
     if binary(procs, holder, system) != Some(Binary::Mycelium) {
         return Err(format!("{id}'s holder runs no mycelium of the system's"));
     }
-    if running.parent != holder {
-        return Err(format!("{id}'s program isn't its holder's own"));
-    }
-    if holding.started < asking.started {
+    let theirs = match began {
+        Began::By(placing) => holding.parent == placing,
+        Began::As(started) => u32::try_from(holder).is_ok_and(|holder| holder == started),
+    };
+    if !theirs {
         return Err(format!(
-            "{id}'s holder started before the one placing it, so it began another's hold"
+            "{id}'s holder isn't the one its placer began, so it is another's hold"
         ));
     }
     Ok(Placed {
         holder,
         holder_started: holding.started,
-        program,
-        program_started: running.started,
     })
 }
 
@@ -586,60 +584,52 @@ mod tests {
         let machine = Machine::new();
         machine.runs(30, "mycelium", (1, 30, 30), (0, -1), 300);
         machine.runs(58, "pi", (30, 58, 58), (TTY, 58), 500);
+        // 59 is the pi a wake started again under the same holder.
+        machine.runs(59, "pi", (30, 59, 59), (TTY + 1, 59), 900);
         let placed = Placed {
             holder: 30,
             holder_started: 300,
-            program: 58,
-            program_started: 500,
         };
-        let judged =
-            |placed: &[Placed]| persons_terminal(machine.procs(), 58, machine.terminals(placed));
-        assert_eq!(judged(&[placed]), Ok(()));
-        let unplaced = Err("the holder of its terminal wasn't placed by the person".to_owned());
-        assert_eq!(judged(&[]), unplaced, "an agent's hold is placed by nobody");
-        let woken = Placed {
-            program: 57,
-            ..placed
+        let judged = |pid: i32, placed: &[Placed]| {
+            persons_terminal(machine.procs(), pid, machine.terminals(placed))
         };
+        assert_eq!(judged(58, &[placed]), Ok(()));
         assert_eq!(
-            judged(&[woken]),
+            judged(59, &[placed]),
+            Ok(()),
+            "a program its placed holder started again is still the person's"
+        );
+        let unplaced = Err("the holder of its terminal wasn't placed by the person".to_owned());
+        assert_eq!(
+            judged(58, &[]),
             unplaced,
-            "a program it started again wasn't placed"
+            "an agent's hold is placed by nobody"
         );
         let earlier = Placed {
             holder_started: 299,
             ..placed
         };
         assert_eq!(
-            judged(&[earlier]),
+            judged(58, &[earlier]),
             unplaced,
             "a holder by an old one's id wasn't placed"
-        );
-        let reused = Placed {
-            program_started: 499,
-            ..placed
-        };
-        assert_eq!(
-            judged(&[reused]),
-            unplaced,
-            "a program by an old one's id wasn't placed"
         );
     }
 
     #[test]
     fn a_placement_names_only_a_hold_the_one_placing_it_began() {
         let machine = Machine::new();
-        // 45 places; 30 holds 31, started after it; 32 a holder started
-        // before 45; 34 runs no mycelium; 36's record names a program not
-        // its own.
+        // 45 places, and started holder 30; 32 is a holder an agent's 70
+        // started, whose record an agent could write over to name; 34
+        // runs no mycelium, though 45 started it.
         machine.runs(45, "mycelium", (41, 45, 41), (TTY, 45), 450);
-        machine.runs(30, "mycelium", (1, 30, 30), (0, -1), 460);
+        machine.runs(30, "mycelium", (45, 30, 30), (0, -1), 460);
         machine.runs(31, "pi", (30, 31, 31), (TTY + 1, 31), 470);
-        machine.runs(32, "mycelium", (1, 32, 32), (0, -1), 400);
+        machine.runs(70, "mycelium", (1, 70, 70), (0, -1), 455);
+        machine.runs(32, "mycelium", (70, 32, 32), (0, -1), 465);
         machine.runs(33, "pi", (32, 33, 33), (TTY + 2, 33), 480);
-        machine.runs(34, "agents-program", (1, 34, 34), (0, -1), 460);
+        machine.runs(34, "agents-program", (45, 34, 34), (0, -1), 460);
         machine.runs(35, "pi", (34, 35, 35), (TTY + 3, 35), 480);
-        machine.runs(36, "mycelium", (1, 36, 36), (0, -1), 460);
         let record = |id: &str, holder: u32, pid: u32| crate::hold::Held {
             id: id.to_owned(),
             command: vec!["pi".to_owned()],
@@ -654,33 +644,38 @@ mod tests {
             record("a1", 30, 31),
             record("b2", 32, 33),
             record("c3", 34, 35),
-            record("d4", 36, 31),
             record("e5", 30, 31),
-            record("e5", 36, 31),
+            record("e5", 32, 33),
             record("f6", 30, 0),
         ];
-        let placed = |id| placement_of(machine.procs(), &machine.system, &records, id, 45);
+        let placed =
+            |id, began| placement_of(machine.procs(), &machine.system, &records, id, began);
+        let persons = Ok(Placed {
+            holder: 30,
+            holder_started: 460,
+        });
+        assert_eq!(placed("a1", Began::By(45)), persons);
         assert_eq!(
-            placed("a1"),
-            Ok(Placed {
-                holder: 30,
-                holder_started: 460,
-                program: 31,
-                program_started: 470,
-            })
+            placed("f6", Began::By(45)),
+            persons,
+            "a holder parked until its turn, as a resumed session's is, is placed"
         );
-        for (id, says) in [
-            ("b2", "started before the one placing it"),
-            ("c3", "runs no mycelium"),
-            ("d4", "isn't its holder's own"),
-            ("e5", "or by more than one"),
-            ("f6", "is parked"),
-            ("g7", "named by no hold record"),
+        assert_eq!(
+            placed("a1", Began::As(30)),
+            persons,
+            "the holder the node started itself is placed"
+        );
+        for (id, began, says) in [
+            ("b2", Began::By(45), "isn't the one its placer began"),
+            ("a1", Began::As(32), "isn't the one its placer began"),
+            ("c3", Began::By(45), "runs no mycelium"),
+            ("e5", Began::By(45), "or by more than one"),
+            ("g7", Began::By(45), "named by no hold record"),
         ] {
+            let refused = placed(id, began);
             assert!(
-                placed(id).as_ref().is_err_and(|why| why.contains(says)),
-                "{id}: {:?}",
-                placed(id)
+                refused.as_ref().is_err_and(|why| why.contains(says)),
+                "{id} {began:?}: {refused:?}"
             );
         }
     }
@@ -707,20 +702,14 @@ mod tests {
         let first = Placed {
             holder: 30,
             holder_started: 300,
-            program: 58,
-            program_started: 580,
         };
         let gone = Placed {
             holder: 32,
             holder_started: 320,
-            program: 60,
-            program_started: 600,
         };
         let second = Placed {
             holder: 31,
             holder_started: 310,
-            program: 59,
-            program_started: 590,
         };
         for placed in [first, gone, second] {
             placements.keep(placed, machine.procs()).expect("kept");
