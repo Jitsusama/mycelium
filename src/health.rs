@@ -89,12 +89,12 @@ where
     let mut sessions: BTreeMap<&str, BTreeMap<&str, u64>> = BTreeMap::new();
     for session in read.sessions {
         let counts = sessions.entry(&session.machine).or_insert_with(|| {
-            ["busy", "idle", "ended", "unreachable"]
+            ["busy", "idle", "parked", "ended", "unreachable"]
                 .into_iter()
                 .map(|state| (state, 0))
                 .collect()
         });
-        *counts.entry(named(session.state)).or_default() += 1;
+        *counts.entry(counted(session)).or_default() += 1;
     }
     let dead = read
         .sessions
@@ -143,11 +143,14 @@ fn lately(session: &Session, at: i64) -> bool {
         .is_none_or(|written| at - written.as_second() < DEAD_FOR)
 }
 
-/// A session's state, as the line counts it.
-const fn named(state: State) -> &'static str {
-    match state {
+/// A session's state, as the line counts it: one ended whose presence
+/// last said it parked is `parked`, apart from those that closed, as the
+/// machines page tells them apart and a parked one may be woken.
+fn counted(session: &Session) -> &'static str {
+    match session.state {
         State::Busy => "busy",
         State::Idle => "idle",
+        State::Ended if session.presence["state"].as_str() == Some("parked") => "parked",
         State::Ended => "ended",
         State::Unreachable => "unreachable",
     }
@@ -253,13 +256,16 @@ mod tests {
                     {"machine": "tern", "state": "up", "ended24h": 0},
                 ],
                 "sessions": {
-                    "osprey": {"busy": 0, "idle": 0, "ended": 0, "unreachable": 1},
-                    "skiff": {"busy": 1, "idle": 1, "ended": 3, "unreachable": 0},
+                    "osprey": {
+                        "busy": 0, "idle": 0, "parked": 0, "ended": 0, "unreachable": 1,
+                    },
+                    "skiff": {"busy": 1, "idle": 1, "parked": 1, "ended": 2, "unreachable": 0},
                 },
                 "deadPresences": 2,
                 "slowestAsk": 8,
             }),
-            "this machine is no link, and only an ended one still saying it runs is dead"
+            "this machine is no link, a parked one is counted apart from those ended, and only \
+             an ended one still saying it runs is dead"
         );
     }
 
