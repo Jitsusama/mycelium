@@ -563,6 +563,10 @@ pub async fn hold(
         said: Mutex::new(None),
         standing: Mutex::new(None),
     });
+    // Said before the program's output is read, so it comes first.
+    if first.is_some() {
+        shown.says(STARTING_LINE);
+    }
     let mut reader = tokio::spawn(read_output(reading, shown.clone(), starts));
     let mut joined = JoinSet::new();
     // A terminal may join whether the program runs or is parked.
@@ -826,6 +830,23 @@ const REOPENING_LINE: &[u8] =
 #[cfg(test)]
 const REOPENING_SAYS: &str = "Reopening it now";
 
+/// What every window joined to a program just started shows, dim, until
+/// the program first draws: pi can take minutes to draw on a loaded
+/// machine, and its window was left blank all that while, so Joel asked
+/// why (25 November). The cursor is kept where the line begins, so
+/// [`STARTING_CLEARED`] can take it away whole, wrapped or not.
+const STARTING_LINE: &[u8] =
+    b"\x1b7\x1b[2mStarting it now: it shows itself once it has started, which can take a minute.\x1b[22m";
+
+/// What takes [`STARTING_LINE`] away as its program first draws: the
+/// cursor back where the line began, and the screen from there cleared,
+/// so the program draws where it would have.
+const STARTING_CLEARED: &[u8] = b"\x1b8\x1b[J";
+
+/// What tests look for in [`STARTING_LINE`].
+#[cfg(test)]
+const STARTING_SAYS: &str = "Starting it now";
+
 /// What a parked program's windows say when it couldn't start again.
 fn unstarted(error: &io::Error) -> Vec<u8> {
     format!("\r\nIt couldn't start again: {error}. {PARKED_WAKES}\r\n").into_bytes()
@@ -1066,6 +1087,9 @@ impl Shown {
     /// screen and focus reporting would otherwise hide it from a window
     /// already joined, and leave a focus there waking nothing.
     fn show(&self, bytes: &[u8]) {
+        if self.starting() {
+            self.passes(STARTING_CLEARED, None);
+        }
         self.passes(bytes, None);
         let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         let standing = *self.standing.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1074,6 +1098,15 @@ impl Shown {
             self.passes(FOCUS_ON, None);
             self.passes(line, None);
         }
+    }
+
+    /// Whether [`STARTING_LINE`] is what was said last, with nothing shown
+    /// over it since, so every joined window still shows it.
+    fn starting(&self) -> bool {
+        let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
+        let said = *self.said.lock().unwrap_or_else(PoisonError::into_inner);
+        drop(modes);
+        said == Some(STARTING_LINE)
     }
 
     /// Passes the holder's own `line` to every joined terminal, and to
@@ -2724,6 +2757,44 @@ mod tests {
         third.sees("late 6").await;
         assert!(
             !third.seen.contains(REOPENING_SAYS),
+            "its program has drawn over it: {:?}",
+            third.seen
+        );
+    }
+
+    #[tokio::test]
+    async fn a_window_joined_before_a_new_program_draws_is_told_it_is_starting() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        // It draws nothing until a line is typed, as pi on a loaded machine
+        // draws nothing for minutes.
+        let silent = ["sh", "-c", "read -r go; echo drew-$((6 * 7)); exec sh"]
+            .map(str::to_owned)
+            .to_vec();
+        let (dir, held, _holder) =
+            holding_in(root.path(), Vec::new(), Given(Vec::new()), silent, None).await;
+        let mut first = Joined::join(socket(&dir, &held.id), FIRST_SIZE, None);
+        first.sees(STARTING_SAYS).await;
+        let mut second = Joined::join(socket(&dir, &held.id), FIRST_SIZE, None);
+        second.sees(STARTING_SAYS).await;
+        first.types("now\r").await;
+        first.sees("drew-42").await;
+        second.sees("drew-42").await;
+        let cleared = std::str::from_utf8(STARTING_CLEARED).expect("plain bytes");
+        for window in [&first, &second] {
+            let said = window.seen.find(STARTING_SAYS);
+            let gone = window.seen.find(cleared);
+            assert!(
+                said < gone && gone < window.seen.find("drew-"),
+                "the line is taken away before its program draws: {:?}",
+                window.seen
+            );
+        }
+        // One joining once it drew is told nothing it drew over.
+        let mut third = Joined::join(socket(&dir, &held.id), FIRST_SIZE, None);
+        third.types("echo late $((2 * 3))\r").await;
+        third.sees("late 6").await;
+        assert!(
+            !third.seen.contains(STARTING_SAYS),
             "its program has drawn over it: {:?}",
             third.seen
         );
