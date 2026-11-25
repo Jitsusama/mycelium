@@ -53,12 +53,14 @@ pub(super) fn one_word(name: &str) -> bool {
     shell_word(name, &[]) && !ACTS.contains(&lower.as_str()) && lower != "team"
 }
 
-/// Whether `name`, cleaned as a page draws it, reads as one of the acts or
-/// as `team`, which `swarm` reads as other than a team's name, so typing
-/// what a page drew would never reach the team.
+/// Whether `name`, cleaned as a page draws it, holds a word `swarm` reads
+/// as other than a team's name: an act, `team` or a flag. Typed as a page
+/// drew it, `reef pause` would pause Reef, and `pause` reach no team.
 fn acts_for(name: &str) -> bool {
-    let drawn = unmarked(name).to_lowercase();
-    ACTS.contains(&drawn.as_str()) || drawn == "team"
+    unmarked(name)
+        .to_lowercase()
+        .split_whitespace()
+        .any(|word| ACTS.contains(&word) || word == "team" || word.starts_with('-'))
 }
 
 /// The most words before a colon that still read as a name.
@@ -164,7 +166,15 @@ pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
         .collect();
     named
         .iter()
-        .filter(|(_, name)| named.iter().filter(|(_, other)| other == name).count() == 1)
+        // Two that clean alike are drawn alike, and typed reach both.
+        .filter(|(_, name)| {
+            let drawn = unmarked(name);
+            named
+                .iter()
+                .filter(|(_, other)| unmarked(other) == drawn)
+                .count()
+                == 1
+        })
         .map(|(team, name)| ((*team).to_owned(), name.clone()))
         .collect()
 }
