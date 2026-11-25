@@ -453,12 +453,13 @@ fn plain_quest(quest: &str) -> bool {
 /// What each log under `logs` continues, the folder scanned once, as a
 /// lapse of the record of orchestrations asks only where a claim lapses;
 /// none where the folder can't be read, so what lapses is kept until it
-/// can be. That, and each folder in it passed over as unreadable, is
-/// said once, so claims kept with no end name their cause.
+/// can be. That, each folder in it passed over as unreadable, and each
+/// session two logs are named for, is said once, so claims kept with no
+/// end name their cause.
 fn continuing(
     logs: &Path,
     unreadable: &through::Unreadable,
-) -> Option<impl Fn(&str) -> Option<String> + use<>> {
+) -> Option<impl Fn(&str) -> chain::Continued + use<>> {
     let say = |why: String| {
         if unreadable.first(&why) {
             eprintln!("{why}");
@@ -477,7 +478,16 @@ fn continuing(
             "the sessions logged in a folder that can't be read continue none: {why}"
         ));
     }
-    Some(move |session: &str| found.continues(session))
+    // Kept where a lapse follows one back (`chain::Orchestrations::lapse`).
+    for session in found.doubled() {
+        say(format!(
+            "claims are kept, rather than lapse, while a lapse has to read what {}'s log \
+             continues, as two logs under {} are named for it",
+            crate::carry::shown(session),
+            logs.display()
+        ));
+    }
+    Some(move |session: &str| found.follows(session))
 }
 
 /// Whether `session` stands where a carry reaches it: running, or parked
@@ -4955,9 +4965,11 @@ impl<S: Store> Shared<S> {
                 open.retain(ordered::open);
                 let proved = if ordered::holds(session, &open) {
                     self.ordered_by(asking_known, carried, &sessions)
+                        .await
                         .map(|_| ())
                 } else {
                     self.orchestrated_ended(asking_known, carried, &open, &sessions)
+                        .await
                 };
                 proved.map_err(|why| {
                     format!(
@@ -5695,10 +5707,14 @@ impl<S: Store> Shared<S> {
 
     /// Changes the record of orchestrations as `change` says and keeps it,
     /// holding it so two changes at once never undo each other; refused,
-    /// changing nothing, where `change` refuses.
+    /// changing nothing, where `change` refuses. What became of each
+    /// claim `change` let lapse is said once the record is kept, so a
+    /// claim that moved or went has a line of its own in the node's log.
     async fn rerecord(
         &self,
-        change: impl FnOnce(&mut chain::Orchestrations) -> Result<(), String> + Send + 'static,
+        change: impl FnOnce(&mut chain::Orchestrations) -> Result<Vec<chain::Lapsed>, String>
+        + Send
+        + 'static,
     ) -> Reply {
         let (file, claiming) = (self.orchestrations.clone(), self.claiming.clone());
         tokio::task::spawn_blocking(move || {
@@ -5708,10 +5724,13 @@ impl<S: Store> Shared<S> {
             let mut record = chain::Orchestrations::read(&file).map_err(|error| {
                 format!("the record of orchestrations can't be read, so none is changed: {error}")
             })?;
-            change(&mut record)?;
+            let lapsed = change(&mut record)?;
             record.keep(&file).map_err(|error| {
                 format!("the record of orchestrations couldn't be kept: {error}")
             })?;
+            for lapsed in lapsed {
+                eprintln!("{lapsed}");
+            }
             Ok(Response::Orchestrated)
         })
         .await
@@ -5768,7 +5787,7 @@ impl<S: Store> Shared<S> {
         let standing = self.standing_addressed(&sessions);
         let (logs, unreadable) = (self.logs.clone(), Arc::clone(&self.unreadable));
         self.rerecord(move |record| {
-            record.lapse(&standing, || continuing(&logs, &unreadable));
+            let lapsed = record.lapse(&standing, || continuing(&logs, &unreadable));
             match heads {
                 None if quests.is_empty() => {
                     record.release(&asker);
@@ -5783,6 +5802,7 @@ impl<S: Store> Shared<S> {
                     record.claim(known, &heads, &quests, jiff::Timestamp::now())
                 }
             }
+            .map(|()| lapsed)
         })
         .await
     }
@@ -5851,17 +5871,17 @@ impl<S: Store> Shared<S> {
         tokio::task::spawn_blocking(move || asker::persons_own(client, &processes, "free a quest"))
             .await
             .map_err(|error| format!("who asks couldn't be told: {error}"))??;
-        self.rerecord(move |record| record.free(&quest).map(|_| ()))
+        self.rerecord(move |record| record.free(&quest).map(|_| Vec::new()))
             .await
     }
 
     /// Who orders the carry of `carried` when `asking` asks, as this
     /// node's record of orchestrations proves it, so long as the quests'
     /// record and the mesh's groups agree.
-    fn ordered_by(
+    async fn ordered_by(
         &self,
-        asking: ordered::Known,
-        carried: ordered::Known,
+        asking: ordered::Known<'_>,
+        carried: ordered::Known<'_>,
         sessions: &[Session],
     ) -> Result<ordered::Order, String> {
         let quests: Vec<serde_json::Value> = self
@@ -5871,7 +5891,7 @@ impl<S: Store> Shared<S> {
             .into_values()
             .collect();
         let quest = ordered::quest_of(carried, &quests)?;
-        let record = self.orchestrations_standing(sessions)?;
+        let record = self.orchestrations_standing(sessions).await?;
         let order = record.chain(&quest, asking)?;
         chain::agrees(&order, &ordered::ordered_by(asking, carried, &quests)?)?;
         ordered::agreed(&order, asking, &quests, &grouped(sessions, &self.machine))?;
@@ -5888,18 +5908,27 @@ impl<S: Store> Shared<S> {
 
     /// This node's record of orchestrations, each session that no longer
     /// stands let go of, its claim handed to the standing session whose
-    /// log continues it, as `sessions` name that one's address.
-    fn orchestrations_standing(
+    /// log continues it, as `sessions` name that one's address. Read off
+    /// the node's one runtime thread, as the logs it reads to hand claims
+    /// on are as many as pi ever wrote.
+    async fn orchestrations_standing(
         &self,
         sessions: &[Session],
     ) -> Result<chain::Orchestrations, String> {
-        let mut record = chain::Orchestrations::read(&self.orchestrations).map_err(|error| {
-            format!("this node's record of orchestrations can't be read, so no carry is ordered: {error}")
-        })?;
-        record.lapse(&self.standing_addressed(sessions), || {
-            continuing(&self.logs, &self.unreadable)
-        });
-        Ok(record)
+        let standing = self.standing_addressed(sessions);
+        let (file, logs) = (self.orchestrations.clone(), self.logs.clone());
+        let unreadable = Arc::clone(&self.unreadable);
+        tokio::task::spawn_blocking(move || {
+            let mut record = chain::Orchestrations::read(&file).map_err(|error| {
+                format!("this node's record of orchestrations can't be read, so no carry is ordered: {error}")
+            })?;
+            record.lapse(&standing, || continuing(&logs, &unreadable));
+            Ok(record)
+        })
+        .await
+        .map_err(|error| {
+            format!("this node's record of orchestrations couldn't be read, so no carry is ordered: {error}")
+        })?
     }
 
     /// Whether `asking` orchestrated the quest that ended holding
@@ -5912,10 +5941,10 @@ impl<S: Store> Shared<S> {
     /// orchestrator's group, and `asking` too, as `sessions` say. Only
     /// the orchestrator itself ends them this way, never one above it,
     /// whose claim to orchestrate a quest nothing checks once it ended.
-    fn orchestrated_ended(
+    async fn orchestrated_ended(
         &self,
-        asking: ordered::Known,
-        carried: ordered::Known,
+        asking: ordered::Known<'_>,
+        carried: ordered::Known<'_>,
         open: &[serde_json::Value],
         sessions: &[Session],
     ) -> Result<(), String> {
@@ -5928,7 +5957,7 @@ impl<S: Store> Shared<S> {
         let heading = ordered::going_by(&orchestrator, open).map_err(|why| {
             format!("{quest} ended orchestrated by {orchestrator}, but {why}, so only the person ends its sessions")
         })?;
-        let record = self.orchestrations_standing(sessions)?;
+        let record = self.orchestrations_standing(sessions).await?;
         // The node's own record must say the asker goes by the ended
         // quest's orchestrator's address, as it claimed when it began to
         // orchestrate: a quest id is the claimer's own word, so a sibling
@@ -6028,7 +6057,7 @@ impl<S: Store> Shared<S> {
             session,
             address: &address,
         };
-        let order = self.ordered_by(asking, carried, &sessions)?;
+        let order = self.ordered_by(asking, carried, &sessions).await?;
         let said_of = |field: &str| {
             said.get(field)
                 .and_then(serde_json::Value::as_str)
@@ -9283,7 +9312,7 @@ mod tests {
         .expect("written");
         let continues = continuing(dir.path(), &through::Unreadable::default())
             .expect("logs that read are read");
-        assert_eq!(continues(session).as_deref(), Some("s-steward"));
+        assert_eq!(continues(session), Ok(Some("s-steward".to_owned())));
     }
 
     /// A holder in `dir` that says it holds at once, writing down in the

@@ -32,8 +32,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::PI_CARRY;
 use super::kept::{self, Kept, State};
+use super::{PI_CARRY, shown};
 
 /// How long the node waits on one settling before it says in its log that
 /// it is waiting on it still.
@@ -260,20 +260,6 @@ pub fn telling(carry: &Kept, before: Option<&Value>, outcome: &Outcome) -> Optio
          said: {}. {after}",
         shown(why)
     ))
-}
-
-/// `text` as a finding shows it: as it was written, but for each control
-/// character, escaped, so none moves the terminal it is read in.
-fn shown(text: &str) -> String {
-    let mut shown = String::new();
-    for character in text.chars() {
-        if character.is_control() {
-            shown.extend(character.escape_default());
-        } else {
-            shown.push(character);
-        }
-    }
-    shown
 }
 
 /// What a carry `pi-carry` held the trees of comes to once its session is

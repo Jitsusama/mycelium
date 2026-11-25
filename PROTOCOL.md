@@ -894,7 +894,12 @@ session says of itself:
   continued, as a session whose log's first line, `<time>_<id>.jsonl`
   under pi's `sessions` folder, names it as `parentSession`, by its id
   or, as pi writes it, its log's path, read for the session its file
-  name names, else whole as an id, and never opened. A session
+  name names, else whole as an id, and never opened. Only a plain
+  file's first line, up to 64 KiB, is read. Where a lapse would read
+  what a session two logs are named for continues, every claim
+  lapsing then is kept as it is, since which log is its own can't be
+  told, and the node's log says so once; it lapses once one is gone.
+  A session
   continuing one that still runs or waits parked, as a fork does,
   takes nothing of its. What a session
   claimed passes, once it neither runs nor waits parked, to the one
