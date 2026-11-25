@@ -834,16 +834,12 @@ impl Tree {
     /// kernel tells a process's children, as Linux's does where it is
     /// built to, which reads a few files below each pi rather than every
     /// process's, thousands on a busy machine; otherwise all of them, at
-    /// most [`LOOKED_THROUGH`].
+    /// most [`LOOKED_THROUGH`]. The kernel is taken to tell them only
+    /// where the node's own children file opens, not merely where it is
+    /// named, so one that can't be read falls back to the look at all.
     fn of(procs: &Path) -> Self {
         let me = std::process::id().to_string();
-        if procs
-            .join(&me)
-            .join("task")
-            .join(&me)
-            .join("children")
-            .exists()
-        {
+        if fs::File::open(procs.join(&me).join("task").join(&me).join("children")).is_ok() {
             return Self::Asked(procs.to_owned());
         }
         let Ok(entries) = fs::read_dir(procs) else {
@@ -865,12 +861,23 @@ impl Tree {
 
     /// The children of process `parent`, each by its id and name: those
     /// any of its threads started, as each child's parent is the process
-    /// and the kernel lists it under the thread that started it.
-    fn children_of(&self, parent: i32) -> Vec<(i32, String)> {
+    /// and the kernel lists it under the thread that started it. Each
+    /// child named, and asked of the kernel each thread's file and each
+    /// child's status read, is taken from `left`, which a look shares
+    /// through all its parents, so a process with a great many threads
+    /// or children can't make it read without end; once `left` is spent
+    /// no more is read.
+    fn children_of(&self, parent: i32, left: &mut usize) -> Vec<(i32, String)> {
+        let mut spend = || {
+            let had = *left;
+            *left = left.saturating_sub(1);
+            had > 0
+        };
         match self {
             Self::Listed(all) => all
                 .iter()
                 .filter(|(_, _, of)| *of == parent)
+                .take_while(|_| spend())
                 .map(|(child, named, _)| (*child, named.clone()))
                 .collect(),
             Self::Asked(procs) => {
@@ -878,42 +885,54 @@ impl Tree {
                 let Ok(threads) = fs::read_dir(threads) else {
                     return Vec::new();
                 };
-                threads
-                    .flatten()
-                    .filter_map(|thread| told_children(&thread.path().join("children")))
-                    .flat_map(|children| {
-                        children
-                            .split_whitespace()
-                            .filter_map(|child| child.parse::<i32>().ok())
-                            .collect::<Vec<_>>()
-                    })
-                    .take(LOOKED_THROUGH)
-                    .filter_map(|child| {
-                        let status =
-                            fs::read_to_string(procs.join(child.to_string()).join("status"))
-                                .ok()?;
-                        let (named, of) = named(&status)?;
-                        // One that ended and whose id was taken again
-                        // since is another's child.
-                        (of == parent).then(|| (child, named.to_owned()))
-                    })
-                    .collect()
+                let mut read = vec![0_u8; CHILDREN_READ];
+                let mut told = Vec::new();
+                for thread in threads.flatten() {
+                    if !spend() {
+                        return Vec::new();
+                    }
+                    if let Some(children) =
+                        told_children(&thread.path().join("children"), &mut read)
+                    {
+                        told.extend(
+                            children
+                                .split_whitespace()
+                                .filter_map(|child| child.parse::<i32>().ok()),
+                        );
+                    }
+                }
+                let mut children = Vec::new();
+                for child in told {
+                    if !spend() {
+                        break;
+                    }
+                    let Ok(status) =
+                        fs::read_to_string(procs.join(child.to_string()).join("status"))
+                    else {
+                        continue;
+                    };
+                    // One that ended and whose id was taken again since
+                    // is another's child.
+                    if let Some((named, of)) = named(&status)
+                        && of == parent
+                    {
+                        children.push((child, named.to_owned()));
+                    }
+                }
+                children
             }
         }
     }
 
     /// Whether the agent fence's bubblewrap runs below process `pid`: one
-    /// reached from it through [`FENCED_THROUGH`] alone, at any depth.
+    /// reached from it through [`FENCED_THROUGH`] alone, at any depth,
+    /// within [`LOOKED_THROUGH`] reads in all.
     fn fences_below(&self, pid: i32) -> bool {
         let mut below = vec![pid];
         let mut seen = std::collections::BTreeSet::from([pid]);
-        let mut looked = 0_usize;
+        let mut left = LOOKED_THROUGH;
         while let Some(parent) = below.pop() {
-            for (child, named) in self.children_of(parent) {
-                looked += 1;
-                if looked > LOOKED_THROUGH {
-                    return false;
-                }
+            for (child, named) in self.children_of(parent, &mut left) {
                 if named == BWRAP {
                     return true;
                 }
@@ -927,13 +946,14 @@ impl Tree {
 }
 
 /// What the kernel's children file at `path` tells, read in reads of
-/// [`CHILDREN_READ`] rather than std's, which start with a few bytes.
-fn told_children(path: &Path) -> Option<String> {
+/// `read`'s length, [`CHILDREN_READ`], rather than std's, which start
+/// with a few bytes; `read` is lent so each thread's file needn't make
+/// one afresh.
+fn told_children(path: &Path, read: &mut [u8]) -> Option<String> {
     let mut file = fs::File::open(path).ok()?;
     let mut told = Vec::new();
-    let mut read = vec![0_u8; CHILDREN_READ];
     loop {
-        let got = std::io::Read::read(&mut file, &mut read).ok()?;
+        let got = std::io::Read::read(&mut file, read).ok()?;
         if got == 0 {
             break;
         }
@@ -3560,6 +3580,93 @@ mod tests {
         assert!(
             Tree::of(procs.path()).fences_below(58),
             "a child any thread started is the process's"
+        );
+    }
+
+    #[test]
+    fn a_look_asking_the_kernel_reads_only_what_it_tells_and_within_one_bound() {
+        // A process that says pi is its parent, but that the kernel tells
+        // as no child of pi's, isn't read: the look reads below each pi,
+        // never every process's status.
+        let (procs, _logs, _hosts) = fenced_pi("HOME=/home/jsama\0", &[(71, "bwrap", 58)]);
+        assert!(Tree::of(procs.path()).fences_below(58), "looked through");
+        tells_children(procs.path());
+        fs::write(procs.path().join("58/task/58/children"), "").expect("untold");
+        assert!(
+            !Tree::of(procs.path()).fences_below(58),
+            "asked, it reads only the children the kernel tells"
+        );
+        // A children file longer than one read is read to its end.
+        let padding = "900000 ".repeat(10_000);
+        assert!(padding.len() > CHILDREN_READ, "past one read");
+        fs::write(
+            procs.path().join("58/task/58/children"),
+            format!("{padding}71 "),
+        )
+        .expect("told");
+        assert!(
+            Tree::of(procs.path()).fences_below(58),
+            "a child told past the first read"
+        );
+        // Each thread's file and each child's status is taken from one
+        // bound, which a look shares through every parent it reads.
+        let (procs, _logs, _hosts) =
+            fenced_pi("HOME=/home/jsama\0", &[(70, "bash", 58), (71, "bwrap", 70)]);
+        tells_children(procs.path());
+        let asked = Tree::of(procs.path());
+        let mut left = 2;
+        assert_eq!(
+            asked.children_of(58, &mut left),
+            vec![(70, "bash".to_owned())],
+            "one thread's file and one status"
+        );
+        assert_eq!(left, 0, "both taken");
+        assert!(
+            asked.children_of(70, &mut left).is_empty(),
+            "a bound spent below one parent is spent below the next"
+        );
+        let mut left = 1;
+        assert!(
+            asked.children_of(58, &mut left).is_empty(),
+            "no status read once the threads spend it"
+        );
+        let (procs, _logs, _hosts) = fenced_pi(
+            "HOME=/home/jsama\0",
+            &[(70, "bash", 58), (71, "bash", 58), (72, "bwrap", 71)],
+        );
+        let listed = Tree::of(procs.path());
+        let mut left = 1;
+        assert_eq!(
+            listed.children_of(58, &mut left).len(),
+            1,
+            "looked through, each child named is taken from it too"
+        );
+    }
+
+    #[test]
+    fn the_kernel_tells_a_child_a_thread_other_than_the_first_started() {
+        // The kernel this runs on, as it is, where it tells children: a
+        // test runs on a thread of its own, not the process's first.
+        let procs = Path::new("/proc");
+        let Tree::Asked(_) = Tree::of(procs) else {
+            eprintln!("skipped: this kernel tells no process's children");
+            return;
+        };
+        let mut sleeping = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("sleep starts");
+        let child = i32::try_from(sleeping.id()).expect("an id");
+        let me = i32::try_from(std::process::id()).expect("an id");
+        let mut left = LOOKED_THROUGH;
+        let children = Tree::of(procs).children_of(me, &mut left);
+        let _ = sleeping.kill();
+        let _ = sleeping.wait();
+        assert!(
+            children
+                .iter()
+                .any(|(pid, named)| *pid == child && named == "sleep"),
+            "{child} among {children:?}"
         );
     }
 

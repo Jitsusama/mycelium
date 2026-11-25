@@ -148,7 +148,9 @@ const LEAVING_EVERY: Duration = Duration::from_secs(60);
 
 /// How often at most the machine's processes are looked through for the
 /// fences its sessions show, as their presences change: each look reads
-/// below each pi, and presences change many times a second.
+/// below each pi where the kernel tells a process's children, and every
+/// process's status where it doesn't, and presences change many times a
+/// second.
 const FENCES_SEEN_EVERY: Duration = Duration::from_secs(2);
 
 /// The longest a session is held as being reopened by a relayed start
