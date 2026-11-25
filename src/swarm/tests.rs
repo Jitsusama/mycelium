@@ -1046,9 +1046,13 @@ fn a_peer_s_name_chained_from_emoji_counts_a_cell_pair_for_each_four() {
         (flagged.as_str(), 20),
     ] {
         let cleaned = unmarked(chain);
+        // Counted directly too, since whether Unicode's widths carry a run
+        // through a mark is theirs to say: each four emoji keep three.
+        let joiners = cleaned.matches('\u{200D}').count();
         assert!(
-            cells(cleaned.as_str()) >= 2 * emoji / 4,
-            "a mark, a skin tone or a flag let a run keep more than three joiners: {cleaned:?}"
+            joiners <= 3 * emoji / 4 && cells(cleaned.as_str()) >= 2 * emoji / 4,
+            "a mark, a skin tone or a flag let a run keep more than three joiners \
+             ({joiners}): {cleaned:?}"
         );
     }
 }
