@@ -2,7 +2,7 @@
 //! stores of the machines discovery finds, holds the sessions and messages
 //! in memory, and serves the local socket every client reads.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
@@ -5557,13 +5557,18 @@ impl<S: Store> Shared<S> {
     /// begins, in order. Only ids are begun, never a word holding a `/`,
     /// since a holder's command may name its log by its path, which is
     /// this machine's and nothing to an asker.
-    fn begun_by(&self, session: &str, sessions: &[Session], seen: &Seen<'_>) -> BTreeSet<String> {
+    fn begun_by(
+        &self,
+        session: &str,
+        sessions: &[Session],
+        seen: &Seen<'_>,
+    ) -> std::collections::BTreeSet<String> {
         let machine = &self.machine;
         if sessions
             .iter()
             .any(|one| one.id == session && one.machine == *machine)
         {
-            return BTreeSet::new();
+            return std::collections::BTreeSet::new();
         }
         sessions
             .iter()
@@ -7889,7 +7894,7 @@ impl<S: Store> Shared<S> {
         away: HashSet<String>,
     ) -> Result<Vec<(String, u64)>, String> {
         let held = hold::held(&self.held);
-        let begun: Vec<(&String, BTreeSet<String>)> = {
+        let begun: Vec<(&String, std::collections::BTreeSet<String>)> = {
             let inner = self.lock();
             let known = inner.state.sessions();
             let coming_back = ended::coming_back(away, inner.turns.waiting());
