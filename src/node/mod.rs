@@ -20693,9 +20693,12 @@ esac
             ),
             "nor one whose marker its holder reads"
         );
-        // What the refusal says holds: a steer wakes it (round 8's F6).
+        // What the refusal says holds: a steer wakes it (round 8's F6),
+        // asked by a peer, since a test may run in an agent's unit, where
+        // a steer said as the person is refused.
         let mut client = Speaking::greeted(&socket).await;
-        let rouse = json!({"id": 1, "ask": "steer", "address": "MARKED", "steer": {"act": "wake"}});
+        let rouse = json!({"id": 1, "ask": "steer", "address": "MARKED",
+                           "steer": {"act": "wake", "from": "WCJQSG"}});
         client.ask(rouse).await;
         let woken = client.next().await;
         assert_eq!(woken["steered"]["machine"], json!("skiff"), "{woken}");
