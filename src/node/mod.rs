@@ -591,6 +591,11 @@ fn ran_in(session: &Session) -> Option<PathBuf> {
     })
 }
 
+/// The refusal of a relayed start naming a session other than as
+/// [`starts::reopens`] takes it.
+const RELAYED_REOPENS_ALONE: &str =
+    "a reopening relayed here names its session by --session and its id alone";
+
 /// Whether `session` has ended parked, which reads its inbox as it wakes.
 fn parked_presence(session: &Session) -> bool {
     session.state == SessionState::Ended
@@ -6910,8 +6915,11 @@ impl<S: Store> Shared<S> {
             .iter()
             .filter(|session| session.machine == self.machine)
             .find_map(|session| {
-                steer::wake_for(session, boot.as_deref(), &self.held)
-                    .or_else(|| self.marked_wake(&session.id))
+                steer::wake_for(session, boot.as_deref(), &self.held).or_else(|| {
+                    parked_presence(session)
+                        .then(|| self.marked_wake(&session.id))
+                        .flatten()
+                })
             });
         match (waking, steer.only_wakes()) {
             (Some(file), true) => steer::wake(&file, address)
@@ -7501,8 +7509,10 @@ impl<S: Store> Shared<S> {
     }
 
     /// The wake file of a park marker this boot wrote for `session`,
-    /// where a running holder reads it, so a steer wakes a session parked
-    /// that way as surely as one whose presence names its wake. The boot
+    /// where a running holder reads it, so a steer wakes a session whose
+    /// presence says parked as surely when only its marker names its
+    /// wake; one live is never woken this way, since a marker may outlast
+    /// its park. The boot
     /// is the one read when the node started, so no `sysctl` runs while
     /// the node's lock is held.
     fn marked_wake(&self, session: &str) -> Option<PathBuf> {
@@ -7637,8 +7647,12 @@ impl<S: Store> Shared<S> {
         // told here, so each is held to a session that ended here, and
         // none is reopened twice at once. No carry is shaped as one, so
         // a start saying it carries is held so too. One that fails to
-        // start holds it no longer, so it may be asked again.
+        // start holds it no longer, so it may be asked again. One naming
+        // its session any other way is refused, so none passes by them.
         let Some(session) = starts::reopens(&asked.command).map(str::to_owned) else {
+            if starts::names_a_session(&asked.command) {
+                return Err(RELAYED_REOPENS_ALONE.to_owned());
+            }
             return self.relayed_start(from, asked).await;
         };
         // A resend under the name of a start that landed, or is landing,
@@ -20535,6 +20549,23 @@ esac
             Err("no session s-unknown ended on skiff, so nothing is reopened here".to_owned()),
             "s-unknown didn't end here"
         );
+        // Round council-20261125T103525593-000003: one naming its session
+        // any other way is refused, rather than started past those holds.
+        for command in [
+            ["pi", "--session=s-held"].as_slice(),
+            &["pi", "--session-id", "s-held"],
+            &["pi", "--session", "s-held", "--continue"],
+        ] {
+            let Request::Relayed { from, mut start } = relayed("s-held") else {
+                panic!("a relayed start is relayed");
+            };
+            start.command = command.iter().map(|word| (*word).to_owned()).collect();
+            assert_eq!(
+                ask(socket.clone(), Request::Relayed { from, start }).await,
+                Err(RELAYED_REOPENS_ALONE.to_owned()),
+                "{command:?} is refused"
+            );
+        }
         for (session, refused) in [
             (
                 "s-live",
@@ -20696,8 +20727,30 @@ esac
         // What the refusal says holds: a steer wakes it (round 8's F6),
         // asked by a peer, since a test may run in an agent's unit, where
         // a steer said as the person is refused.
+        // But a live session whose marker outlasted its park is never
+        // woken through it (round council-20261125T103525593-000003).
+        let marker = json!({"session": "s-awake", "addresses": ["AWAKE"],
+                            "wake": wake("e0r3")});
+        fs::write(parks_of(&socket).join("s-awake.json"), marker.to_string()).expect("a marker");
+        store.start_here(
+            "s-awake",
+            json!({"session": "s-awake", "addresses": ["AWAKE"], "at": now}),
+            true,
+        );
+        listed(socket.clone(), "s-awake").await;
         let mut client = Speaking::greeted(&socket).await;
-        let rouse = json!({"id": 1, "ask": "steer", "address": "MARKED",
+        let stray = json!({"id": 1, "ask": "steer", "address": "AWAKE",
+                           "steer": {"act": "wake", "from": "WCJQSG"}});
+        client.ask(stray).await;
+        assert_eq!(
+            client.next().await["error"]["message"],
+            json!("AWAKE isn't parked with a holder to wake it this boot"),
+        );
+        assert!(
+            !wake("e0r3").exists(),
+            "a live session's marker wakes nothing"
+        );
+        let rouse = json!({"id": 2, "ask": "steer", "address": "MARKED",
                            "steer": {"act": "wake", "from": "WCJQSG"}});
         client.ask(rouse).await;
         let woken = client.next().await;

@@ -29,18 +29,19 @@ const RESUMING: [&str; 2] = ["--session", "--session-id"];
 /// `.../2026-11-14T22-23-37-209Z_<id>.jsonl`, is the id that path ends in.
 #[must_use]
 pub fn resumed(command: &[String]) -> Option<String> {
-    trimmed(&named(command)?)
+    trimmed(named(command).first()?)
 }
 
 /// Whether `command` resumes `session`: by the very word it names, or a
 /// log's path ending in it, as `.../<time>Z_<session>.jsonl`, since
 /// [`resumed`] reads an `_` or a `.` as a log path's, and an id may hold
 /// either. So `pi --session a_b` resumes `a_b`, though [`resumed`] says
-/// `b`. It errs toward a match, as `x_a` resuming `a` too, since a match
-/// only refuses a reopening, where a miss would start a second pi.
+/// `b`. It errs toward a match, as `x_a` resuming `a` too, and as any
+/// word the command names a session by, not only the first, since a
+/// match only refuses a reopening, where a miss would start a second pi.
 #[must_use]
 pub fn resumes(command: &[String], session: &str) -> bool {
-    named(command).is_some_and(|word| {
+    named(command).into_iter().any(|word| {
         let stem = Path::new(&word).file_stem().and_then(|stem| stem.to_str());
         word == session
             || stem == Some(session)
@@ -51,9 +52,9 @@ pub fn resumes(command: &[String], session: &str) -> bool {
     })
 }
 
-/// The word naming the session `command` resumes, as [`resumed`] finds
-/// it, before it is read as a log's path.
-fn named(command: &[String]) -> Option<String> {
+/// Each word naming a session `command` resumes, first to last, as
+/// [`resumed`] finds the first, before it is read as a log's path.
+fn named(command: &[String]) -> Vec<String> {
     let words: Vec<String> = command
         .iter()
         .enumerate()
@@ -66,18 +67,22 @@ fn named(command: &[String]) -> Option<String> {
         })
         .collect();
     let words: Vec<&str> = words.iter().map(String::as_str).collect();
-    let named = words.iter().enumerate().find_map(|(at, word)| {
-        if let Some((flag, id)) = word.split_once('=')
-            && RESUMING.contains(&flag)
-        {
-            return Some(id);
-        }
-        RESUMING
-            .contains(word)
-            .then(|| words.get(at + 1).copied())
-            .flatten()
-    });
-    named.map(str::to_owned)
+    words
+        .iter()
+        .enumerate()
+        .filter_map(|(at, word)| {
+            if let Some((flag, id)) = word.split_once('=')
+                && RESUMING.contains(&flag)
+            {
+                return Some(id);
+            }
+            RESUMING
+                .contains(word)
+                .then(|| words.get(at + 1).copied())
+                .flatten()
+        })
+        .map(str::to_owned)
+        .collect()
 }
 
 /// The id `named` gives, where it may be a log's path, as
@@ -323,6 +328,19 @@ mod tests {
         assert!(
             !super::resumes(&words(&["pi"]), "a_b"),
             "one naming none resumes none"
+        );
+        // Round council-20261125T103525593-000003: a session named after
+        // another is resumed too, since pi may take the last.
+        assert!(
+            super::resumes(
+                &words(&["sh", "-c", "tool --session-id q; exec pi --session x"]),
+                "x"
+            ),
+            "a script naming one before the pi still resumes the pi's"
+        );
+        assert!(
+            super::resumes(&words(&["pi", "--session", "d", "--session", "x"]), "x"),
+            "and so does a command naming two"
         );
     }
 

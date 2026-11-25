@@ -322,6 +322,26 @@ pub fn reopens(command: &[String]) -> Option<&str> {
         .then_some(session.as_str())
 }
 
+/// Whether `command` is the person's pi naming a session to resume or
+/// begin, by `--session` or `--session-id`, alone or with `=` and its
+/// id, in any shape: a relayed one [`reopens`] doesn't take is refused,
+/// rather than started past the holds a reopening is judged by.
+#[must_use]
+pub fn names_a_session(command: &[String]) -> bool {
+    let Some((program, words)) = command.split_first() else {
+        return false;
+    };
+    persons_pi(program)
+        && words.iter().any(|word| {
+            ["--session", "--session-id"].iter().any(|flag| {
+                word == flag
+                    || word
+                        .strip_prefix(flag)
+                        .is_some_and(|rest| rest.starts_with('='))
+            })
+        })
+}
+
 /// A start let go ahead, held as counted till it is kept.
 #[derive(Debug)]
 #[must_use = "a start let go ahead is kept once it ends"]
