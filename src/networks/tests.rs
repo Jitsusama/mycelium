@@ -1294,6 +1294,56 @@ fn cells_are_the_living_and_dormant_sessions_then_the_machines() {
     );
 }
 
+/// The harbour's cell ASKS01 as its line says it, its want asking in
+/// `asked`.
+fn asking_whole(asked: &str) -> Value {
+    let [teams, mut sessions, machines] = records();
+    let asking = sessions
+        .iter_mut()
+        .find(|session| session["address"] == "ASKS01")
+        .expect("the harbour's asking session");
+    asking["wants"] = json!({"said": "Which tide?", "asked": asked});
+    Mycelium::of("work", &teams, &sessions, &machines)
+        .lines()
+        .into_iter()
+        .find(|line| line["name"] == "ASKS01")
+        .expect("its cell")
+}
+
+#[test]
+fn a_cell_carries_its_question_whole_its_lines_kept_and_nothing_that_steers() {
+    let cell = asking_whole(
+        "The ebb runs at six.\r\nThe flood at noon.\n\n\u{202E}Which tide?\u{1b}[2J \u{2028}1. ebb",
+    );
+    assert_eq!(
+        (&cell["asks"], &cell["asked"]),
+        (
+            &json!("Which tide?"),
+            &json!("The ebb runs at six.\nThe flood at noon.\n\nWhich tide? [2J \n1. ebb")
+        ),
+        "its paragraphs and lines kept, a return, an escape and a turn gone"
+    );
+    assert_eq!(
+        asking_whole(" \n\u{200F} ").get("asked"),
+        None,
+        "nothing to read says none"
+    );
+}
+
+#[test]
+fn a_question_past_its_most_is_cut_and_says_so() {
+    let cell = asking_whole(&"tide ".repeat(1000));
+    let asked = cell["asked"].as_str().expect("its question");
+    assert_eq!(
+        (
+            asked.chars().count() <= super::ASKED_MOST,
+            asked.ends_with("tide [...]")
+        ),
+        (true, true),
+        "{asked}"
+    );
+}
+
 #[test]
 fn json_lines_say_each_network_then_each_cell() {
     let lines = mycelium().lines();

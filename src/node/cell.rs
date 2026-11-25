@@ -22,8 +22,8 @@ use crate::networks::Is;
 pub const KIND: &str = "cell";
 
 /// The fields of a cell that change while it lives.
-pub const LIVE: [&str; 20] = [
-    "title", "window", "standing", "doing", "asks", "repo", "subjects", "usage", "leads",
+pub const LIVE: [&str; 21] = [
+    "title", "window", "standing", "doing", "asks", "asked", "repo", "subjects", "usage", "leads",
     "machine", "quest", "plan", "cwd", "trees", "shares", "state", "busy", "runs", "counts",
     "networks",
 ];

@@ -377,12 +377,14 @@ mod tests {
             kind: "question".to_owned(),
             since: "before".to_owned(),
             said: "which tide?".to_owned(),
+            asked: None,
         });
         sessions[22] = session("s22", State::Ended, "before", false);
         sessions[21].wants = Some(Want {
             kind: "approval".to_owned(),
             since: "before".to_owned(),
             said: "may I sail?".to_owned(),
+            asked: None,
         });
         let ids: Vec<String> = sessions.iter().map(|one| one.id.clone()).collect();
         let mut turns = Turns::default();

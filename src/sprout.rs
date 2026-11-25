@@ -15,7 +15,9 @@ use std::hash::BuildHasher;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
+use crate::flow::{Code, Refusal};
 use crate::placement::{Need, Work};
+use crate::places::{self, Kind, Place, Unfound};
 use crate::wire::{Reply, Response, Sprout, Start};
 
 /// What a sprout is given: a link, which the session seeds its quest
@@ -86,6 +88,17 @@ pub trait Disk {
     fn resolved(&self, folder: &Path) -> PathBuf;
     /// Where the checkout at `folder` fetches from, if it says.
     fn origin(&self, folder: &Path) -> Option<String>;
+    /// The folders directly in `folder`, sorted; none where it can't be
+    /// read.
+    fn folders(&self, folder: &Path) -> Vec<PathBuf>;
+    /// What `file` says, where it is words of at most `most` bytes.
+    fn read(&self, file: &Path, most: u64) -> Option<String>;
+    /// Whether `folder` is a bare repository: one with no checkout of
+    /// its own, its trees cut elsewhere.
+    fn is_bare(&self, folder: &Path) -> bool;
+    /// The tree of the bare repository at `folder` that has its trunk
+    /// checked out ([`places::trunk_of`]).
+    fn trunk(&self, folder: &Path) -> Option<PathBuf>;
 }
 
 /// This machine's disk.
@@ -115,6 +128,51 @@ impl Disk for ThisDisk {
             .success()
             .then(|| String::from_utf8_lossy(&said.stdout).trim().to_owned())
     }
+
+    fn folders(&self, folder: &Path) -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(folder) else {
+            return Vec::new();
+        };
+        let mut found: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .map(|entry| entry.path())
+            .collect();
+        found.sort();
+        found
+    }
+
+    fn read(&self, file: &Path, most: u64) -> Option<String> {
+        use std::io::Read as _;
+        let mut said = String::new();
+        std::fs::File::open(file)
+            .ok()?
+            .take(most.saturating_add(1))
+            .read_to_string(&mut said)
+            .ok()?;
+        u64::try_from(said.len())
+            .is_ok_and(|length| length <= most)
+            .then_some(said)
+    }
+
+    fn is_bare(&self, folder: &Path) -> bool {
+        folder.join("HEAD").is_file()
+            && folder.join("objects").is_dir()
+            && !folder.join(".git").exists()
+    }
+
+    fn trunk(&self, folder: &Path) -> Option<PathBuf> {
+        let said = std::process::Command::new("git")
+            .arg("-C")
+            .arg(folder)
+            .args(["worktree", "list", "--porcelain"])
+            .output()
+            .ok()?;
+        if !said.status.success() {
+            return None;
+        }
+        places::trunk_of(&String::from_utf8_lossy(&said.stdout))
+    }
 }
 
 /// `path` with its `.` and `..` worked out from its words alone.
@@ -132,10 +190,12 @@ pub(crate) fn lexical(path: &Path) -> PathBuf {
     out
 }
 
-/// The folder a sprout begins in: the one named for it; else the
-/// checkout here of the repository its link is on, under `~/src` as
-/// `<host>/<owner>/<repo>`, or as `<repo>` where that one fetches from
-/// the same owner's repository; else the folder it was asked from, where
+/// The folder a sprout begins in: the one named for it, or the place
+/// named ([`place_named`]); else the checkout here of the repository its
+/// link is on, under `~/src` as `<host>/<owner>/<repo>`, or as `<repo>`
+/// or a place's checkout where that one fetches from the same owner's
+/// repository, in the deepest zone checked out there that the link's
+/// path lies in; else the folder it was asked from, where
 /// that is in a repository below home. A home folder is never one, however
 /// it is spelled, since a session started there has none of its
 /// repository's skills, and a folder named for this machine that isn't
@@ -150,23 +210,53 @@ pub(crate) fn lexical(path: &Path) -> PathBuf {
 /// # Errors
 ///
 /// When none of those gives a folder, or the one named is home or isn't
-/// here, saying what to name instead.
-pub fn folder(asked: Asked<'_>, seed: &Seed, disk: &impl Disk) -> Result<PathBuf, String> {
+/// here, or the place named is none or several, saying what to name
+/// instead.
+pub fn folder(asked: Asked<'_>, seed: &Seed, disk: &impl Disk) -> Result<PathBuf, Refusal> {
+    begins(asked, seed, disk).map(|begins| begins.folder)
+}
+
+/// Where a sprout begins, and what its session is told of it.
+struct Begins {
+    folder: PathBuf,
+    /// Said to the session after its first words, where it begins other
+    /// than where it was asked to.
+    note: Option<String>,
+}
+
+impl Begins {
+    fn at(folder: PathBuf) -> Self {
+        Self { folder, note: None }
+    }
+}
+
+fn begins(asked: Asked<'_>, seed: &Seed, disk: &impl Disk) -> Result<Begins, Refusal> {
     let home = disk.resolved(asked.home);
     if let Some(named) = asked.folder {
+        // A checkout's place is named from `~`, as a launcher says it.
+        let named = &match named.strip_prefix("~") {
+            Ok(within) => asked.home.join(within),
+            Err(_) => named.to_owned(),
+        };
+        if let Some(name) = place_named(named, asked.cwd, disk) {
+            return named_place(name, asked.home, disk);
+        }
         let named = lexical(&asked.cwd.join(named));
         if disk.resolved(&named) == home {
-            return Err(home_refused());
+            return Err(Refusal::new(Code::NeedsFolder, home_refused()));
         }
         if asked.here && !disk.is_folder(&named) {
-            return Err(format!("{} isn't a folder here", named.display()));
+            return Err(Refusal::new(
+                Code::NotHere,
+                format!("{} isn't a folder here", named.display()),
+            ));
         }
-        return Ok(named);
+        return Ok(Begins::at(named));
     }
     if let Seed::Link(link) = seed
-        && let Some(checkout) = checkout(link, asked.home, disk)
+        && let Some(begins) = linked(link, asked.home, disk)
     {
-        return Ok(checkout);
+        return Ok(begins);
     }
     let cwd = disk.resolved(asked.cwd);
     let in_repository = cwd
@@ -174,12 +264,106 @@ pub fn folder(asked: Asked<'_>, seed: &Seed, disk: &impl Disk) -> Result<PathBuf
         .take_while(|above| *above != home)
         .any(|above| disk.is_checkout(above));
     if cwd != home && in_repository {
-        return Ok(asked.cwd.to_owned());
+        return Ok(Begins::at(asked.cwd.to_owned()));
     }
-    Err(format!(
-        "it needs a repository to work in, and {} isn't one: say which, as `mycelium sprout --in <folder> ...`",
-        asked.cwd.display()
+    Err(Refusal::new(
+        Code::NeedsFolder,
+        format!(
+            "it needs a repository to work in, and {} isn't one: say which, as `mycelium \
+             sprout --in <folder or place> ...`; `mycelium places` lists the places",
+            asked.cwd.display()
+        ),
     ))
+}
+
+/// The place `named` names, where it names one rather than a folder: a
+/// zone's path, `//<path>`, or one plain name that isn't a folder in
+/// `cwd`, as `reef` names the zone `//system/reef` from anywhere but a
+/// folder holding a `reef`.
+#[must_use]
+pub fn place_named<'a>(named: &'a Path, cwd: &Path, disk: &impl Disk) -> Option<&'a str> {
+    let said = named.to_str()?;
+    let is_place =
+        places::is_name(said) && (said.starts_with("//") || !disk.is_folder(&cwd.join(said)));
+    is_place.then_some(said)
+}
+
+/// Where work asked for in the place `name` begins ([`places::found`]).
+fn named_place(name: &str, home: &Path, disk: &impl Disk) -> Result<Begins, Refusal> {
+    let all = places::on(home, disk);
+    match places::found(&all, name) {
+        Ok(place) => Ok(begun_in(place, &all)),
+        Err(Unfound::None) => Err(Refusal::new(
+            Code::NoSuchPlace,
+            format!("no checkout or zone here is named {name}: `mycelium places` lists them"),
+        )),
+        Err(Unfound::Several(names)) => Err(Refusal::new(
+            Code::SeveralPlaces,
+            format!(
+                "{name} names several places, so say which: {}",
+                names.join(", ")
+            ),
+        )),
+    }
+}
+
+/// Where work asked for in `place` begins: in it; or, for a zone not
+/// checked out, at the top of its checkout, the session told to work in
+/// a tree of its own that has the zone, since checking one out changes
+/// the tree for everyone working in it.
+fn begun_in(place: &Place, all: &[Place]) -> Begins {
+    let checkout = all
+        .iter()
+        .filter(|one| one.kind == Kind::Checkout && place.folder.starts_with(&one.folder))
+        .max_by_key(|one| one.folder.components().count());
+    match checkout {
+        Some(checkout) if place.out => Begins {
+            folder: checkout.folder.clone(),
+            note: Some(format!(
+                "It was asked to begin in {}, which isn't checked out in {}, so it begins at \
+                 that checkout's top: work in a tree of your own that has {} checked out, \
+                 rather than checking it out in this one.",
+                place.name,
+                checkout.folder.display(),
+                place.name
+            )),
+        },
+        _ => Begins::at(place.folder.clone()),
+    }
+}
+
+/// Where a sprout from `link` begins: in its repository's checkout here
+/// ([`checkout`]), else in a place's checkout fetching from it, in the
+/// deepest zone checked out there that the link's path lies in.
+fn linked(link: &str, home: &Path, disk: &impl Disk) -> Option<Begins> {
+    let repository = repository(link)?;
+    let all = places::on(home, disk);
+    let found = checkout(&repository, home, disk).or_else(|| {
+        all.iter()
+            .filter(|place| place.kind == Kind::Checkout)
+            .find(|place| {
+                disk.origin(&place.folder)
+                    .is_some_and(|origin| fetches_from(&origin, &repository))
+            })
+            .map(|place| place.folder.clone())
+    })?;
+    let path = after_repository(link);
+    Some(Begins::at(places::zone_of_link(&all, &found, &path)))
+}
+
+/// The plain steps of `link`'s path after its repository, as `tree`,
+/// `main` and `src` in `https://<host>/<owner>/<repo>/tree/main/src`.
+fn after_repository(link: &str) -> Vec<&str> {
+    let rest = link
+        .strip_prefix("https://")
+        .or_else(|| link.strip_prefix("http://"))
+        .unwrap_or(link);
+    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    rest.split('/')
+        .filter(|part| !part.is_empty())
+        .skip(3)
+        .take_while(|part| is_plain(part))
+        .collect()
 }
 
 fn home_refused() -> String {
@@ -221,8 +405,7 @@ fn is_plain(part: &str) -> bool {
 /// `~/src/<host>/<owner>/<repo>`, else the one at `~/src/<repo>` where it
 /// fetches from that owner's repository on that host, since a name alone
 /// is anyone's.
-fn checkout(link: &str, home: &Path, disk: &impl Disk) -> Option<PathBuf> {
-    let repository = repository(link)?;
+fn checkout(repository: &Repository<'_>, home: &Path, disk: &impl Disk) -> Option<PathBuf> {
     let src = home.join("src");
     let full = src
         .join(repository.host)
@@ -235,7 +418,7 @@ fn checkout(link: &str, home: &Path, disk: &impl Disk) -> Option<PathBuf> {
     (disk.is_folder(&short)
         && disk
             .origin(&short)
-            .is_some_and(|origin| fetches_from(&origin, &repository)))
+            .is_some_and(|origin| fetches_from(&origin, repository)))
     .then_some(short)
 }
 
@@ -504,15 +687,26 @@ pub fn starting(
     home: &Path,
     here: &str,
     disk: &impl Disk,
-) -> Result<Sprouted, String> {
+) -> Result<Sprouted, Refusal> {
     let seed = Seed::of(&asked.words);
     if seed.is_empty() {
-        return Err("say what the work is: a link or words".to_owned());
+        return Err(Refusal::new(
+            Code::NoWork,
+            "say what the work is: a link or words",
+        ));
     }
-    let from = asked.from.as_deref().map(origin_cell).transpose()?;
+    let from = asked
+        .from
+        .as_deref()
+        .map(origin_cell)
+        .transpose()
+        .map_err(|why| Refusal::new(Code::NotACell, why))?;
     // Naming this machine is asking here, so its folder is judged here.
     let on_here = asked.on.as_deref().is_none_or(|on| on == here);
-    let found = folder(
+    let Begins {
+        folder: found,
+        note,
+    } = begins(
         Asked {
             folder: asked.folder.as_deref(),
             cwd,
@@ -532,7 +726,7 @@ pub fn starting(
         machine,
         Some(within_home(found, home)),
         &seed,
-        from,
+        (from, note.as_deref()),
         &sprout_id(),
     ))
 }
@@ -550,16 +744,22 @@ pub fn within_home(folder: PathBuf, home: &Path) -> PathBuf {
 /// What a sprout asks the node to start: its session on `machine` and
 /// nowhere else, in `folder` and never at home where that machine hasn't
 /// it (`strict`), never on a machine that costs money, its seed carrying
-/// the sprout's own `id`; and what that seed leaves out.
+/// the sprout's own `id`, told the cell it came `from` and any `note` on
+/// where it begins; and what that seed leaves out.
 #[must_use]
 pub fn start(
     machine: &str,
     folder: Option<PathBuf>,
     seed: &Seed,
-    from: Option<&str>,
+    (from, note): (Option<&str>, Option<&str>),
     id: &str,
 ) -> Sprouted {
     let Seeded { data, left_out } = seeded(seed, from, id);
+    let mut told = first_words(seed, from);
+    if let Some(note) = note {
+        told.push(' ');
+        told.push_str(note);
+    }
     let start = Start {
         work: Work {
             needs: vec![Need::Machine(machine.to_owned())],
@@ -571,7 +771,7 @@ pub fn start(
         },
         folder,
         strict: true,
-        command: command(&first_words(seed, from), data.as_deref()),
+        command: command(&told, data.as_deref()),
         may_cost: false,
         carries: false,
         once: None,
@@ -586,20 +786,37 @@ pub fn start(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
 
-    /// A disk holding the folders, checkouts and links named.
+    /// A disk holding the folders, checkouts, links, bare repositories
+    /// and files named.
     #[derive(Default)]
-    struct Held {
+    pub(crate) struct Held {
         folders: BTreeSet<PathBuf>,
         checkouts: BTreeMap<PathBuf, Option<String>>,
         links: BTreeMap<PathBuf, PathBuf>,
+        bare: BTreeMap<PathBuf, PathBuf>,
+        files: BTreeMap<PathBuf, String>,
     }
 
     impl Held {
-        fn of(folders: &[&str], checkouts: &[&str]) -> Self {
+        /// A bare repository at `repository`, its trunk's tree at `trunk`.
+        pub(crate) fn bare(mut self, repository: &str, trunk: &str) -> Self {
+            self.folders.insert(PathBuf::from(repository));
+            self.bare
+                .insert(PathBuf::from(repository), PathBuf::from(trunk));
+            self
+        }
+
+        /// A file at `file` saying `said`.
+        pub(crate) fn holding(mut self, file: &str, said: &str) -> Self {
+            self.files.insert(PathBuf::from(file), said.to_owned());
+            self
+        }
+
+        pub(crate) fn of(folders: &[&str], checkouts: &[&str]) -> Self {
             Self {
                 folders: folders.iter().map(PathBuf::from).collect(),
                 checkouts: checkouts.iter().map(|c| (PathBuf::from(c), None)).collect(),
@@ -607,7 +824,7 @@ mod tests {
             }
         }
 
-        fn fetching(mut self, checkout: &str, origin: &str) -> Self {
+        pub(crate) fn fetching(mut self, checkout: &str, origin: &str) -> Self {
             self.folders.insert(PathBuf::from(checkout));
             self.checkouts
                 .insert(PathBuf::from(checkout), Some(origin.to_owned()));
@@ -633,6 +850,25 @@ mod tests {
         }
         fn origin(&self, folder: &Path) -> Option<String> {
             self.checkouts.get(folder).cloned().flatten()
+        }
+        fn folders(&self, folder: &Path) -> Vec<PathBuf> {
+            self.folders
+                .iter()
+                .filter(|one| one.parent() == Some(folder))
+                .cloned()
+                .collect()
+        }
+        fn read(&self, file: &Path, most: u64) -> Option<String> {
+            let said = self.files.get(file)?;
+            u64::try_from(said.len())
+                .is_ok_and(|length| length <= most)
+                .then(|| said.clone())
+        }
+        fn is_bare(&self, folder: &Path) -> bool {
+            self.bare.contains_key(folder)
+        }
+        fn trunk(&self, folder: &Path) -> Option<PathBuf> {
+            self.bare.get(folder).cloned()
         }
     }
 
@@ -701,9 +937,9 @@ mod tests {
                 &disk,
             );
             assert!(
-                begins
-                    .as_ref()
-                    .is_err_and(|why| why.contains("home folder")),
+                begins.as_ref().is_err_and(
+                    |why| why.code == Code::NeedsFolder && why.why.contains("home folder")
+                ),
                 "{named} was {begins:?}"
             );
         }
@@ -715,7 +951,9 @@ mod tests {
         for cwd in ["/home/kestrel", "/home/kestrel/notes"] {
             let begins = folder(asked(None, Path::new(cwd)), &words("x"), &disk);
             assert!(
-                begins.as_ref().is_err_and(|why| why.contains("--in")),
+                begins
+                    .as_ref()
+                    .is_err_and(|why| why.code == Code::NeedsFolder && why.why.contains("--in")),
                 "from {cwd}: {begins:?}"
             );
         }
@@ -729,7 +967,9 @@ mod tests {
             &words("x"),
             &disk,
         );
-        assert!(begins.unwrap_err().contains("isn't a folder here"));
+        let refused = begins.unwrap_err();
+        assert_eq!(refused.code, Code::NotHere);
+        assert!(refused.why.contains("isn't a folder here"));
     }
 
     #[test]
@@ -821,7 +1061,153 @@ mod tests {
         assert!(
             folder(asked(None, Path::new("/tmp")), &pull, &disk)
                 .unwrap_err()
+                .why
                 .contains("--in")
+        );
+    }
+
+    const BASIN: &str = "/home/kestrel/basin/trees/root/src";
+
+    fn named(place: &str) -> Result<Begins, Refusal> {
+        begins(
+            asked(Some(Path::new(place)), Path::new("/home/kestrel")),
+            &words("x"),
+            &places::tests::home(),
+        )
+    }
+
+    #[test]
+    fn a_place_named_is_where_it_begins() {
+        for (place, begins_in) in [
+            ("//system/reef", format!("{BASIN}/system/reef")),
+            ("skiff", "/home/kestrel/src/skiff".to_owned()),
+            ("~/src/skiff", "/home/kestrel/src/skiff".to_owned()),
+            (
+                "tern",
+                "/home/kestrel/src/example.org/owner/tern".to_owned(),
+            ),
+        ] {
+            let begun = named(place).expect("it begins");
+            assert_eq!(begun.folder, PathBuf::from(begins_in), "{place}");
+            assert_eq!(begun.note, None, "{place}");
+        }
+    }
+
+    #[test]
+    fn a_plain_name_that_is_a_folder_where_it_was_asked_is_that_folder() {
+        let disk = places::tests::home();
+        let begun = folder(
+            asked(Some(Path::new("skiff")), Path::new("/home/kestrel/src")),
+            &words("x"),
+            &disk,
+        );
+        assert_eq!(begun, Ok(PathBuf::from("/home/kestrel/src/skiff")));
+        assert_eq!(
+            place_named(Path::new("src"), Path::new("/home/kestrel"), &disk),
+            None
+        );
+        assert_eq!(
+            place_named(Path::new("//src"), Path::new("/home/kestrel"), &disk),
+            Some("//src"),
+            "a zone's path is never a folder"
+        );
+    }
+
+    #[test]
+    fn a_zone_not_checked_out_begins_at_its_checkouts_top_saying_so() {
+        let begun = named("wren").expect("it begins");
+        assert_eq!(begun.folder, PathBuf::from(BASIN));
+        let note = begun.note.expect("it says why");
+        assert!(
+            note.contains("//areas/tools/wren, which isn't checked out in"),
+            "{note}"
+        );
+        assert!(note.contains("a tree of your own"), "{note}");
+    }
+
+    #[test]
+    fn the_note_is_said_after_the_first_words() {
+        let sprouted = starting(
+            &sprouting("tidy the rows", Some("wren"), None),
+            Path::new("/home/kestrel"),
+            Path::new("/home/kestrel"),
+            "osprey",
+            &places::tests::home(),
+        )
+        .expect("it starts");
+        assert_eq!(
+            sprouted.start.folder,
+            Some(PathBuf::from("basin/trees/root/src"))
+        );
+        let told = sprouted.start.command.join(" ");
+        assert!(
+            told.contains("Nobody else loads it. It was asked to begin in //areas/tools/wren"),
+            "{told}"
+        );
+    }
+
+    #[test]
+    fn a_place_named_that_is_none_or_several_is_refused_saying_which() {
+        let several = named("reef").err().expect("refused");
+        assert_eq!(several.code, Code::SeveralPlaces);
+        assert!(
+            several
+                .why
+                .ends_with("say which: //areas/reef, //system/reef"),
+            "{}",
+            several.why
+        );
+        for gone in ["gone", "//system/gone"] {
+            let none = named(gone).err().expect("refused");
+            assert_eq!(none.code, Code::NoSuchPlace, "{gone}");
+            assert!(none.why.contains("`mycelium places`"), "{gone}");
+        }
+    }
+
+    #[test]
+    fn a_link_to_no_repository_asked_from_home_needs_a_folder() {
+        let thread = link("https://chat.example.org/archives/C0B4K7/p1795540688");
+        let refused = folder(
+            asked(None, Path::new("/home/kestrel")),
+            &thread,
+            &places::tests::home(),
+        )
+        .unwrap_err();
+        assert_eq!(refused.code, Code::NeedsFolder);
+        assert!(refused.why.contains("--in <folder or place>"));
+    }
+
+    #[test]
+    fn a_link_into_a_places_checkout_begins_in_the_zone_it_points_into() {
+        let disk =
+            places::tests::home().fetching(BASIN, "https://mirror.example.org/owner/basin.git");
+        let begun =
+            |said: &str| folder(asked(None, Path::new("/home/kestrel")), &link(said), &disk);
+        assert_eq!(
+            begun("https://mirror.example.org/owner/basin/tree/main/system/reef/src"),
+            Ok(PathBuf::from(BASIN).join("system/reef"))
+        );
+        assert_eq!(
+            begun("https://mirror.example.org/owner/basin/pull/7"),
+            Ok(PathBuf::from(BASIN)),
+            "one to no path begins at the checkout's top"
+        );
+        assert!(
+            begun("https://elsewhere.org/owner/basin/pull/7").is_err(),
+            "another host's repository of that name isn't it"
+        );
+    }
+
+    #[test]
+    fn a_refusal_says_its_code_in_snake_case() {
+        assert_eq!(
+            serde_json::to_value([Code::NeedsFolder, Code::SeveralPlaces, Code::NotACell])
+                .expect("it writes"),
+            serde_json::json!(["needs_folder", "several_places", "not_a_cell"])
+        );
+        assert_eq!(
+            String::from(Refusal::new(Code::NoWork, "say what")),
+            "say what"
         );
     }
 
@@ -857,7 +1243,7 @@ mod tests {
             "kestrel",
             Some(PathBuf::from("src/skiff")),
             &words("make tea"),
-            None,
+            (None, None),
             ID,
         )
         .start;
@@ -969,7 +1355,10 @@ mod tests {
         );
         assert_eq!(
             refused,
-            Err("/home/kestrel/src/gone isn't a folder here".to_owned())
+            Err(Refusal::new(
+                Code::NotHere,
+                "/home/kestrel/src/gone isn't a folder here"
+            ))
         );
     }
 
@@ -979,7 +1368,10 @@ mod tests {
         let nothing = Held::of(&[], &[]);
         assert_eq!(
             starting(&sprouting("", None, None), home, home, "osprey", &nothing),
-            Err("say what the work is: a link or words".to_owned())
+            Err(Refusal::new(
+                Code::NoWork,
+                "say what the work is: a link or words"
+            ))
         );
         assert_eq!(
             starting(
@@ -989,7 +1381,10 @@ mod tests {
                 "osprey",
                 &nothing
             ),
-            Err("/home/kestrel/src/gone isn't a folder here".to_owned())
+            Err(Refusal::new(
+                Code::NotHere,
+                "/home/kestrel/src/gone isn't a folder here"
+            ))
         );
     }
 
@@ -1187,7 +1582,7 @@ mod tests {
             "tern",
             None,
             &words("make tea"),
-            Some("QEST-20261116-42P0R4"),
+            (Some("QEST-20261116-42P0R4"), None),
             ID,
         );
         let said = asked.left_out.told(&Ok(started_as("tern", "5e55")));
@@ -1208,7 +1603,13 @@ mod tests {
     // says which sprout the line is about.
     #[test]
     fn a_seed_too_long_is_said_of_the_session_holding_it() {
-        let asked = start("tern", None, &words(&"a".repeat(SEED_MOST + 1)), None, ID);
+        let asked = start(
+            "tern",
+            None,
+            &words(&"a".repeat(SEED_MOST + 1)),
+            (None, None),
+            ID,
+        );
         assert_eq!(seed_given(&asked.start), None, "no seed, so no id sent");
         let said = asked.left_out.told(&Ok(started_as("tern", "5e55")));
         assert_eq!(said.len(), 1);
@@ -1220,7 +1621,7 @@ mod tests {
 
     #[test]
     fn what_a_seed_left_out_is_said_only_once_its_session_started() {
-        let asked = start("tern", None, &words("make tea"), Some("QEST-1"), ID);
+        let asked = start("tern", None, &words("make tea"), (Some("QEST-1"), None), ID);
         assert_eq!(asked.left_out.told(&Ok(started_as("tern", "h"))).len(), 1);
         let refused: Reply = Err("the cell's start limit is reached".to_owned());
         assert!(
@@ -1239,7 +1640,7 @@ mod tests {
     // What is written to a log given the start's answer.
     #[test]
     fn the_log_is_written_what_was_left_out_once_a_session_started() {
-        let asked = start("tern", None, &words("make tea"), Some("QEST-1"), ID);
+        let asked = start("tern", None, &words("make tea"), (Some("QEST-1"), None), ID);
         let mut log = Vec::new();
         asked
             .left_out
@@ -1273,7 +1674,14 @@ mod tests {
 
     #[test]
     fn a_start_carries_its_seed_beside_its_first_words() {
-        let asked = start("kestrel", None, &words("make tea"), Some("HARBOR"), ID).start;
+        let asked = start(
+            "kestrel",
+            None,
+            &words("make tea"),
+            (Some("HARBOR"), None),
+            ID,
+        )
+        .start;
         assert_eq!(
             seed_given(&asked),
             Some(serde_json::json!({ "v": 1, "words": "make tea", "from": "HARBOR", "id": ID }))
@@ -1283,7 +1691,7 @@ mod tests {
     #[test]
     fn a_start_whose_words_run_past_the_most_a_session_reads_carries_no_seed() {
         let said = "a".repeat(SEED_MOST + 1);
-        let asked = start("kestrel", None, &words(&said), Some("HARBOR"), ID).start;
+        let asked = start("kestrel", None, &words(&said), (Some("HARBOR"), None), ID).start;
         assert_eq!(seed_given(&asked), None);
         assert!(asked.command[5].starts_with("QUEST_WORKFLOW_FIRST_TEXT="));
         assert_eq!(asked.command[6], "pi", "the first words alone stand");
@@ -1295,7 +1703,7 @@ mod tests {
         let work = home.path().join("src");
         std::fs::create_dir(&work).expect("a folder");
         let said = "make \"tea\" 'now'\nthen $(id); `id` & rm -rf ~ \\ $HOME";
-        let asked = start("kestrel", None, &words(said), Some("HARBOR"), ID).start;
+        let asked = start("kestrel", None, &words(said), (Some("HARBOR"), None), ID).start;
         let mut command = asked.command.clone();
         // pi's place takes one that says what it was given, and the guard
         // waits for nothing.

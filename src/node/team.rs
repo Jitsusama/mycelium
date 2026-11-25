@@ -534,6 +534,7 @@ mod tests {
             kind: "question".to_owned(),
             since: "2026-11-12T21:50:00Z".to_owned(),
             said: "Which way?".to_owned(),
+            asked: None,
         });
         let sessions = [
             session(

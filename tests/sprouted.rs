@@ -54,7 +54,7 @@ fn a_sprout_from_home_or_a_folder_in_it_asks_which_repository() {
         let (ran, said) = sprout(home.path(), &cwd, &["make", "tea"]);
         assert!(!ran, "it refused from {}: {said}", cwd.display());
         assert!(
-            said.contains("--in <folder>"),
+            said.contains("--in <folder or place>"),
             "it says what to name, not that the node is away: {said}"
         );
     }

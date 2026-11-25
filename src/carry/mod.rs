@@ -30,6 +30,7 @@ pub mod easing;
 pub mod ground;
 pub mod kept;
 pub mod ordered;
+pub mod secrets;
 pub mod settle;
 pub mod sleep;
 pub mod through;
@@ -40,6 +41,7 @@ use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub use self::ground::Lent;
 use crate::placement::{Need, Work};
 use crate::record::{Session, State};
 use crate::wire::{Start, Started, Taking};
@@ -218,6 +220,13 @@ pub trait Hands {
     ///
     /// When the node can't say.
     fn machines(&mut self) -> Result<Vec<String>, String>;
+    /// What the machine `to` is: one of the person's own, or a worker
+    /// that takes carries or takes none.
+    ///
+    /// # Errors
+    ///
+    /// When the node can't say.
+    fn lent(&mut self, to: &str) -> Result<Lent, String>;
     /// Every session the node knows of.
     ///
     /// # Errors
@@ -316,12 +325,14 @@ pub trait Hands {
     ///
     /// When it may not, with why.
     fn shareable(&mut self, quest: &str) -> Result<(), String>;
-    /// Shares the quest, with its handover.
+    /// Shares the quest, with its handover, for the machine `to`: given
+    /// to it alone where it is a worker that takes carries, once no file
+    /// in the handover names a secret.
     ///
     /// # Errors
     ///
-    /// When it can't be shared.
-    fn share(&mut self, quest: &str) -> Result<(), String>;
+    /// When it can't be shared, or the handover holds a secret.
+    fn share(&mut self, quest: &str, to: &str) -> Result<(), String>;
     /// Starts a program held where `start` says.
     ///
     /// # Errors
@@ -583,7 +594,7 @@ fn rest<F: FnMut(&Value)>(
         Stood::Doing,
         format!("sharing {quest} with its handover"),
     );
-    said.or_failed(Step::Share, hands.share(quest))?;
+    said.or_failed(Step::Share, hands.share(quest, to))?;
     said.line(
         Step::Share,
         Stood::Done,
@@ -794,6 +805,9 @@ fn find(
                 machines.join(", ")
             }
         ));
+    }
+    if hands.lent(to)? == Lent::TakesNone {
+        return Err(ground::takes_none(to));
     }
     hands.shareable(quest)?;
     let boot = hands.boot();
@@ -1374,7 +1388,7 @@ mod tests {
 
     use super::cell::Brought;
     use super::{
-        Asked, Carried, Done, Failed, Hands, Ordered, PI_CARRY, Refused, Step, Told, Untaken,
+        Asked, Carried, Done, Failed, Hands, Lent, Ordered, PI_CARRY, Refused, Step, Told, Untaken,
         carry, carry_told, runs_on, session_id, unordered_arrival,
     };
     use crate::placement::Need;
@@ -1429,6 +1443,10 @@ mod tests {
         /// What each session told refused.
         refused: Vec<Refused>,
         shared: Vec<String>,
+        /// What each machine is that isn't one of the person's own.
+        lent: BTreeMap<String, Lent>,
+        /// The workers each share was given to, as it was.
+        given: Vec<String>,
         started: Vec<Start>,
         /// Every tie the node holds.
         ties: Vec<Value>,
@@ -1625,8 +1643,14 @@ mod tests {
         fn shareable(&mut self, _quest: &str) -> Result<(), String> {
             self.unshareable.clone().map_or(Ok(()), Err)
         }
-        fn share(&mut self, quest: &str) -> Result<(), String> {
+        fn lent(&mut self, to: &str) -> Result<Lent, String> {
+            Ok(self.lent.get(to).copied().unwrap_or(Lent::Not))
+        }
+        fn share(&mut self, quest: &str, to: &str) -> Result<(), String> {
             self.shared.push(quest.to_owned());
+            if self.lent(to)? == Lent::TakesCarries {
+                self.given.push(to.to_owned());
+            }
             Ok(())
         }
         fn start(&mut self, start: Start) -> Result<Started, String> {
@@ -2405,6 +2429,46 @@ mod tests {
                 "{to}: nothing moved"
             );
         }
+    }
+
+    #[test]
+    fn a_worker_that_takes_no_carries_is_refused_before_anything_moves() {
+        let mut realm = Realm {
+            lent: [("tern".to_owned(), Lent::TakesNone)].into(),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        assert_eq!(done, Err(Failed { step: Step::Find }), "refused");
+        assert_eq!(
+            lines.last().and_then(|line| line["said"].as_str()),
+            Some(
+                "tern is a worker that doesn't declare it takes carries, so nothing is \
+                 carried there"
+            ),
+            "saying why: {lines:?}"
+        );
+        assert!(
+            realm.steered.is_empty() && realm.shared.is_empty() && realm.started.is_empty(),
+            "nothing moved"
+        );
+    }
+
+    #[test]
+    fn a_worker_that_takes_carries_is_given_the_quest_as_it_is_shared() {
+        let mut worker = Realm {
+            lent: [("tern".to_owned(), Lent::TakesCarries)].into(),
+            ..realm()
+        };
+        let (done, _) = carried(&mut worker, "tern");
+        done.expect("carried");
+        assert_eq!(worker.shared, [QUEST], "shared once");
+        assert_eq!(worker.given, ["tern"], "and given to the worker alone");
+        let mut own = realm();
+        carried(&mut own, "tern").0.expect("carried");
+        assert!(
+            own.given.is_empty(),
+            "one of the person's own is given nothing"
+        );
     }
 
     #[test]

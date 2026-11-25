@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 use serde::Deserialize as _;
 
 use super::{
-    Builds, Cell, EventLine, Is, MACHINES, Mycelium, Network, Places, Shape, Share, Tree, Usage,
-    kept,
+    ASKED_MOST, Builds, Cell, EventLine, Is, MACHINES, Mycelium, Network, Places, Shape, Share,
+    Tree, Usage, kept,
 };
 use crate::receptor::{self, Counts, Source};
 use crate::swarm::{self, Standing};
@@ -228,6 +228,7 @@ fn bare(name: String, is: Is) -> Cell {
         standing: None,
         doing: None,
         asks: None,
+        asked: None,
         repo: None,
         subjects: Vec::new(),
         usage: Usage::default(),
@@ -329,6 +330,37 @@ pub const MOST_SUBJECTS: usize = 12;
 
 /// The most characters one subject holds.
 const SUBJECT_MOST: usize = 120;
+
+/// What a cut [`asked_whole`] makes ends in, so it reads as cut.
+const ASKED_CUT: &str = " [...]";
+
+/// A want's whole question as a cell carries it: its lines and
+/// paragraphs kept, each line or paragraph separator a line's end, a
+/// carriage return gone, every other control character a space and each
+/// mark turning text's direction gone, so it draws as lines of its own
+/// and steers no terminal. Past [`ASKED_MOST`] characters it is cut,
+/// ending in [`ASKED_CUT`]. None where nothing is left to read.
+fn asked_whole(asked: &str) -> Option<String> {
+    let kept: String = asked
+        .chars()
+        .filter(|each| *each != '\r' && !crate::forage::turns_direction(*each))
+        .map(|each| match each {
+            '\n' | '\u{2028}' | '\u{2029}' => '\n',
+            each if each.is_control() => ' ',
+            each => each,
+        })
+        .collect();
+    let kept = kept.trim();
+    if kept.is_empty() {
+        return None;
+    }
+    if kept.chars().count() <= ASKED_MOST {
+        return Some(kept.to_owned());
+    }
+    let room = ASKED_MOST - ASKED_CUT.chars().count();
+    let cut: String = kept.chars().take(room).collect();
+    Some(format!("{}{ASKED_CUT}", cut.trim_end()))
+}
 
 /// The first [`MOST_SUBJECTS`] subjects a presence declares, each a
 /// string of at most [`SUBJECT_MOST`] characters with nothing a terminal
@@ -575,6 +607,7 @@ fn session_cell(session: &Value) -> Option<Cell> {
         standing: Some(standing.counted()),
         doing: standing.doing(session).map(str::to_owned),
         asks: session["wants"]["said"].as_str().map(str::to_owned),
+        asked: session["wants"]["asked"].as_str().and_then(asked_whole),
         repo: session["presence"]["repo"].as_str().map(str::to_owned),
         subjects: subjects(&session["presence"]["subjects"]),
         usage: Usage::of(session),

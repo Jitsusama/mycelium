@@ -459,7 +459,8 @@ Three seams shape a link:
   said too is taken over it.
   A machine reached so is a worker: it is asked and asks
   nothing back. Its end's starts, steers, updates, carries, ends and
-  runs are refused, its follows are ignored, and a presence of its
+  runs are refused (what it asks: a carry to a worker is Carrying a
+  Quest's to judge), its follows are ignored, and a presence of its
   naming another machine isn't kept, nor one answering to an id or
   address a session living or parked here or through another link
   answers to, nor a reply to an ask it wasn't
@@ -662,7 +663,10 @@ in order and says each step:
 
 1. `find`: the quest's sessions on this machine that can carry their own
    work, those running and those parked this boot. A machine not in reach,
-   or this one, is refused. So is a carry whose sessions' starts the
+   or this one, is refused. So is one to a worker (The Link) whose
+   `declared` doesn't say `takes_carries`, as `tern is a worker that
+   doesn't declare it takes carries, so nothing is carried there`.
+   So is a carry whose sessions' starts the
    machine wouldn't take: the node is asked `"Takes"` once, with each
    session's arrival and the quest's own, and its refusal is said, as
    `HARBOR's sessions can't start on osprey now: this asks as a fenced
@@ -780,7 +784,15 @@ in order and says each step:
    weighed as a hub by its cell's talk. Carried on again, it brings
    that cell.
 3. `share`: the quest is shared with `handover`, as `mycelium share
-   --scratch handover` does.
+   --scratch handover` does; to a worker, as `--to` does, giving it
+   the quest alone, once no file in the whole handover, links passed
+   over unfollowed, is named as a secret is: `auth.json`, `.netrc`, a
+   private ssh key, one ending `.pem`, `.key`, `.p12`, `.pfx` or
+   `.tpm`, or one with the word `credentials` or `token` in its name
+   that isn't a bundle, patch, log or done file. One that is refuses
+   the carry, naming it. What a bundle or a log holds isn't read. The
+   node logs each carried session started on a worker, naming it, its
+   quest and the worker.
 4. `start`: each carried session starts again on the machine, held:
    those told to carry first, then the quest's own, then those the find
    couldn't ask of, so a refusal the ask couldn't foresee meets no
@@ -869,12 +881,14 @@ session says of itself:
   only that session hands it on, by forgetting it, or by ending once
   continued, as a session whose log's first line, `<time>_<id>.jsonl`
   under pi's `sessions` folder, names it as `parentSession`, by its id
-  or, as pi writes it, its log's path, of which only the file name is
-  read. A session continuing one that still runs, as a fork does, takes
-  nothing of its. What a session claimed passes, once it neither runs
-  nor waits parked, to the one session standing whose log continues
-  its own, through at most eight logs; where any other number do, it
-  lapses, as the record is next read or changed, so an
+  or, as pi writes it, its log's path, read for the session its file
+  name names, else whole as an id, and never opened. A session
+  continuing one that still runs or waits parked, as a fork does,
+  takes nothing of its. What a session
+  claimed passes, once it neither runs nor waits parked, to the one
+  session standing whose log continues its own, through at most eight
+  logs, where that session holds no claim of its own; where any other
+  number do, it lapses, as the record is next read or changed, so an
   orchestrator started afresh claims its quests again and one ended
   holds nothing; and the person's
   own login, never an agent's, frees a quest from whichever session
@@ -909,7 +923,9 @@ session says of itself:
   each of `to`'s `fence` and `strict` fences it declares must declare
   its `runs` too, or the carry is refused before any session is told
   to carry and ends (The Socket). A node easing itself never chooses
-  such a machine.
+  such a machine. A worker is firm ground only where its `declared`
+  says `takes_carries`, and never for a strict session, since a
+  worker's strict fence is its own word, which no node holds it to.
 - The fence it names is never looser than its process shows. The
   node reads the proved owner's process: `PI_SANDBOX` in the
   environment it began with (`strict` or `fence`), and, for a pi that
@@ -1507,7 +1523,8 @@ reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"PlaceToStart": work}` | `{"Placement": placement}`, as `"Place"` for a start, counted here as one |
 | `{"Start": {"work", "folder", "strict", "command", "may_cost", "once"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
 | `{"Takes": {"starts", "ordered"}}` | `{"Placement": placement}`, the last start's, placed as `"Start"` would, or a refusal; starts nothing |
-| `{"Sprout": {"words", "folder", "from", "on", "cwd"}}` | `{"Started": {"machine", "held", "folder", "attach"}}`, as for `"Start"` |
+| `{"Sprout": {"words", "folder", "from", "on", "cwd"}}` | `{"Started": {"machine", "held", "folder", "attach"}}`, as for `"Start"`, or `{"Refused": {"code", "why"}}` |
+| `{"Places": {}}` | `{"Places": [{"folder", "name", "kind", "out", "checkOut"}]}`, where work can begin, as the asker sees the disk |
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by", "carries_on"}}`, where it was put, who ordered a carry, and whether the node carries it on |
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
 | `{"Free": {"quest"}}` | `"Orchestrated"`, freed, from the person's own login |
@@ -1549,7 +1566,11 @@ from another realm, carry the node's, and say neither `hosted` nor
 `invite`; one a link carried from another machine carries a process
 there. So a session knows its own by `pid` only beside its `from`, and
 only for what it wrote itself. `invite` is the mesh target as written
-(`#harness`), not a group's name (`harness`).
+(`#harness`), not a group's name (`harness`). Every other field its
+file says, as a hold's `starts` and `ends`, a watch says as the file
+does, beside these, so a field a sender adds reaches those reading
+through a node built before it. None of them crosses into another
+realm, and a link carries a message's file whole, as it always has.
 
 A `Present` connection counts the process at its other end, as the
 kernel names it, present until the connection closes; then every session
@@ -1582,7 +1603,8 @@ A session's `state` is `busy`, `idle`, `ended`, or `unreachable` while no
 link reaches its machine. Beside its `id`, `address`, `machine` and
 `groups`, it carries what its presence says of it: its `quest` by id (or,
 from an older presence, the quest among what it owns), what it `wants` of
-its person (`kind`, `since`, `said`) while it waits, the `landings` it
+its person (`kind`, `since`, `said` and, where it says more, the
+whole text it `asked` in) while it waits, the `landings` it
 says it made lately, newest first (each `at`, `ref`, a one-line `what`
 and, when it means something to its person, `person`; any it can't read is
 left out), what its plan is `doing` (its `plan` by id, the `item` it works
@@ -1838,6 +1860,10 @@ than every cell in it: lower-case letters, digits and hyphens, at most
 63, read as no basin in any other shape, which spoils nothing else
 declared. It is the cell's own word and only ever drawn, never weighed
 in placement.
+Where true, `takes_carries` says a worker takes carried sessions, as
+one made to take load off the person's machines does: a carry to a
+worker that doesn't say so is refused (Carrying a Quest), and one of
+the person's own machines takes carries either way.
 Where given, `fence` says the fences an agent session runs in there, by
 kind (`none`, `fence` or `strict`), each with the doors it opens:
 `{"strict": {"builders": [...], "forges": [...], "secrets": [...]}}`,
@@ -2516,12 +2542,44 @@ as it connected, so an id taken again is refused. Where that can't be
 read, as on a Mac, once the asker has gone, or where the kernel can't
 keep a path inside a root, the person's sprout is judged on the node's
 disk from `cwd`, where the asker says it is, and an agent's is refused.
-Refusals are errors saying why: `say what
-the work is: a link or words`, `<folder> isn't a folder here`, a home
-folder's, a folder with no repository's, or `an agent's sprout is judged
-on the disk as it sees it, and <why it can't be read>; the person can
-start it`. `mycelium sprout` judges the sprout on its own disk first, so
-it refuses what the node would without asking it. A node from before
+`folder` may instead name a place, as `"Places"` lists them: a zone by
+its path, `//<path>`, a checkout from `~`, as `~/src/skiff`, or one
+plain name that isn't a folder where the asker is, which is the last
+step of exactly one place's name, as `reef` names `//system/reef`. A
+zone checked out begins in it; one not checked out begins at its
+checkout's top, the session told to work in a tree of its own that has
+the zone, since checking it out there changes the tree for everyone in
+it. With no folder named, a link to a repository no checkout under
+`~/src` holds begins in a place's checkout that fetches from it, and a
+link's `tree/<ref>/<path>` or `blob/<ref>/<path>` begins in the deepest
+zone checked out there that the path lies in.
+
+What the judging refuses is answered `{"Refused": {"code", "why"}}`,
+as a crossing's refusal is, `why` saying it in words and `code` one of
+`no_work` (`say what the work is: a link or words`), `not_a_cell`,
+`not_here` (`<folder> isn't a folder here`), `needs_folder` (named
+home, or asked from no repository with none named: `it needs a
+repository to work in, and <folder> isn't one: say which, ...`),
+`no_such_place` or `several_places` (naming the first eight). A
+launcher offers the places on `needs_folder`. Anything else is an
+error saying why, as `an agent's sprout is judged on the disk as it
+sees it, and <why it can't be read>; the person can start it`.
+`mycelium sprout` judges the sprout on its own disk first, so it
+refuses what the node would without asking it, printing the same
+`"Refused"` with `-o json`.
+
+`"Places"` lists where work can begin on this machine, judged on the
+disk as the asker sees it, as a sprout is, and refused for an agent
+whose view can't be read: each repository checked out at `~/src/<repo>`
+or `~/src/<host>/<owner>/<repo>`; the tree on `main`, else `master`, of
+each bare repository at `~/<name>` or `~/<name>/<name>`, hidden folders
+passed over; and each zone a checkout's `.meta/manifest.json` names, a
+JSON object whose keys are `//<path>`, each step a plain name, read up
+to 8 MiB. `name` is a zone's path, or a checkout's folder from `~`;
+`kind` is `checkout` or `zone`; `out` is true for a zone not checked
+out, and only then `checkOut` says the command that checks it out
+(`git -C <checkout> sparse-checkout add <path>`). `mycelium places`
+prints it. A node from before
 `"Sprout"` answers `not a request: unknown variant` naming it, and
 `mycelium sprout` then asks for the `"Start"` it judged.
 
@@ -3301,9 +3359,12 @@ such as `slack@kestrel`. Each is the very cell that
 same records as the `network` kind, less its `kind`: its `type`
 (`session`, `machine` or `receptor`), and where it says them its
 `title`, a session's `id`, `window`, `standing` (`needs-you`, `stuck`,
-`moving`, `quiet` or `dormant`), `doing`, `asks`, `repo`, the
-`subjects` its presence declares (the first 12 strings of at most 120
-characters a terminal draws as plain text), `usage`, the networks it
+`moving`, `quiet` or `dormant`), `doing`, `asks`, `asked` (the whole
+text its want asks in, where the session says one: its lines and
+paragraphs kept, nothing else that steers a terminal, cut past 4096
+characters to end in a space and `[...]`), `repo`,
+the `subjects` its presence declares (the first 12 strings of at most
+120 characters a terminal draws as plain text), `usage`, the networks it
 `leads`, `machine`, `since`, `quest`, `started_by` (the cell its
 session's record says a book of starts names, else the orchestrator it
 names, each only as an address other than its own) with

@@ -271,6 +271,21 @@ pub struct Cpu {
     pub busy: Option<f64>,
 }
 
+/// This boot's id, where the system mints one at each boot: the id the
+/// harness writes in a session's owner, so the two agree on which parks
+/// this boot made. None where the system names no boot, or hasn't said.
+#[must_use]
+pub fn boot_id() -> Option<String> {
+    said_boot(&here::boot()?)
+}
+
+/// A boot's id as the system said it, its line's end let go; none where
+/// nothing is left.
+fn said_boot(said: &str) -> Option<String> {
+    let id = said.trim();
+    (!id.is_empty()).then(|| id.to_owned())
+}
+
 /// The count processor use is measured from, kept between measures.
 static SAMPLER: std::sync::Mutex<Option<busy::Sampler>> = std::sync::Mutex::new(None);
 
@@ -495,6 +510,11 @@ mod here {
         crate::busy::linux(&fs::read_to_string("/proc/stat").ok()?)
     }
 
+    /// This boot's id, as procfs says it.
+    pub(super) fn boot() -> Option<String> {
+        fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()
+    }
+
     /// Each power supply the kernel lists, or none where it can't list
     /// them.
     fn supplies() -> Option<Vec<linux::Supply>> {
@@ -689,6 +709,15 @@ mod here {
         mach::cores().map(|cores| crate::busy::mac(&cores))
     }
 
+    /// This boot's id, `kern.bootsessionuuid`, which macOS mints at each
+    /// boot as Linux mints its own. `kern.boottime` beside it is no id: it
+    /// follows the clock, so a park made this boot would read as an earlier
+    /// boot's once NTP moved it.
+    pub(super) fn boot() -> Option<String> {
+        static BOOT: OnceLock<String> = OnceLock::new();
+        said_once(&BOOT, "/usr/sbin/sysctl", &["-n", "kern.bootsessionuuid"])
+    }
+
     mod mach {
         //! The Mach host's count of each core's time. A Mac says it
         //! nowhere else: no file holds it, and `top` or `iostat` would
@@ -835,6 +864,11 @@ mod here {
 
     /// Nothing counts its cores' time.
     pub(super) fn ticks() -> Option<crate::busy::Ticks> {
+        None
+    }
+
+    /// Nothing names a boot.
+    pub(super) const fn boot() -> Option<String> {
         None
     }
 
@@ -1006,6 +1040,25 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_boot_is_named_by_what_its_system_said_less_its_line_end() {
+        assert_eq!(
+            said_boot("0B5E4C1A-55F2-4B7E-9C2D-3A1F6E8D7B40\n").as_deref(),
+            Some("0B5E4C1A-55F2-4B7E-9C2D-3A1F6E8D7B40"),
+            "sysctl's line and procfs's each end in a newline the id lacks"
+        );
+        assert_eq!(said_boot(" \n"), None, "a blank answer names no boot");
+    }
+
+    #[test]
+    fn this_machine_names_its_boot_where_its_system_mints_one() {
+        // Both systems the node is built for mint an id at each boot, so
+        // the link's test of parks from an earlier boot holds on each.
+        if cfg!(any(target_os = "linux", target_os = "macos")) {
+            assert!(boot_id().is_some(), "this boot is named");
+        }
+    }
 
     #[test]
     fn a_machine_naming_a_band_this_build_doesnt_know_keeps_the_rest() {

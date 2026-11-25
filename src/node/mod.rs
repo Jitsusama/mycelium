@@ -620,7 +620,9 @@ fn shown_since() -> jiff::Timestamp {
 /// disk as the asker sees it where `processes` shows it: the asker's
 /// process and its start ticks as it connected. Where that can't be
 /// read, the person's ask is judged on this disk from where it says it
-/// is, and an agent's is refused, since its view is the bound.
+/// is, and an agent's is refused, since its view is the bound. What the
+/// judging refuses is answered `Refused` with its code, so a launcher
+/// tells each apart; anything else, `Err`.
 fn sprouted(
     asked: &Sprout,
     by: By,
@@ -628,12 +630,15 @@ fn sprouted(
     processes: &Processes,
     home: &Path,
     here: &str,
-) -> Result<sprout::Sprouted, String> {
+) -> Result<sprout::Sprouted, Answer> {
     #[cfg(target_os = "linux")]
     let unseen = match (connected, processes.kernel()) {
         (Some((pid, ticks)), Processes::Folder(procs)) => {
             match viewed::Viewed::of(procs, pid, ticks) {
-                Ok(view) => return sprout::starting(asked, view.cwd(), home, here, &view),
+                Ok(view) => {
+                    return sprout::starting(asked, view.cwd(), home, here, &view)
+                        .map_err(Answer::Refused);
+                }
                 Err(why) => why,
             }
         }
@@ -647,11 +652,39 @@ fn sprouted(
     match by {
         By::Person => {
             let cwd = asked.cwd.as_deref().unwrap_or(home);
-            sprout::starting(asked, cwd, home, here, &sprout::ThisDisk)
+            sprout::starting(asked, cwd, home, here, &sprout::ThisDisk).map_err(Answer::Refused)
         }
-        By::Agent(_) => Err(format!(
+        By::Agent(_) => Err(Answer::Err(format!(
             "an agent's sprout is judged on the disk as it sees it, and {unseen}; \
              the person can start it"
+        ))),
+    }
+}
+
+/// The places work can begin in under `home`, listed as a sprout is
+/// judged ([`sprouted`]): on the disk as the asker sees it where
+/// `processes` shows it, else on this disk for the person, and for no
+/// agent, so an agent is never shown a place it couldn't begin in.
+fn placed(by: By, connected: Option<(i32, u64)>, processes: &Processes, home: &Path) -> Reply {
+    #[cfg(target_os = "linux")]
+    let unseen = match (connected, processes.kernel()) {
+        (Some((pid, ticks)), Processes::Folder(procs)) => {
+            match viewed::Viewed::of(procs, pid, ticks) {
+                Ok(view) => return Ok(Response::Places(crate::places::on(home, &view))),
+                Err(why) => why,
+            }
+        }
+        _ => "the asker's folders can't be read here".to_owned(),
+    };
+    #[cfg(not(target_os = "linux"))]
+    let unseen = {
+        let _ = (connected, processes);
+        "the asker's folders can't be read here".to_owned()
+    };
+    match by {
+        By::Person => Ok(Response::Places(crate::places::on(home, &sprout::ThisDisk))),
+        By::Agent(_) => Err(format!(
+            "an agent's places are those on the disk as it sees it, and {unseen}"
         )),
     }
 }
@@ -2466,6 +2499,18 @@ fn keep_forages(
         said.forages.clone(),
     ));
     to_read
+}
+
+/// The carried session `command` starts, in words for the log: its
+/// session, its quest and the machine it left; or none, where it starts
+/// no carried session.
+fn carried_words(command: &[String]) -> Option<String> {
+    crate::carry::arrives(command).map(|arrives| {
+        format!(
+            "session {} of {} from {}",
+            arrives.session, arrives.quest, arrives.from
+        )
+    })
 }
 
 /// Whether a start asked by `by` to run `command` is marked as the
@@ -4503,6 +4548,7 @@ impl<S: Store> Shared<S> {
             }
             Request::Relayed { .. } => Err("a relayed start is answered by `relayed`".to_owned()),
             Request::Sprout(_) => Err("a sprout is answered by `sprout`".to_owned()),
+            Request::Places {} => Err("places are answered by `places`".to_owned()),
             Request::Run(_) => Err("a run is answered by `run`".to_owned()),
             Request::Lend(_) => Err("a lend is answered by `lend`".to_owned()),
             Request::Offers => Err("offers are answered by `offers`".to_owned()),
@@ -6359,17 +6405,37 @@ impl<S: Store> Shared<S> {
     /// where it couldn't reach itself. Where the asker's view can't be
     /// read, the person's ask is judged on the node's disk and an agent's
     /// is refused. It starts as a [`Start`] does, under the same limits.
-    async fn sprout(&self, asked: Sprout) -> Reply {
+    /// The places work can begin in, as the asker sees them ([`placed`]).
+    async fn places(&self) -> Reply {
         let (by, _) = self.judged().await?;
         let home = std::env::home_dir().ok_or("the node has no home folder")?;
+        let (client, started, processes) =
+            (self.client, self.client_started, self.processes.clone());
+        tokio::task::spawn_blocking(move || placed(by, client.zip(started), &processes, &home))
+            .await
+            .map_err(|error| format!("the places couldn't be read: {error}"))?
+    }
+
+    async fn sprout(&self, asked: Sprout) -> Answer {
+        let by = match self.judged().await {
+            Ok((by, _)) => by,
+            Err(why) => return Answer::Err(why),
+        };
+        let Some(home) = std::env::home_dir() else {
+            return Answer::Err("the node has no home folder".to_owned());
+        };
         let here = self.machine.clone();
         let (client, started, processes) =
             (self.client, self.client_started, self.processes.clone());
-        let sprout::Sprouted { start, left_out } = tokio::task::spawn_blocking(move || {
+        let judged = tokio::task::spawn_blocking(move || {
             sprouted(&asked, by, client.zip(started), &processes, &home, &here)
         })
-        .await
-        .map_err(|error| format!("the sprout couldn't be judged: {error}"))??;
+        .await;
+        let sprout::Sprouted { start, left_out } = match judged {
+            Ok(Ok(sprouted)) => sprouted,
+            Ok(Err(refused)) => return refused,
+            Err(error) => return Answer::Err(format!("the sprout couldn't be judged: {error}")),
+        };
         let reply = self.start(start).await;
         // A log that can't be written takes nothing from the asker, whose
         // session started or didn't as the reply says.
@@ -6381,7 +6447,7 @@ impl<S: Store> Shared<S> {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _ = left_out.tell(&reply, &mut *log);
         drop(log);
-        reply
+        reply.into()
     }
 
     /// Starts a program held where placement chooses, as [`Self::placed`]
@@ -6629,6 +6695,24 @@ impl<S: Store> Shared<S> {
             self.rejudge.notify_one();
         }
         started.map(Response::Started)
+    }
+
+    /// Says in this node's log a carried session, as `arriving` names it
+    /// ([`carried_words`]), started on a worker, as `started` says, so
+    /// every carry to a lent machine is kept here, on the person's own.
+    fn says_carried_to_a_worker(&self, arriving: Option<&str>, started: &Started) {
+        let Some(arriving) = arriving else {
+            return;
+        };
+        let worker = self.others().into_iter().any(|one| {
+            one.name == started.machine && crate::carry::Lent::of(&one) != crate::carry::Lent::Not
+        });
+        if worker {
+            eprintln!(
+                "mycelium: carried {arriving} to {}, a worker",
+                started.machine
+            );
+        }
     }
 
     /// Whether a reopening asked `whither` by `by` goes unfenced: asked
@@ -7173,7 +7257,8 @@ impl<S: Store> Shared<S> {
     /// to move. A reopening let through unfenced (`reopens`) is placed
     /// as a start with no fence is, as [`Self::here`] places one, and
     /// only on the machine it names ([`Self::placed`]). It was asked at
-    /// `at`, in milliseconds of the wall clock.
+    /// `at`, in milliseconds of the wall clock. A carried session placed
+    /// on a worker is told in the log ([`Self::says_carried_to_a_worker`]).
     async fn placed_held(&self, asked: Start, by: By, reopens: bool, at: i64) -> Reply {
         if reopens {
             return self
@@ -7185,7 +7270,12 @@ impl<S: Store> Shared<S> {
             eprintln!("{}", told_unfenced_held(above, &asked));
         }
         let screen = held_or_run(unfenced.is_some(), by);
-        self.placed((asked, at), fence_of(by), screen, false).await
+        let arriving = carried_words(&asked.command);
+        let placed = self.placed((asked, at), fence_of(by), screen, false).await;
+        if let Ok(Response::Started(started)) = &placed {
+            self.says_carried_to_a_worker(arriving.as_deref(), started);
+        }
+        placed
     }
 
     /// Where each of `asked`'s starts would be placed as
@@ -8396,7 +8486,8 @@ async fn answered<S: Store>(shared: &Shared<S>, request: Result<Request, String>
         Ok(Request::Start(asked)) => shared.start(asked).await.into(),
         Ok(Request::Takes(asked)) => shared.would_take(&asked).await.into(),
         Ok(Request::Relayed { from, start }) => shared.relayed(&from, start).await.into(),
-        Ok(Request::Sprout(asked)) => shared.sprout(asked).await.into(),
+        Ok(Request::Sprout(asked)) => shared.sprout(asked).await,
+        Ok(Request::Places {}) => shared.places().await.into(),
         Ok(Request::Steer { address, steer }) => shared.steer(&address, &steer).await.into(),
         Ok(Request::End { held }) => shared.end(&held).await.into(),
         Ok(Request::Orchestrates { heads, quests }) => {
@@ -12807,7 +12898,8 @@ esac
             .await,
             Err(
                 "WCJQSG's session already orchestrates QEST-20261115-HARBOR by this node's \
-                 record, so OSPHT4 can't: only that session hands it on, or the person"
+                 record, so OSPHT4 can't: only that session hands it on, by letting go or by \
+                 ending once a session continues its log, or the person"
                     .to_owned()
             ),
             "a session taking another's quest is refused"
@@ -12889,6 +12981,17 @@ esac
         .expect("written");
         stops(&store, "s-steward");
         assert_eq!(
+            claims(&socket, 7003, Some("QEST-20261007-WCJQSG"), &quests).await,
+            Err(
+                "OSPHT4's session already heads QEST-20261007-WCJQSG by this node's record, so \
+                 HARBOR can't: only that session hands it on, by letting go or by ending once a \
+                 session continues its log, or the person"
+                    .to_owned()
+            ),
+            "once the steward stops, its claim passes to the session continuing it, not to \
+             whoever asks first"
+        );
+        assert_eq!(
             claims(&socket, 7002, Some("QEST-20261007-WCJQSG"), &quests).await,
             Ok(Response::Orchestrated),
             "one whose log continues it does, once the steward has stopped"
@@ -12932,7 +13035,8 @@ esac
             claims(&socket, 7002, Some("QEST-20261007-WCJQSG"), &quests).await,
             Err(
                 "WCJQSG's session already heads QEST-20261007-WCJQSG by this node's record, so \
-                 OSPHT4 can't: only that session hands it on, or the person"
+                 OSPHT4 can't: only that session hands it on, by letting go or by ending once a \
+                 session continues its log, or the person"
                     .to_owned()
             ),
             "a fork of a steward still running takes nothing of its"
@@ -22517,6 +22621,7 @@ esac
             .put_machine(&facts::Machine {
                 declared: Some(crate::declared::Declared {
                     pi_fences_itself: false,
+                    takes_carries: false,
                     reach: Vec::new(),
                     probes: BTreeMap::new(),
                     outlives: Vec::new(),
@@ -23119,7 +23224,7 @@ esac
         };
 
         let started = link.sprout(sprout("skiff")).await;
-        let Ok(Response::Started(started)) = started else {
+        let Answer::Ok(Response::Started(started)) = started else {
             panic!("the person's sprout starts here: {started:?}");
         };
         let said = logged();
@@ -23135,7 +23240,10 @@ esac
 
         kept.lock().expect("the log").clear();
         let refused = link.sprout(sprout("tern")).await;
-        assert!(refused.is_err(), "no link reaches tern: {refused:?}");
+        assert!(
+            matches!(refused, Answer::Err(_)),
+            "no link reaches tern: {refused:?}"
+        );
         assert_eq!(logged(), "", "nothing for a start refused");
     }
 
@@ -23160,6 +23268,12 @@ esac
             !marks_a_carry(By::Person, &["pi".to_owned()]),
             "nor the person's other starts"
         );
+        assert_eq!(
+            carried_words(&carry).as_deref(),
+            Some("session s-harbour of QEST-20261013-4UHC5Q from tern"),
+            "the log names what a carry starts"
+        );
+        assert_eq!(carried_words(&["pi".to_owned()]), None, "and nothing else");
     }
 
     /// The strength tie `record` has now, faded as every reader of ties
@@ -23553,6 +23667,7 @@ esac
             .put_machine(&facts::Machine {
                 declared: Some(crate::declared::Declared {
                     pi_fences_itself: false,
+                    takes_carries: false,
                     reach: Vec::new(),
                     probes: BTreeMap::new(),
                     outlives: Vec::new(),
@@ -23845,11 +23960,11 @@ esac
 
         assert_eq!(
             refused,
-            Err(
+            Err(Answer::Err(
                 "an agent's sprout is judged on the disk as it sees it, and the asker's \
                  folders can't be read here; the person can start it"
                     .to_owned()
-            )
+            ))
         );
     }
 
@@ -23872,6 +23987,35 @@ esac
         .start;
 
         assert_eq!(start.folder, Some(PathBuf::from("src/rows")));
+    }
+
+    #[test]
+    fn places_whose_askers_view_cant_be_read_are_listed_for_the_person_alone() {
+        let place = tempfile::tempdir().expect("a place");
+        let home = place.path().canonicalize().expect("real");
+        fs::create_dir_all(home.join("src/rows/.git")).expect("a checkout");
+
+        let persons = placed(By::Person, None, &Processes::Listed, &home);
+        let agents = placed(
+            By::Agent(crate::declared::Kind::Fence),
+            None,
+            &Processes::Listed,
+            &home,
+        );
+
+        let Ok(Response::Places(listed)) = persons else {
+            panic!("the person's places are listed: {persons:?}");
+        };
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "~/src/rows");
+        assert_eq!(
+            agents,
+            Err(
+                "an agent's places are those on the disk as it sees it, and the asker's \
+                 folders can't be read here"
+                    .to_owned()
+            )
+        );
     }
 
     /// The README of quest `id` of `realm`, making `claims` for its

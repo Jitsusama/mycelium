@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::cell::{self, Brought};
-use super::{Done, Hands, PI_CARRY, Refused, Told, Untaken};
+use super::{Done, Hands, Lent, PI_CARRY, Refused, Told, Untaken, ground, secrets};
 use crate::client::Client;
 use crate::placement::Placement;
 use crate::record::Session;
@@ -131,6 +131,17 @@ impl Hands for Through {
         }
     }
 
+    fn lent(&mut self, to: &str) -> Result<Lent, String> {
+        match self.ask(&Request::Machines)? {
+            Response::Machines(machines) => Ok(machines
+                .iter()
+                .skip(1)
+                .find(|one| one.name == to)
+                .map_or(Lent::Not, Lent::of)),
+            other => Err(format!("the node answered {other:?} for its machines")),
+        }
+    }
+
     fn sessions(&mut self) -> Result<Vec<Session>, String> {
         match self.ask(&Request::Sessions)? {
             Response::Sessions(sessions) => Ok(sessions),
@@ -215,12 +226,33 @@ impl Hands for Through {
             .map_err(|error| error.to_string())
     }
 
-    fn share(&mut self, quest: &str) -> Result<(), String> {
+    fn share(&mut self, quest: &str, to: &str) -> Result<(), String> {
         debug_assert_eq!(quest, self.quest, "a carry shares its own quest");
-        self.shares
-            .offer(quest, &["handover".to_owned()])
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        let scratch = ["handover".to_owned()];
+        let shared = match self.lent(to)? {
+            Lent::Not => self.shares.offer(quest, &scratch),
+            Lent::TakesNone => return Err(ground::takes_none(to)),
+            Lent::TakesCarries => {
+                // The whole handover, every machine's, since a worker is
+                // served all of it.
+                let handover = self.shares.scratch.join(quest).join("handover");
+                let found = secrets::first_in(&handover).map_err(|error| {
+                    format!("{quest}'s handover can't be told free of secrets: {error}")
+                })?;
+                if let Some(secret) = found {
+                    return Err(format!(
+                        "{} names a secret, so {quest} isn't given to {to}, a worker",
+                        secret.display()
+                    ));
+                }
+                let given = self.shares.offer_to(to, quest, &scratch);
+                if given.is_ok() {
+                    eprintln!("mycelium: {quest} given to {to}, a worker, for a carry");
+                }
+                given
+            }
+        };
+        shared.map(|_| ()).map_err(|error| error.to_string())
     }
 
     fn start(&mut self, start: Start) -> Result<Started, String> {
@@ -987,6 +1019,81 @@ mod tests {
             refusals(handover, began).is_err(),
             "one naming another session than its file stops the carry"
         );
+    }
+
+    #[test]
+    fn a_worker_is_given_a_quest_whose_handover_names_no_secret() {
+        use super::{Hands, Places, Through};
+        use crate::declared::Declared;
+        use crate::facts;
+        let dir = tempfile::tempdir().expect("places");
+        let places = Places {
+            quests: dir.path().join("quests"),
+            scratch: dir.path().join("scratch"),
+            home: dir.path().join("home"),
+            state: dir.path().join("state"),
+        };
+        let quest = "QEST-20261115-HARBOR";
+        fs::create_dir_all(places.record(quest)).expect("its record");
+        let notes = places.scratch.join(quest).join("handover").join("skiff");
+        fs::create_dir_all(&notes).expect("a handover");
+        fs::write(notes.join("s-busy01.done.json"), "{}").expect("a done file");
+        let machine = |name: &str, takes: Option<bool>| facts::Machine {
+            worker: takes.is_some(),
+            declared: takes.map(|takes| Declared {
+                takes_carries: takes,
+                ..Declared::default()
+            }),
+            ..facts::measure(name, &facts::Sources::nowhere())
+        };
+        let machines = vec![
+            machine("skiff", None),
+            machine("tern", Some(true)),
+            machine("wren", Some(false)),
+            machine("osprey", None),
+        ];
+        let mut hands = Through::new(
+            dir.path().join("work.sock"),
+            places.clone(),
+            quest,
+            Duration::from_secs(1),
+        )
+        .asking(Box::new(move |request| match request {
+            Request::Machines => Ok(Response::Machines(machines.clone())),
+            other => Err(format!("asked {other:?}")),
+        }));
+        hands.share(quest, "osprey").expect("shared");
+        assert!(
+            !places.given("osprey", quest),
+            "one of the person's own is given nothing"
+        );
+        assert_eq!(
+            hands.share(quest, "wren"),
+            Err(
+                "wren is a worker that doesn't declare it takes carries, so nothing is carried \
+                 there"
+                    .to_owned()
+            ),
+            "a worker taking none is given nothing"
+        );
+        hands.share(quest, "tern").expect("given");
+        assert!(
+            places.given("tern", quest),
+            "a worker taking carries is given it"
+        );
+        let login = notes.join("cells").join("auth.json");
+        fs::create_dir_all(notes.join("cells")).expect("a cells folder");
+        fs::write(&login, "{}").expect("a login");
+        fs::remove_dir_all(places.state.join("given")).expect("the gift taken back");
+        assert_eq!(
+            hands.share(quest, "tern"),
+            Err(format!(
+                "{} names a secret, so {quest} isn't given to tern, a worker",
+                login.display()
+            )),
+            "a handover holding a login is refused, naming it"
+        );
+        assert!(!places.given("tern", quest), "and nothing is given");
     }
 
     // 8855BD77's council (23 November): hands made once the session was

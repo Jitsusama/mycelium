@@ -63,6 +63,12 @@ pub struct Message {
     /// hearing it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invite: Option<String>,
+    /// Every other field its file says, as it says them, so a field a
+    /// sender adds after this node was built reaches those reading
+    /// through it, as the harness's hold windows (`starts`, `ends`) do.
+    /// Nothing here reads them, and none crosses a realm.
+    #[serde(flatten)]
+    pub rest: serde_json::Map<String, Value>,
 }
 
 /// What a message asks of those who hear it, in the mesh's words.
@@ -196,6 +202,11 @@ pub struct Want {
     pub since: String,
     /// What it asked or said, in one short line.
     pub said: String,
+    /// The whole text it asked in, where it says more than `said`: its
+    /// paragraphs and lines as written, for a reader that shows the
+    /// question whole. A harness too old to say it leaves it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked: Option<String>,
 }
 
 /// Something a session landed: a change merged, or an item of its plan done.

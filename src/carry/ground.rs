@@ -63,7 +63,67 @@ pub fn firm(
             "{to} is out of reach, so nothing is carried there now"
         ));
     }
+    worker_takes(kind, to, there)?;
     stands(kind, here, to, there.declared.as_ref())
+}
+
+/// What a machine a carry would go to is: one of the person's own, or a
+/// worker, which its link marks it or its own word says it is, that
+/// declares it takes carries or takes none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lent {
+    /// One of the person's own machines.
+    Not,
+    /// A worker that declares it takes carried sessions.
+    TakesCarries,
+    /// A worker that doesn't.
+    TakesNone,
+}
+
+impl Lent {
+    /// What `machine` is, as the realm last knew it.
+    #[must_use]
+    pub fn of(machine: &Machine) -> Self {
+        let declared = machine.declared.as_ref();
+        if !(machine.worker || declared.is_some_and(Declared::is_worker)) {
+            Self::Not
+        } else if declared.is_some_and(|said| said.takes_carries) {
+            Self::TakesCarries
+        } else {
+            Self::TakesNone
+        }
+    }
+}
+
+/// Why nothing is carried to `to`, a worker that takes no carries.
+#[must_use]
+pub fn takes_none(to: &str) -> String {
+    format!("{to} is a worker that doesn't declare it takes carries, so nothing is carried there")
+}
+
+/// Whether `there`, where it is a worker, takes a carry of a session
+/// running in `kind`: only one that declares it takes carries does, and
+/// never of a strict session from a node, since a worker's strict fence
+/// is its own word, which no node holds it to. One of the person's own
+/// machines takes any, as far as this says.
+///
+/// # Errors
+///
+/// When `there` is a worker that doesn't declare it takes carries, or
+/// the session runs strictly.
+pub fn worker_takes(kind: Option<Kind>, to: &str, there: &Machine) -> Result<(), String> {
+    match Lent::of(there) {
+        Lent::Not => return Ok(()),
+        Lent::TakesNone => return Err(takes_none(to)),
+        Lent::TakesCarries => {}
+    }
+    if kind == Some(Kind::Strict) {
+        return Err(format!(
+            "{to} is a worker, whose strict fence is its own word, so no node carries a strict \
+             session there"
+        ));
+    }
+    Ok(())
 }
 
 /// Why a machine that would declare `there` is looser ground than this
@@ -631,6 +691,78 @@ mod tests {
                     .to_owned()
             ),
             "a machine whose doors are wider names each"
+        );
+    }
+
+    /// A worker, as its link marks it, declaring both fences with no
+    /// doors, and whether it `takes` carries.
+    fn worker(takes: bool) -> Machine {
+        let both = BTreeMap::from([
+            (Kind::Fence, doors(&[], &[], &[])),
+            (Kind::Strict, doors(&[], &[], &[])),
+        ]);
+        Machine {
+            worker: true,
+            declared: Some(Declared {
+                takes_carries: takes,
+                ..declaring(Some(both))
+            }),
+            ..tern(None, Readiness::Ready)
+        }
+    }
+
+    #[test]
+    fn a_worker_takes_a_carry_only_where_it_declares_it_does() {
+        let here = declaring(Some(BTreeMap::from([
+            (Kind::Fence, doors(&[], &[], &[])),
+            (Kind::Strict, doors(&[], &[], &[])),
+        ])));
+        for kind in [Kind::Fence, Kind::Strict] {
+            assert_eq!(
+                firm(Some(kind), Some(&here), "tern", Some(&worker(false))),
+                Err(
+                    "tern is a worker that doesn't declare it takes carries, so nothing is \
+                     carried there"
+                        .to_owned()
+                ),
+                "a worker saying nothing takes no {kind} session"
+            );
+        }
+        assert_eq!(
+            firm(Some(Kind::Fence), Some(&here), "tern", Some(&worker(true))),
+            Ok(()),
+            "one that declares it takes a fenced session on ground as firm"
+        );
+        assert_eq!(
+            firm(Some(Kind::Strict), Some(&here), "tern", Some(&worker(true))),
+            Err(
+                "tern is a worker, whose strict fence is its own word, so no node carries a \
+                 strict session there"
+                    .to_owned()
+            ),
+            "but never a strict one"
+        );
+        let lent = Machine {
+            worker: false,
+            declared: Some(Declared {
+                costs_money: true,
+                ..declaring(None)
+            }),
+            ..tern(None, Readiness::Ready)
+        };
+        assert_eq!(
+            worker_takes(Some(Kind::Fence), "tern", &lent),
+            Err(
+                "tern is a worker that doesn't declare it takes carries, so nothing is \
+                 carried there"
+                    .to_owned()
+            ),
+            "a machine that says it is lent is a worker, whatever its link says"
+        );
+        assert_eq!(
+            worker_takes(Some(Kind::Strict), "tern", &tern(None, Readiness::Ready)),
+            Ok(()),
+            "one of the person's own machines is no worker"
         );
     }
 
