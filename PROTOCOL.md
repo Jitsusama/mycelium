@@ -1252,9 +1252,11 @@ carries nothing. Sessions that wait anew meanwhile sleep too without
 putting the carry off, and once the five minutes are past they sleep
 only where nothing is carried; while it is short of memory, one that
 has never slept is never carried. It carries the smallest log first,
-placed as any work is and onto ground as firm: on the person's own
-machines first, and on a worker, named so placement lets it take the
-work, only where none of them takes it. A worker takes no strict
+placed as any work is and onto ground as firm, ground that isn't left
+out before placing: on the person's own machines first, and only
+where none of them takes it, on the best of the workers, each named
+so placement lets it take the work and ranked as placement ranks
+machines. A worker takes no strict
 session, its strict fence being its own word, and one that leaves
 takes none, since a carried session lasts. A session in a turn,
 on the person's screen, written in by the person (its presence says

@@ -19,9 +19,9 @@
 //! worker that says it takes carries, with room whose latest facts are
 //! fresh enough to place by, placed as any work is, onto ground as
 //! firm as here's, never one in a turn, on the person's screen,
-//! orchestrating other sessions, part way through something a carry would break, or
-//! whose quest runs elsewhere too; what can't be told of a session keeps
-//! it here. After a carry it waits [`COOLDOWN`], and it carries at most
+//! orchestrating other sessions, part way through something a carry
+//! would break, or whose quest runs elsewhere too; what can't be told
+//! of a session keeps it here. After a carry it waits [`COOLDOWN`], and it carries at most
 //! [`DAILY`] within a [`DAY`], counted as the larger of what its node
 //! remembers and what the record of carries holds; a session moved by
 //! anyone stays put for [`PIN`]; and
@@ -750,11 +750,21 @@ fn carried(
         }
         let (peers, mut refused) = bringing_back(&peers, cell.fence);
         let (peers, apart) = alike(here, &peers, cell.fence);
-        if peers.is_empty() {
+        // Ground no carry may go to is left out before placing, so the
+        // one placed is never one the carry refuses, hiding the next.
+        let mut firm = Vec::new();
+        for machine in peers {
+            match ground::firm(cell.fence, here.declared, &machine.name, Some(&machine)) {
+                Ok(()) => firm.push(machine),
+                Err(why) => refused.push(why),
+            }
+        }
+        if firm.is_empty() {
             refused.extend(apart);
             why_not.push(format!("{who}: {}", refused.join("; ")));
             continue;
         }
+        let peers = firm;
         // Placed as of the reading's own time, so each room is judged heard
         // or not by when it was read, and the best takes it rather than
         // one drawn at random from those near it: a carry is one session
@@ -766,11 +776,6 @@ fn carried(
                 continue;
             }
         };
-        let there = peers.iter().find(|machine| machine.name == to);
-        if let Err(why) = ground::firm(cell.fence, here.declared, &to, there) {
-            why_not.push(format!("{who}: {why}"));
-            continue;
-        }
         return Choice::Carry {
             session: cell.session.id.clone(),
             why: why(here.name, &to, reading, history),
@@ -787,32 +792,50 @@ fn carried(
 }
 
 /// Where `work` goes of `peers`, or why none takes it: the person's own
-/// machines first, then each worker that takes carries, by name, since
-/// placement keeps work that names no worker off every worker.
+/// machines first, and only where none of them takes it, the best of the
+/// workers that take carries. Placement keeps work that names no worker
+/// off every worker, so each is placed by name, alone, and they are
+/// ranked here as placement ranks machines: by tier, then by headroom,
+/// then by name.
 fn placed(work: &Work, peers: &[Machine], loads: &Loads, now: Timestamp) -> Result<String, String> {
+    let weights = &placement::Weights::STARTING;
     let (own, workers): (Vec<Machine>, Vec<Machine>) = peers
         .iter()
         .cloned()
         .partition(|machine| ground::Lent::of(machine) == ground::Lent::Not);
-    let named = workers.iter().map(|worker| {
-        let mut named = work.clone();
-        named.needs.push(Need::Machine(worker.name.clone()));
-        (named, std::slice::from_ref(worker))
-    });
     let mut refused = Vec::new();
-    for (work, machines) in std::iter::once((work.clone(), own.as_slice()))
-        .filter(|(_, machines)| !machines.is_empty())
-        .chain(named)
-    {
-        let weights = &placement::Weights::STARTING;
-        match placement::decide_as(&work, machines, loads, &[], now, weights).placement {
+    if !own.is_empty() {
+        match placement::decide_as(work, &own, loads, &[], now, weights).placement {
             Placement::Placed { machine, .. } => return Ok(machine),
             Placement::Pending { misses } | Placement::Refused { misses } => {
                 refused.push(placement::said(&misses));
             }
         }
     }
-    Err(refused.join("; "))
+    let mut taking = Vec::new();
+    for worker in &workers {
+        let mut named = work.clone();
+        named.needs.push(Need::Machine(worker.name.clone()));
+        let alone = std::slice::from_ref(worker);
+        let decision = placement::decide_as(&named, alone, loads, &[], now, weights);
+        match decision.placement {
+            Placement::Placed { .. } => taking.extend(decision.judged),
+            Placement::Pending { misses } | Placement::Refused { misses } => {
+                refused.push(placement::said(&misses));
+            }
+        }
+    }
+    let tier = |one: &placement::Judgement| (one.unheard, one.saturated, one.over);
+    taking
+        .into_iter()
+        .min_by(|one, other| {
+            tier(one)
+                .cmp(&tier(other))
+                .then_with(|| other.headroom.total_cmp(&one.headroom))
+                .then_with(|| one.machine.cmp(&other.machine))
+        })
+        .map(|best| best.machine)
+        .ok_or_else(|| refused.join("; "))
 }
 
 /// Those of `peers` the start bringing back a session in the fence `kind`
@@ -2085,7 +2108,7 @@ pub(super) mod tests {
         leaving.leaves_at = Some(now() + PIN);
         leaving.takes_carries = true;
         assert!(
-            carries(&chose(&lent, &[cell("s1")], &history)).is_none(),
+            why_not(&chose(&lent, &[cell("s1")], &history)).contains("tern leaves at"),
             "a worker that leaves takes none, since a carried session lasts"
         );
         let mut untold = realm();
@@ -2094,6 +2117,52 @@ pub(super) mod tests {
             why_not(&chose(&untold, &[cell("s1")], &history))
                 .starts_with("no machine with room is a peer"),
             "a machine that says nothing of itself can't be told a peer"
+        );
+    }
+
+    #[test]
+    fn the_best_worker_takes_a_session_none_of_the_persons_own_takes() {
+        use crate::declared::{Effect, Taint};
+        let taking = |mut machine: Machine| {
+            let declared = machine.declared.as_mut().expect("declared");
+            declared.costs_money = true;
+            declared.takes_carries = true;
+            machine
+        };
+        let mut serviced = machine("wren", 30.0);
+        let taints = &mut serviced.declared.as_mut().expect("declared").taints;
+        taints.push(Taint {
+            key: "serviced".to_owned(),
+            effect: Effect::Never,
+            why: "it is being serviced".to_owned(),
+        });
+        let realm = vec![
+            machine("skiff", 86.0),
+            taking(machine("osprey", 20.0)),
+            taking(machine("tern", 4.6)),
+            serviced,
+        ];
+        let history = hot_for(&realm, 11);
+        assert_eq!(
+            carries(&chose(&realm, &[cell("s1")], &history)),
+            Some(("s1", "tern")),
+            "a worker takes what the person's own refuse, the roomiest first"
+        );
+        let mut leaving = realm.clone();
+        let tern = leaving[2].declared.as_mut().expect("declared");
+        tern.leaves_at = Some(now() + PIN);
+        assert_eq!(
+            carries(&chose(&leaving, &[cell("s1")], &hot_for(&leaving, 11))),
+            Some(("s1", "osprey")),
+            "a worker that refuses leaves the next to take it"
+        );
+        let mut unfenced = realm;
+        unfenced[3] = machine("wren", 30.0);
+        unfenced[3].declared = Some(declaring(&[Kind::None]));
+        assert_eq!(
+            carries(&chose(&unfenced, &[cell("s1")], &hot_for(&unfenced, 11))),
+            Some(("s1", "tern")),
+            "one of the person's own the carry refuses hides no worker"
         );
     }
 
