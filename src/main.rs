@@ -2159,6 +2159,8 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
             },
             // Checked below, against the declarers its runs trust.
             kit: None,
+            // Said by the node as it binds its worker socket, if it serves one.
+            worker_socket: None,
         }),
         fences_held: mycelium::facts::FENCES_HELD,
         awake: Awake::here(),
@@ -3288,6 +3290,9 @@ fn hold(
         scope: Scope::of_a_terminal(runtime.as_deref()),
         // A terminal's hold has the person's own path already.
         kit: None,
+        // A terminal's hold is the person's, who speaks through the node's
+        // own socket.
+        worker_socket: None,
     };
     let id = starter.start(realm, &folder, (&[], command), false)?;
     if detached {

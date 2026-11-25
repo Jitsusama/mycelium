@@ -3036,6 +3036,12 @@ if it isn't there. It answers only a process the kernel names as of
 account UID, refusing any other with one `{"Err": ...}` line, and the
 main socket answers none of these asks.
 
+Where UID is the node's own account, every program it holds is told
+the socket in `MYCELIUM_WORKER_SOCKET`, which the harness speaks
+through. Where it is another, or the node serves no worker socket,
+none is told, and any the node's own environment names is taken
+away, since no socket there would answer them.
+
 A connection opens with `{"Presence": {"presence": {...}}}`, the
 presence as the harness writes its file, answered `{"Ok":
 "Present"}` or `{"Err": "why"}`, which closes it. The node keeps the

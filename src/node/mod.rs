@@ -918,7 +918,13 @@ where
     store::out_of_reach_of_unclaimed(&store)?;
     // Bound before any task is spawned, so a socket that can't be put
     // in place leaves nothing running.
-    let workers = given.worker.take().as_ref().map(worker::bind).transpose()?;
+    let serving = given.worker.take();
+    let workers = serving.as_ref().map(worker::bind).transpose()?;
+    // Said by the node, never left to its environment, so what it holds
+    // is told the socket it serves and no other.
+    if let Some(starter) = given.starter.as_mut() {
+        starter.worker_socket = serving.as_ref().and_then(Worker::told_to_starts);
+    }
     let holdings = worker::Holdings::default();
     let (to_dial, mut made) = mpsc::unbounded_channel();
     redial_standing(&given.book, &given.providers, &store, &to_dial);
@@ -16209,6 +16215,7 @@ esac
             program: holder,
             scope: start::Scope::None,
             kit: None,
+            worker_socket: None,
         };
         let nobody = Vec::<Piped>::new();
         let far = node(&far_store, "kestrel", nobody, Some(holds), &far_socket);
@@ -16309,6 +16316,7 @@ esac
             program: holder,
             scope: start::Scope::None,
             kit: None,
+            worker_socket: None,
         };
         let far = node(
             &far_store,
@@ -16489,6 +16497,7 @@ esac
             program: holder,
             scope: start::Scope::None,
             kit: None,
+            worker_socket: None,
         };
         let dial = Piped {
             store: far_store.clone(),
@@ -17084,6 +17093,7 @@ esac
             program: PathBuf::from("/bin/false"),
             scope: start::Scope::None,
             kit: Some(start::Kit::Carried(kit.clone())),
+            worker_socket: None,
         };
         let running = node(&store, "skiff", Vec::<Piped>::new(), Some(starter), &socket);
         asks_as_person(&socket);
@@ -17119,6 +17129,7 @@ esac
             program: PathBuf::from("/bin/false"),
             scope: start::Scope::None,
             kit: None,
+            worker_socket: None,
         };
         let running = node(&store, "skiff", Vec::<Piped>::new(), Some(starter), &socket);
         asks_as_person(&socket);
@@ -20386,6 +20397,7 @@ esac
                     program: PathBuf::from("/bin/false"),
                     scope: start::Scope::None,
                     kit: Some(checked),
+                    worker_socket: None,
                 };
                 let running = node(&store, "skiff", Vec::<Piped>::new(), Some(starter), &socket);
                 asks_as_person(&socket);
@@ -21438,6 +21450,7 @@ esac
             program: holder,
             scope: start::Scope::None,
             kit: Some(start::Kit::Carried(PathBuf::from("/nix/store/kit"))),
+            worker_socket: None,
         };
         // Its fences run a command, so an agent's held start may land here.
         declares_runs(&socket, true);
@@ -21527,6 +21540,84 @@ esac
         assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
     }
 
+    /// What a session the node started was told of its worker socket, by a
+    /// node serving one for `uid`: the socket, or `unset`.
+    async fn worker_socket_told(uid: u32) -> (PathBuf, String) {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("mycelium").join("work.sock");
+        let told = dir.path().join("told");
+        let holder = dir.path().join("holder");
+        crate::stand_in::program(
+            &holder,
+            &format!(
+                "#!/bin/sh\nprintf %s \"${{{}-unset}}\" > {}\necho held\n",
+                start::WORKER_SOCKET_SAID,
+                told.display()
+            ),
+        );
+        let holds = Starter {
+            program: holder,
+            scope: start::Scope::None,
+            kit: None,
+            worker_socket: None,
+        };
+        declares_runs(&socket, true);
+        let worker = dir.path().join("worker").join("socket");
+        let given = Given {
+            declared: socket.with_file_name("declared.json"),
+            runs: runs_of(&socket),
+            worker: Some(Worker {
+                socket: worker.clone(),
+                uid,
+            }),
+            ..bare(dir.path().join("steer"), Some(holds))
+        };
+        let (stop, node) = alone_with(&Memory::default(), &socket, given);
+        let started = tokio::task::spawn_blocking(move || {
+            let mut client = Client::connect(&socket).expect("the client connects");
+            client
+                .ask(&Request::Start(Start {
+                    work: work(Vec::new()),
+                    folder: None,
+                    strict: false,
+                    command: vec!["pi".to_owned()],
+                    may_cost: false,
+                    carries: false,
+                    once: None,
+                }))
+                .expect("the node answers")
+        });
+        let started = tokio::time::timeout(PATIENCE, started)
+            .await
+            .expect("the node answers in time")
+            .expect("the client asks");
+        assert!(
+            matches!(started, Ok(Response::Started(_))),
+            "it starts: {started:?}"
+        );
+        let told = fs::read_to_string(&told).expect("the holder was started");
+        drop(stop);
+        let stopped = node.await.expect("the node runs to its end");
+        assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
+        (worker, told)
+    }
+
+    #[tokio::test]
+    async fn a_node_tells_what_it_starts_the_worker_socket_it_serves_for_its_own_account() {
+        let own = rustix::process::geteuid().as_raw();
+        let (worker, told) = worker_socket_told(own).await;
+        assert_eq!(
+            told,
+            worker.display().to_string(),
+            "a session it starts speaks through the worker socket it serves"
+        );
+        let (_, told) = worker_socket_told(own + 1).await;
+        assert_eq!(
+            told, "unset",
+            "one serving another account is told none, since it would be refused"
+        );
+    }
+
     /// A stand-in holder in `dir` that writes a line to the file it
     /// answers second each time it is started, then holds only once the
     /// file it answers third is there: so a test sees how many starts
@@ -21586,6 +21677,7 @@ esac
             program: holder,
             scope: start::Scope::None,
             kit: None,
+            worker_socket: None,
         };
         let store = Memory::default();
         let (stop, node) = node(&store, "skiff", Vec::<Piped>::new(), Some(holds), &socket);
@@ -21639,6 +21731,7 @@ esac
             program: holder,
             scope: start::Scope::None,
             kit: None,
+            worker_socket: None,
         };
         let store = Memory::default();
         let (stop, node) = node(&store, "skiff", Vec::<Piped>::new(), Some(holds), &socket);
@@ -21685,6 +21778,7 @@ esac
             program: holder,
             scope: start::Scope::None,
             kit: None,
+            worker_socket: None,
         };
         let store = Memory::default();
         let (stop, node) = node(&store, "skiff", Vec::<Piped>::new(), Some(holds), &socket);
@@ -23300,6 +23394,7 @@ esac
             program: holder,
             scope: start::Scope::None,
             kit: None,
+            worker_socket: None,
         };
         // Its book of starts in `dir`, so a test may fill it first.
         let given = Given {
