@@ -24240,16 +24240,16 @@ esac
         (machine, binaries)
     }
 
-    #[tokio::test]
-    async fn a_hold_is_kept_as_the_persons_only_where_they_place_it_themselves() {
+    /// A node of skiff over [`placing_machine`], whose holder is this
+    /// test's own process, holding hold a1 of HELD_PI, with the typed
+    /// answers it keeps its placements in; the folders go with `dir`.
+    fn placing_node(dir: &Path) -> (Shared<Memory>, Arc<typed::Typed>, [tempfile::TempDir; 2]) {
         use asker::tests::system_of;
-        let dir = tempfile::tempdir().expect("a temporary folder");
         // A hold record whose holder no longer runs is read as none, so
         // the test's own process stands in for the holder.
         let holder = i32::try_from(std::process::id()).expect("a pid");
         let (machine, binaries) = placing_machine(holder);
-        let at = machine.path();
-        let held = dir.path().join("held");
+        let held = dir.join("held");
         fs::create_dir_all(&held).expect("its folder is made");
         let record = hold::Held {
             id: "a1".to_owned(),
@@ -24267,16 +24267,21 @@ esac
         )
         .expect("its record is kept");
         fs::write(hold::socket(&held, "a1"), "").expect("its socket stands");
-
-        let store = Memory::default();
-        let mut shared = typing(dir.path(), &store, true);
+        let mut shared = typing(dir, &Memory::default(), true);
         let typed = Arc::new(
-            typed::Typed::new(dir.path().join("typed-answers.jsonl"))
-                .seeing(system_of(binaries.path())),
+            typed::Typed::new(dir.join("typed-answers.jsonl")).seeing(system_of(binaries.path())),
         );
         shared.typed = Some(Arc::clone(&typed));
-        shared.processes = Arc::new(Processes::Folder(at.to_owned()));
+        shared.processes = Arc::new(Processes::Folder(machine.path().to_owned()));
         shared.held = held;
+        (shared, typed, [machine, binaries])
+    }
+
+    #[tokio::test]
+    async fn a_hold_is_kept_as_the_persons_only_where_they_place_it_themselves() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let holder = i32::try_from(std::process::id()).expect("a pid");
+        let (mut shared, typed, _folders) = placing_node(dir.path());
         for (asker, says) in [
             (A_PI, "a pi places it"),
             (IT_RAN, "a pi places it or runs above"),
@@ -24310,6 +24315,42 @@ esac
                 holder_started: 460,
             }],
             "the person's own placing keeps the hold they began"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_start_the_person_asks_keeps_only_the_holder_the_node_began() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (shared, typed, _folders) = placing_node(dir.path());
+        // The node started a holder, but a1's record names another, as a
+        // record written over after the start would.
+        let other = terminal::Began::As(u32::try_from(FAR + 99).expect("a pid"));
+        let refused = shared.keep_persons("a1", TYPED_BY, other).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.contains("another's hold")),
+            "{refused:?}"
+        );
+        let agents = terminal::Began::As(std::process::id());
+        let refused = shared.keep_persons("a1", AGENTS, agents).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.contains("isn't kept as the person's")),
+            "an agent's start keeps nothing: {refused:?}"
+        );
+        assert!(typed.placements().placed().is_empty(), "nothing is kept");
+        let began = terminal::Began::As(std::process::id());
+        let kept = shared.keep_persons("a1", TYPED_BY, began).await;
+        assert!(kept.is_ok(), "{kept:?}");
+        assert_eq!(
+            typed.placements().placed(),
+            vec![terminal::Placed {
+                holder: i32::try_from(std::process::id()).expect("a pid"),
+                holder_started: 460,
+            }],
+            "the person's start keeps the holder the node began"
         );
     }
 
