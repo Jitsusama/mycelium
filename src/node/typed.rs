@@ -473,12 +473,12 @@ mod tests {
     fn a_try_with_long_names_is_kept_cut_and_the_log_rolls_past_its_bound() {
         let (dir, typed) = typed();
         let log = dir.path().join("typed-answers.jsonl");
-        let long = Bound {
+        let lengthy = Bound {
             address: "é".repeat(FIELD_LONGEST),
             want: "w".repeat(FIELD_LONGEST * 4),
             digest: digest("yes"),
         };
-        assert!(typed.spend("no-such", Some(ASKER), &long, None).is_err());
+        assert!(typed.spend("no-such", Some(ASKER), &lengthy, None).is_err());
         let kept = std::fs::read_to_string(&log).expect("a line is kept");
         let line: serde_json::Value =
             serde_json::from_str(kept.trim_end()).expect("it reads whole");

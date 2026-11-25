@@ -30,7 +30,7 @@ pub enum Binary {
 }
 
 impl Binary {
-    const ALL: [Self; 3] = [Self::Kitty, Self::Mycelium, Self::Quickshell];
+    pub(super) const ALL: [Self; 3] = [Self::Kitty, Self::Mycelium, Self::Quickshell];
 
     /// The name a profile gives it.
     fn file(self) -> &'static str {
@@ -160,7 +160,7 @@ impl System {
         }
     }
 
-    fn holds(&self, binary: Binary, folder: &Path) -> bool {
+    pub(super) fn holds(&self, binary: Binary, folder: &Path) -> bool {
         self.folders
             .iter()
             .any(|(one, held)| *one == binary && held == folder)

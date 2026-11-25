@@ -332,7 +332,7 @@ fn write_whole(file: &Path, text: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     /// Who owns the files a test makes, standing in for root.
     fn me() -> u32 {

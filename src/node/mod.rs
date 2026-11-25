@@ -5359,8 +5359,8 @@ impl<S: Store> Shared<S> {
             fields.and_then(|fields| fields.keys().find(|field| !TYPED.contains(&field.as_str())));
         // An ask the store doesn't keep can't be told no hold, so it is
         // refused, never taken on trust.
-        let asked = self.store.message(want).as_ref().and_then(mesh::message);
-        let held = asked
+        let kept = self.store.message(want).as_ref().and_then(mesh::message);
+        let held = kept
             .as_ref()
             .is_some_and(|message| message.intent == Some(Intent::Hold));
         let refused = if let Some(extra) = extra {
@@ -5373,7 +5373,7 @@ impl<S: Store> Shared<S> {
             Some("a typed answer names the ask it answers, as want".to_owned())
         } else if words.is_none() {
             Some("a typed answer carries its words as one string, value or other".to_owned())
-        } else if asked.is_none() {
+        } else if kept.is_none() {
             Some(
                 "a typed answer answers an ask this node keeps, and it keeps none by that id"
                     .to_owned(),
@@ -23902,7 +23902,7 @@ esac
         );
         let shared = typing(dir.path(), &store, true);
         let typed = shared.typed.clone().expect("it mints");
-        let tried = |want: &str, more: Value| {
+        let tried = async |want: &str, more: Value| {
             let bound = typed::Bound {
                 address: "TERN02".to_owned(),
                 want: want.to_owned(),
@@ -23914,8 +23914,8 @@ esac
             if let (Some(said), Some(more)) = (said.as_object_mut(), more.as_object()) {
                 said.extend(more.clone());
             }
-            let spent = shared.spend_typed("tern02", &said);
-            let again = shared.spend_typed("tern02", &said);
+            let spent = shared.spend_typed("tern02", &said).await;
+            let again = shared.spend_typed("tern02", &said).await;
             assert!(
                 again.is_err_and(|why| why.contains("no token like it")),
                 "each token is tried once: {said}"
@@ -23923,7 +23923,7 @@ esac
             spent
         };
         assert_eq!(
-            tried("m-ask", json!({})),
+            tried("m-ask", json!({})).await,
             Ok(()),
             "the person's answer is taken"
         );
@@ -23934,13 +23934,13 @@ esac
             (json!({"from": "agent"}), "an answer from the person"),
             (json!({"other": "yes"}), "one of value or other"),
         ] {
-            let refused = tried("m-ask", more.clone());
+            let refused = tried("m-ask", more.clone()).await;
             assert!(
                 refused.as_ref().is_err_and(|why| why.contains(says)),
                 "{more}: {refused:?}"
             );
         }
-        let held = tried("m-hold", json!({}));
+        let held = tried("m-hold", json!({})).await;
         assert!(
             held.as_ref()
                 .is_err_and(|why| why.contains("never answers a hold")),
@@ -23969,7 +23969,7 @@ esac
             off.mint("s-own", bound(&typed::digest("yes")))
                 .await
                 .map(|_| ()),
-            off.spend_typed("TERN02", &said),
+            off.spend_typed("TERN02", &said).await,
         ] {
             assert!(
                 refused
