@@ -18,7 +18,6 @@ src/forage.rs
 src/hold/holder.rs
 src/hold/start.rs
 src/hosted_attach/mod.rs
-src/lend/forge/mod.rs
 src/lend/lender/mod.rs
 src/lend/lender/tests.rs
 src/link/carried.rs
