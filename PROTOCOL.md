@@ -2305,14 +2305,16 @@ A carry's arrival from the machine relaying it, word for word as a
 carry writes it, which starts pi only once `pi-carry arrive` has taken
 the carry, is judged by the carry, but its session is still held
 while its start runs, and refused as being reopened where another
-start holds it. Any other start relayed here is held, in the same
+start holds it, or holds a word as written that begins it. Any other start relayed here is held, in the same
 words, to each session it names by `--session` or `--session-id`,
 alone or with `=`, under any program or in a shell's `-c` script with
 its positional parameters, and to the id a log's path ends in. Each
 word it names as written is held, too, to each session here that
 word begins, and to each another start holds that it begins, since pi
-opens one so; it is refused where another start holds a shorter id
-the word begins. Each is refused where one comes back by itself or
+opens one so; it is refused where another start holds, as written, a
+shorter word that begins it. A holder whose command names a word
+beginning a session, which no session there has as its id, holds
+that session too. Each is refused where one comes back by itself or
 is being reopened, and held while its start runs, though it need not
 have ended here, since its asker fenced it. A start only shaped as a
 carry is held so too. A refusal of a session a word begins names the
