@@ -25005,6 +25005,8 @@ esac
             asker: Some("QK4T7Z".to_owned()),
             machine: "kestrel".to_owned(),
             place: "kestrel-place".to_owned(),
+            // Its own end, not the kept one's, so it is asked to be kept.
+            until: jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1),
             ..book.standing().expect("the book reads").made[0].clone()
         };
         book.made(&agents).expect("the make is booked");
