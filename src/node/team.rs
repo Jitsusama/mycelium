@@ -137,10 +137,16 @@ pub fn teams(
         .filter(|session| Attention::of(session, parked).is_some())
         .collect();
     let renamed = renamed(&living);
+    // In upper case, as the mesh reaches an address in either: a session
+    // saying its orchestrator in another case answers to the same team,
+    // and no two teams differ by case alone, so neither takes the words
+    // typed in lower case for the other.
     let own = |address: &str| -> String {
-        renamed
-            .get(address)
-            .map_or_else(|| address.to_owned(), |own| (*own).to_owned())
+        let address = address.to_ascii_uppercase();
+        match renamed.get(address.as_str()) {
+            Some(own) => own.to_ascii_uppercase(),
+            None => address,
+        }
     };
     let owned: Vec<(Option<String>, Option<String>)> = living
         .iter()
@@ -410,6 +416,38 @@ mod tests {
             .into_iter()
             .map(|(id, _, fields)| (id, fields))
             .collect()
+    }
+
+    #[test]
+    fn an_orchestrator_said_in_another_case_is_the_same_team() {
+        // A peer saying its orchestrator in lower case would otherwise key a
+        // team of its own beside Harbour's, taking what's typed in lower case.
+        let sessions = [
+            session(
+                "lead",
+                State::Idle,
+                (None, Some("QEST-20261007-HARBOR")),
+                &[],
+            ),
+            session("one", State::Busy, (Some("HARBOR"), None), &[]),
+            session(
+                "peer",
+                State::Busy,
+                (Some("harbor"), Some("QEST-x-harbor")),
+                &[],
+            ),
+        ];
+        let teams = worked_out(&sessions, &[("HARBOR", "Harbour")], &[]);
+        assert_eq!(
+            teams.keys().collect::<Vec<_>>(),
+            ["HARBOR"],
+            "one team, whatever the case its orchestrator is said in"
+        );
+        assert_eq!(
+            (&teams["HARBOR"]["lead"], &teams["HARBOR"]["members"]),
+            (&json!("lead"), &json!(["one", "peer", "lead"])),
+            "led by the session on its quest, the peer only among its members"
+        );
     }
 
     #[test]
