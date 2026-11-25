@@ -23937,7 +23937,7 @@ esac
             (json!({"look": "l-1"}), "not look"),
             (json!({"act": "carry"}), "an answer from the person"),
             (json!({"from": "agent"}), "an answer from the person"),
-            (json!({"other": "yes"}), "one of value or other"),
+            (json!({"other": "yes"}), "its words as one string, value or other"),
         ] {
             let refused = tried("m-ask", more.clone()).await;
             assert!(
