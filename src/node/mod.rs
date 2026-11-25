@@ -2806,26 +2806,39 @@ impl Drop for Reading<'_> {
 
 /// The sessions being reopened here by a relayed start, each held while
 /// its start runs, and at most [`REOPENING_HELD`] where that start was
-/// dropped before it answered, as when its asker hung up.
+/// dropped before it answered, as when its asker hung up. Each hold is
+/// told by its own number, so a start outliving its while lets go only
+/// its own hold, never a later ask's that took the session since.
 #[derive(Default)]
-struct Reopening(HashMap<String, std::time::Instant>);
+struct Reopening {
+    held: HashMap<String, (std::time::Instant, u64)>,
+    taken: u64,
+}
 
 impl Reopening {
-    /// Holds `session` as being reopened from `now`, unless it is held
-    /// already.
-    fn hold(&mut self, session: &str, now: std::time::Instant) -> bool {
-        self.0
-            .retain(|_, at| now.saturating_duration_since(*at) < REOPENING_HELD);
-        if self.0.contains_key(session) {
-            return false;
+    /// Holds `session` as being reopened from `now`, answering the number
+    /// that lets this hold go, unless it is held already.
+    fn hold(&mut self, session: &str, now: std::time::Instant) -> Option<u64> {
+        self.held
+            .retain(|_, (at, _)| now.saturating_duration_since(*at) < REOPENING_HELD);
+        if self.held.contains_key(session) {
+            return None;
         }
-        self.0.insert(session.to_owned(), now);
-        true
+        self.taken += 1;
+        self.held.insert(session.to_owned(), (now, self.taken));
+        Some(self.taken)
     }
 
-    /// Holds `session` no longer, as when its start failed.
-    fn let_go(&mut self, session: &str) {
-        self.0.remove(session);
+    /// Holds `session` no longer, as when its start answered, if the hold
+    /// numbered `number` is still the one on it.
+    fn let_go(&mut self, session: &str, number: u64) {
+        if self
+            .held
+            .get(session)
+            .is_some_and(|(_, held)| *held == number)
+        {
+            self.held.remove(session);
+        }
     }
 }
 
@@ -5507,11 +5520,12 @@ impl<S: Store> Shared<S> {
                 "no session {shown} ended on {machine}, so nothing is reopened here"
             ));
         };
-        let held = seen.held.iter().any(|held| {
-            held.command
-                .windows(2)
-                .any(|words| words[0] == "--session" && words[1] == session)
-        });
+        // Read as the holder reads its own resumes, so `--session=<id>`,
+        // `--session-id`, a shell's script or a log's path name it too.
+        let held = seen
+            .held
+            .iter()
+            .any(|held| hold::turn::resumed(&held.command).as_deref() == Some(session));
         if one.state != SessionState::Ended {
             Err(format!(
                 "{shown} is still live on {machine}, so it isn't reopened"
@@ -7623,7 +7637,7 @@ impl<S: Store> Shared<S> {
             .carried_away()
             .map_err(|why| format!("nothing is reopened on {}, as {why}", self.machine))?;
         let held = hold::held(&self.held);
-        {
+        let number = {
             let mut inner = self.lock();
             let sessions = inner.state.sessions();
             let coming_back = ended::coming_back(away, inner.turns.waiting());
@@ -7632,17 +7646,15 @@ impl<S: Store> Shared<S> {
                 coming_back: &coming_back,
             };
             self.reopened_here(&session, &sessions, &seen)?;
-            if !inner.reopening.hold(&session, std::time::Instant::now()) {
-                return Err(format!(
-                    "{session} is being reopened on {} already",
-                    self.machine
-                ));
-            }
-        }
+            inner
+                .reopening
+                .hold(&session, std::time::Instant::now())
+                .ok_or_else(|| format!("{session} is being reopened on {} already", self.machine))?
+        };
         // Held only across its start: once that answers, its holder's
         // record says it is held, or it failed and may be asked again.
         let started = self.relayed_start(from, asked).await;
-        self.lock().reopening.let_go(&session);
+        self.lock().reopening.let_go(&session, number);
         started
     }
 
@@ -20446,6 +20458,18 @@ esac
                              "parked": false, "since": "2026-11-19T06:00:00Z", "windows": []});
         fs::write(holders.join("h-held.json"), holding.to_string()).expect("its record");
         fs::write(hold::socket(&holders, "h-held"), b"").expect("its socket stands");
+        // Followups 60 and 103: one naming its session another way pi
+        // resumes, here within a shell's script, is held as surely.
+        store.start_here(
+            "s-also",
+            json!({"session": "s-also", "addresses": ["ALSO01"], "at": "2026-11-19T06:00:00Z"}),
+            false,
+        );
+        let also = json!({"id": "h-also", "command": ["sh", "-c", "exec pi --session=s-also"],
+                          "folder": "/", "holder": std::process::id(), "pid": 0,
+                          "parked": false, "since": "2026-11-19T06:00:00Z", "windows": []});
+        fs::write(holders.join("h-also.json"), also.to_string()).expect("its record");
+        fs::write(hold::socket(&holders, "h-also"), b"").expect("its socket stands");
         asks_below(&socket, 7001);
         assert_eq!(
             ask(socket.clone(), relayed("s-unknown")).await,
@@ -20460,6 +20484,10 @@ esac
             (
                 "s-held",
                 "s-held is held on skiff already, so it isn't reopened",
+            ),
+            (
+                "s-also",
+                "s-also is held on skiff already, so it isn't reopened",
             ),
         ] {
             assert_eq!(
@@ -20566,20 +20594,51 @@ esac
     fn a_session_is_held_as_being_reopened_only_for_a_while() {
         let mut reopening = Reopening::default();
         let asked = std::time::Instant::now();
-        assert!(reopening.hold("s-ended", asked), "the first is held");
         assert!(
-            !reopening.hold("s-ended", asked + REOPENING_HELD / 2),
+            reopening.hold("s-ended", asked).is_some(),
+            "the first is held"
+        );
+        assert!(
+            reopening
+                .hold("s-ended", asked + REOPENING_HELD / 2)
+                .is_none(),
             "a second within the while isn't"
         );
-        assert!(reopening.hold("s-other", asked), "another session is");
         assert!(
-            reopening.hold("s-ended", asked + REOPENING_HELD),
-            "once the while is over, it is held again"
+            reopening.hold("s-other", asked).is_some(),
+            "another session is"
         );
-        reopening.let_go("s-ended");
+        let later = reopening
+            .hold("s-ended", asked + REOPENING_HELD)
+            .expect("once the while is over, it is held again");
+        reopening.let_go("s-ended", later);
         assert!(
-            reopening.hold("s-ended", asked + REOPENING_HELD),
+            reopening.hold("s-ended", asked + REOPENING_HELD).is_some(),
             "as it is once let go"
+        );
+    }
+
+    // Followups 44 and 107: a start outliving its while let go by the
+    // session's name alone, freeing the hold a later ask took since.
+    #[test]
+    fn a_start_outliving_its_while_lets_go_only_its_own_hold() {
+        let mut reopening = Reopening::default();
+        let asked = std::time::Instant::now();
+        let slow = reopening
+            .hold("s-ended", asked)
+            .expect("the slow start holds it");
+        let later = reopening
+            .hold("s-ended", asked + REOPENING_HELD)
+            .expect("a later ask holds it once the slow one's while is over");
+        reopening.let_go("s-ended", slow);
+        assert!(
+            reopening.hold("s-ended", asked + REOPENING_HELD).is_none(),
+            "the slow start's answer leaves the later ask's hold"
+        );
+        reopening.let_go("s-ended", later);
+        assert!(
+            reopening.hold("s-ended", asked + REOPENING_HELD).is_some(),
+            "which its own answer lets go"
         );
     }
 
