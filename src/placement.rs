@@ -3049,11 +3049,11 @@ pub(crate) mod tests {
             ))
         };
         let mut over = pressed(machine("kestrel", "linux", 60, &[]), 20.0);
-        over.room.as_mut().expect("a room").over = Some(vec![crate::room::Limit::Cpu]);
+        over.room.as_mut().expect("a room").over = Some(vec![Limit::Cpu]);
         let saturated = pressed(machine("osprey", "linux", 60, &[]), 95.0);
         let roomy = pressed(machine("tern", "linux", 60, &[]), 20.0);
         assert!(past(&[over.clone()]), "over its room");
-        assert!(past(&[saturated.clone()]), "saturated");
+        assert!(past(std::slice::from_ref(&saturated)), "saturated");
         assert!(past(&[over.clone(), saturated]), "both past it");
         assert!(!past(&[over.clone(), roomy]), "one has room");
         let mut unheard = over;

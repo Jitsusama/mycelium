@@ -786,9 +786,12 @@ pub fn within_home(folder: PathBuf, home: &Path) -> PathBuf {
 /// one.
 fn stays(folder: &Path, home: &Path, disk: &impl Disk) -> bool {
     let kept = places::checkouts(home, disk);
-    // A trunk's tree is cut from its bare repository, which fetches.
+    let src = home.join("src");
+    // Those listed outside `~/src` are bare repositories' trunks, each cut
+    // from a repository that fetches; one under it is its own checkout.
     let shared = |top: &Path| {
-        kept.iter().any(|one| one == top) && (disk.is_cut_tree(top) || disk.origin(top).is_some())
+        kept.iter().any(|one| one == top)
+            && (!top.starts_with(&src) || (!disk.is_cut_tree(top) && disk.origin(top).is_some()))
     };
     folder
         .ancestors()
@@ -1495,6 +1498,8 @@ pub(crate) mod tests {
             &[
                 "/home/kestrel/src/rows/docs",
                 "/home/kestrel/src/rows/.worktrees/tidy",
+                "/home/kestrel/src/example.com",
+                "/home/kestrel/src/example.com/kestrel",
                 "/home/kestrel/src/example.com/kestrel/reef",
                 "/home/kestrel/src/loose",
                 "/home/kestrel/src/rows/vendor/sea",

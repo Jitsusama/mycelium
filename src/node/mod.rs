@@ -7741,46 +7741,30 @@ impl<S: Store> Shared<S> {
         let within = relayed_within(at, jiff::Timestamp::now().as_millisecond());
         let decision = self.decided(&asked.work, Counts::Always, fence, screen, &admits);
         let past_room = !reopens && asked.may_cost && placement::placed_past_room(&decision);
-        let (misses, nowhere) =
-            match decision.placement {
-                Placement::Placed { machine, .. } if reopens && machine != self.machine => {
-                    return self.asked_there(&machine, asked, true, within).await;
+        let (misses, nowhere) = match decision.placement {
+            Placement::Placed { machine, .. } if reopens && machine != self.machine => {
+                return self.asked_there(&machine, asked, true, within).await;
+            }
+            Placement::Placed { machine, .. } => {
+                let ground = (at, fence, screen, &admits);
+                if past_room && let Some(cloud) = self.in_the_cloud_past_room(&asked, ground).await
+                {
+                    return cloud;
                 }
-                Placement::Placed { machine, .. } => {
-                    let ground = (at, fence, screen, &admits);
-                    if past_room && let Some(cloud) = self.in_the_cloud_past_room(&asked, ground).await
-                    {
-                        return cloud;
-                    }
-                    let fenced = (starts_in(fence, screen), within);
-                    let reply = self.start_on(machine.clone(), asked.clone(), fenced).await;
-                    let chosen = (machine.as_str(), self.machine.as_str());
-                    let (pinned, why) = match here_where_it_lacks_its_folder(chosen, asked, reply) {
-                        Ok(instead) => instead,
-                        Err(reply) => return reply,
-                    };
-                    // Quoted, since the folder in it is one the asker chose.
-                    let said = why.escape_debug();
-                    eprintln!("a start placed on {machine} is placed here instead, as {said}");
-                    // Nothing began there, so it weighs there no longer.
-                    self.lock().starts.unplaced(&machine);
-                    return self
-                        .placed_here((pinned, at), fence, screen, &admits)
-                        .await
-                        .map_err(|again| format!("{why}, and here: {again}"));
+                return self.started_where_placed(machine, asked, ground).await;
+            }
+            Placement::Pending { misses } => {
+                let nowhere = nowhere_now(&misses);
+                (misses, nowhere)
+            }
+            Placement::Refused { misses } => {
+                if let Some(why) = fenced_out(&asked.work, &misses, fence) {
+                    return Err(why);
                 }
-                Placement::Pending { misses } => {
-                    let nowhere = nowhere_now(&misses);
-                    (misses, nowhere)
-                }
-                Placement::Refused { misses } => {
-                    if let Some(why) = fenced_out(&asked.work, &misses, fence) {
-                        return Err(why);
-                    }
-                    let nowhere = format!("nowhere: {}", placement::said(&misses));
-                    (misses, nowhere)
-                }
-            };
+                let nowhere = format!("nowhere: {}", placement::said(&misses));
+                (misses, nowhere)
+            }
+        };
         if reopens {
             return Err(nowhere);
         }
@@ -7788,6 +7772,33 @@ impl<S: Store> Shared<S> {
             return self.start_on_made(asked, &misses, fence).await;
         }
         self.start_on_free(asked, nowhere, fence).await
+    }
+
+    /// Starts `asked`, asked at `at`, on `machine`, where placement chose,
+    /// in `fence` behind `screen`; or here where `machine` hasn't its
+    /// folder ([`here_where_it_lacks_its_folder`]), within the same start.
+    async fn started_where_placed(
+        &self,
+        machine: String,
+        asked: Start,
+        (at, fence, screen, admits): (i64, Option<crate::declared::Kind>, Screen, &Admits),
+    ) -> Reply {
+        let within = relayed_within(at, jiff::Timestamp::now().as_millisecond());
+        let fenced = (starts_in(fence, screen), within);
+        let reply = self.start_on(machine.clone(), asked.clone(), fenced).await;
+        let chosen = (machine.as_str(), self.machine.as_str());
+        let (pinned, why) = match here_where_it_lacks_its_folder(chosen, asked, reply) {
+            Ok(instead) => instead,
+            Err(reply) => return reply,
+        };
+        // Quoted, since the folder in it is one the asker chose.
+        let said = why.escape_debug();
+        eprintln!("a start placed on {machine} is placed here instead, as {said}");
+        // Nothing began there, so it weighs there no longer.
+        self.lock().starts.unplaced(&machine);
+        self.placed_here((pinned, at), fence, screen, admits)
+            .await
+            .map_err(|again| format!("{why}, and here: {again}"))
     }
 
     /// Starts `asked`, asked at `at`, here where placement takes it here,
