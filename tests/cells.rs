@@ -12,11 +12,20 @@ mod realm;
 /// cells' records are past any cache, a thousand's are not, so the time
 /// is first taken where both are: work growing with the cells takes twice
 /// as long, and with their square four times.
+///
+/// The second is a release build's, which the package's own check tests.
+/// A debug build, as plain `cargo test` makes, is held by its growth
+/// alone: its unoptimised code took 1.5 s for the same records on a cloud
+/// builder on 25 November, on main as on every branch.
 #[cfg(not(target_env = "musl"))]
 const GROWTH: realm::Growth = realm::Growth {
     from: realm::CELLS / 2,
     times: 3,
-    within: Some(std::time::Duration::from_secs(1)),
+    within: if cfg!(debug_assertions) {
+        None
+    } else {
+        Some(std::time::Duration::from_secs(1))
+    },
 };
 
 /// Under musl, whose allocator slows as the heap grows, held as the
