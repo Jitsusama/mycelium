@@ -306,9 +306,8 @@ impl Drop for Answer {
 /// quest that isn't a quest's id, or a commit that isn't forty lowercase
 /// hex digits.
 pub fn asked(command: &[String]) -> Result<(&str, &str), Refused> {
-    let (program, act, arguments) = match command {
-        [program, act, arguments @ ..] => (program, act, arguments),
-        _ => return Err(Refused::Program),
+    let [program, act, arguments @ ..] = command else {
+        return Err(Refused::Program);
     };
     if program != PROGRAM || act != ANSWER {
         return Err(Refused::Program);

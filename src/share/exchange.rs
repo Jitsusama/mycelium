@@ -1257,43 +1257,16 @@ impl Exchange {
         Ok(())
     }
 
-    /// Takes what the other end said, returning what this end says back.
-    pub fn hear(&mut self, say: Say) -> io::Result<Vec<Say>> {
-        self.above_again |= match &say {
-            Say::Shares { .. } => true,
-            Say::Piece { file, .. } | Say::File { file, .. } => file == README,
-            _ => false,
-        };
+    /// What a worker says of a gate's files, answered here, or `None`
+    /// when it is anything else, or the other end is no worker.
+    fn heard_of_gate(&mut self, say: &Say) -> Option<io::Result<Vec<Say>>> {
+        if !self.worker {
+            return None;
+        }
         match say {
-            Say::Shares {
-                mut quests,
-                mut scratch,
-                mut clones,
-                mut ended,
-                mut above,
-            } => {
-                let taken: BTreeSet<String> =
-                    quests.iter().filter(|id| self.takes(id)).cloned().collect();
-                quests.retain(|id| taken.contains(id));
-                scratch.retain(|id, _| taken.contains(id));
-                clones.retain(|id, _| taken.contains(id));
-                ended.retain(|id| taken.contains(id));
-                above.retain(|id| taken.contains(id));
-                self.theirs = Some(Theirs {
-                    quests: quests.into_iter().collect(),
-                    ended,
-                    above,
-                    scratch,
-                    clones,
-                });
-                self.drop_unnamed();
-                self.take_up_theirs()?;
-                Ok(Vec::new())
-            }
-            Say::Holds { quest, files } if self.worker && self.serves(&quest) => {
-                let wants = self.gates_wanted(&quest, &files);
-                self.read_by_worker(&quest, files)?;
-                Ok(wants)
+            Say::Holds { quest, files } if self.serves(quest) => {
+                let wants = self.gates_wanted(quest, files);
+                Some(self.read_by_worker(quest, files.clone()).map(|()| wants))
             }
             Say::Piece {
                 quest,
@@ -1303,8 +1276,8 @@ impl Exchange {
                 len,
                 body,
                 ..
-            } if self.worker && gate::sent(&file).is_ok() => {
-                Ok(self.gate_piece(&quest, &file, &state, (at, len), &body))
+            } if gate::sent(file).is_ok() => {
+                Some(Ok(self.gate_piece(quest, file, state, (*at, *len), body)))
             }
             Say::File {
                 quest,
@@ -1312,8 +1285,59 @@ impl Exchange {
                 state,
                 body,
                 ..
-            } if self.worker && gate::sent(&file).is_ok() => {
-                Ok(self.gate_file(&quest, &file, &state, body.as_deref()))
+            } if gate::sent(file).is_ok() => {
+                Some(Ok(self.gate_file(quest, file, state, body.as_deref())))
+            }
+            _ => None,
+        }
+    }
+
+    /// What the other end shares, kept to the quests this end takes.
+    fn taken_of(
+        &self,
+        mut quests: Vec<String>,
+        mut scratch: BTreeMap<String, BTreeSet<String>>,
+        mut clones: BTreeMap<String, BTreeMap<String, Clone>>,
+        mut ended: BTreeSet<String>,
+        mut above: BTreeSet<String>,
+    ) -> Theirs {
+        let taken: BTreeSet<String> = quests.iter().filter(|id| self.takes(id)).cloned().collect();
+        quests.retain(|id| taken.contains(id));
+        scratch.retain(|id, _| taken.contains(id));
+        clones.retain(|id, _| taken.contains(id));
+        ended.retain(|id| taken.contains(id));
+        above.retain(|id| taken.contains(id));
+        Theirs {
+            quests: quests.into_iter().collect(),
+            ended,
+            above,
+            scratch,
+            clones,
+        }
+    }
+
+    /// Takes what the other end said, returning what this end says back.
+    pub fn hear(&mut self, say: Say) -> io::Result<Vec<Say>> {
+        self.above_again |= match &say {
+            Say::Shares { .. } => true,
+            Say::Piece { file, .. } | Say::File { file, .. } => file == README,
+            _ => false,
+        };
+        if let Some(said) = self.heard_of_gate(&say) {
+            return said;
+        }
+        match say {
+            Say::Shares {
+                quests,
+                scratch,
+                clones,
+                ended,
+                above,
+            } => {
+                self.theirs = Some(self.taken_of(quests, scratch, clones, ended, above));
+                self.drop_unnamed();
+                self.take_up_theirs()?;
+                Ok(Vec::new())
             }
             Say::Holds { quest, .. } | Say::Piece { quest, .. } | Say::File { quest, .. }
                 if !self.takes(&quest) =>
@@ -5265,13 +5289,11 @@ mod tests {
 
     /// skiff's gates, answered by a stand-in program, for the workers
     /// `listed` names.
-    fn gates_for(skiff: &Machine, listed: &str) -> Option<Arc<Gates>> {
+    fn gates_for(skiff: &Machine, listed: &str) -> Arc<Gates> {
         let file = skiff.places.state.join("answers-for");
         fs::create_dir_all(&skiff.places.state).expect("the state folder made");
         fs::write(&file, listed).expect("the list written");
-        Some(Arc::new(
-            Gates::new(PathBuf::from("/bin/true"), file).expect("the gates"),
-        ))
+        Arc::new(Gates::new(PathBuf::from("/bin/true"), file).expect("the gates"))
     }
 
     /// Writes the gate's file `name` of quest `id` on `machine`, holding
@@ -5339,7 +5361,7 @@ mod tests {
         let mut near = skiff
             .exchange(&tern)
             .for_worker()
-            .gating(gates_for(&skiff, "wren\ntern\n"));
+            .gating(Some(gates_for(&skiff, "wren\ntern\n")));
         let mut far = tern.exchange(&skiff);
         talk(&mut near, &mut far);
 
@@ -5388,7 +5410,7 @@ mod tests {
         ] {
             let (skiff, tern) = given_to_tern();
             gate_written(&tern, QUEST, "request.json", "{}\n");
-            let gates = gates.and_then(|listed| gates_for(&skiff, listed));
+            let gates = gates.map(|listed| gates_for(&skiff, listed));
             let mut near = skiff.exchange(&tern).for_worker().gating(gates);
             let mut far = tern.exchange(&skiff);
             talk(&mut near, &mut far);
@@ -5409,7 +5431,7 @@ mod tests {
         let mut near = skiff
             .exchange(&tern)
             .for_worker()
-            .gating(gates_for(&skiff, "tern\n"));
+            .gating(Some(gates_for(&skiff, "tern\n")));
         let mut far = tern.exchange(&skiff);
         talk(&mut near, &mut far);
         assert!(
@@ -5438,7 +5460,7 @@ mod tests {
         let mut near = skiff
             .exchange(&tern)
             .for_worker()
-            .gating(gates_for(&skiff, "tern\n"));
+            .gating(Some(gates_for(&skiff, "tern\n")));
         let key = format!("scratch/{HANDOVER}/gates/{GATED}/request.json");
         let said = near
             .hear(Say::File {
@@ -5449,7 +5471,7 @@ mod tests {
                 mode: None,
             })
             .expect("heard");
-        assert!(said.is_empty());
+        assert_eq!(said, Vec::<Say>::new());
         assert_eq!(
             gate_read(&skiff, QUEST, "request.json"),
             None,
@@ -5475,7 +5497,7 @@ mod tests {
         let mut near = skiff
             .exchange(&tern)
             .for_worker()
-            .gating(gates_for(&skiff, "tern\n"));
+            .gating(Some(gates_for(&skiff, "tern\n")));
         let mut far = tern.exchange(&skiff);
         talk(&mut near, &mut far);
         assert_eq!(
