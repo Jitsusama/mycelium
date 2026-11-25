@@ -13,14 +13,15 @@
 //! ("Bootstrap skiff to replace the old dinghy" is `skiff`). Else its
 //! leading words up to its first small one, two at most ("Quick Wins That
 //! Move Harbour Toward Lighthouse's Vision" is `quick-wins`). A name two
-//! teams would share, or that's one of the swarm's acts, goes to neither,
-//! and one worked out goes to none where a quest gives it to its own.
+//! teams would share, or that reads as one of the swarm's acts or as
+//! `team` once cleaned as a page draws it, goes to neither, and one
+//! worked out goes to none where a quest gives it to its own.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use super::{address, title};
+use super::{address, title, unmarked};
 
 /// The small words that name nothing, which a short name never holds.
 const SMALL: [&str; 38] = [
@@ -50,6 +51,14 @@ pub(crate) fn shell_word(name: &str, also: &[char]) -> bool {
 pub(super) fn one_word(name: &str) -> bool {
     let lower = name.to_lowercase();
     shell_word(name, &[]) && !ACTS.contains(&lower.as_str()) && lower != "team"
+}
+
+/// Whether `name`, cleaned as a page draws it, reads as one of the acts or
+/// as `team`, which `swarm` reads as other than a team's name, so typing
+/// what a page drew would never reach the team.
+fn acts_for(name: &str) -> bool {
+    let drawn = unmarked(name).to_lowercase();
+    ACTS.contains(&drawn.as_str()) || drawn == "team"
 }
 
 /// The most words before a colon that still read as a name.
@@ -151,7 +160,7 @@ pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
             }
             Some((me, short(title(team), &shared)?)).filter(|(_, name)| !chosen.contains(name))
         })
-        .filter(|(_, name)| !ACTS.contains(&name.as_str()))
+        .filter(|(_, name)| !acts_for(name))
         .collect();
     named
         .iter()
