@@ -26037,25 +26037,17 @@ esac
     /// The person's carry of `s-harbour` and its `quest` from tern to
     /// skiff, as tern's node relays it.
     fn carried_from_tern(quest: &str) -> Start {
+        let done = crate::carry::Done {
+            session: "s-harbour".to_owned(),
+            started_before: None,
+        };
+        // Word for word as tern's carry writes it, so the node here reads
+        // it as a carry, and never as another start of its live session.
         Start {
             work: work(vec![Need::Machine("skiff".to_owned())]),
-            folder: None,
-            strict: false,
-            command: [
-                "sh",
-                "-c",
-                r#"pi-carry arrive "$1" --from "$2" --session "$3"; exec pi --session "$3""#,
-                crate::carry::PI_CARRY,
-                quest,
-                "tern",
-                "s-harbour",
-                "carry on",
-            ]
-            .map(str::to_owned)
-            .to_vec(),
-            may_cost: false,
             carries: true,
             once: None,
+            ..crate::carry::arriving(quest, "tern", "skiff", &done, None)
         }
     }
 
@@ -26118,11 +26110,17 @@ esac
         shared.read_sessions();
         assert_eq!(stands(&shared), "STAND1", "and is never read for one");
         asker.client = i32::try_from(std::process::id()).ok();
-        asker
+        // From any machine but the one it names, it is no carry, so it is
+        // judged as any start of the session it names, live here.
+        let refused = asker
             .relayed("osprey", carrying.clone())
             .await
-            .expect("a carry from elsewhere starts");
-        assert_eq!(stands(&shared), "STAND1", "but never as another's carry");
+            .expect_err("a carry from elsewhere is no carry");
+        assert!(
+            refused.contains("s-harbour is still live on skiff"),
+            "it is refused as its session is live: {refused}"
+        );
+        assert_eq!(stands(&shared), "STAND1", "and never as another's carry");
         let unmarked = Start {
             carries: false,
             ..carrying.clone()
