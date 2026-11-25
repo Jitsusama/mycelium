@@ -585,7 +585,17 @@ fn a_short_name_is_drawn_as_it_is_typed_and_reaches_only_its_team() {
             "{given} was given as Harbour's name: {names:?}"
         );
     }
-    // A name worked out from a title is held to the same rule.
+    // A name worked out from a title is held in the same typed form, so a
+    // control in a title's word is drawn and reached as a hyphen.
+    let mut controlled = swarm();
+    controlled.teams[1]["title"] = json!("Bootstrap tide\u{1b}plan tools");
+    let found = team(&controlled, "tide-plan", &look()).unwrap_or_default();
+    assert!(
+        typed(&controlled).iter().any(|name| name == "tide-plan") && found.starts_with("Bootstrap"),
+        "a title's controlled word was not drawn as typed: {:?}, {found}",
+        typed(&controlled)
+    );
+    // And to the same rule on acts.
     let worked_out = "Bootstrap reef\u{2800}pause tools";
     let mut titled = swarm();
     titled.teams[1]["title"] = json!(worked_out);
