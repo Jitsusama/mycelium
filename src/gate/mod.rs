@@ -15,7 +15,8 @@
 //!   never chooses the binary, a folder, an environment or another
 //!   argument ([`asked`]).
 //! - One answer a worker at a time, and [`AT_ONCE`] on this machine,
-//!   refused past that rather than queued.
+//!   refused past that rather than queued, each ended with all it
+//!   started at [`LIMIT`] or when the node lets it go ([`ended`]).
 //! - Of what the worker writes of a quest it was given, only a gate's
 //!   request and bundle are taken, each a new file ([`take`]), and of
 //!   what the gate writes, nothing is served back to it but the result:
@@ -35,6 +36,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
+
+use rustix::process::{Pid, Signal};
 
 use crate::share::ledger::is_quest;
 use crate::wire::Start;
@@ -43,6 +47,15 @@ pub use take::take;
 
 /// How many answers run on this machine at once.
 pub const AT_ONCE: usize = 2;
+
+/// The longest an answer runs: the two hours a gate's asker waits for
+/// its result, as nix-offload's ask does unless told otherwise, and the
+/// minutes its result takes to cross, past which nobody reads it.
+pub const LIMIT: Duration = Duration::from_secs(125 * 60);
+
+/// How long an answer past [`LIMIT`] is given to end once asked, before
+/// all it started is killed.
+pub const GRACE: Duration = Duration::from_secs(10);
 
 /// The program a worker's start names, as it names it.
 const PROGRAM: &str = "nix-offload";
@@ -272,7 +285,9 @@ impl Answer {
     /// The gate's run: its program by its store path, with its act, the
     /// quest and the commit as arguments alone, reading nothing and
     /// saying nothing back, since the result crosses as a file and its
-    /// log stays here.
+    /// log stays here. It leads a process group of its own, so what it
+    /// starts (its checks, and nix's own) ends with it ([`ended`]), and
+    /// is killed should the node let it go unawaited.
     #[must_use]
     pub fn command(&self) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(&self.gates.program);
@@ -282,9 +297,47 @@ impl Answer {
             .arg(&self.commit)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::null())
+            .process_group(0)
+            .kill_on_drop(true);
         command
     }
+}
+
+/// Waits for an answer `running` at most `limit`, then asks its whole
+/// process group to end and, `grace` on, kills what's left of it, as
+/// it kills what it left behind when it ends of itself, saying how it
+/// ended: an answer nobody waits for any more would otherwise hold a
+/// builder, and its place here, for good. The node gives it [`LIMIT`]
+/// and [`GRACE`].
+pub async fn ended(mut running: tokio::process::Child, limit: Duration, grace: Duration) -> String {
+    let group = running
+        .id()
+        .and_then(|pid| i32::try_from(pid).ok())
+        .and_then(Pid::from_raw);
+    if let Ok(ended) = tokio::time::timeout(limit, running.wait()).await {
+        // Whatever it started and left behind goes with it.
+        if let Some(group) = group {
+            let _ = rustix::process::kill_process_group(group, Signal::KILL);
+        }
+        return ended.map_or_else(|error| error.to_string(), |status| status.to_string());
+    }
+    if let Some(group) = group {
+        let _ = rustix::process::kill_process_group(group, Signal::TERM);
+    }
+    let asked = tokio::time::timeout(grace, running.wait()).await;
+    if let Some(group) = group {
+        let _ = rustix::process::kill_process_group(group, Signal::KILL);
+    }
+    let status = match asked {
+        Ok(ended) => ended,
+        Err(_) => running.wait().await,
+    };
+    format!(
+        "past its limit of {} seconds, and ended: {}",
+        limit.as_secs(),
+        status.map_or_else(|error| error.to_string(), |status| status.to_string())
+    )
 }
 
 impl Drop for Answer {

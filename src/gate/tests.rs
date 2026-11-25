@@ -380,6 +380,58 @@ fn a_wrong_name_or_folder_is_refused() {
     assert!(!dir.path().join(QUEST).join("handover").exists());
 }
 
+/// An answer admitted from gates whose program is a stand-in of `dir`
+/// running `body`, and the file a process it left behind writes a
+/// second on, should it still live then.
+fn answering(dir: &Path, body: &str) -> (Answer, PathBuf) {
+    let (program, alive) = (dir.join("nix-offload"), dir.join("alive"));
+    crate::stand_in::program(
+        &program,
+        &format!(
+            "#!/bin/sh\n(sleep 1; echo alive > {})&\n{body}\n",
+            alive.display()
+        ),
+    );
+    let listed = dir.join("answers-for");
+    fs::write(&listed, "skiff\n").expect("the list");
+    let gates = Arc::new(Gates::new(program, listed).expect("gates"));
+    let answer = gates.admit("skiff", &gate()).expect("admitted");
+    (answer, alive)
+}
+
+#[tokio::test]
+async fn an_answer_past_its_limit_ends_with_all_it_started_though_it_waves_off_term() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let (answer, alive) = answering(dir.path(), "trap '' TERM\nsleep 30");
+    let begun = std::time::Instant::now();
+    let running = answer.command().spawn().expect("the answer starts");
+    let said = ended(
+        running,
+        Duration::from_millis(200),
+        Duration::from_millis(200),
+    )
+    .await;
+    assert!(said.starts_with("past its limit"), "{said}");
+    assert!(
+        begun.elapsed() < Duration::from_secs(5),
+        "it was killed, not waited out"
+    );
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(!alive.exists(), "what it started was killed with it");
+}
+
+#[tokio::test]
+async fn an_answer_ending_of_itself_says_how_and_leaves_nothing_running() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let (answer, alive) = answering(dir.path(), "exit 3");
+    let running = answer.command().spawn().expect("the answer starts");
+    let said = ended(running, Duration::from_secs(30), Duration::from_secs(1)).await;
+    assert!(!said.starts_with("past"), "{said}");
+    assert!(said.contains('3'), "its exit is said: {said}");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(!alive.exists(), "what it left behind went with it");
+}
+
 #[test]
 fn a_quest_with_no_scratch_here_has_one_made_but_no_quests_id_is_refused() {
     let dir = scratch();
