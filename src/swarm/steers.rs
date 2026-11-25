@@ -636,14 +636,16 @@ mod tests {
     }
 
     #[test]
-    fn two_teams_whose_short_names_clean_alike_are_each_named() {
+    fn two_teams_whose_titles_clean_alike_are_each_named() {
+        // Short names that clean alike go to neither, so two teams are
+        // drawn alike only by titles that clean alike.
         let mut swarm = swarm();
-        swarm.teams[1]["swarm"] = json!("dock");
-        swarm.teams[0]["swarm"] = json!("do\u{200B}ck");
+        swarm.teams[1]["title"] = json!("Dock");
+        swarm.teams[0]["title"] = json!("Do\u{200B}ck");
         let why = aim(&swarm, Act::Pause, "dock")
             .expect_err("a steer to two teams drawn alike is refused");
         assert_eq!(
-            why, "dock could be dock (REEF01) or dock (HARBOR)",
+            why, "dock could be Dock (REEF01) or Dock (HARBOR)",
             "each is named with what to type to reach it"
         );
         // `swarm` takes the first act it finds as the act, so an act's
@@ -651,13 +653,13 @@ mod tests {
         swarm.teams[0]["key"] = json!("team:RESUME");
         assert_eq!(
             aim(&swarm, Act::Pause, "dock"),
-            Err("dock could be dock (no address to type) or dock (HARBOR)".to_owned()),
+            Err("dock could be Dock (no address to type) or Dock (HARBOR)".to_owned()),
             "an act's word was given as an address to type"
         );
         swarm.teams[0]["key"] = json!("team:ALONE");
         assert_eq!(
             aim(&swarm, Act::Pause, "dock"),
-            Err("dock could be dock (no address to type) or dock (HARBOR)".to_owned()),
+            Err("dock could be Dock (no address to type) or Dock (HARBOR)".to_owned()),
             "an address that would steer a session instead is not given"
         );
     }

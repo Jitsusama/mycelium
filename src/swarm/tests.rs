@@ -204,24 +204,26 @@ fn a_name_matching_none_or_several_is_said_plainly() {
         Err("r could be reef or harbour".to_owned()),
         "several, each as it's typed, as the node lists them"
     );
+    // Short names that clean alike go to neither, so two teams are drawn
+    // alike only by titles that clean alike.
     let mut alike = swarm();
-    alike.teams[1]["swarm"] = json!("dock");
-    alike.teams[0]["swarm"] = json!("do\u{200B}ck");
+    alike.teams[1]["title"] = json!("Dock");
+    alike.teams[0]["title"] = json!("Do\u{200B}ck");
     assert_eq!(
         team(&alike, "dock", &look()),
-        Err("dock could be dock (REEF01) or dock (HARBOR)".to_owned()),
+        Err("dock could be Dock (REEF01) or Dock (HARBOR)".to_owned()),
         "two drawn alike are each named by their address too, so one can be typed"
     );
     alike.teams[0]["key"] = json!("team:RE\u{1b}]52;c;eA==\u{7}EF");
     assert_eq!(
         team(&alike, "dock", &look()),
-        Err("dock could be dock (no address to type) or dock (HARBOR)".to_owned()),
+        Err("dock could be Dock (no address to type) or Dock (HARBOR)".to_owned()),
         "a peer's address is said only when it is one, so typing it reaches its team"
     );
     alike.teams[0]["key"] = json!("team:PAUSE");
     assert_eq!(
         team(&alike, "dock", &look()),
-        Err("dock could be dock (no address to type) or dock (HARBOR)".to_owned()),
+        Err("dock could be Dock (no address to type) or Dock (HARBOR)".to_owned()),
         "an address swarm reads as an act is not said, as typing it does no steer"
     );
     let mut hidden = swarm();
@@ -239,12 +241,14 @@ fn a_name_matching_none_or_several_is_said_plainly() {
             .any(|line| line.contains("Reef") && line.contains("harbor")),
         "Reef was drawn by a name that reaches Harbour:\n{shown}"
     );
-    assert_eq!(
+    // Two short names that clean alike go to neither, so Harbour may lose
+    // its own to the one drawn like it, and is offered by its title.
+    assert!(
         typed(&hidden)
             .iter()
             .filter(|name| *name == "harbor")
-            .count(),
-        1,
+            .count()
+            <= 1,
         "harbor was offered for a team besides Harbour"
     );
 }
@@ -259,32 +263,21 @@ fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
             .map(str::to_owned)
     };
     let mut acting = swarm();
-    acting.teams[1]["swarm"] = json!("harbour pause");
-    assert_eq!(
-        hint(&acting).as_deref(),
-        Some("HARBOR"),
-        "a short name that would act or split is given as the team's address"
-    );
     acting.teams[1]["swarm"] = json!("harbour;ls");
     assert_eq!(
         hint(&acting).as_deref(),
         Some("HARBOR"),
-        "or one a shell acts on"
+        "a short name a shell acts on is given as the team's address"
     );
     // Every miss is gathered, so undoing any one rule names its case.
     let mut misread = Vec::new();
+    // One swarm reads as other than a name, in any of its words, is no
+    // short name at all, so the team is given by its title, as one with
+    // none is.
     for (given, said) in [
+        ("harbour pause", "a name with an act among its words"),
         ("--names", "a name swarm reads as an option"),
         ("-ojson", "or as its output"),
-    ] {
-        acting.teams[1]["swarm"] = json!(given);
-        if hint(&acting).as_deref() != Some("HARBOR") {
-            misread.push(said);
-        }
-    }
-    // One swarm reads as other than a name is no short name at all, so
-    // the team is given by its title, as one with none is.
-    for (given, said) in [
         ("team", "a name read as the person saying what follows"),
         // Resume, as no session is addressed by it, so the act is what
         // refuses it, not the address a cleaned name would take.
@@ -300,8 +293,8 @@ fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
         }
     }
     // Kelp stays within it, so Harbour still leads, by a short name a
-    // shell would split, so its address is what the hint would give.
-    acting.teams[1]["swarm"] = json!("harbour pause");
+    // shell would act on, so its address is what the hint would give.
+    acting.teams[1]["swarm"] = json!("harbour;ls");
     acting.teams[2]["within"] = json!("PAUSE");
     acting.teams[1]["key"] = json!("team:PAUSE");
     if hint(&acting).as_deref() != Some("<team>") {
@@ -535,6 +528,42 @@ fn a_short_name_that_cleans_to_an_act_is_never_drawn() {
     assert!(
         !typed(&swarm).iter().any(|name| unmarked(name) == "resume"),
         "a shell was offered an act as a team's name"
+    );
+}
+
+#[test]
+fn a_short_name_holding_a_word_swarm_reads_otherwise_is_never_drawn() {
+    // Typed as drawn, `reef pause` would pause Reef rather than show
+    // Harbour, and a flag would be read as one.
+    for given in ["reef pause", "--names", "harbour team"] {
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!(given);
+        let shown = overview(&swarm, &look());
+        assert!(
+            !shown.contains(given) && !typed(&swarm).iter().any(|name| name == given),
+            "{given} was given as Harbour's name:\n{shown}"
+        );
+    }
+}
+
+#[test]
+fn two_short_names_that_clean_alike_go_to_neither_and_swarm_names_say_them_cleaned() {
+    // Drawn alike, typed they'd reach both, and the hint offered one.
+    let mut both = swarm();
+    both.teams[0]["swarm"] = json!("dock");
+    both.teams[1]["swarm"] = json!("do\u{200B}ck");
+    assert!(
+        !typed(&both).iter().any(|name| unmarked(name) == "dock"),
+        "two teams were given one name: {:?}",
+        typed(&both)
+    );
+    // Alone, the name is kept and handed to a shell as a page draws it.
+    let mut alone = swarm();
+    alone.teams[1]["swarm"] = json!("do\u{200B}ck");
+    assert!(
+        typed(&alone).iter().any(|name| name == "dock"),
+        "a name was handed to a shell otherwise than drawn: {:?}",
+        typed(&alone)
     );
 }
 
