@@ -549,7 +549,12 @@ pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> Stri
     let mut drawn = 0;
     for word in text.split_whitespace() {
         let cells = drawn_width(word);
-        let joins = !lines.is_empty() && drawn + 1 + cells <= room(lines.len() - 1);
+        // A word joins the line only within the cap on steps a cut of
+        // that line keeps, so a pile of marks on a later word is cut as
+        // one on the first is, rather than drawn whole.
+        let joins = !lines.is_empty()
+            && drawn + 1 + cells <= room(lines.len() - 1)
+            && steps(word).nth(most_steps(room(lines.len() - 1))).is_none();
         if let Some(line) = lines.last_mut().filter(|_| joins) {
             line.push(' ');
             line.push_str(word);

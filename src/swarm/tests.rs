@@ -1055,6 +1055,15 @@ fn a_peer_s_name_chained_from_emoji_counts_a_cell_pair_for_each_four() {
         4,
         "a spacing mark is a run's start"
     );
+    // But one that extends a grapheme, as U+09BE does, unicode-width
+    // gives no cell, so the run goes on past it, as PROTOCOL says.
+    assert_eq!(
+        kept(
+            "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{9BE}\u{200D}\u{1F469}"
+        ),
+        3,
+        "a mark extending a grapheme started a run"
+    );
     for (chain, emoji) in [
         (marked.as_str(), 20),
         (toned.as_str(), 20),
@@ -1239,6 +1248,25 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
         wrapped("abc\u{915}\u{94D}\u{200D}\u{937}", "", "", 4),
         "abc\n\u{915}\u{94D}\u{200D}\u{937}\n",
         "a conjunct was split at its joiner, or its joiner dropped"
+    );
+}
+
+#[test]
+fn a_pile_of_marks_on_a_later_word_is_cut_as_one_on_the_first_is() {
+    // A peer's question may wrap into a few lines and be shown as it
+    // is, so a pile joined whole to the line before it would bury what
+    // is beside it, as a pile on the text's first word can't.
+    let wrap = wrapped(&format!("x Reef{} b", "\u{301}".repeat(10_000)), "", "", 80);
+    let marks = wrap.matches('\u{301}').count();
+    assert!(
+        marks < most_steps(80)
+            && wrap.starts_with('x')
+            && wrap.contains("Reef")
+            && wrap.ends_with(" b\n"),
+        "a pile after a later word passed whole, or a word went: {marks} marks on {:?}",
+        wrap.lines()
+            .map(|line| line.chars().count())
+            .collect::<Vec<_>>()
     );
 }
 

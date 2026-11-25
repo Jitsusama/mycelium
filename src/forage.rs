@@ -1390,7 +1390,8 @@ pub(crate) fn one_line(text: &str) -> String {
     // The zero-width joiners kept in the run at hand, which a character
     // that follows none, takes a cell of its own by Unicode's widths and
     // neither selects nor modifies ends, so a nonspacing mark between
-    // emoji can't start the count afresh, though a spacing mark can,
+    // emoji can't start the count afresh, though a spacing mark can
+    // where unicode-width gives it a cell (not one extending a grapheme),
     // nor a flag's second half, which follows its first rather than a
     // joiner. A non-joiner is never counted, as it joins no emoji.
     let mut joined = 0;
@@ -1428,6 +1429,9 @@ pub(crate) fn one_line(text: &str) -> String {
 /// joined run of any length as two cells. This bounds that, not closes
 /// it: four emoji joined as no sequence is still count two cells and draw
 /// eight, so a chain of them draws at most four times what it counts.
+/// A chain of Khmer subscripts (coeng, U+17D2) isn't capped: Unicode's
+/// widths count it as one cell, which a terminal drawing per code point
+/// draws wider; capping it as emoji chains are is still to do.
 const MOST_JOINED: usize = 3;
 
 /// Whether `each` is an emoji modifier, a skin tone, which is drawn as
