@@ -4190,6 +4190,14 @@ start again stays parked and says why on its terminal, and the next
 wake tries again, with any command named since. A parked program is no
 work: it keeps no machine awake and holds up no handover.
 
+A program that exits with 79 quit though nobody asked it to, as a pi
+whose own code gave up does, and is started again at once on the same
+terminal, as one that restarts is, never shown as parked: its window
+stays rather than closing on the person. Its run's end warns in the
+journal, as `quit unasked (exit 79)`. A fourth such quit within a
+minute ends the hold, saying so on the node's log, so a program that
+quits as it starts can't start forever.
+
 A program that exits with 69 (sysexits' `EX_UNAVAILABLE`) having
 written `<id>.gone`, told its path in `MYCELIUM_GONE`, is kept as a
 parked one is, with its windows, and each window joining meanwhile,

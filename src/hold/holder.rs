@@ -51,6 +51,21 @@ const FIRST_SIZE: Size = Size { rows: 24, cols: 80 };
 /// holder reads it from a child's `ExitStatus::code`.
 pub const PARKED: i32 = 75;
 
+/// The exit code a held program ends with when it quit though nobody
+/// asked it to, as a pi whose own code gave up does: just past sysexits'
+/// range, so it is never a tool's own. Its holder starts it again at
+/// once, as for a restart, rather than ending its hold and taking its
+/// window with it, up to [`UNASKED_MOST`] times within [`UNASKED_WITHIN`].
+pub const UNASKED: i32 = 79;
+
+/// How many unasked quits in a row within [`UNASKED_WITHIN`] are started
+/// again; one more ends the hold, so a program that quits as it starts
+/// can't start forever.
+const UNASKED_MOST: usize = 3;
+
+/// How close together unasked quits count toward [`UNASKED_MOST`].
+const UNASKED_WITHIN: Duration = Duration::from_secs(60);
+
 /// The exit code `mycelium attach --host` ends with when its host let the
 /// conversation go back to plain pi, as a release does, rather than 0 for
 /// any other leaving. Whatever runs in the window next starts plain pi on
@@ -489,7 +504,8 @@ fn on_end(
 /// started again on the same terminal when woken, with the command named
 /// for it from outside if any was (see [`super::name_next`]), else with
 /// the one it named itself; one that wrote its wake file before it went is restarting,
-/// and starts again at once, never shown as parked. One exiting with
+/// and starts again at once, never shown as parked, as does one exiting
+/// with [`UNASKED`], until it has quit so too often. One exiting with
 /// [`GONE`] having written its gone file, its pi host away, is kept as a
 /// parked one is and also starts
 /// again by itself after [`gone_pause`]. How each run ended, parked or
@@ -589,6 +605,8 @@ pub async fn hold(
         // when the latest began, which comes with each child started.
         let mut gone_runs = 0u32;
         let mut began = Instant::now();
+        // When each recent run that quit unasked ended.
+        let mut unasked = Vec::new();
         let status = 'held: loop {
             let pid = child.id().unwrap_or_default();
             let run = told.before(child.wait());
@@ -627,12 +645,26 @@ pub async fn hold(
             // code, so the program's word that it parked keeps it so.
             let said_parked = fs::remove_file(&files.parked).is_ok();
             let parking = said_parked || status.code() == Some(PARKED);
+            let quit_unasked = !gone && !parking && status.code() == Some(UNASKED);
             // Told to end, a program that parked as it saved stays down.
-            if telling || (!gone && !parking) {
+            if telling || (!gone && !parking && !quit_unasked) {
+                break status;
+            }
+            if quit_unasked && quits_too_often(&mut unasked, Instant::now()) {
+                // Said on the node's log, beside the journal's word on
+                // each run, since the window ends as on any exit.
+                eprintln!(
+                    "mycelium: {} quit unasked {} times within {} s, so its hold ends",
+                    holding.id,
+                    UNASKED_MOST + 1,
+                    UNASKED_WITHIN.as_secs(),
+                );
                 break status;
             }
             gone_runs = gone_runs_after(gone_runs, gone, began.elapsed());
-            let mut restarting = !gone && restarting(&files.waking);
+            // Its wake file is taken either way, so none is left to read a
+            // later park as a restart.
+            let mut restarting = !gone && (restarting(&files.waking) || quit_unasked);
             // Parked before any window is told so, so a key typed the
             // moment it is told wakes it rather than going to no program.
             let mut parked = (!restarting).then(|| terminal.parks());
@@ -746,6 +778,19 @@ fn gone_runs_after(runs: u32, gone: bool, lasted: Duration) -> u32 {
         (true, true) => runs.saturating_add(1),
         (true, false) => 1,
     }
+}
+
+/// Whether a program quitting unasked `now` has quit so more than
+/// [`UNASKED_MOST`] times within [`UNASKED_WITHIN`], counting `before`,
+/// when each recent unasked quit ended; unless so, `now` is kept among
+/// them, and those too old to count are let go either way.
+fn quits_too_often(before: &mut Vec<Instant>, now: Instant) -> bool {
+    before.retain(|at| now.saturating_duration_since(*at) < UNASKED_WITHIN);
+    if before.len() >= UNASKED_MOST {
+        return true;
+    }
+    before.push(now);
+    false
 }
 
 /// More doublings than any pause needs to reach [`GONE_AGAIN_MOST`], so
@@ -2305,6 +2350,79 @@ mod tests {
             Some(69),
             "a 69 its program never said was its pi host ends the holder"
         );
+    }
+
+    // 85PKB2 and KP0L6A (2026-11-25): a pi that quit though nobody asked
+    // it to took its window with it, and the person found it closed.
+    #[tokio::test]
+    async fn a_program_quitting_unasked_starts_again_in_its_window() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, _holder) = holding_sh(root.path()).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        window.types("echo first $((40 + 2)); exit 79\r").await;
+        window.sees("first 42").await;
+        window.types("echo again $((50 + 5))\r").await;
+        window.sees("again 55").await;
+        let anew = tokio::time::timeout(PATIENCE, async {
+            while !listed(&dir)
+                .iter()
+                .any(|one| !one.parked && one.pid != 0 && one.pid != held.pid)
+            {
+                changes.recv().await;
+            }
+        })
+        .await;
+        assert!(anew.is_ok(), "it runs again as a new process");
+        assert!(
+            !window.seen.contains("Parked"),
+            "it is never shown as parked: {:?}",
+            window.seen
+        );
+    }
+
+    #[tokio::test]
+    async fn a_program_quitting_unasked_too_often_ends_its_hold() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, holder) = holding_sh(root.path()).await;
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        for run in 1..=UNASKED_MOST + 1 {
+            window
+                .types(&format!("echo run $(({run} * 11)); exit 79\r"))
+                .await;
+            window.sees(&format!("run {}", run * 11)).await;
+        }
+        assert_eq!(
+            exited(holder).await,
+            Some(UNASKED),
+            "one more quit than it starts again within a minute ends it"
+        );
+    }
+
+    #[test]
+    fn only_unasked_quits_close_together_count_as_too_often() {
+        let start = Instant::now();
+        let mut quits = Vec::new();
+        for after in 0..UNASKED_MOST {
+            let at = start + Duration::from_secs(u64::try_from(after).expect("a few"));
+            assert!(
+                !quits_too_often(&mut quits, at),
+                "quit {after} starts again"
+            );
+        }
+        assert!(
+            quits_too_often(&mut quits, start + Duration::from_secs(10)),
+            "one more within a minute is too often"
+        );
+        assert!(
+            !quits_too_often(&mut quits, start + UNASKED_WITHIN + Duration::from_secs(1)),
+            "once the first has aged out, one more starts again"
+        );
+        assert!(
+            !quits_too_often(&mut quits, start + UNASKED_WITHIN * 3),
+            "and a quit long after the rest is the first again"
+        );
+        assert_eq!(quits.len(), 1, "those too old to count are let go");
     }
 
     #[test]

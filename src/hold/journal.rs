@@ -17,7 +17,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
-use super::holder::{PARKED, RELEASED};
+use super::holder::{PARKED, RELEASED, UNASKED};
 
 /// Where the journal takes entries in its own form.
 const JOURNAL_SOCKET: &str = "/run/systemd/journal/socket";
@@ -29,6 +29,9 @@ pub enum How {
     Exited(i32),
     /// It parked, to start again once woken.
     Parked,
+    /// It quit though nobody asked it to, and is started again unless it
+    /// has quit so too often.
+    Unasked,
     /// A signal ended it, leaving a core or not.
     Killed {
         /// The signal's number.
@@ -44,6 +47,7 @@ impl How {
     pub fn of(status: ExitStatus) -> Self {
         match (status.code(), status.signal()) {
             (Some(PARKED), _) => Self::Parked,
+            (Some(UNASKED), _) => Self::Unasked,
             (Some(code), _) => Self::Exited(code),
             (None, signal) => Self::Killed {
                 signal: signal.unwrap_or_default(),
@@ -75,6 +79,7 @@ impl Ended {
         let how = match self.how {
             How::Exited(code) => format!("exited {code}"),
             How::Parked => format!("parked (exit {PARKED})"),
+            How::Unasked => format!("quit unasked (exit {UNASKED})"),
             How::Killed { signal, core } => format!(
                 "was killed by signal {signal} ({}){}",
                 signal_name(signal),
@@ -100,6 +105,9 @@ impl Ended {
         let (code, status, priority) = match self.how {
             How::Exited(code) => ("exited", code.to_string(), if fine(code) { 6 } else { 4 }),
             How::Parked => ("exited", PARKED.to_string(), 6),
+            // A program quitting unasked gave up on something, so it warns,
+            // whether or not it is started again.
+            How::Unasked => ("exited", UNASKED.to_string(), 4),
             How::Killed { signal, core } => (
                 if core { "dumped" } else { "killed" },
                 signal_name(signal).to_owned(),
@@ -241,6 +249,13 @@ mod tests {
         assert!(
             ended(How::Parked).line().ends_with("parked (exit 75)"),
             "a park says it parked"
+        );
+        let unasked = ended(How::Unasked);
+        assert!(
+            unasked.line().ends_with("quit unasked (exit 79)")
+                && unasked.entry().contains("EXIT_STATUS=79\n")
+                && unasked.entry().contains("PRIORITY=4\n"),
+            "an unasked quit says so, and warns"
         );
         let dumped = ended(How::Killed {
             signal: 11,
