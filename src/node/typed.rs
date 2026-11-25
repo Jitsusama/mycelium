@@ -15,6 +15,8 @@ use std::sync::{Mutex, MutexGuard};
 use jiff::{SignedDuration, Timestamp};
 use sha2::{Digest, Sha256};
 
+use super::terminal::Placements;
+
 /// How long a token stands once minted, past which it is refused: long
 /// enough for pi to send the steer it was minted for, and no longer.
 const STANDS: SignedDuration = SignedDuration::from_secs(60);
@@ -44,20 +46,34 @@ struct Minted {
     until: Timestamp,
 }
 
-/// The tokens standing, one a session at most, and the log each mint,
-/// spend and refusal is kept in.
+/// The tokens standing, one a session at most, the log each mint, spend
+/// and refusal is kept in, and the holds the person placed, whose
+/// sessions' pis alone among held ones a token is minted to.
 pub struct Typed {
     minted: Mutex<HashMap<String, Minted>>,
     log: PathBuf,
+    placements: Placements,
 }
 
+/// The file beside the typed answers' log the person's placements are
+/// kept in.
+const PLACEMENTS: &str = "placed-by-the-person.json";
+
 impl Typed {
-    /// None standing yet, each mint, spend and refusal kept in `log`.
+    /// None standing yet, each mint, spend and refusal kept in `log`, and
+    /// the holds the person placed this boot read from beside it.
     pub fn new(log: PathBuf) -> Self {
+        let placements = Placements::read(log.with_file_name(PLACEMENTS), crate::facts::boot_id());
         Self {
             minted: Mutex::new(HashMap::new()),
             log,
+            placements,
         }
+    }
+
+    /// The holds the person placed this boot.
+    pub fn placements(&self) -> &Placements {
+        &self.placements
     }
 
     /// A token for `session`, minted to the process `asker` and bound to

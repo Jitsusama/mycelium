@@ -3343,10 +3343,26 @@ fn hold(
         kit: None,
     };
     let id = starter.start(realm, &folder, (&[], command), false)?;
+    say_placed(realm, &id);
     if detached {
         writeln!(io::stdout().lock(), "{id}")
     } else {
         attach(&place::held(realm), &id)
+    }
+}
+
+/// Tells the node that this process placed hold `id`, so where the kernel
+/// shows it on the person's own terminal, the node keeps the hold as
+/// theirs and its pi may be minted a typed answer (PROTOCOL.md's A Typed
+/// Answer). A node not running, or one that refuses, leaves the hold as
+/// it is, held but no one's, so nothing is said of it.
+fn say_placed(realm: &str, id: &str) {
+    if let Ok(mut node) =
+        Client::connect_within(&place::socket(realm), std::time::Duration::from_secs(5))
+    {
+        let _ = node.ask(&Request::Placed {
+            held: id.to_owned(),
+        });
     }
 }
 

@@ -91,6 +91,7 @@ pub use tie::{
     HALF_LIFE as TIE_HALF_LIFE, KIND as TIE_KIND, Talk, aliases as tie_aliases,
     records as tie_records, talk,
 };
+mod terminal;
 mod turns;
 mod typed;
 mod worker;
@@ -4605,6 +4606,7 @@ impl<S: Store> Shared<S> {
             Request::Starts { .. } => Err("starts are answered by `starts_asked`".to_owned()),
             Request::Spawned { .. } => Err("a spawner is answered by `spawned`".to_owned()),
             Request::Mint { .. } => Err("a mint is answered by `mint`".to_owned()),
+            Request::Placed { .. } => Err("a placement is answered by `placed`".to_owned()),
             Request::Update { .. } => Err("an update is answered by `update`".to_owned()),
             Request::Carry { .. } => Err("carrying is answered by `carried`".to_owned()),
             Request::Health => Err("health is answered by `own_health::tell`".to_owned()),
@@ -5180,6 +5182,75 @@ impl<S: Store> Shared<S> {
         }
     }
 
+    /// Keeps hold `held` as one the person placed, where the asker placed
+    /// it from their own terminal or is the launcher's own process, as
+    /// the kernel tells it; see PROTOCOL.md's A Typed Answer.
+    async fn placed_by_the_person(&self, held: &str) -> Reply {
+        let Some(pid) = self.client else {
+            return Err(
+                "nothing names the process that asks, so no hold is kept as the \
+                        person's"
+                    .to_owned(),
+            );
+        };
+        self.keep_persons(held, pid)
+            .await
+            .map(|()| Response::Placed)
+    }
+
+    /// Keeps hold `held` as the person's where process `asker` placed it
+    /// from their own terminal ([`terminal::persons_terminal`]) or is the
+    /// launcher's own ([`terminal::launchers_own`]); a hold anything else
+    /// placed, parked, or that no holder here runs is refused.
+    async fn keep_persons(&self, held: &str, asker: i32) -> Result<(), String> {
+        let Some(typed) = self.typed.clone() else {
+            return Err(
+                "this node mints no typed answer, so it keeps no hold as the \
+                        person's"
+                    .to_owned(),
+            );
+        };
+        // A machine no person works on has no hold of theirs.
+        let Processes::Folder(procs) = self.processes.as_ref().clone() else {
+            return Err("this machine can't tell who placed a hold".to_owned());
+        };
+        let folder = self.held.clone();
+        let held = held.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let placed = typed.placements().placed();
+            let persons = terminal::persons_terminal(&procs, asker, terminal::ROOT, &placed);
+            if let Err(why) = persons {
+                if !terminal::launchers_own(&procs, asker, terminal::ROOT) {
+                    return Err(format!(
+                        "{held} is kept as the person's only when placed from their own \
+                         terminal or by the launcher, and this asks from neither: {why}"
+                    ));
+                }
+            }
+            let Some(one) = hold::held(&folder).into_iter().find(|one| one.id == held) else {
+                return Err(format!("no holder here runs {held}"));
+            };
+            let (Ok(holder), Ok(program)) = (i32::try_from(one.holder), i32::try_from(one.pid))
+            else {
+                return Err(format!("{held}'s holder or program can't be named"));
+            };
+            if program == 0 {
+                return Err(format!("{held} is parked, so its program wasn't placed"));
+            }
+            let Some(started) = terminal::stat(&procs, holder).map(|stat| stat.started) else {
+                return Err(format!("{held}'s holder can't be read"));
+            };
+            let placed = terminal::Placed {
+                holder,
+                holder_started: started,
+                program,
+            };
+            typed.placements().keep(placed, &procs)
+        })
+        .await
+        .map_err(|error| format!("who placed it couldn't be told: {error}"))?
+    }
+
     /// The asker, by its process's id and start, where a typed answer's
     /// token for `session`, bound to `bound`, may be minted to it: it is
     /// that session's own pi with none above it ([`asker::may_mint`]), and
@@ -5208,6 +5279,11 @@ impl<S: Store> Shared<S> {
             );
         };
         let claims = self.claims();
+        let placed = self
+            .typed
+            .as_ref()
+            .map(|typed| typed.placements().placed())
+            .unwrap_or_default();
         let (processes, hosts, logs, owned) = (
             self.processes.clone(),
             self.hosts.clone(),
@@ -5219,7 +5295,18 @@ impl<S: Store> Shared<S> {
                 "who owns the sessions here can't be proved, so no typed answer is minted"
                     .to_owned()
             })?;
-            asker::may_mint((pid, started), &owned, &owners, &claims, &processes)
+            let terminals = terminal::Terminals {
+                owner: terminal::ROOT,
+                placed: &placed,
+            };
+            asker::may_mint(
+                (pid, started),
+                &owned,
+                &owners,
+                &claims,
+                &processes,
+                terminals,
+            )
         })
         .await
         .map_err(|error| format!("who asks couldn't be told: {error}"))??;
@@ -8006,6 +8093,12 @@ impl<S: Store> Shared<S> {
         .await
         .map_err(|error| format!("its start stopped: {error}"))?
         .map_err(|error| format!("it didn't start: {error}"))?;
+        // A start the person asked, from their own terminal or the
+        // launcher, is kept as theirs. Any other is an agent's, whose
+        // refusal here is its due, not a fault, so nothing is said of it.
+        if let Some(asker) = self.client {
+            let _ = self.keep_persons(&held, asker).await;
+        }
         Ok(Response::Started(Started {
             folder,
             attach: start::attach_here(&self.realm, &held),
@@ -8711,6 +8804,7 @@ async fn answered<S: Store>(shared: &Shared<S>, request: Result<Request, String>
             };
             shared.mint(&session, bound).await.into()
         }
+        Ok(Request::Placed { held }) => shared.placed_by_the_person(&held).await.into(),
         Ok(Request::Update { machine }) => shared.update(&machine).await.into(),
         Ok(Request::Offers) => Answer::Ok(Response::Offers(shared.offers().await)),
         // A receptor's cell is named `<source>@<machine>`, and only the

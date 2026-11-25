@@ -3260,11 +3260,37 @@ where each of these holds, and otherwise refuses, saying which:
   host's word at all (A Hosted Session's Spawner).
 - No other pi, pi host or pi-spawner is among that process's
   forebears, so a pi a command started never gets one.
+- It asks from the foreground of the person's own terminal, which a
+  forebears' walk can't show, since a process that calls `setsid` is
+  taken in by the service manager. The kernel's `stat` must say it
+  runs on a terminal, in its foreground group, and that its session's
+  leader runs on the same one, a child of either the system's kitty
+  or a holder the person placed (below). A binary is told by the file
+  its `exe` names, owned by root as the store's are, its name
+  `kitty`, `mycelium` or `quickshell`, or one Nix's wrapper renames
+  `.<name>-wrapped`; never by the name a process gives itself, which
+  any process can change. So a pi under `setsid`, `script(1)`, a
+  program calling itself kitty, or in a shell's background gets none,
+  and a hosted session's host, on no terminal, never does.
 - `session` was never seen strict (`fences.json`), and its presence
   doesn't name its `fence` strict. A session started to read a
   stranger's words never asks: the harness knows that, and the node
   doesn't.
 - The node runs without `--no-typed-answers`, which turns minting off.
+
+A held session's terminal is its holder's, so the holder counts only
+where the node keeps that the person placed it: its pid, its start
+time and the program it held then. `{"Placed": {"held"}}` asks the
+node to keep hold `held` so, answered `"Placed"`. It keeps it only
+where the asking process passes the terminal rule above, or is the
+launcher's own, its parent the system's Quickshell, and the hold runs
+here unparked; `mycelium holds add` says it after each hold, and a
+`Start` by either is kept the same way. An agent's hold is placed by
+nobody, nor is a program its holder starts again, as a wake does, so
+neither mints. They are kept in `placed-by-the-person.json` beside
+`typed-answers.jsonl`, for the boot named there, so a node that starts
+again keeps them and a boot forgets them; one whose holder has gone is
+dropped at the next placing.
 
 The token is spent by an `answer` steer to `address`, as
 `{"Steer": {"address", "steer"}}` with a steer of exactly `act`
@@ -3291,7 +3317,10 @@ This is a fence against habit and mistakes, as the check of who
 steers is: within one account, code an agent brought into pi's own
 process can mint as pi does. The harness keeps the mint in its
 command line's own handler, where no tool, extension or event reaches
-it, and its own test says so.
+it, and its own test says so. Nor does the terminal rule stop code
+running as the person's account from driving a real kitty or holder
+it started itself; it stops a pi an agent started from passing as
+one the person typed in.
 
 ### The Daemon Interface
 

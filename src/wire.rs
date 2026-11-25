@@ -193,6 +193,14 @@ pub enum Request {
         /// The words' SHA-256, as 64 lowercase hex digits.
         digest: String,
     },
+    /// The asker's word that it placed hold `held` from the person's own
+    /// terminal, or is the launcher's own process, so the node keeps that
+    /// the person placed it, judging the process at the other end by the
+    /// kernel and nothing it says; see PROTOCOL.md's A Typed Answer.
+    Placed {
+        /// The hold, by its id.
+        held: String,
+    },
     /// What this node asks of `machine`, handed to the connection one ask
     /// a line for as long as it stays, each answered on a line of its own:
     /// a link `machine` dialled, which runs outside the node, carries them.
@@ -553,6 +561,8 @@ pub enum Response {
         /// When it is refused from, in RFC 3339.
         until: String,
     },
+    /// The hold was kept as the person's.
+    Placed,
     /// Asks follow, one per line, each to be answered on a line back.
     Carrying,
     /// This machine's own health, or none while it is unknown: one at
@@ -676,6 +686,22 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&minted).expect("its answer writes"),
             r#"{"Minted":{"token":"0f","until":"2026-11-25T05:00:00Z"}}"#,
+        );
+    }
+
+    #[test]
+    fn a_placement_is_said_and_answered_as_the_protocol_writes_it() {
+        let said = r#"{"Placed":{"held":"f00d"}}"#;
+        assert_eq!(
+            serde_json::from_str::<Request>(said).expect("a placement reads"),
+            Request::Placed {
+                held: "f00d".to_owned()
+            },
+            "{said}"
+        );
+        assert_eq!(
+            serde_json::to_string(&Response::Placed).expect("its answer writes"),
+            r#""Placed""#,
         );
     }
 
