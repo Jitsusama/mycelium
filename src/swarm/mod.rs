@@ -547,18 +547,29 @@ pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> Stri
     // measured again for each word, as no sequence spans a space, so a
     // long text drawn whole costs what it does once.
     let mut drawn = 0;
+    // And the steps it takes, so a word joins it only within the cap on
+    // steps a cut of that line keeps: piles of marks on later words, or
+    // split over many short ones, are cut as one on the first is, rather
+    // than drawn whole. A word is walked only to just past the cap.
+    let mut stepped = 0;
     for word in text.split_whitespace() {
         let cells = drawn_width(word);
-        // A word joins the line only within the cap on steps a cut of
-        // that line keeps, so a pile of marks on a later word is cut as
-        // one on the first is, rather than drawn whole.
-        let joins = !lines.is_empty()
-            && drawn + 1 + cells <= room(lines.len() - 1)
-            && steps(word).nth(most_steps(room(lines.len() - 1))).is_none();
-        if let Some(line) = lines.last_mut().filter(|_| joins) {
+        let joining = lines.len().checked_sub(1).map(|at| {
+            let most = most_steps(room(at));
+            // Into a pipe the cap is as many steps as there can be.
+            let walked = steps(word).take(most.saturating_add(1)).count();
+            (
+                drawn + 1 + cells <= room(at) && stepped + 1 + walked <= most,
+                walked,
+            )
+        });
+        if let Some((true, walked)) = joining
+            && let Some(line) = lines.last_mut()
+        {
             line.push(' ');
             line.push_str(word);
             drawn += 1 + cells;
+            stepped += 1 + walked;
             continue;
         }
         let mut left = word;
@@ -605,6 +616,7 @@ pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> Stri
                 left[taken.len()..].trim_start_matches(draws_nothing)
             };
             drawn = drawn_width(taken);
+            stepped = steps(taken).count();
             lines.push(taken.to_owned());
             left = rest;
         }

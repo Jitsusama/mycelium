@@ -1230,8 +1230,13 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
     // split at the pile's base.
     for word in ["a", "ab", "Reef"] {
         let wrap = wrapped(&format!("{word}{} b", "\u{301}".repeat(10_000)), "", "", 80);
+        // Cut to the line's cap, it leaves no room for another step, so
+        // the word after it goes down, and no line holds a mark but the
+        // first.
         assert!(
-            wrap.lines().count() == 1 && wrap.starts_with(word) && wrap.ends_with(" b\n"),
+            wrap.starts_with(word)
+                && wrap.ends_with("\nb\n")
+                && wrap.lines().skip(1).all(|line| !line.contains('\u{301}')),
             "a pile after {word} spread over lines: {} of them",
             wrap.lines().count()
         );
@@ -1262,11 +1267,24 @@ fn a_pile_of_marks_on_a_later_word_is_cut_as_one_on_the_first_is() {
         marks < most_steps(80)
             && wrap.starts_with('x')
             && wrap.contains("Reef")
-            && wrap.ends_with(" b\n"),
+            && wrap.ends_with("b\n"),
         "a pile after a later word passed whole, or a word went: {marks} marks on {:?}",
         wrap.lines()
             .map(|line| line.chars().count())
             .collect::<Vec<_>>()
+    );
+    // Nor do piles split over short words, each under the cap, add up
+    // on one line past it.
+    let split = wrapped(
+        &format!("Reef{} ", "\u{301}".repeat(640)).repeat(16),
+        "",
+        "",
+        80,
+    );
+    let most = split.lines().map(|line| line.chars().count()).max();
+    assert!(
+        split.matches("Reef").count() == 16 && most.is_some_and(|most| most <= most_steps(80)),
+        "piles on short words added up on a line past the cap, or a word went: {most:?}"
     );
 }
 
