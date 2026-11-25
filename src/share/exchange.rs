@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -31,6 +32,7 @@ use super::settle::{Merge, Settled, State, settle};
 use super::tree::{Place, Quest, Shared, content, may_name};
 use super::watch::Watch;
 use super::{journey, log};
+use crate::gate::{self, Gates, Refused};
 use crate::group::Group;
 use crate::record::Intent;
 use crate::wire::Draft;
@@ -523,6 +525,12 @@ pub struct Exchange {
     whole: BTreeSet<String>,
     /// The quests the last look withheld from the other end.
     passed_over: BTreeSet<String>,
+    /// The gates this machine answers, whose request and bundle it takes
+    /// from a worker it names ([`Self::gating`]).
+    gates: Option<Arc<Gates>>,
+    /// The gates' files asked of the worker and not yet taken, by quest
+    /// and file.
+    gate_wanted: BTreeSet<(String, String)>,
 }
 
 /// A shared quest's README, as its ledger keys it.
@@ -658,7 +666,19 @@ impl Exchange {
             held_back: BTreeMap::new(),
             whole: BTreeSet::new(),
             passed_over: BTreeSet::new(),
+            gates: None,
+            gate_wanted: BTreeSet::new(),
         }
+    }
+
+    /// This end's talk with a worker whose gates this machine answers,
+    /// with `gates`: of a quest given to the worker, it takes a gate's
+    /// request and bundle the worker writes, each as a new file, while
+    /// `gates` names the worker, and nothing else it writes
+    /// ([`crate::gate`]).
+    #[must_use]
+    pub fn gating(self, gates: Option<Arc<Gates>>) -> Self {
+        Self { gates, ..self }
     }
 
     /// Withholds from the other end every quest shared only for those under
@@ -749,6 +769,13 @@ impl Exchange {
         }
     }
 
+    /// Whether quest `id` was given to the other end, a worker, so a gate
+    /// it asks of the quest may be answered.
+    #[must_use]
+    pub fn gives(&self, id: &str) -> bool {
+        self.worker && self.places.given(&self.other, id)
+    }
+
     /// Whether quest `id` is said and served to the other end.
     fn serves(&self, id: &str) -> bool {
         !self.worker || self.places.given(&self.other, id)
@@ -781,11 +808,152 @@ impl Exchange {
         false
     }
 
+    /// The gates' files a worker says it holds of quest `id`, given to it,
+    /// that this end asks for: each request or bundle not here yet, while
+    /// this machine's gates name the worker.
+    fn gates_wanted(&mut self, id: &str, files: &BTreeMap<String, State>) -> Vec<Say> {
+        let Some(gates) = self.gates.clone() else {
+            return Vec::new();
+        };
+        let mut wants = Vec::new();
+        for (key, state) in files {
+            let Ok(file) = gate::sent(key) else {
+                continue;
+            };
+            let asked = (id.to_owned(), key.clone());
+            if state.hash.is_none() || self.gate_wanted.contains(&asked) {
+                continue;
+            }
+            // One here already is never asked for, so never written over.
+            let here = self.places.scratch.join(id).join(file.within());
+            if fs::symlink_metadata(here).is_ok() {
+                continue;
+            }
+            if !gates.lists(&self.other) {
+                self.gate_refused(id, key, Refused::Unlisted);
+                continue;
+            }
+            self.gate_wanted.insert(asked);
+            wants.push(Say::Want {
+                quest: id.to_owned(),
+                file: key.clone(),
+                at: Some(0),
+            });
+        }
+        wants
+    }
+
+    /// The gate's file `key` of quest `id`, of `len` bytes, if this end may
+    /// take it from its worker now, or why not.
+    fn gate_admits(&self, id: &str, key: &str, len: u64) -> Result<gate::GateFile, Refused> {
+        if !self
+            .gates
+            .as_ref()
+            .is_some_and(|gates| gates.lists(&self.other))
+        {
+            return Err(Refused::Unlisted);
+        }
+        if !self.serves(id) {
+            return Err(Refused::NotGiven);
+        }
+        let file = gate::sent(key)?;
+        if len > file.largest {
+            return Err(Refused::Large);
+        }
+        if !self.gate_wanted.contains(&(id.to_owned(), key.to_owned())) {
+            return Err(Refused::Unasked);
+        }
+        Ok(file)
+    }
+
+    /// Stages a piece of a gate's file the worker sent, asking for the
+    /// next, and takes the file once it is whole.
+    fn gate_piece(
+        &mut self,
+        id: &str,
+        key: &str,
+        theirs: &State,
+        (at, len): (u64, u64),
+        body: &str,
+    ) -> Vec<Say> {
+        if let Err(why) = self.gate_admits(id, key, len) {
+            self.gate_refused(id, key, why);
+            return Vec::new();
+        }
+        let (Some(hash), Ok(body)) = (theirs.hash.as_deref(), STANDARD.decode(body)) else {
+            self.gate_refused(id, key, Refused::Hash);
+            return Vec::new();
+        };
+        match self.pieces.stage(id, key, hash, at, len, &body) {
+            Ok(Staged::More(next)) => vec![Say::Want {
+                quest: id.to_owned(),
+                file: key.to_owned(),
+                at: Some(next),
+            }],
+            Ok(Staged::Whole(whole)) => {
+                self.gate_whole(id, key, hash, &whole);
+                Vec::new()
+            }
+            Ok(Staged::Astray) => Vec::new(),
+            Err(error) => {
+                eprintln!("gate: staging {key} of {id} from {}: {error}", self.other);
+                self.gate_refused(id, key, Refused::Write);
+                Vec::new()
+            }
+        }
+    }
+
+    /// Takes a gate's file the worker sent whole; its deletion is no file,
+    /// so it is let be.
+    fn gate_file(&mut self, id: &str, key: &str, theirs: &State, body: Option<&str>) -> Vec<Say> {
+        let (Some(hash), Some(body)) = (theirs.hash.as_deref(), body) else {
+            self.gate_wanted.remove(&(id.to_owned(), key.to_owned()));
+            return Vec::new();
+        };
+        let Ok(body) = STANDARD.decode(body) else {
+            self.gate_refused(id, key, Refused::Hash);
+            return Vec::new();
+        };
+        let len = u64::try_from(body.len()).unwrap_or(u64::MAX);
+        match self.gate_admits(id, key, len) {
+            Ok(_) => self.gate_whole(id, key, hash, &body),
+            Err(why) => self.gate_refused(id, key, why),
+        }
+        Vec::new()
+    }
+
+    /// Writes a gate's file come whole from the worker into its quest's
+    /// scratch, as a new file ([`gate::take`]), saying so.
+    fn gate_whole(&mut self, id: &str, key: &str, hash: &str, body: &[u8]) {
+        if content(body).hash != hash {
+            self.gate_refused(id, key, Refused::Hash);
+            return;
+        }
+        match gate::take(&self.places.scratch, id, key, body) {
+            Ok(_) => {
+                self.gate_wanted.remove(&(id.to_owned(), key.to_owned()));
+                eprintln!("gate: took {key} of {id} from {}, a worker", self.other);
+            }
+            Err(why) => self.gate_refused(id, key, why),
+        }
+    }
+
+    /// Says why the gate's file `key` of quest `id` isn't taken from the
+    /// worker, and lets its ask go.
+    fn gate_refused(&mut self, id: &str, key: &str, why: Refused) {
+        self.gate_wanted.remove(&(id.to_owned(), key.to_owned()));
+        eprintln!(
+            "gate: refused {key} of {id} from {}, a worker: {why}",
+            self.other
+        );
+    }
+
     /// Keeps what this end's worker said it holds of `id`, a quest it was
     /// given, apart from what the ledger takes ([`Ledger::read`]), as word
-    /// that the quest reached it: nothing of it is taken. A quest this
-    /// machine no longer shares is left unshared: holding a ledger makes
-    /// one, and keeping it would share the quest again.
+    /// that the quest reached it: nothing of it is taken but the gates'
+    /// files asked for ([`Self::gates_wanted`]). A quest this machine no
+    /// longer shares is left unshared: holding a ledger makes one, and
+    /// keeping it would share the quest again.
     ///
     /// # Errors
     ///
@@ -1029,6 +1197,7 @@ impl Exchange {
                 .into_iter()
                 .filter(|(key, _)| anew || changed.contains(key))
                 .filter(|(key, _)| shared_of(key).is_some_and(|shared| carried.carries(&shared)))
+                .filter(|(key, _)| !self.worker || !gate::withheld(key))
                 .collect();
             if !files.is_empty() || anew {
                 holds.push(Say::Holds {
@@ -1088,6 +1257,65 @@ impl Exchange {
         Ok(())
     }
 
+    /// What a worker says of a gate's files, answered here, or `None`
+    /// when it is anything else, or the other end is no worker.
+    fn heard_of_gate(&mut self, say: &Say) -> Option<io::Result<Vec<Say>>> {
+        if !self.worker {
+            return None;
+        }
+        match say {
+            Say::Holds { quest, files } if self.serves(quest) => {
+                let wants = self.gates_wanted(quest, files);
+                Some(self.read_by_worker(quest, files.clone()).map(|()| wants))
+            }
+            Say::Piece {
+                quest,
+                file,
+                state,
+                at,
+                len,
+                body,
+                ..
+            } if gate::sent(file).is_ok() => {
+                Some(Ok(self.gate_piece(quest, file, state, (*at, *len), body)))
+            }
+            Say::File {
+                quest,
+                file,
+                state,
+                body,
+                ..
+            } if gate::sent(file).is_ok() => {
+                Some(Ok(self.gate_file(quest, file, state, body.as_deref())))
+            }
+            _ => None,
+        }
+    }
+
+    /// What the other end shares, kept to the quests this end takes.
+    fn taken_of(
+        &self,
+        mut quests: Vec<String>,
+        mut scratch: BTreeMap<String, BTreeSet<String>>,
+        mut clones: BTreeMap<String, BTreeMap<String, Clone>>,
+        mut ended: BTreeSet<String>,
+        mut above: BTreeSet<String>,
+    ) -> Theirs {
+        let taken: BTreeSet<String> = quests.iter().filter(|id| self.takes(id)).cloned().collect();
+        quests.retain(|id| taken.contains(id));
+        scratch.retain(|id, _| taken.contains(id));
+        clones.retain(|id, _| taken.contains(id));
+        ended.retain(|id| taken.contains(id));
+        above.retain(|id| taken.contains(id));
+        Theirs {
+            quests: quests.into_iter().collect(),
+            ended,
+            above,
+            scratch,
+            clones,
+        }
+    }
+
     /// Takes what the other end said, returning what this end says back.
     pub fn hear(&mut self, say: Say) -> io::Result<Vec<Say>> {
         self.above_again |= match &say {
@@ -1095,34 +1323,20 @@ impl Exchange {
             Say::Piece { file, .. } | Say::File { file, .. } => file == README,
             _ => false,
         };
+        if let Some(said) = self.heard_of_gate(&say) {
+            return said;
+        }
         match say {
             Say::Shares {
-                mut quests,
-                mut scratch,
-                mut clones,
-                mut ended,
-                mut above,
+                quests,
+                scratch,
+                clones,
+                ended,
+                above,
             } => {
-                let taken: BTreeSet<String> =
-                    quests.iter().filter(|id| self.takes(id)).cloned().collect();
-                quests.retain(|id| taken.contains(id));
-                scratch.retain(|id, _| taken.contains(id));
-                clones.retain(|id, _| taken.contains(id));
-                ended.retain(|id| taken.contains(id));
-                above.retain(|id| taken.contains(id));
-                self.theirs = Some(Theirs {
-                    quests: quests.into_iter().collect(),
-                    ended,
-                    above,
-                    scratch,
-                    clones,
-                });
+                self.theirs = Some(self.taken_of(quests, scratch, clones, ended, above));
                 self.drop_unnamed();
                 self.take_up_theirs()?;
-                Ok(Vec::new())
-            }
-            Say::Holds { quest, files } if self.worker && self.serves(&quest) => {
-                self.read_by_worker(&quest, files)?;
                 Ok(Vec::new())
             }
             Say::Holds { quest, .. } | Say::Piece { quest, .. } | Say::File { quest, .. }
@@ -1155,6 +1369,13 @@ impl Exchange {
             } if self.withholds_quest(&quest)? => {
                 self.wanted.remove(&(quest.clone(), file.clone()));
                 self.keep_back(quest, BTreeMap::from([(file, state)]));
+                Ok(Vec::new())
+            }
+            Say::Want { quest, file, .. } if self.worker && gate::withheld(&file) => {
+                eprintln!(
+                    "gate: {} asked for {file} of {quest}, which no worker is served (withheld)",
+                    self.other
+                );
                 Ok(Vec::new())
             }
             Say::Want { quest, .. } if self.withholds_quest(&quest)? => Ok(Vec::new()),
@@ -2139,7 +2360,7 @@ mod tests {
                 self.name.to_owned(),
                 other.name.to_owned(),
             );
-            let free = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let free = Arc::new(std::sync::atomic::AtomicBool::new(false));
             exchange.users = Box::new(Working(free));
             exchange
         }
@@ -4653,7 +4874,7 @@ mod tests {
         skiff.write("attachments/map.md", "the map\n");
         share(&skiff, QUEST);
         let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
-        let working = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let working = Arc::new(std::sync::atomic::AtomicBool::new(true));
         far.users = Box::new(Working(working));
         talk(&mut near, &mut far);
         let notes = kestrel.places.scratch.join(QUEST).join("notes/plan.md");
@@ -4682,7 +4903,7 @@ mod tests {
     }
 
     /// What works inside a folder, as a test says.
-    struct Working(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    struct Working(Arc<std::sync::atomic::AtomicBool>);
 
     impl Users for Working {
         fn inside(&self, _: &std::path::Path) -> bool {
@@ -4700,7 +4921,7 @@ mod tests {
         skiff.write("README.md", &readme("active"));
         share(&skiff, QUEST);
         let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
-        let working = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let working = Arc::new(std::sync::atomic::AtomicBool::new(true));
         far.users = Box::new(Working(working.clone()));
         talk(&mut near, &mut far);
         fs::create_dir_all(notes.parent().expect("a file has a folder")).expect("made");
@@ -5061,5 +5282,241 @@ mod tests {
             !skiff.places.ledgers().shares(given),
             "what a worker says of a quest skiff stopped sharing doesn't share it again"
         );
+    }
+
+    /// The commit the gates in these tests answer for.
+    const GATED: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    /// skiff's gates, answered by a stand-in program, for the workers
+    /// `listed` names.
+    fn gates_for(skiff: &Machine, listed: &str) -> Arc<Gates> {
+        let file = skiff.places.state.join("answers-for");
+        fs::create_dir_all(&skiff.places.state).expect("the state folder made");
+        fs::write(&file, listed).expect("the list written");
+        Arc::new(Gates::new(PathBuf::from("/bin/true"), file).expect("the gates"))
+    }
+
+    /// Writes the gate's file `name` of quest `id` on `machine`, holding
+    /// `text`, with the quest's handover named shared.
+    fn gate_written(machine: &Machine, id: &str, name: &str, text: &str) {
+        let path = gate_path(machine, id, name);
+        fs::create_dir_all(path.parent().expect("a gate's folder")).expect("made");
+        fs::write(path, text).expect("written");
+        machine
+            .places
+            .name_scratch(id, HANDOVER)
+            .expect("its handover named");
+    }
+
+    fn gate_path(machine: &Machine, id: &str, name: &str) -> PathBuf {
+        machine
+            .places
+            .scratch
+            .join(id)
+            .join(format!("{HANDOVER}/gates/{GATED}/{name}"))
+    }
+
+    /// A file's state as an end holding `body`, never changed, says it.
+    fn holding(body: &[u8]) -> State {
+        State {
+            hash: Some(content(body).hash),
+            version: super::super::version::Version::default(),
+        }
+    }
+
+    fn gate_read(machine: &Machine, id: &str, name: &str) -> Option<String> {
+        fs::read_to_string(gate_path(machine, id, name)).ok()
+    }
+
+    /// skiff, having given its quest to tern, and tern holding it.
+    fn given_to_tern() -> (Machine, Machine) {
+        let skiff = Machine::new("skiff");
+        let tern = Machine::new("tern");
+        shared(&skiff, QUEST, "# Given\n");
+        skiff.places.give("tern", QUEST).expect("the quest given");
+        let mut near = skiff.exchange(&tern).for_worker();
+        let mut far = tern.exchange(&skiff);
+        talk(&mut near, &mut far);
+        assert_eq!(readme(&tern, QUEST).as_deref(), Some("# Given\n"));
+        (skiff, tern)
+    }
+
+    #[test]
+    fn a_listed_worker_s_gate_request_and_bundle_are_taken_and_nothing_else() {
+        let (skiff, tern) = given_to_tern();
+        gate_written(&tern, QUEST, "request.json", "{\"repo\":\"a\"}\n");
+        gate_written(&tern, QUEST, "gate.bundle", "a bundle\n");
+        gate_written(&tern, QUEST, "result.json", "{\"passed\":true}\n");
+        gate_written(&tern, QUEST, "log", "what ran\n");
+        fs::write(
+            tern.places
+                .scratch
+                .join(QUEST)
+                .join(HANDOVER)
+                .join("notes.md"),
+            "tern's notes\n",
+        )
+        .expect("written");
+
+        let mut near = skiff
+            .exchange(&tern)
+            .for_worker()
+            .gating(Some(gates_for(&skiff, "wren\ntern\n")));
+        let mut far = tern.exchange(&skiff);
+        talk(&mut near, &mut far);
+
+        assert_eq!(
+            gate_read(&skiff, QUEST, "request.json").as_deref(),
+            Some("{\"repo\":\"a\"}\n"),
+            "the gate's request is taken from the worker skiff answers"
+        );
+        assert_eq!(
+            gate_read(&skiff, QUEST, "gate.bundle").as_deref(),
+            Some("a bundle\n"),
+            "and its bundle"
+        );
+        let mode = fs::metadata(gate_path(&skiff, QUEST, "gate.bundle"))
+            .expect("taken")
+            .permissions();
+        assert_eq!(
+            std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777,
+            0o600,
+            "each readable by skiff's account alone"
+        );
+        assert_eq!(
+            gate_read(&skiff, QUEST, "result.json"),
+            None,
+            "a result is skiff's to write, never the worker's"
+        );
+        assert_eq!(gate_read(&skiff, QUEST, "log"), None, "nor is its log");
+        assert!(
+            !skiff
+                .places
+                .scratch
+                .join(QUEST)
+                .join(HANDOVER)
+                .join("notes.md")
+                .exists(),
+            "nor anything else the worker writes"
+        );
+    }
+
+    #[test]
+    fn a_gate_is_taken_from_no_worker_unlisted_or_with_gates_off() {
+        for (gates, why) in [
+            (None, "with no gates answered"),
+            (Some("wren\n"), "from a worker the list doesn't name"),
+            (Some(""), "with the list emptied"),
+        ] {
+            let (skiff, tern) = given_to_tern();
+            gate_written(&tern, QUEST, "request.json", "{}\n");
+            let gates = gates.map(|listed| gates_for(&skiff, listed));
+            let mut near = skiff.exchange(&tern).for_worker().gating(gates);
+            let mut far = tern.exchange(&skiff);
+            talk(&mut near, &mut far);
+            assert_eq!(
+                gate_read(&skiff, QUEST, "request.json"),
+                None,
+                "nothing is taken {why}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_gate_of_a_quest_not_given_is_refused() {
+        let (skiff, tern) = given_to_tern();
+        let began = "QEST-20261124-TERN22";
+        shared(&tern, began, "# Begun there\n");
+        gate_written(&tern, began, "request.json", "{}\n");
+        let mut near = skiff
+            .exchange(&tern)
+            .for_worker()
+            .gating(Some(gates_for(&skiff, "tern\n")));
+        let mut far = tern.exchange(&skiff);
+        talk(&mut near, &mut far);
+        assert!(
+            !skiff.places.scratch.join(began).exists(),
+            "a gate of a quest skiff never gave the worker writes nothing"
+        );
+
+        // Sent unasked, it is refused all the same.
+        let state = holding(b"{}\n");
+        let said = near
+            .hear(Say::File {
+                quest: began.to_owned(),
+                file: format!("scratch/{HANDOVER}/gates/{GATED}/request.json"),
+                state,
+                body: Some(STANDARD.encode(b"{}\n")),
+                mode: None,
+            })
+            .expect("heard");
+        assert!(said.is_empty(), "and nothing is asked: {said:?}");
+        assert!(!skiff.places.scratch.join(began).exists());
+    }
+
+    #[test]
+    fn a_gate_s_file_unasked_or_already_here_is_never_written() {
+        let (skiff, tern) = given_to_tern();
+        let mut near = skiff
+            .exchange(&tern)
+            .for_worker()
+            .gating(Some(gates_for(&skiff, "tern\n")));
+        let key = format!("scratch/{HANDOVER}/gates/{GATED}/request.json");
+        let said = near
+            .hear(Say::File {
+                quest: QUEST.to_owned(),
+                file: key,
+                state: holding(b"{}\n"),
+                body: Some(STANDARD.encode(b"{}\n")),
+                mode: None,
+            })
+            .expect("heard");
+        assert_eq!(said, Vec::<Say>::new());
+        assert_eq!(
+            gate_read(&skiff, QUEST, "request.json"),
+            None,
+            "a file skiff never asked for is refused"
+        );
+
+        gate_written(&skiff, QUEST, "request.json", "skiff's own\n");
+        gate_written(&tern, QUEST, "request.json", "tern's\n");
+        let mut far = tern.exchange(&skiff);
+        talk(&mut near, &mut far);
+        assert_eq!(
+            gate_read(&skiff, QUEST, "request.json").as_deref(),
+            Some("skiff's own\n"),
+            "one already here is never asked for, so never written over"
+        );
+    }
+
+    #[test]
+    fn a_gate_s_log_is_withheld_from_a_worker_and_its_result_reaches_it() {
+        let (skiff, tern) = given_to_tern();
+        gate_written(&skiff, QUEST, "result.json", "{\"passed\":true}\n");
+        gate_written(&skiff, QUEST, "log", "what ran, with its secrets\n");
+        let mut near = skiff
+            .exchange(&tern)
+            .for_worker()
+            .gating(Some(gates_for(&skiff, "tern\n")));
+        let mut far = tern.exchange(&skiff);
+        talk(&mut near, &mut far);
+        assert_eq!(
+            gate_read(&tern, QUEST, "result.json").as_deref(),
+            Some("{\"passed\":true}\n"),
+            "the gate's result reaches the worker that asked"
+        );
+        assert_eq!(
+            gate_read(&tern, QUEST, "log"),
+            None,
+            "its log stays on skiff"
+        );
+        let said = near
+            .hear(Say::Want {
+                quest: QUEST.to_owned(),
+                file: format!("scratch/{HANDOVER}/gates/{GATED}/log"),
+                at: None,
+            })
+            .expect("heard");
+        assert!(said.is_empty(), "even asked for by name: {said:?}");
     }
 }

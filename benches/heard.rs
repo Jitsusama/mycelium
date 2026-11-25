@@ -199,6 +199,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
                 lends_from: None,
                 lend: None,
                 worker: None,
+                gates: None,
             },
             bound,
             until_stopped,

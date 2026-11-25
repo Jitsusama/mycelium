@@ -41,6 +41,8 @@
 //! - [`placement`]: which machine work goes to, by what each says it is
 //! - [`builders`]: the Nix builders it sends builds to, which are no
 //!   machines of the realm
+//! - [`gate`]: the one program a worker may have it run, nix-offload's
+//!   gate, and the gate's files it takes from one
 //! - [`offer`]: the shapes of machine a provider's program could make
 //! - [`made`]: machines made from offers, and the book of each
 //! - [`group`]: groups' names, patterns that hear them, and routes
@@ -84,6 +86,7 @@ pub mod facts;
 pub mod feed;
 pub mod flow;
 pub mod forage;
+pub mod gate;
 pub mod group;
 pub mod handover;
 pub mod health;

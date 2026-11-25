@@ -12,6 +12,7 @@ use std::io::{self, Write};
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use mycelium::awake::Awake;
@@ -871,6 +872,16 @@ struct Node {
     /// of any other is refused.
     #[arg(long, requires = "worker_socket")]
     worker_uid: Option<u32>,
+    /// The program, by its absolute path, that answers the gates the
+    /// workers `--answers-for` names ask of this machine: the one start
+    /// a worker may ask, run as `PROGRAM answer QUEST COMMIT`.
+    #[arg(long, requires = "answers_for")]
+    answers_with: Option<PathBuf>,
+    /// The file naming, one to a line, the workers whose gates this
+    /// machine answers; read again at every ask, so emptying it stops
+    /// them all.
+    #[arg(long, requires = "answers_with")]
+    answers_for: Option<PathBuf>,
 }
 
 /// A machines file of builders to dial, as `--builders` gives it.
@@ -2097,6 +2108,25 @@ fn worker_given(socket: Option<PathBuf>, uid: Option<u32>) -> Option<node::Worke
         .map(|(socket, uid)| node::Worker { socket, uid })
 }
 
+/// The gates the node answers its workers, if it is given a program to
+/// answer them `with` and a list of whom `for`.
+///
+/// # Errors
+///
+/// When the program isn't named by an absolute path.
+fn gates_given(
+    with: Option<PathBuf>,
+    listed: Option<PathBuf>,
+) -> io::Result<Option<Arc<mycelium::gate::Gates>>> {
+    with.zip(listed)
+        .map(|(program, listed)| {
+            mycelium::gate::Gates::new(program, listed)
+                .map(Arc::new)
+                .map_err(io::Error::other)
+        })
+        .transpose()
+}
+
 /// How the node eases its machine, kept under `state`, if it `eases` at
 /// all: whether it `carries`, and where it asks the harness to park the
 /// sessions it `sleeps`.
@@ -2193,6 +2223,7 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
         lends_from: node.lends_from,
         lend: node.lend,
         worker: worker_given(node.worker_socket, node.worker_uid),
+        gates: gates_given(node.answers_with, node.answers_for)?,
     };
     tell!(
         "mycelium: {}",
@@ -2279,6 +2310,8 @@ fn run_link(here: Here, realm: String, socket: PathBuf, far: Option<String>) -> 
         saturation: None,
         // A dialled link lends nothing: its machine is lent to, not lending.
         lender: None,
+        // Nor answers any gate, which only the node's own links answer.
+        gates: None,
     };
     match far {
         Some(far) => {

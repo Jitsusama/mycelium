@@ -87,6 +87,7 @@ fn node(dir: &Path, realm: &str, to: &[&str], from: &[&str], heard: &[&str]) -> 
         lends_from: None,
         lend: None,
         worker: None,
+        gates: None,
     };
     let membership = Realm {
         name: realm.to_owned(),

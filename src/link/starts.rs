@@ -89,6 +89,10 @@ pub struct Starting {
     /// each lend it asks; none for a machine lending nothing, which
     /// refuses every one.
     pub lender: Option<Arc<crate::lend::lender::Lender>>,
+    /// The gates this machine answers for the workers it names, the one
+    /// start a worker may ask of it; none for a machine answering none,
+    /// which refuses every worker's start.
+    pub gates: Option<Arc<crate::gate::Gates>>,
 }
 
 /// How a link carries what this machine's node asks of the other machine.
