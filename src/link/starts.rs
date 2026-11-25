@@ -342,7 +342,14 @@ impl Asks {
             by,
         };
         let within = crate::hold::end::GRACE + ANSWERED_WITHIN;
-        self.send(machine, asked, Some(within)).await?
+        match self.send(machine, asked, Some(within)).await {
+            Ok(reply) => reply,
+            // Once sent, the end may still be under way there.
+            Err(Unsent { why, sent: true }) => Err(format!(
+                "{why}; it was asked, so it may still end there, as `mycelium holds` shows"
+            )),
+            Err(unsent) => Err(unsent.into()),
+        }
     }
 
     /// Sends `asked` to `machine` through the link reaching it, and waits

@@ -5004,15 +5004,25 @@ impl<S: Store> Shared<S> {
         // presence, so its end goes where this node's book says it
         // started it, which judges it there.
         let started = self.starts.landed_on(held);
+        let mut by_book = false;
         if machines.is_empty()
             && let Some(machine) = started.as_deref().filter(|on| *on != self.machine)
         {
             machines.push(machine);
+            by_book = true;
         }
         match machines.as_slice() {
             [] => Err(format!(
                 "nothing is held as {held} here, nor on any machine in reach"
             )),
+            // The book keeps every start it made, ended or not, so what
+            // the machine answers is said as about where it started it,
+            // which may hold it no longer.
+            [machine] if by_book && matches!(asker, hold::end::Asker::Person) => {
+                self.asks.end(machine, held, asker).await.map_err(|why| {
+                    format!("{held} was started on {machine}, by this node's book: {why}")
+                })
+            }
             [machine] => match asker {
                 hold::end::Asker::Person => self.asks.end(machine, held, asker).await,
                 hold::end::Asker::Session(address) => Err(format!(
@@ -16773,11 +16783,14 @@ esac
             },
         )
         .await;
+        let routed = format!(
+            "{} was started on kestrel, by this node's book: kestrel ends a held session \
+             only when",
+            started.held
+        );
         assert!(
-            ended
-                .as_ref()
-                .is_err_and(|why| why.starts_with("kestrel ends a held session only when")),
-            "a hold started on kestrel is ended there: {ended:?}"
+            ended.as_ref().is_err_and(|why| why.starts_with(&routed)),
+            "a hold started on kestrel is ended there, under its id: {ended:?}"
         );
 
         for (stop, node) in [near, far] {
