@@ -2830,17 +2830,18 @@ impl Reopening {
     }
 
     /// Holds `session` no longer, as when its start answered, if the hold
-    /// numbered `number` is still the one on it; answering whether
-    /// another ask's hold is on it instead, its start begun beside this
-    /// one's, which outlived its while.
+    /// numbered `number` is still the one on it; answering whether this
+    /// hold outlived its while instead, so another ask may have begun a
+    /// start beside this one's. A hold goes only by its own answer or by
+    /// outliving its while, so one found gone outlived it as surely as
+    /// one found taken by a later ask, whichever start answered first.
     fn let_go(&mut self, session: &str, number: u64) -> bool {
         match self.held.get(session) {
             Some((_, held)) if *held == number => {
                 self.held.remove(session);
                 false
             }
-            Some(_) => true,
-            None => false,
+            Some(_) | None => true,
         }
     }
 }
@@ -7485,10 +7486,20 @@ impl<S: Store> Shared<S> {
     /// session instead: a park of an earlier boot, or one whose holder
     /// has gone, has nothing to wake it and comes back by a start, as a
     /// restarted machine's wave does. A start bringing back one already
-    /// coming back is refused by [`starts::Starts::admit`].
+    /// coming back is refused by [`starts::Starts::admit`]. A park marker
+    /// of this boot whose wake file a running holder reads counts too,
+    /// whatever the presence says, since a message waking parked
+    /// sessions writes the marker's own wake file
+    /// ([`crate::wake::wake_for`]).
     fn parked_here(&self, session: &Session) -> bool {
         session.machine == self.machine
-            && steer::wake_for(session, self.boot.id.as_deref(), &self.held).is_some()
+            && (steer::wake_for(session, self.boot.id.as_deref(), &self.held).is_some()
+                || crate::wake::parked(&self.parked, standing::began())
+                    .iter()
+                    .any(|marked| {
+                        marked.session == session.id
+                            && steer::read_by_a_holder(&marked.wake, &self.held)
+                    }))
     }
 
     /// The session `asked` brings back uncounted, `reopened` as the node
@@ -7653,9 +7664,10 @@ impl<S: Store> Shared<S> {
         let started = self.relayed_start(from, asked).await;
         if self.lock().reopening.let_go(&session, number) {
             // Said, since two pi may now run on one session: no holder's
-            // record stood when the later ask was judged.
+            // record stood when any later ask was judged.
             eprintln!(
-                "mycelium: a reopening of {} outlived its {} s, and another began beside it",
+                "mycelium: a reopening of {} outlived its {} s, so another may have begun \
+                 beside it",
                 session.escape_debug(),
                 REOPENING_HELD.as_secs()
             );
@@ -20616,32 +20628,42 @@ esac
                 once: None,
             },
         };
-        // s-parked's holder still runs; s-orphan's marker stands, but the
-        // holder it names has gone, as one that died this boot leaves it;
-        // s-napped says it is parked, with neither. All are parked now,
-        // so a Mac, which judges a park by when it changed, takes each as
-        // this boot's, and only a live holder tells them apart.
+        // s-parked's holder still runs; s-marked's does too, named by its
+        // marker alone, which a message wakes it through (round 7's F17);
+        // s-orphan's marker stands, but the holder it names has gone, as
+        // one that died this boot leaves it; s-napped says it is parked,
+        // with neither. All are parked now, so a Mac, which judges a park
+        // by when it changed, takes each as this boot's, and only a live
+        // holder tells them apart.
         let held = held_of(&socket);
         fs::create_dir_all(parks_of(&socket)).expect("the parks' folder is made");
         let now = jiff::Timestamp::now().to_string();
-        for (session, address, hold) in [
-            ("s-parked", "PARKED", Some("e0r1")),
-            ("s-orphan", "ORPHAN", Some("e0r2")),
-            ("s-napped", "NAPPED", None),
+        let wake = |hold: &str| held.join(format!("{hold}.wake"));
+        for (session, address, said, marked) in [
+            ("s-parked", "PARKED", Some("e0r1"), Some("e0r1")),
+            ("s-marked", "MARKED", None, Some("e0r3")),
+            ("s-orphan", "ORPHAN", Some("e0r2"), Some("e0r2")),
+            ("s-napped", "NAPPED", None, None),
         ] {
-            if hold.is_some() {
-                fs::write(parks_of(&socket).join(format!("{session}.json")), "{}")
-                    .expect("a marker");
+            if let Some(hold) = marked {
+                let marker =
+                    json!({"session": session, "addresses": [address], "wake": wake(hold)});
+                fs::write(
+                    parks_of(&socket).join(format!("{session}.json")),
+                    marker.to_string(),
+                )
+                .expect("a marker");
             }
             store.start_here(
                 session,
                 json!({"session": session, "addresses": [address], "state": "parked",
-                       "at": now, "wake": hold.map(|hold| held.join(format!("{hold}.wake")))}),
+                       "at": now, "wake": said.map(wake)}),
                 false,
             );
         }
         let (holder, program) = holds_for_real(&held, "e0r1");
-        let _let_go = LetGo(vec![holder, program]);
+        let (marked_holder, marked_program) = holds_for_real(&held, "e0r3");
+        let _let_go = LetGo(vec![holder, program, marked_holder, marked_program]);
         asks_below(&socket, 7001);
         assert_eq!(
             ask(socket.clone(), relayed("s-parked")).await,
@@ -20650,6 +20672,14 @@ esac
                     .to_owned()
             ),
             "a session its holder wakes gets no second pi"
+        );
+        assert_eq!(
+            ask(socket.clone(), relayed("s-marked")).await,
+            Err(
+                "s-marked is parked on skiff, and its holder wakes it, so it isn't reopened"
+                    .to_owned()
+            ),
+            "nor one whose marker its holder reads"
         );
         for session in ["s-orphan", "s-napped"] {
             assert_eq!(
@@ -20738,6 +20768,23 @@ esac
         assert!(
             reopening.hold("s-ended", asked + REOPENING_HELD).is_some(),
             "which its own answer lets go"
+        );
+        // The later start answering first, the slow one finds its hold
+        // gone, which is its while outlived all the same (round 7's F10).
+        let mut reopening = Reopening::default();
+        let slow = reopening
+            .hold("s-ended", asked)
+            .expect("the slow start holds it");
+        let later = reopening
+            .hold("s-ended", asked + REOPENING_HELD)
+            .expect("a later ask holds it");
+        assert!(
+            !reopening.let_go("s-ended", later),
+            "the later start answers first"
+        );
+        assert!(
+            reopening.let_go("s-ended", slow),
+            "and the slow one still finds it outlived its while"
         );
     }
 

@@ -32,13 +32,23 @@ pub fn resumed(command: &[String]) -> Option<String> {
     trimmed(&named(command)?)
 }
 
-/// Whether `command` resumes `session`: as [`resumed`] reads it, or by
-/// the very word it names, since [`resumed`] reads an `_` or a `.` as a
-/// log path's, and an id may hold either. So `pi --session a_b` resumes
-/// `a_b`, though [`resumed`] says `b`.
+/// Whether `command` resumes `session`: by the very word it names, or a
+/// log's path ending in it, as `.../<time>Z_<session>.jsonl`, since
+/// [`resumed`] reads an `_` or a `.` as a log path's, and an id may hold
+/// either. So `pi --session a_b` resumes `a_b`, though [`resumed`] says
+/// `b`. It errs toward a match, as `x_a` resuming `a` too, since a match
+/// only refuses a reopening, where a miss would start a second pi.
 #[must_use]
 pub fn resumes(command: &[String], session: &str) -> bool {
-    named(command).is_some_and(|word| word == session || trimmed(&word).as_deref() == Some(session))
+    named(command).is_some_and(|word| {
+        let stem = Path::new(&word).file_stem().and_then(|stem| stem.to_str());
+        word == session
+            || stem == Some(session)
+            || stem.is_some_and(|stem| {
+                stem.strip_suffix(session)
+                    .is_some_and(|it| it.ends_with('_'))
+            })
+    })
 }
 
 /// The word naming the session `command` resumes, as [`resumed`] finds
@@ -293,6 +303,12 @@ mod tests {
                     id
                 ),
                 "so does a script naming it"
+            );
+            let log =
+                format!("/h/.pi/agent/sessions/--h-src--/2026-11-14T22-23-37-209Z_{id}.jsonl");
+            assert!(
+                super::resumes(&words(&["pi", "--session", &log]), id),
+                "and a log's path ending in it (round 7's F1)"
             );
         }
         let log = "/h/.pi/agent/sessions/--h-src--/2026-11-14T22-23-37-209Z_01a1-gh.jsonl";
