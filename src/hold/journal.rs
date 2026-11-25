@@ -153,6 +153,8 @@ fn signal_name(signal: i32) -> &'static str {
         13 => "PIPE",
         14 => "ALRM",
         15 => "TERM",
+        libc::SIGUSR1 => "USR1",
+        libc::SIGUSR2 => "USR2",
         _ => "?",
     }
 }

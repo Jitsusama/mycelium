@@ -8,6 +8,7 @@
 use std::fs;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::atomic::AtomicU32;
@@ -57,6 +58,17 @@ pub const PARKED: i32 = 75;
 /// once, as for a restart, rather than ending its hold and taking its
 /// window with it, up to [`UNASKED_MOST`] times within [`UNASKED_WITHIN`].
 pub const UNASKED: i32 = 79;
+
+/// The signal a held pi dies by when it quit though nobody asked it to
+/// while a name lookup it can't cut short held its exit, so it is ended
+/// as [`UNASKED`] is, started again at once.
+const UNASKED_SIGNAL: i32 = libc::SIGUSR2;
+
+/// Whether a run that ended as `status` quit though nobody asked it to:
+/// with [`UNASKED`], or killed by [`UNASKED_SIGNAL`].
+fn unasked(status: ExitStatus) -> bool {
+    status.code() == Some(UNASKED) || status.signal() == Some(UNASKED_SIGNAL)
+}
 
 /// How many unasked quits in a row within [`UNASKED_WITHIN`] are started
 /// again; one more ends the hold, so a program that quits as it starts
@@ -505,7 +517,8 @@ fn on_end(
 /// for it from outside if any was (see [`super::name_next`]), else with
 /// the one it named itself; one that wrote its wake file before it went is restarting,
 /// and starts again at once, never shown as parked, as does one exiting
-/// with [`UNASKED`], until it has quit so too often. One exiting with
+/// with [`UNASKED`] or killed by [`UNASKED_SIGNAL`], until it has quit
+/// so too often. One exiting with
 /// [`GONE`] having written its gone file, its pi host away, is kept as a
 /// parked one is and also starts
 /// again by itself after [`gone_pause`]. How each run ended, parked or
@@ -645,7 +658,7 @@ pub async fn hold(
             // code, so the program's word that it parked keeps it so.
             let said_parked = fs::remove_file(&files.parked).is_ok();
             let parking = said_parked || status.code() == Some(PARKED);
-            let quit_unasked = !gone && !parking && status.code() == Some(UNASKED);
+            let quit_unasked = !gone && !parking && unasked(status);
             // Told to end, a program that parked as it saved stays down.
             if telling || (!gone && !parking && !quit_unasked) {
                 break status;
@@ -2362,6 +2375,9 @@ mod tests {
         let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
         window.types("echo first $((40 + 2)); exit 79\r").await;
         window.sees("first 42").await;
+        // As a pi whose name lookup held its exit dies, by its own signal.
+        window.types("echo then $((60 + 6)); kill -USR2 $$\r").await;
+        window.sees("then 66").await;
         window.types("echo again $((50 + 5))\r").await;
         window.sees("again 55").await;
         let anew = tokio::time::timeout(PATIENCE, async {
@@ -2397,6 +2413,19 @@ mod tests {
             Some(UNASKED),
             "one more quit than it starts again within a minute ends it"
         );
+    }
+
+    #[test]
+    fn only_its_own_code_or_signal_says_a_program_quit_unasked() {
+        let exited = |code: i32| ExitStatus::from_raw(code << 8);
+        assert!(unasked(exited(UNASKED)), "its code");
+        assert!(unasked(ExitStatus::from_raw(UNASKED_SIGNAL)), "its signal");
+        for meant in [0, 1, PARKED, GONE] {
+            assert!(!unasked(exited(meant)), "exit {meant} was meant");
+        }
+        for signal in [libc::SIGTERM, libc::SIGKILL, libc::SIGHUP, libc::SIGUSR1] {
+            assert!(!unasked(ExitStatus::from_raw(signal)), "signal {signal}");
+        }
     }
 
     #[test]

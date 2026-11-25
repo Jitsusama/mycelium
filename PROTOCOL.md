@@ -4194,8 +4194,11 @@ A program that exits with 79 quit though nobody asked it to, as a pi
 whose own code gave up does, and is started again at once on the same
 terminal, as one that restarts is, never shown as parked: its window
 stays rather than closing on the person. Its run's end warns in the
-journal, as `quit unasked (exit 79)`. A fourth such quit within a
-minute ends the hold, saying so on the node's log, so a program that
+journal, as `quit unasked (exit 79)`. One killed by `SIGUSR2` quit
+unasked too, as a pi does when a name lookup it can't cut short holds
+its exit, and is started again the same way; its journal line names
+the signal. A fourth such quit within a minute ends the hold, saying
+so on the node's log, so a program that
 quits as it starts can't start forever.
 
 A program that exits with 69 (sysexits' `EX_UNAVAILABLE`) having
