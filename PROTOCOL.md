@@ -3642,7 +3642,7 @@ part of a word past ASCII (none a space, a braille blank or a
 noncharacter), and a joiner only between two, the first perhaps
 followed by its selector, and at most three zero-width joiners
 (U+200D) from one character taking a cell of its own (no mark,
-selector or skin tone) and following no zero-width joiner to the
+selector, skin tone or half of a flag) and following no zero-width joiner to the
 next, the rest dropped, a non-joiner (U+200C) never counted; and
 then is trimmed of spaces
 and braille blanks (U+2800), and cut to its first 120 characters, then

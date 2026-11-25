@@ -1048,7 +1048,7 @@ fn a_peer_s_name_chained_from_emoji_counts_a_cell_pair_for_each_four() {
         let cleaned = unmarked(chain);
         assert!(
             cells(cleaned.as_str()) >= 2 * emoji / 4,
-            "a mark or a skin tone let a run keep more than three joiners: {cleaned:?}"
+            "a mark, a skin tone or a flag let a run keep more than three joiners: {cleaned:?}"
         );
     }
 }
