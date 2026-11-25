@@ -563,6 +563,7 @@ pub async fn hold(
         said: Mutex::new(None),
         standing: Mutex::new(None),
         typed: Mutex::new(Vec::new()),
+        echo: Mutex::new(Vec::new()),
     });
     // Said before the program's output is read, so it comes first.
     if first.is_some() {
@@ -854,31 +855,58 @@ const STARTING_SAYS: &str = "Starting it now";
 /// from its echo; past it, an echo takes the line away, as drawing does.
 const TYPED_KEPT: usize = 4096;
 
-/// What a window types that its terminal's echo shows as something else:
-/// line ends, and the erase key, echoed as [`ERASED`].
-const ECHOED_OTHERWISE: &[u8] = b"\r\n\x7f";
+/// The most echo held back while [`STARTING_LINE`] stands; past it, the
+/// line goes, as it does when the program draws.
+const ECHO_HELD: usize = 2 * TYPED_KEPT;
+
+/// The keys a terminal echoes only as [`ERASED`]: erase, kill and word
+/// erase.
+const ERASES: &[u8] = b"\x7f\x15\x17";
 
 /// How a terminal's echo takes back a character erased.
 const ERASED: &[u8] = b"\x08 \x08";
 
-/// How much of `output` begins as the terminal's echo of `typed`, each
-/// byte as typed with the line ends and erasures an echo adds, and what
-/// is left of `typed` after it. What follows, from the first byte that
-/// isn't an echo, is the program drawing.
+/// What `given` is echoed as by a terminal as a pty starts it: a line
+/// end as one `\n`, which [`echoed`] matches with or without its `\r`,
+/// another control key as `^` and its letter, and the erasing keys as
+/// nothing but [`ERASED`].
+fn as_echoed(given: &[u8]) -> Vec<u8> {
+    let mut echo = Vec::with_capacity(given.len());
+    for &byte in given {
+        match byte {
+            b'\r' | b'\n' => echo.push(b'\n'),
+            _ if ERASES.contains(&byte) => {}
+            // A tab is echoed as itself.
+            0..=0x08 | 0x0a..=0x1f => echo.extend_from_slice(&[b'^', byte + 0x40]),
+            _ => echo.push(byte),
+        }
+    }
+    echo
+}
+
+/// How much of `output` begins as the terminal's echo of `typed`, kept as
+/// [`as_echoed`] makes it, with any erasures between, and what is left of
+/// `typed` after it. What follows, from the first byte that isn't an
+/// echo of what is still to come back, is the program drawing.
 fn echoed(typed: &[u8], output: &[u8]) -> (Vec<u8>, usize) {
     let mut left = typed;
     let mut at = 0;
     while let Some(&byte) = output.get(at) {
         if output[at..].starts_with(ERASED) {
             at += ERASED.len();
-        } else if byte == b'\r' || byte == b'\n' {
-            at += 1;
-        } else if let Some((_, rest)) = left.split_first().filter(|(next, _)| **next == byte) {
-            left = rest;
+            continue;
+        }
+        let Some((&next, rest)) = left.split_first() else {
+            break;
+        };
+        if next == b'\n' && output[at..].starts_with(b"\r\n") {
+            at += 2;
+        } else if next == byte {
             at += 1;
         } else {
             break;
         }
+        left = rest;
     }
     (left.to_vec(), at)
 }
@@ -1111,6 +1139,12 @@ struct Shown {
     /// terminal's echo hasn't shown back yet, so an echo isn't taken for
     /// the program drawing. Only ever taken while `modes` is held.
     typed: Mutex<Vec<u8>>,
+    /// The echo of what was typed, held back while [`STARTING_LINE`]
+    /// stands and passed on just after [`STARTING_CLEARED`], so no echoed
+    /// line end scrolls the line from where the cursor goes back to, and
+    /// the screen ends as it would have with no line. Only ever taken
+    /// while `modes` is held.
+    echo: Mutex<Vec<u8>>,
 }
 
 impl Shown {
@@ -1129,10 +1163,11 @@ impl Shown {
     /// screen and focus reporting would otherwise hide it from a window
     /// already joined, and leave a focus there waking nothing.
     fn show(&self, bytes: &[u8]) {
-        let drawn = &bytes[self.passes_echo(bytes)..];
-        if drawn.len() == bytes.len() || !drawn.is_empty() {
+        let echo = self.holds_echo(bytes);
+        // A read that is only echo leaves the line standing.
+        if echo == 0 || echo < bytes.len() {
             self.unsays_start();
-            self.passes(drawn, None);
+            self.passes(&bytes[echo..], None);
         }
         let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         let standing = *self.standing.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1143,31 +1178,27 @@ impl Shown {
         }
     }
 
-    /// Passes on as much of `bytes`, the program's output, as begins as
+    /// Holds back as much of `bytes`, the program's output, as begins as
     /// the echo of what was typed while [`STARTING_LINE`] stands
     /// ([`echoed`]), as a key typed into a window still blank is, and
-    /// says how much. An echo leaves the line standing; it is passed
-    /// under the lock the line is taken away under, so it can't put
-    /// back a line taken away meanwhile.
-    fn passes_echo(&self, bytes: &[u8]) -> usize {
-        let mut modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
+    /// says how much. Held under the lock the line is taken away under,
+    /// so none is held once the line is gone.
+    fn holds_echo(&self, bytes: &[u8]) -> usize {
+        let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         let said = *self.said.lock().unwrap_or_else(PoisonError::into_inner);
         if said != Some(STARTING_LINE) {
             return 0;
         }
         let mut typed = self.typed.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut echo = self.echo.lock().unwrap_or_else(PoisonError::into_inner);
         let (left, length) = echoed(&typed, bytes);
-        *typed = left;
-        drop(typed);
-        let echo = &bytes[..length];
-        if !echo.is_empty() {
-            modes.saw(echo);
-            self.title
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .saw(echo);
-            let _ = self.output.send(Arc::from(echo));
+        if echo.len() + length > ECHO_HELD {
+            return 0;
         }
+        *typed = left;
+        echo.extend_from_slice(&bytes[..length]);
+        drop(echo);
+        drop(typed);
         drop(modes);
         length
     }
@@ -1180,23 +1211,18 @@ impl Shown {
         if said == Some(STARTING_LINE) {
             let mut typed = self.typed.lock().unwrap_or_else(PoisonError::into_inner);
             let room = TYPED_KEPT.saturating_sub(typed.len());
-            typed.extend(
-                given
-                    .iter()
-                    .copied()
-                    .filter(|byte| !ECHOED_OTHERWISE.contains(byte))
-                    .take(room),
-            );
+            typed.extend(as_echoed(given).into_iter().take(room));
         }
         drop(modes);
     }
 
     /// Takes [`STARTING_LINE`] away from every joined window while it
-    /// stands. The check, the claim and the sending are one step under
-    /// the lock a window joins under, so it is taken away once however
-    /// many ask, and no window joins between them to be told it.
+    /// stands, and passes on the echo held back behind it. The check, the
+    /// claim and the sending are one step under the lock a window joins
+    /// under, so it is taken away once however many ask, and no window
+    /// joins between them to be told it.
     fn unsays_start(&self) {
-        let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         let mut said = self.said.lock().unwrap_or_else(PoisonError::into_inner);
         if *said == Some(STARTING_LINE) {
             *said = None;
@@ -1204,8 +1230,18 @@ impl Shown {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .clear();
+            let echo =
+                std::mem::take(&mut *self.echo.lock().unwrap_or_else(PoisonError::into_inner));
             // Neither a mode nor a title, so it needn't be read as `passes` does.
             let _ = self.output.send(Arc::from(STARTING_CLEARED));
+            if !echo.is_empty() {
+                modes.saw(&echo);
+                self.title
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .saw(&echo);
+                let _ = self.output.send(Arc::from(echo));
+            }
         }
         drop(said);
         drop(modes);
@@ -1419,9 +1455,12 @@ async fn typed(terminal: &Terminal, shown: &Shown, bytes: Vec<u8>) -> io::Result
     if given.is_empty() {
         return Ok(());
     }
-    // Kept before it's written, so its echo can't come back first.
+    let mut writing = terminal.writing.lock().await;
+    // Kept under the lock it's written under, so windows typing at once
+    // are kept in the order they're written, and before, so no echo of
+    // it comes back first.
     shown.keeps_typed(&given);
-    terminal.writing.lock().await.write_all(&given).await
+    writing.write_all(&given).await
 }
 
 /// Passes the program's output to every joined terminal until it ends.
@@ -2619,6 +2658,7 @@ mod tests {
             said: Mutex::new(None),
             standing: Mutex::new(None),
             typed: Mutex::new(Vec::new()),
+            echo: Mutex::new(Vec::new()),
         }
     }
 
@@ -2916,10 +2956,10 @@ mod tests {
                     .unwrap_or_else(|| panic!("it was shown {text:?}: {:?}", window.seen))
             };
             assert!(
-                at(line) < at("now\r\n")
-                    && at("now\r\n") < at(cleared)
-                    && at(cleared) < at("drew-"),
-                "the line, kept whole through the echo, goes as its program draws: {:?}",
+                at(line) < at(cleared)
+                    && at(cleared) < at("now\r\n")
+                    && at("now\r\n") < at("drew-"),
+                "the line stands through the echo, held back until its program draws: {:?}",
                 window.seen
             );
             assert_eq!(
@@ -2941,9 +2981,18 @@ mod tests {
     }
 
     #[test]
+    fn what_is_typed_is_kept_as_a_terminal_echoes_it() {
+        assert_eq!(
+            as_echoed(b"a\r\tb\n\x1b[A\x03\x7f\x15\x17"),
+            b"a\n\tb\n^[[A^C".to_vec(),
+            "line ends as one, control keys by their letter, erasing keys as nothing"
+        );
+    }
+
+    #[test]
     fn an_echo_is_told_apart_from_drawing() {
         assert_eq!(
-            echoed(b"now", b"now\r\n"),
+            echoed(b"now\n", b"now\r\n"),
             (Vec::new(), 5),
             "a line, echoed"
         );
@@ -2951,7 +3000,7 @@ mod tests {
         assert_eq!(
             echoed(b"ab", b"a\x08 \x08b"),
             (Vec::new(), 5),
-            "a key erased between, its erase kept out of what was typed"
+            "a key erased between"
         );
         assert_eq!(
             echoed(b"", b"drew"),
@@ -2959,7 +3008,17 @@ mod tests {
             "drawn, nothing typed"
         );
         assert_eq!(
-            echoed(b"now", b"now\r\n\x1b[2J"),
+            echoed(b"", b"\r\ndrew"),
+            (Vec::new(), 0),
+            "a line end nobody typed is the program's own"
+        );
+        assert_eq!(
+            echoed(b"now", b"now\r\n"),
+            (Vec::new(), 3),
+            "as is one after what was typed"
+        );
+        assert_eq!(
+            echoed(b"now\n", b"now\r\n\x1b[2J"),
             (Vec::new(), 5),
             "drawn in the same read, after the echo"
         );
@@ -2968,6 +3027,25 @@ mod tests {
             (b"ow".to_vec(), 1),
             "drawn, not as typed"
         );
+        assert_eq!(
+            echoed(b"^[[A", b"^[[A"),
+            (Vec::new(), 4),
+            "an arrow key, echoed by its letter"
+        );
+        assert_eq!(
+            echoed(b"^[[A", b"\x1b[?1049h"),
+            (b"^[[A".to_vec(), 0),
+            "an arrow key never echoed isn't the start of what's drawn"
+        );
+    }
+
+    /// What `joined` has been sent so far, run together.
+    fn sent(joined: &mut broadcast::Receiver<Arc<[u8]>>) -> String {
+        let mut seen = Vec::new();
+        while let Ok(bytes) = joined.try_recv() {
+            seen.extend_from_slice(&bytes);
+        }
+        String::from_utf8_lossy(&seen).into_owned()
     }
 
     #[test]
@@ -2984,6 +3062,7 @@ mod tests {
             "one joining after an echo is told it still: {:?}",
             String::from_utf8_lossy(&first)
         );
+        assert_eq!(sent(&mut joined), "", "the echo is held back");
         shown.keeps_typed(b"go");
         shown.show(b"go\r\ndrawn");
         shown.show(b"more");
@@ -2993,22 +3072,45 @@ mod tests {
             "one joining once it drew isn't: {:?}",
             String::from_utf8_lossy(&first)
         );
-        let mut seen = Vec::new();
-        while let Ok(bytes) = joined.try_recv() {
-            seen.extend_from_slice(&bytes);
-        }
+        let cleared = std::str::from_utf8(STARTING_CLEARED).expect("plain bytes");
         assert_eq!(
-            String::from_utf8_lossy(&seen),
-            String::from_utf8_lossy(
-                &[
-                    b"hi\r\n".as_slice(),
-                    b"go\r\n",
-                    STARTING_CLEARED,
-                    b"drawnmore".as_slice()
-                ]
-                .concat()
-            ),
-            "each echo leaves it, and drawing takes it away once, after an echo read with it"
+            sent(&mut joined),
+            format!("{cleared}hi\r\ngo\r\ndrawnmore"),
+            "drawing takes it away once, then the echo held back, then the program's own line end"
+        );
+        shown.keeps_typed(b"late");
+        assert!(
+            shown
+                .typed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty(),
+            "nothing typed once it's gone is kept"
+        );
+    }
+
+    #[test]
+    fn what_is_typed_and_echoed_while_it_starts_is_kept_to_a_bound() {
+        let shown = shown();
+        shown.says_start();
+        shown.keeps_typed(&[b'a'; TYPED_KEPT + 9]);
+        assert_eq!(
+            shown
+                .typed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len(),
+            TYPED_KEPT,
+            "typed is kept to its bound"
+        );
+        let (_, mut joined) = shown.join();
+        shown.show(&[b'\x08', b' ', b'\x08'].repeat(ECHO_HELD / 3));
+        assert_eq!(sent(&mut joined), "", "an echo up to its bound is held");
+        shown.show(b"\x08 \x08\x08 \x08");
+        let cleared = std::str::from_utf8(STARTING_CLEARED).expect("plain bytes");
+        assert!(
+            sent(&mut joined).starts_with(cleared),
+            "past it, the line goes"
         );
     }
 
@@ -3037,6 +3139,29 @@ mod tests {
             joined.try_recv().ok().as_deref(),
             Some(STARTING_CLEARED),
             "a program ending before it drew leaves no line saying it starts"
+        );
+        let away = shown();
+        away.says_start();
+        let (_, mut joined) = away.join();
+        away.stands(GONE_LINE);
+        assert_eq!(
+            joined.try_recv().ok().as_deref(),
+            Some(STARTING_CLEARED),
+            "a line that stands takes it away first"
+        );
+        // A program parking before it drew is shown its parked words, with
+        // a key typed and never echoed meanwhile.
+        let parked = shown();
+        parked.says_start();
+        let (_, mut joined) = parked.join();
+        parked.keeps_typed(b"x");
+        let words = [FOCUS_ON, PARKED_LINE].concat();
+        parked.show(&words);
+        let cleared = std::str::from_utf8(STARTING_CLEARED).expect("plain bytes");
+        assert_eq!(
+            sent(&mut joined),
+            format!("{cleared}{}", String::from_utf8_lossy(&words)),
+            "parking takes it away before its words"
         );
     }
 
