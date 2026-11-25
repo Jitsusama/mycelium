@@ -2239,7 +2239,8 @@ none is proved. A session whose node said it `Ended` is judged as it
 was last carried here, kept for a week once let go, in the node's own
 state rather than the mesh's folders, so no session here sees it; one
 this node keeps no record of from the last week is reopened from fenced
-ground only by the person. A name a reopening took there without its
+ground only by the person. A name a reopening took on the session's
+machine without its
 asker's fence and that went unanswered is asked there again only by
 a reopening of a session there, let through without its fence again.
 A reopening let
@@ -3336,8 +3337,11 @@ session also says
 whether it runs `here`, and how it stands, as `standing`: `running` while
 its process runs, here or on a machine heard of this boot; `parked` here,
 ended for its holder to start again, its park marked this boot (where
-the machine names no boot, as a Mac doesn't, its session changed since
-the boot began, or the machine can't say when it began); `closed` here,
+the machine names its boot, a presence naming none counts as this
+boot's; where it names none, as a Mac doesn't, its session changed
+since the boot began,
+its record gives no time that can be read, or the machine can't say
+when it began); `closed` here,
 ended this boot unparked; and no `standing` for one passed over.
 Its `told` is a digest of the record without what only an open launcher
 shows (its step, usage and times), so a
