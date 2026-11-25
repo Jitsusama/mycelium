@@ -8339,6 +8339,10 @@ impl<S: Store> Shared<S> {
             // The provider said what it made, so the machine's own word
             // for its name isn't taken.
             named: Arc::new(std::sync::OnceLock::from(made.machine.clone())),
+            // A machine made for the person is theirs, a peer as any
+            // machine of the realm is; one an agent's make asked for is a
+            // worker, so no agent makes a peer for itself.
+            worker: made.asker.as_deref() != Some(crate::made::PERSON),
         })
     }
 
@@ -24184,6 +24188,41 @@ esac
         );
     }
 
+    #[test]
+    fn a_machine_made_for_the_person_is_a_peer_and_one_for_an_agent_a_worker() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let given = Given {
+            book: Book::at(dir.path().join("made.jsonl")).of_realm("work"),
+            ..bare("/nowhere/steer".into(), None)
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            given,
+            to_dial,
+        );
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        for (asker, worker) in [
+            (Some(crate::made::PERSON), false),
+            (Some("P9R1KI"), true),
+            (Some(crate::made::UNKNOWN), true),
+            (None, true),
+        ] {
+            let mut made = made_by("/nowhere/lend", "kestrel", later);
+            made.asker = asker.map(str::to_owned);
+            assert_eq!(
+                shared.book_for(&made).worker,
+                worker,
+                "a machine made for {asker:?} is a worker: {worker}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_machine_kept_and_let_go_is_booked_for_nobody() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -24440,6 +24479,7 @@ esac
             program: provider.display().to_string(),
             place: "wren-place".to_owned(),
             named: Arc::default(),
+            worker: true,
         };
 
         let answer = tokio::time::timeout(PATIENCE, released(&dial))

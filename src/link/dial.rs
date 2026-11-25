@@ -209,6 +209,10 @@ pub struct Program {
     /// provider said it made, or else the first it says, kept across
     /// redials so a machine can't come back as another.
     pub named: Arc<OnceLock<String>>,
+    /// Whether the machine it reaches is a worker ([`Connection::worker`]),
+    /// as every one is but a machine the node made for the person, which
+    /// is theirs as any machine of the realm is.
+    pub worker: bool,
 }
 
 impl Program {
@@ -224,6 +228,7 @@ impl Program {
                 program: program.to_owned(),
                 place: place.to_owned(),
                 named: Arc::default(),
+                worker: true,
             }),
             _ => Err(format!(
                 "{via} isn't a program and a place, written PROGRAM:PLACE, such as aquifer-link:sandbox-1"
@@ -245,7 +250,7 @@ impl Dial for Program {
         // end there, which takes minutes, and it ends when it can't.
         std::future::ready(carried(program).map(|connection| Connection {
             releases: true,
-            worker: true,
+            worker: self.worker,
             named: Some(self.named.clone()),
             hello_within: None,
             ..connection
@@ -398,6 +403,7 @@ mod tests {
                 program: "aquifer-link".to_owned(),
                 place: "sandbox-1:2".to_owned(),
                 named: Arc::default(),
+                worker: true,
             }),
             "the place is everything after the first colon"
         );
@@ -484,6 +490,7 @@ mod tests {
             program,
             place: "sandbox-1".to_owned(),
             named: Arc::default(),
+            worker: true,
         });
 
         let mut connection = way.dial("work").await.expect("the program starts");
@@ -545,6 +552,7 @@ mod tests {
             program,
             place: "sandbox-1".to_owned(),
             named: Arc::default(),
+            worker: true,
         });
 
         let released = way.release().await.expect("a program can release");
@@ -570,6 +578,7 @@ mod tests {
             program: provider(dir.path(), "exit 3\n"),
             place: "sandbox-1".to_owned(),
             named: Arc::default(),
+            worker: true,
         });
 
         let released = way.release().await.expect("a program can release");
