@@ -3110,7 +3110,10 @@ anything as anyone. A node given `--worker-socket PATH` and
 folder only the node's account or the system's may change, made 0755
 if it isn't there. It answers only a process the kernel names as of
 account UID, refusing any other with one `{"Err": ...}` line, and the
-main socket answers none of these asks.
+main socket answers none of these asks. A worker socket that can't be
+put in place, as where its folder can't be made, is said on the
+node's standard error, and the node runs on without it: its own
+sessions still reach it, and only the workers' can't.
 
 Where UID is the node's own account, every program it holds is told
 the socket in `MYCELIUM_WORKER_SOCKET`, which the harness speaks
