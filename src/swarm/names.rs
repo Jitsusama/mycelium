@@ -57,11 +57,37 @@ pub(super) fn one_word(name: &str) -> bool {
 /// Whether `name`, cleaned as a page draws it, holds a word `swarm` reads
 /// as other than a team's name: an act, `team` or a flag. Typed as a page
 /// drew it, `reef pause` would pause Reef, and `pause` reach no team.
+/// A short's words may be typed apart, so each part between hyphens
+/// counts as a word too: `reef-pause`, typed as `reef pause`, would pause
+/// Reef.
 fn acts_for(name: &str) -> bool {
+    let drawn = unmarked(name).to_lowercase();
+    let flagged = drawn.split(blank).any(|word| word.starts_with('-'));
+    flagged
+        || drawn
+            .split(|each: char| blank(each) || each == '-')
+            .any(|word| ACTS.contains(&word) || word == "team")
+}
+
+/// Whether `each` is drawn as a space between words.
+fn blank(each: char) -> bool {
+    each.is_whitespace() || each == BRAILLE_BLANK
+}
+
+/// `name` as a page draws it and a person types it: cleaned, so each
+/// control is the space it's drawn as, in lower case, and with each run
+/// of what's drawn as a space one hyphen, as a typed name's words are
+/// joined. So what a page draws is what reaches it: `tide plan` drawn as
+/// said would be typed as `tide-plan`, another team's, and a braille
+/// blank or a control drawn like a space would let `reef pause` through
+/// as one word.
+fn typed_form(name: &str) -> String {
     unmarked(name)
         .to_lowercase()
-        .split_whitespace()
-        .any(|word| ACTS.contains(&word) || word == "team" || word.starts_with('-'))
+        .split(blank)
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 /// The most words before a colon that still read as a name.
@@ -132,19 +158,9 @@ fn short(title: &str, shared: &dyn Fn(&str) -> bool) -> Option<String> {
     (!leading.is_empty()).then(|| leading.join("-"))
 }
 
-/// The name `team`'s quest gives it in the swarm, as it's typed: in lower
-/// case, with each run of spaces or braille blanks one hyphen, as a typed
-/// name's words are joined. So what a page draws is what reaches it:
-/// `tide plan` drawn as said would be typed as `tide-plan`, another
-/// team's, and a braille blank drawn like a space would let `reef pause`
-/// through as one word.
+/// The name `team`'s quest gives it in the swarm, in its [`typed_form`].
 fn given(team: &Value) -> Option<String> {
-    let said = team.get("swarm")?.as_str()?.to_lowercase();
-    let name = said
-        .split(|each: char| each.is_whitespace() || each == BRAILLE_BLANK)
-        .filter(|word| !word.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
+    let name = typed_form(team.get("swarm")?.as_str()?);
     (!name.is_empty()).then_some(name)
 }
 
@@ -171,11 +187,14 @@ pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
             if let Some(name) = given(team) {
                 return Some((me, name));
             }
-            Some((me, short(title(team), &shared)?)).filter(|(_, name)| !chosen.contains(name))
+            // A worked-out name is held in its typed form too, as a
+            // title's word may hold a braille blank or a control.
+            Some((me, typed_form(&short(title(team), &shared)?)))
+                .filter(|(_, name)| !chosen.contains(name))
         })
         // One that cleans to nothing would be drawn blank, and offered to
         // a shell as an empty word.
-        .filter(|(_, name)| !acts_for(name) && !unmarked(name).is_empty())
+        .filter(|(_, name)| !acts_for(name) && !name.is_empty())
         .collect();
     named
         .iter()
@@ -206,10 +225,11 @@ pub fn shown<'a>(team: &Value, shorts: &'a BTreeMap<String, String>) -> Option<&
     (!says_again(title(team), short)).then_some(short.as_str())
 }
 
-/// Whether `short` only says `title` again, as `reef` says Reef.
+/// Whether `short` only says `title` again, as `reef` says Reef, the
+/// title's words in the [`typed_form`] a short is held in.
 pub(crate) fn says_again(title: &str, short: &str) -> bool {
     let spelt: Vec<String> = words(title).into_iter().map(|word| word.typed).collect();
-    spelt.join("-") == short
+    typed_form(&spelt.join("-")) == short
 }
 
 #[cfg(test)]
