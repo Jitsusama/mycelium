@@ -3116,10 +3116,10 @@ mod tests {
 
     #[test]
     fn the_starting_line_goes_before_the_holders_next_words_or_an_end() {
-        let shown = shown();
-        shown.says_start();
-        let (_, mut joined) = shown.join();
-        shown.says(PARKED_LINE);
+        let said = shown();
+        said.says_start();
+        let (_, mut joined) = said.join();
+        said.says(PARKED_LINE);
         let next = |joined: &mut broadcast::Receiver<Arc<[u8]>>| joined.try_recv().ok();
         assert_eq!(
             next(&mut joined).as_deref(),
