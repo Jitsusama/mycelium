@@ -3243,7 +3243,7 @@ token first, then spends it on that one steer.
 
 - `session` is the asker's own session, the one the person typed in.
 - `address` is the cell answered, and `want` the ask it raised, as an
-  `answer` steer names them.
+  `answer` steer names them: its presence's want, `<kind>@<since>`.
 - `digest` is the SHA-256 of the answer's words, as 64 lowercase hex
   digits: of `value` where the answer picks a choice, else of `other`,
   each as UTF-8, exactly as the steer will carry it.
@@ -3310,11 +3310,14 @@ process is the one it was minted to, by pid and start time; and
 is spent by its first try, taken or not, before anything else of the
 steer is weighed, so it is never tried twice. Never taken, whatever
 the token: a steer with any other field (an `endsHold`, a `look`, a
-`now`), words that aren't one string, an answer whose `want` names a
-message the store keeps as a hold, since the person alone ends a hold
-from their own login, or one the store doesn't keep at all, since it
-can't then be told no hold, and any act but `answer`, so no token pauses,
-carries, merges, lends or rules on a risk. The
+`now`), words that aren't one string, a `want` that isn't the
+standing want of a busy, idle or parked session going by `address`,
+named as the harness names it, `<kind>@<since>` (its `since` judged
+as an instant), or whose kind isn't `question`, `approval` or
+`blocked`, and any act but `answer`. A hold is a message, never a
+want, so no typed answer ends one: the person alone does, from their
+own login. Nor does a token pause, carry, merge, lend or rule on a
+risk. The
 steer reaches the cell without its token, wherever the cell is, as
 the person's own steers do.
 
@@ -3332,9 +3335,12 @@ steers is: within one account, code an agent brought into pi's own
 process can mint as pi does. The harness keeps the mint in its
 command line's own handler, where no tool, extension or event reaches
 it, and its own test says so. Nor does the terminal rule stop code
-running as the person's account from driving a real kitty or holder
-it started itself; it stops a pi an agent started from passing as
-one the person typed in.
+running as the person's account from typing into the person's own
+pi: into a placed hold through its socket, which takes any joiner of
+the account, or into a kitty window through kitty's remote control,
+where it listens. Its pi then mints as the person's, since it is.
+The rule stops a pi an agent started from passing as one the person
+typed in; it doesn't stop an agent typing where the person types.
 
 ### The Daemon Interface
 

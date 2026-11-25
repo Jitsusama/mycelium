@@ -642,6 +642,47 @@ fn shown_since() -> jiff::Timestamp {
     now.checked_sub(kept::SHOWN_FOR).unwrap_or(now)
 }
 
+/// The kinds of want the person answers: what the harness's wants are
+/// (lib/mesh/want.ts in the harness).
+const ANSWERED_WANTS: [&str; 3] = ["question", "approval", "blocked"];
+
+/// Whether `want`, as the harness names a want, `<kind>@<since>`, is the
+/// standing want of a running session going by `address` in `sessions`,
+/// its kind one the person answers. `since` is judged as an instant, since
+/// the harness writes it in JavaScript's own form and a presence may not.
+/// Otherwise it says why not.
+fn standing_want(sessions: &[Session], address: &str, want: &str) -> Result<(), String> {
+    let instant = |since: &str| since.parse::<jiff::Timestamp>().ok();
+    let named = want
+        .split_once('@')
+        .and_then(|(kind, since)| Some((kind, instant(since)?)));
+    let Some((kind, since)) = named else {
+        return Err("a typed answer names the want it answers as kind@since".to_owned());
+    };
+    if !ANSWERED_WANTS.contains(&kind) {
+        return Err(format!(
+            "a typed answer answers a question, an approval or a block, not a {kind}"
+        ));
+    }
+    let stands = sessions
+        .iter()
+        .filter(|session| session.address.eq_ignore_ascii_case(address))
+        .filter(|session| {
+            matches!(session.state, SessionState::Busy | SessionState::Idle)
+                || parked_presence(session)
+        })
+        .filter_map(|session| session.wants.as_ref())
+        .any(|standing| standing.kind == kind && instant(&standing.since) == Some(since));
+    if stands {
+        Ok(())
+    } else {
+        Err(format!(
+            "a typed answer answers a want {address} stands on now, and it stands on none \
+             by that name"
+        ))
+    }
+}
+
 /// The start a sprout asked `by` someone makes on `here`, judged on the
 /// disk as the asker sees it where `processes` shows it: the asker's
 /// process and its start ticks as it connected. Where that can't be
@@ -5358,12 +5399,10 @@ impl<S: Store> Shared<S> {
         let want = text("want").unwrap_or_default();
         let extra =
             fields.and_then(|fields| fields.keys().find(|field| !TYPED.contains(&field.as_str())));
-        // An ask the store doesn't keep can't be told no hold, so it is
-        // refused, never taken on trust.
-        let kept = self.store.message(want).as_ref().and_then(mesh::message);
-        let held = kept
-            .as_ref()
-            .is_some_and(|message| message.intent == Some(Intent::Hold));
+        // The ask answered is the cell's standing want, which the harness
+        // names `<kind>@<since>`: never a mesh message, so no hold, which
+        // the person alone ends from their own login.
+        let standing = standing_want(&self.lock().state.sessions(), address, want);
         let refused = if let Some(extra) = extra {
             Some(format!(
                 "a typed answer carries only act, want, value or other, from and token, not {extra}"
@@ -5374,16 +5413,8 @@ impl<S: Store> Shared<S> {
             Some("a typed answer names the ask it answers, as want".to_owned())
         } else if words.is_none() {
             Some("a typed answer carries its words as one string, value or other".to_owned())
-        } else if kept.is_none() {
-            Some(
-                "a typed answer answers an ask this node keeps, and it keeps none by that id"
-                    .to_owned(),
-            )
-        } else if held {
-            Some(
-                "a typed answer never answers a hold: the person ends one from their own login"
-                    .to_owned(),
-            )
+        } else if let Err(why) = standing {
+            Some(why)
         } else {
             None
         };
@@ -23895,18 +23926,29 @@ esac
     async fn a_typed_answer_is_taken_only_as_exactly_the_persons_answer_to_no_hold() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let store = Memory::default();
-        let now = jiff::Timestamp::now();
+        // A hold the store keeps, by its message id, which no want is.
         store.send_here(
             "m-hold",
-            json!({"v": 1, "id": "m-hold", "at": now.to_string(), "from": "TERN02",
+            json!({"v": 1, "id": "m-hold", "at": "2026-11-25T15:00:00Z", "from": "TERN02",
                    "to": ["#machine"], "intent": "hold", "text": "a reboot", "pid": 1}),
         );
-        store.send_here(
-            "m-ask",
-            json!({"v": 1, "id": "m-ask", "at": now.to_string(), "from": "TERN02",
-                   "to": ["#machine"], "intent": "question", "text": "ship it?", "pid": 1}),
-        );
         let shared = typing(dir.path(), &store, true);
+        // TERN02 stands on a question, said in its presence without the
+        // milliseconds the harness names it with; TERN03 has ended on one.
+        let waiting = |id: &str, address: &str, state: &str| -> Session {
+            serde_json::from_value(json!({
+                "id": id, "address": address, "machine": "skiff", "groups": [],
+                "state": state, "at": "2026-11-25T15:00:00Z",
+                "wants": {"kind": "question", "since": "2026-11-25T15:00:00Z",
+                           "said": "ship it?"},
+            }))
+            .expect("a session")
+        };
+        shared.lock().state.set_sessions(vec![
+            waiting("s-tern", "TERN02", "idle"),
+            waiting("s-ended", "TERN03", "ended"),
+        ]);
+        let ask = "question@2026-11-25T15:00:00.000Z";
         let typed = shared.typed.clone().expect("it mints");
         let tried = async |want: &str, more: Value| {
             let bound = typed::Bound {
@@ -23929,9 +23971,9 @@ esac
             spent
         };
         assert_eq!(
-            tried("m-ask", json!({})).await,
+            tried(ask, json!({})).await,
             Ok(()),
-            "the person's answer is taken"
+            "the person's answer to the want TERN02 stands on is taken"
         );
         for (more, says) in [
             (json!({"endsHold": true}), "not endsHold"),
@@ -23943,17 +23985,29 @@ esac
                 "its words as one string, value or other",
             ),
         ] {
-            let refused = tried("m-ask", more.clone()).await;
+            let refused = tried(ask, more.clone()).await;
             assert!(
                 refused.as_ref().is_err_and(|why| why.contains(says)),
                 "{more}: {refused:?}"
             );
         }
-        let held = tried("m-hold", json!({})).await;
+        for (want, says) in [
+            ("m-hold", "as kind@since"),
+            ("hold@2026-11-25T15:00:00.000Z", "not a hold"),
+            ("question@2026-11-25T15:00:01.000Z", "stands on none"),
+            ("approval@2026-11-25T15:00:00.000Z", "stands on none"),
+        ] {
+            let refused = tried(want, json!({})).await;
+            assert!(
+                refused.as_ref().is_err_and(|why| why.contains(says)),
+                "{want}: {refused:?}"
+            );
+        }
+        let sessions = shared.lock().state.sessions();
         assert!(
-            held.as_ref()
-                .is_err_and(|why| why.contains("never answers a hold")),
-            "{held:?}"
+            standing_want(&sessions, "TERN03", ask)
+                .is_err_and(|why| why.contains("stands on none")),
+            "an ended session's want is answered by no one"
         );
         let log = fs::read_to_string(dir.path().join("typed-answers.jsonl")).expect("its log");
         assert!(
