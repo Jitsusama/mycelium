@@ -23937,7 +23937,10 @@ esac
             (json!({"look": "l-1"}), "not look"),
             (json!({"act": "carry"}), "an answer from the person"),
             (json!({"from": "agent"}), "an answer from the person"),
-            (json!({"other": "yes"}), "its words as one string, value or other"),
+            (
+                json!({"other": "yes"}),
+                "its words as one string, value or other",
+            ),
         ] {
             let refused = tried("m-ask", more.clone()).await;
             assert!(
@@ -23969,7 +23972,10 @@ esac
         };
         let said = json!({"act": "answer", "want": "m-ask", "value": "yes",
                           "from": "person", "token": "0".repeat(32)});
-        let off = typing(dir.path(), &store, false);
+        // Each node its own folder, so the log counted below is the on
+        // node's alone, and the off node is seen to keep none.
+        let off_dir = tempfile::tempdir().expect("a temporary folder");
+        let off = typing(off_dir.path(), &store, false);
         for refused in [
             off.mint("s-own", bound(&typed::digest("yes")))
                 .await
@@ -23991,6 +23997,15 @@ esac
                 .is_err_and(|why| why.contains("64 lowercase hex")),
             "{short:?}"
         );
+        let lengthy = on
+            .mint(&"s".repeat(257), bound(&typed::digest("yes")))
+            .await;
+        assert!(
+            lengthy
+                .as_ref()
+                .is_err_and(|why| why.contains("at most 256 bytes")),
+            "a name past 256 bytes is refused before anything is weighed: {lengthy:?}"
+        );
         on.client_started = None;
         let nameless = on.mint("s-own", bound(&typed::digest("yes"))).await;
         assert!(
@@ -24000,7 +24015,11 @@ esac
             "{nameless:?}"
         );
         let log = fs::read_to_string(dir.path().join("typed-answers.jsonl")).expect("its log");
-        assert_eq!(log.lines().count(), 2, "each refused mint is kept: {log}");
+        assert_eq!(log.lines().count(), 3, "each refused mint is kept: {log}");
+        assert!(
+            fs::read_dir(off_dir.path()).is_ok_and(|mut kept| kept.next().is_none()),
+            "a node told not to mint keeps no log"
+        );
     }
 
     #[tokio::test]
