@@ -400,8 +400,17 @@ const BWRAP: &str = "bwrap";
 const FENCED_THROUGH: &[&str] = &[SPAWNER, "bash", "sh"];
 
 /// How many processes are looked through at most for those below a pi,
-/// so a machine running a great many can't hold a carry up for long.
+/// in all, so a machine running a great many can't hold a carry up for
+/// long.
 const LOOKED_THROUGH: usize = 65_536;
+
+/// How much a children file is asked for at each read. The kernel finds
+/// each read's first child again by its place in the list, so a sibling
+/// that ends between two reads can hide one after it. Std's reading of a
+/// file that says it is empty starts with a read of 32 bytes, a few ids,
+/// and asking for this much at once leaves that only to a process with
+/// more children than the kernel gives in one read, a page of them.
+const CHILDREN_READ: usize = 64 * 1024;
 
 /// The fence `session` shows it runs in, by what its owner's process
 /// holds, proved as [`proved`] proves it, and never by the session's own
@@ -460,7 +469,7 @@ pub fn shown_fence(
 
 /// The fence each session here shows it runs in, as [`shown_fence`] tells
 /// it, for every session whose owner is proved and holds no other, read
-/// with one look through the machine's processes. None where who owns
+/// below each owner alone. None where who owns
 /// what can't be told. A bubblewrap below a pi host whose record names
 /// another session isn't weighed here: what this look finds is kept as
 /// the strictest each session was seen in, for good, and a sibling's
@@ -871,7 +880,7 @@ impl Tree {
                 };
                 threads
                     .flatten()
-                    .filter_map(|thread| fs::read_to_string(thread.path().join("children")).ok())
+                    .filter_map(|thread| told_children(&thread.path().join("children")))
                     .flat_map(|children| {
                         children
                             .split_whitespace()
@@ -898,8 +907,13 @@ impl Tree {
     fn fences_below(&self, pid: i32) -> bool {
         let mut below = vec![pid];
         let mut seen = std::collections::BTreeSet::from([pid]);
+        let mut looked = 0_usize;
         while let Some(parent) = below.pop() {
             for (child, named) in self.children_of(parent) {
+                looked += 1;
+                if looked > LOOKED_THROUGH {
+                    return false;
+                }
                 if named == BWRAP {
                     return true;
                 }
@@ -910,6 +924,22 @@ impl Tree {
         }
         false
     }
+}
+
+/// What the kernel's children file at `path` tells, read in reads of
+/// [`CHILDREN_READ`] rather than std's, which start with a few bytes.
+fn told_children(path: &Path) -> Option<String> {
+    let mut file = fs::File::open(path).ok()?;
+    let mut told = Vec::new();
+    let mut read = vec![0_u8; CHILDREN_READ];
+    loop {
+        let got = std::io::Read::read(&mut file, &mut read).ok()?;
+        if got == 0 {
+            break;
+        }
+        told.extend_from_slice(read.get(..got)?);
+    }
+    String::from_utf8(told).ok()
 }
 
 /// Whether process `pid` in `procs` holds open the log pi keeps of
@@ -3519,6 +3549,18 @@ mod tests {
             !Tree::of(procs.path()).fences_below(58),
             "a child whose parent is now another's is that one's"
         );
+        // A child started by a thread of pi's other than its first.
+        let (procs, _logs, _hosts) =
+            fenced_pi("HOME=/home/jsama\0", &[(70, "bash", 58), (71, "bwrap", 70)]);
+        tells_children(procs.path());
+        fs::write(procs.path().join("58/task/58/children"), "").expect("untold");
+        let thread = procs.path().join("58/task/59");
+        fs::create_dir_all(&thread).expect("its thread's folder is made");
+        fs::write(thread.join("children"), "70 ").expect("told");
+        assert!(
+            Tree::of(procs.path()).fences_below(58),
+            "a child any thread started is the process's"
+        );
     }
 
     #[test]
@@ -3551,6 +3593,24 @@ mod tests {
         assert!(
             shown(&claims, &began).is_empty(),
             "one no longer claimed is forgotten, so read again"
+        );
+        // Another process given the same id is its own, read afresh.
+        fs::write(
+            procs.path().join("58").join("environ"),
+            "PI_SANDBOX=strict\0",
+        )
+        .expect("its environment is written");
+        assert_eq!(shown(&claims, &began), strict);
+        started(procs.path(), 58, "pi", 600);
+        fs::write(
+            procs.path().join("58").join("environ"),
+            "HOME=/home/jsama\0",
+        )
+        .expect("its environment is written");
+        assert_eq!(
+            shown(&[claim("s-own", 58, Some(600), None)], &began),
+            BTreeMap::from([("s-own".to_owned(), Kind::None)]),
+            "a pid used again is read as the process that has it now"
         );
     }
 
