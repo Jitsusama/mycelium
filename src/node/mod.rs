@@ -7527,7 +7527,10 @@ impl<S: Store> Shared<S> {
     /// only on the machine it names ([`Self::placed`]). It was asked at
     /// `at`, in milliseconds of the wall clock. A carried session placed
     /// on a worker is told in the log ([`Self::says_carried_to_a_worker`]).
-    async fn placed_held(&self, asked: Start, by: By, reopens: bool, at: i64) -> Reply {
+    async fn placed_held(&self, mut asked: Start, by: By, reopens: bool, at: i64) -> Reply {
+        // The person pays for what they ask for, so their start may cost
+        // unasked; a worker still takes only work that names it.
+        asked.may_cost |= by == By::Person;
         if reopens {
             return self
                 .placed((asked, at), None, held_screen(None), true)
