@@ -84,7 +84,7 @@ const HELP_WIDTH: usize = 60;
 struct Command {
     /// The realm: a set of machines that link, with nothing crossing
     /// between realms.
-    #[arg(long, env = "MYCELIUM_REALM", global = true)]
+    #[arg(long, env = "MYCELIUM_REALM", hide_env_values = true, global = true)]
     realm: Option<String>,
     /// The node's socket, if not where the realm's goes.
     #[arg(long, global = true)]
@@ -706,7 +706,7 @@ enum ForgeAct {
         #[arg(long, default_value = mycelium::lend::forge::borrow::BUDGET)]
         budget: String,
         /// The cell asking, as this machine says it.
-        #[arg(long, env = "PI_MESH_SESSION")]
+        #[arg(long, env = "PI_MESH_SESSION", hide_env_values = true)]
         cell: Option<String>,
     },
 }
@@ -4126,6 +4126,29 @@ mod tests {
             commands.extend(each.get_subcommands().cloned());
         }
         assert!(wide.is_empty(), "help passes {HELP_WIDTH}: {wide:#?}");
+    }
+
+    /// Help reads the same whoever asks, since a value read from the
+    /// caller's environment would show a session's address in it and
+    /// push its lines past the width the test above holds them to.
+    #[test]
+    fn no_command_s_help_shows_what_the_caller_s_environment_holds() {
+        let mut command = Command::command();
+        command.build();
+        let mut commands = vec![command];
+        let mut shown = Vec::new();
+        while let Some(each) = commands.pop() {
+            shown.extend(
+                each.get_arguments()
+                    .filter(|arg| arg.get_env().is_some() && !arg.is_hide_env_values_set())
+                    .map(|arg| format!("{}: --{}", each.get_name(), arg.get_id())),
+            );
+            commands.extend(each.get_subcommands().cloned());
+        }
+        assert!(
+            shown.is_empty(),
+            "help shows the caller's value: {shown:#?}"
+        );
     }
 
     #[test]
