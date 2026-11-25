@@ -1031,17 +1031,32 @@ fn a_peer_s_name_chained_from_emoji_counts_a_cell_pair_for_each_four() {
         "a name chained from emoji passed a cut whole"
     );
     // Four emoji joined as no sequence still count two cells and draw
-    // eight, a bound the cap keeps rather than closes. A mark between them
-    // draws nothing, and a skin tone carries on the emoji before it, so
-    // neither starts the count afresh, nor does a flag's second half: a
-    // run holds four emoji at most, and each four cost two cells, as
-    // Unicode's widths count them.
-    let marked =
-        "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{301}\u{200D}".repeat(20);
+    // eight, a bound the cap keeps rather than closes. A nonspacing mark
+    // between them draws nothing, and a skin tone carries on the emoji
+    // before it, so neither starts the count afresh, nor does a flag's
+    // second half: a run holds four emoji at most, and each four cost two
+    // cells, as Unicode's widths count them. Each emoji carries its mark,
+    // so one that restarted the count would keep every joiner.
+    let marked = "\u{1F469}\u{301}\u{200D}".repeat(20);
     let toned = "\u{1F469}\u{1F3FB}\u{200D}".repeat(20);
     let flagged = "\u{1F1E8}\u{1F1E6}\u{200D}".repeat(20);
+    let kept = |text: &str| unmarked(text).matches('\u{200D}').count();
+    assert_eq!(
+        kept(&marked),
+        15,
+        "a mark between emoji is joined past, three joiners a run"
+    );
+    // A spacing mark takes a cell of its own, so it starts a run afresh,
+    // as PROTOCOL says: the joiner after it is the run's first.
+    assert_eq!(
+        kept(
+            "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{93E}\u{200D}\u{1F469}"
+        ),
+        4,
+        "a spacing mark is a run's start"
+    );
     for (chain, emoji) in [
-        (marked.as_str(), 80),
+        (marked.as_str(), 20),
         (toned.as_str(), 20),
         (flagged.as_str(), 20),
     ] {

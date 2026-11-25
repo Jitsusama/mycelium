@@ -1388,8 +1388,9 @@ pub(crate) fn one_line(text: &str) -> String {
         .collect();
     let mut kept: Vec<char> = Vec::with_capacity(plain.len());
     // The zero-width joiners kept in the run at hand, which a character
-    // that follows none, takes a cell of its own and neither selects nor
-    // modifies ends, so a mark between emoji can't start the count afresh,
+    // that follows none, takes a cell of its own by Unicode's widths and
+    // neither selects nor modifies ends, so a nonspacing mark between
+    // emoji can't start the count afresh, though a spacing mark can,
     // nor a flag's second half, which follows its first rather than a
     // joiner. A non-joiner is never counted, as it joins no emoji.
     let mut joined = 0;
