@@ -114,6 +114,11 @@ impl Disk for Viewed {
         self.here(&folder.join(".git")).is_some()
     }
 
+    fn is_cut_tree(&self, folder: &Path) -> bool {
+        self.here(&folder.join(".git"))
+            .is_some_and(|real| real.is_file())
+    }
+
     fn resolved(&self, folder: &Path) -> PathBuf {
         self.here(folder).unwrap_or_else(|| lexical(folder))
     }

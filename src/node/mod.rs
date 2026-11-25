@@ -694,6 +694,20 @@ fn sprouted(
     }
 }
 
+/// The machine placement chose for a sprout's start `asked` that answered
+/// `reply`, refusing it for having no folder by the name it gives, where
+/// that is one other than `here`: the folder was found here, so the
+/// sprout starts here instead. None for a start naming its machine, and
+/// for every other answer.
+fn lacked_elsewhere(asked: &Start, reply: &Reply, here: &str) -> Option<String> {
+    let (Err(why), Some(folder)) = (reply, &asked.folder) else {
+        return None;
+    };
+    sprout::lacks_folder(why, folder)
+        .filter(|there| asked.work.needs.is_empty() && *there != here)
+        .map(str::to_owned)
+}
+
 /// The places work can begin in under `home`, listed as a sprout is
 /// judged ([`sprouted`]): on the disk as the asker sees it where
 /// `processes` shows it, else on this disk for the person, and for no
@@ -6674,7 +6688,7 @@ impl<S: Store> Shared<S> {
             Ok(Err(refused)) => return refused,
             Err(error) => return Answer::Err(format!("the sprout couldn't be judged: {error}")),
         };
-        let reply = self.start(start).await;
+        let reply = self.sprout_start(start).await;
         // A log that can't be written takes nothing from the asker, whose
         // session started or didn't as the reply says.
         // A write that panicked leaves at most part of a line behind,
@@ -6686,6 +6700,21 @@ impl<S: Store> Shared<S> {
         let _ = left_out.tell(&reply, &mut *log);
         drop(log);
         reply.into()
+    }
+
+    /// Starts a sprout's `start`. One placement chose a machine for that
+    /// refused it for having no checkout of its repository there starts
+    /// here instead, where its folder was found, as it did before sprouts
+    /// were placed; every other answer is the sprout's.
+    async fn sprout_start(&self, start: Start) -> Reply {
+        let reply = self.start(start.clone()).await;
+        let Some(there) = lacked_elsewhere(&start, &reply, &self.machine) else {
+            return reply;
+        };
+        eprintln!("a sprout placed on {there} starts here instead, as {there} hasn't its folder");
+        let mut here = start;
+        here.work.needs = vec![Need::Machine(self.machine.clone())];
+        self.start(here).await
     }
 
     /// Starts a program held where placement chooses, as [`Self::placed`]
@@ -23832,6 +23861,52 @@ esac
             "no link reaches tern: {refused:?}"
         );
         assert_eq!(logged(), "", "nothing for a start refused");
+    }
+
+    // A sprout placed on a machine without its repository's checkout
+    // starts where its folder was found instead, and only then.
+    #[test]
+    fn a_placed_sprout_whose_machine_hasnt_its_folder_starts_here_instead() {
+        let asked = |needs: Vec<Need>| Start {
+            work: work(needs),
+            folder: Some(PathBuf::from("src/rows")),
+            strict: true,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let lacks = |machine: &str| -> Reply {
+            Err(start::begins_strictly(
+                Some(Path::new("src/rows")),
+                start::Needs::ItsFolder,
+                Path::new("/nowhere/home"),
+                machine,
+            )
+            .expect_err("it hasn't the folder"))
+        };
+        let placed = asked(Vec::new());
+        assert_eq!(
+            lacked_elsewhere(&placed, &lacks("tern"), "skiff").as_deref(),
+            Some("tern")
+        );
+        let named = asked(vec![Need::Machine("tern".to_owned())]);
+        assert_eq!(
+            lacked_elsewhere(&named, &lacks("tern"), "skiff"),
+            None,
+            "named, it goes there or nowhere"
+        );
+        assert_eq!(
+            lacked_elsewhere(&placed, &lacks("skiff"), "skiff"),
+            None,
+            "here hasn't it either"
+        );
+        let silent: Reply = Err("tern didn't answer within 90s".to_owned());
+        assert_eq!(
+            lacked_elsewhere(&placed, &silent, "skiff"),
+            None,
+            "unanswered, it may have started there"
+        );
     }
 
     #[test]

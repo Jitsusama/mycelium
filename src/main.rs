@@ -1236,7 +1236,8 @@ struct Starting {
 
 #[derive(clap::Args)]
 struct Sprouting {
-    /// The machine it starts on, by name; this one if none.
+    /// The machine it starts on, by name; if none, the one with most room,
+    /// or this one where its folder is in a tree cut here.
     #[arg(long)]
     on: Option<String>,
     /// The folder it works in, or a place by name, such as

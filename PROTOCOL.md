@@ -2521,8 +2521,15 @@ as the first counted.
 in no window: the node makes the `"Start"` and starts it as above, under
 the same limits. `words` is the work, a link alone or words, which
 become the session's first words; `from` the address of the cell it
-comes from; `on` the machine, this one when it's none or names this
-one; and all but `words` may be left out. Beside its first words the
+comes from; `on` the machine; and all but `words` may be left out.
+With no `on`, the start names no machine, so placement chooses, as
+for any start, and new work goes where there is room. It names this
+one where its folder is in a tree cut from a repository kept elsewhere
+(its `.git` a file), as a quest's tree or a zone's tree is, or in no
+checkout below home, since no other machine has that folder as it is
+here. A machine placement chose that answers `<machine> has no folder
+<folder>, which the start names` is passed over, and the sprout
+starts on this one. Beside its first words the
 session is given `QUEST_WORKFLOW_SPROUT`, the same work as data, a
 JSON object such as
 `{"v": 1, "link": "https://...", "from": "HARBOR", "id": "sprout-..."}`:
