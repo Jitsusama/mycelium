@@ -1369,8 +1369,14 @@ mod tests {
         let shut = logs.path().join("--root--");
         fs::create_dir_all(&shut).expect("made");
         fs::set_permissions(&shut, fs::Permissions::from_mode(0o000)).expect("unreadable");
-        // An account that reads past modes reads it, so names none.
+        // An account that reads past modes reads it, so names none, and
+        // the refusal goes untested there: said, so the skip is seen.
         let unreadable = fs::read_dir(&shut).is_err();
+        if !unreadable {
+            eprintln!(
+                "this account reads a folder of mode 0o000, so a folder that can't be read goes untested here"
+            );
+        }
         let scanned = Logs::scan(logs.path());
         fs::set_permissions(&shut, fs::Permissions::from_mode(0o700)).expect("readable");
         let scanned = scanned.expect("one folder unread costs only its own logs");
