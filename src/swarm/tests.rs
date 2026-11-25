@@ -269,13 +269,17 @@ fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
         Some("HARBOR"),
         "a short name a shell acts on is given as the team's address"
     );
+    acting.teams[1]["swarm"] = json!("harbour pause");
+    assert_eq!(
+        hint(&acting).as_deref(),
+        Some("harbour-pause"),
+        "a short name's words are given joined, as one word swarm reads as a name"
+    );
     // Every miss is gathered, so undoing any one rule names its case.
     let mut misread = Vec::new();
-    // One swarm reads as other than a name, in any of its words, is no
-    // short name at all, so the team is given by its title, as one with
-    // none is.
+    // One swarm reads as other than a name is no short name at all, so
+    // the team is given by its title, as one with none is.
     for (given, said) in [
-        ("harbour pause", "a name with an act among its words"),
         ("--names", "a name swarm reads as an option"),
         ("-ojson", "or as its output"),
         ("team", "a name read as the person saying what follows"),
@@ -532,18 +536,53 @@ fn a_short_name_that_cleans_to_an_act_is_never_drawn() {
 }
 
 #[test]
-fn a_short_name_holding_a_word_swarm_reads_otherwise_is_never_drawn() {
-    // Typed as drawn, `reef pause` would pause Reef rather than show
-    // Harbour, and a flag would be read as one.
-    for given in ["reef pause", "--names", "harbour team"] {
+fn a_short_name_is_drawn_as_it_is_typed_and_reaches_only_its_team() {
+    // Drawn with its space, `reef pause` typed would pause Reef rather
+    // than show Harbour, and `tide plan` would reach `tide-plan`'s team;
+    // a braille blank draws like a space but parts no words.
+    for (given, drawn) in [
+        ("reef pause", "reef-pause"),
+        ("harbour  tides", "harbour-tides"),
+        ("reef\u{2800}pause", "reef-pause"),
+    ] {
         let mut swarm = swarm();
         swarm.teams[1]["swarm"] = json!(given);
         let shown = overview(&swarm, &look());
         assert!(
-            !shown.contains(given) && !typed(&swarm).iter().any(|name| name == given),
-            "{given} was given as Harbour's name:\n{shown}"
+            !shown.contains(given) && typed(&swarm).iter().any(|name| name == drawn),
+            "{given} was not drawn as {drawn}:\n{shown}"
         );
+        for asked in [drawn.to_owned(), drawn.replace('-', " ")] {
+            let found = team(&swarm, &asked, &look()).unwrap_or_default();
+            assert!(
+                found.starts_with("Harbour"),
+                "{asked}, typed as {given} is drawn, missed Harbour: {found}"
+            );
+        }
     }
+    let mut flagged = swarm();
+    flagged.teams[1]["swarm"] = json!("--names");
+    assert!(
+        !typed(&flagged).iter().any(|name| name == "--names"),
+        "a flag was given as Harbour's name"
+    );
+    // A spaced name and a hyphened one are typed alike, so go to neither.
+    let mut twins = swarm();
+    twins.teams[0]["swarm"] = json!("tide-plan");
+    twins.teams[1]["swarm"] = json!("tide plan");
+    assert!(
+        !typed(&twins).iter().any(|name| name.contains("tide")),
+        "one typed name was given to two teams: {:?}",
+        typed(&twins)
+    );
+    // One that cleans to nothing would be drawn blank and typed as no word.
+    let mut blank = swarm();
+    blank.teams[1]["swarm"] = json!("\u{200B}");
+    assert!(
+        !typed(&blank).iter().any(|name| unmarked(name).is_empty()),
+        "a blank was given as Harbour's name: {:?}",
+        typed(&blank)
+    );
 }
 
 #[test]
