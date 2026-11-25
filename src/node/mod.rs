@@ -24241,7 +24241,7 @@ esac
     }
 
     /// A node of skiff over [`placing_machine`], whose holder is this
-    /// test's own process, holding hold a1 of HELD_PI, with the typed
+    /// test's own process, holding hold a1 of `HELD_PI`, with the typed
     /// answers it keeps its placements in; the folders go with `dir`.
     fn placing_node(dir: &Path) -> (Shared<Memory>, Arc<typed::Typed>, [tempfile::TempDir; 2]) {
         use asker::tests::system_of;
