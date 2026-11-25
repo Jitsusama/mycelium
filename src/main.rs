@@ -882,6 +882,20 @@ struct Node {
     /// them all.
     #[arg(long, requires = "answers_with")]
     answers_for: Option<PathBuf>,
+    #[command(flatten)]
+    typed: Typed,
+}
+
+/// Whether the node mints typed answers (PROTOCOL.md's A Typed Answer),
+/// apart from the node's other switches since it is a fence of its own.
+#[derive(clap::Args)]
+struct Typed {
+    /// Mint no typed answer, so no pi session's command line answers a
+    /// cell's ask as the person, and refuse every token. Unsaid, each
+    /// mint, spend and refusal is kept in `typed-answers.jsonl` in the
+    /// node's state.
+    #[arg(long)]
+    no_typed_answers: bool,
 }
 
 /// A machines file of builders to dial, as `--builders` gives it.
@@ -2226,6 +2240,7 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
         lend: node.lend,
         worker: worker_given(node.worker_socket, node.worker_uid),
         gates: gates_given(node.answers_with, node.answers_for)?,
+        typed_answers: (!node.typed.no_typed_answers).then(|| state.join("typed-answers.jsonl")),
     };
     tell!(
         "mycelium: {}",
@@ -3332,12 +3347,50 @@ fn hold(
         // own socket.
         worker_socket: None,
     };
-    let id = starter.start(realm, &folder, (&[], command), false)?;
+    let id = starter.start(realm, &folder, (&[], command), false)?.id;
+    say_placed(realm, &id);
     if detached {
         writeln!(io::stdout().lock(), "{id}")
     } else {
         attach(&place::held(realm), &id)
     }
+}
+
+/// Tells the node that this process placed hold `id`, so where the kernel
+/// shows it on the person's own terminal, the node keeps the hold as
+/// theirs and its pi may be minted a typed answer (PROTOCOL.md's A Typed
+/// Answer). A node not running, or one that mints none, leaves the hold
+/// as it is, held but no one's, so nothing is said of it; one that
+/// refuses it as the person's is said, so the person knows its pi won't
+/// be minted one before a typed answer is refused.
+fn say_placed(realm: &str, id: &str) {
+    if let Ok(mut node) =
+        Client::connect_within(&place::socket(realm), std::time::Duration::from_secs(5))
+        && let Ok(Err(why)) = node.ask(&Request::Placed {
+            held: id.to_owned(),
+        })
+        && !placing_is_moot(&why)
+    {
+        let said =
+            format!("mycelium: {id} isn't kept as yours, so its pi gets no typed answer: {why}\n");
+        let _ = io::stderr().lock().write_all(said.as_bytes());
+    }
+}
+
+/// Whether a node's refusal to keep a hold as the person's says only that
+/// it keeps none anywhere: it mints no typed answer, can't read who
+/// placed a hold (a Mac, with no `/proc`), can't name who asks, or is
+/// older than placing. None says anything of this hold, so none is said.
+fn placing_is_moot(why: &str) -> bool {
+    let unknown = why.starts_with("not a request") && why.contains("Placed");
+    unknown
+        || [
+            "this node mints no typed answer",
+            "this machine can't tell who placed a hold",
+            "nothing names the process that asks",
+        ]
+        .iter()
+        .any(|moot| why.starts_with(moot))
 }
 
 /// Holds `command` here as the session `id`, in `folder`, each start of
@@ -3769,9 +3822,31 @@ mod tests {
 
     use super::{
         Action, Command, HELP_WIDTH, SAID_MOST, SWARM_WIDTH, SwarmAsked, Tree, held_through,
-        in_place, kit, orchestrates, processes_here, reader_left, room_of, said_text, swarm_asked,
-        tree, width, within, write_line,
+        in_place, kit, orchestrates, placing_is_moot, processes_here, reader_left, room_of,
+        said_text, swarm_asked, tree, width, within, write_line,
     };
+
+    #[test]
+    fn a_node_that_keeps_no_hold_as_anyones_says_nothing_of_one() {
+        for moot in [
+            "this node mints no typed answer, so it keeps no hold as the person's",
+            "this machine can't tell who placed a hold",
+            "nothing names the process that asks, so no hold is kept as the person's",
+            "not a request: unknown variant `Placed`, expected one of `Health`",
+        ] {
+            assert!(placing_is_moot(moot), "{moot}");
+        }
+        for said in [
+            "a1's holder isn't the one its placer began, so it is another's hold",
+            "a1 is named by no hold record here, or by more than one",
+            "not a request: unknown variant `Sprout`",
+        ] {
+            assert!(
+                !placing_is_moot(said),
+                "a refusal of this hold is said: {said}"
+            );
+        }
+    }
 
     #[test]
     fn a_held_program_starts_within_its_fence_outside_the_login_shell() {

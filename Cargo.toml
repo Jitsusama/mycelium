@@ -20,6 +20,9 @@ clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 # The time, for the ids and times of messages the node sends, and when a
 # machine says it leaves.
 jiff = { version = "0.2", features = ["serde"] }
+# The digest a typed answer's words are bound to their token by, SHA-256 as
+# the harness that mints one computes it with node's own crypto.
+sha2 = "0.10"
 # Folder changes, from inotify on Linux and FSEvents on macOS. The 9
 # release candidate, for its watch of only the kinds of change asked for
 # (`watching`), which 8 has no way to say.

@@ -35,6 +35,16 @@ pub struct Starter {
     pub worker_socket: Option<PathBuf>,
 }
 
+/// A hold begun: its id, and its holder's process, which `systemd-run
+/// --scope` becomes in place, so the process started is the holder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Begun {
+    /// The hold's id.
+    pub id: String,
+    /// The holder's process id.
+    pub holder: u32,
+}
+
 /// The realm's kit as a node was given it, once checked
 /// ([`crate::declared::kit_checked`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,7 +169,7 @@ fn says_on_its_log(scope: Scope, by_a_node: bool) -> bool {
 
 impl Starter {
     /// Starts holding `command` in `folder` for `realm`, answering its id
-    /// once a terminal can join it. With `login`, each start of it, the
+    /// and its holder once a terminal can join it. With `login`, each start of it, the
     /// first and every one after a park, runs through the person's login
     /// shell ([`login_shell`]), as a node's must, since the holder has only
     /// the node's environment. Each runs `within` a fence's launcher too,
@@ -177,7 +187,7 @@ impl Starter {
         folder: &Path,
         (within, command): (&[String], &[String]),
         login: bool,
-    ) -> io::Result<String> {
+    ) -> io::Result<Begun> {
         let id = super::new_id();
         let mut holder = self.scope.command(&self.program, &id);
         // A session and its tools are given the limit on open files the
@@ -203,6 +213,10 @@ impl Starter {
                 Stdio::null()
             })
             .spawn()?;
+        let begun = Begun {
+            id,
+            holder: holder.id(),
+        };
         let out = holder.stdout.take();
         let (told, said) = mpsc::channel();
         std::thread::spawn(move || {
@@ -223,7 +237,7 @@ impl Starter {
         // so it is waited on, or every session ended would leave a zombie.
         std::thread::spawn(move || holder.wait());
         match said.as_deref().map(str::trim) {
-            Ok("held") => Ok(id),
+            Ok("held") => Ok(begun),
             Ok("") => Err(io::Error::other("its holder ended without holding it")),
             Ok(why) => Err(io::Error::other(format!(
                 "couldn't hold {}: {why}",

@@ -1576,6 +1576,8 @@ reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events; no `groups`, no messages |
 | `"Present"` | `"Present"`, then held open while its process runs |
 | `{"Spawned": {"pid", "started", "session"}}` | `"Spawned"`, from a pi host, of its own spawner (A Hosted Session's Spawner) |
+| `{"Mint": {"session", "address", "want", "digest"}}` | `{"Minted": {"token", "until"}}`, from pi's own process, for the person's typed answer (A Typed Answer) |
+| `{"Placed": {"held"}}` | `"Placed"`, from the person's `mycelium hold`, once the node keeps that hold as theirs (A Typed Answer) |
 | `{"Carry": {"machine", "reopens"}}` | `"Carrying"`, then what it asks of `machine` |
 | `"Health"` | `{"Health": health}`, then another each time it moves |
 | `{"Turn": {"session"}}` | `"Turn"`, once a holder may resume `session` (A Held Session) |
@@ -3305,6 +3307,120 @@ namespace, where no spawner's `/proc` shows, and lays an empty
 folder over the one holding the host's socket, since a socket in a
 read-only folder still connects. A Mac's fence must deny connecting
 to that socket for the same.
+
+### A Typed Answer
+
+The person types in a pi session, and every pi session's process is
+an agent's, so a steer it sends `"from": "person"` is refused, as
+The Socket says of steers. A typed answer is the one exception:
+pi's command line, and nothing else in pi, may answer one cell's open
+ask as the person, once, with the words typed. It asks the node for a
+token first, then spends it on that one steer.
+
+`{"Mint": {"session", "address", "want", "digest"}}` asks for one:
+
+- `session` is the asker's own session, the one the person typed in.
+- `address` is the cell answered, and `want` the ask it raised, as an
+  `answer` steer names them: its presence's want, `<kind>@<since>`.
+- `digest` is the SHA-256 of the answer's words, as 64 lowercase hex
+  digits: of `value` where the answer picks a choice, else of `other`,
+  each as UTF-8, exactly as the steer will carry it.
+
+The node answers `{"Minted": {"token", "until"}}`: `token` is 128
+random bits as 32 lowercase hex digits, and `until` the RFC 3339 time,
+60 seconds on, past which it is refused. A session holds one token
+at a time, so minting again forgets the one before. It mints only
+where each of these holds, and otherwise refuses, saying which:
+
+- The kernel names the connection's other end as `session`'s own pi:
+  the process its presence names as owner, by pid and start time, or
+  the pi host it proves under, taken only where the node takes that
+  host's word at all (A Hosted Session's Spawner).
+- No other pi, pi host or pi-spawner is among that process's
+  forebears, so a pi a command started never gets one.
+- It asks from the foreground of the person's own terminal, which a
+  forebears' walk can't show, since a process that calls `setsid` is
+  taken in by the service manager. The kernel's `stat` must say it
+  runs on a terminal, in its foreground group, and that its session's
+  leader runs on the same one, a child of either the system's kitty
+  or a holder the person placed (below). A binary is told by the file
+  its `exe` names, its name `kitty`, `mycelium` or `quickshell`, or
+  one Nix's wrapper renames `.<name>-wrapped`, in a folder that a
+  system generation's profile names for it, that profile owned by
+  root; an older generation counts until it is collected. Never by
+  the name a process gives itself, which any process can change, nor
+  by a file's owner alone, since every store path is root's. So a pi
+  under `setsid`, `script(1)`, a program calling itself kitty, or in
+  a shell's background gets none, a hosted session's host, on no
+  terminal, never does, and a machine with no system profiles mints
+  none.
+- `session` was never seen strict (`fences.json`), and its presence
+  doesn't name its `fence` strict. A session started to read a
+  stranger's words never asks: the harness knows that, and the node
+  doesn't.
+- The node runs without `--no-typed-answers`, which turns minting off.
+
+A held session's terminal is its holder's, so the holder counts only
+where the node keeps that the person placed it, by its pid and its
+start time. `{"Placed": {"held"}}` asks the node to keep hold `held`
+so, answered `"Placed"`. It keeps it only where the asking process
+passes the terminal rule above, or is the launcher's own, its parent
+the system's Quickshell, with no pi, pi host or pi-spawner among its
+forebears; and where exactly one record here names the hold, and its
+holder runs the system's `mycelium` and is the asker's own child, as
+`mycelium holds add` starts it. That command says it after each hold.
+A `Start` by either is kept the same way, its holder the very process
+the node started, so a record written over names no other. A hold
+parked until its turn, as a resumed session's is, is placed as well,
+and a program its holder starts again, as a wake does, stays the
+person's, whatever command was named for its next start. An agent's
+hold is placed by nobody, so it never mints. They are kept in
+`placed-by-the-person.json` beside `typed-answers.jsonl`, for the boot
+named there, so a node that starts again keeps them and a boot forgets
+them; one whose holder has gone is dropped at the next placing.
+
+The token is spent by an `answer` steer to `address`, as
+`{"Steer": {"address", "steer"}}` with a steer of exactly `act`
+(`answer`), `want`, one of `value` or `other`, `from` (`person`) and
+`token`. The node takes it as the person's own steer only where the
+token is one it minted, unspent and before `until`; the asking
+process is the one it was minted to, by pid and start time; and
+`address`, `want` and the digest of the words match the mint. A token
+is spent by its first try, taken or not, before anything else of the
+steer is weighed, so it is never tried twice. Never taken, whatever
+the token: a steer with any other field (an `endsHold`, a `look`, a
+`now`), words that aren't one string, a `want` that isn't the
+standing want of a busy, idle or parked session going by `address`,
+named as the harness names it, `<kind>@<since>` (its `since` judged
+as an instant), or whose kind isn't `question`, `approval` or
+`blocked`, and any act but `answer`. A hold is a message, never a
+want, so no typed answer ends one: the person alone does, from their
+own login. Nor does a token pause, carry, merge, lend or rule on a
+risk. The
+steer reaches the cell without its token, wherever the cell is, as
+the person's own steers do.
+
+Each mint, spend and refusal is a line in `typed-answers.jsonl`
+beside `carries.jsonl`: `at`, `did` (`minted`, `spent` or
+`refused`), `session`, `address`, `want` and, for a refusal, `why`,
+the three names each cut to 256 bytes at a character's edge. It
+never holds the token or the words.
+Past 4 MiB it is rolled to `typed-answers.jsonl.1`, the one before
+that dropped, and a last line a crash left torn is ended before the
+next is written, so each line stays whole.
+
+This is a fence against habit and mistakes, as the check of who
+steers is: within one account, code an agent brought into pi's own
+process can mint as pi does. The harness keeps the mint in its
+command line's own handler, where no tool, extension or event reaches
+it, and its own test says so. Nor does the terminal rule stop code
+running as the person's account from typing into the person's own
+pi: into a placed hold through its socket, which takes any joiner of
+the account, or into a kitty window through kitty's remote control,
+where it listens; nor from naming what a placed hold runs next, which
+any of the account may. Its pi then mints as the person's.
+The rule stops a pi an agent started from passing as one the person
+typed in; it doesn't stop an agent typing where the person types.
 
 ### The Daemon Interface
 
