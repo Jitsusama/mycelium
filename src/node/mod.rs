@@ -453,12 +453,13 @@ fn plain_quest(quest: &str) -> bool {
 /// What each log under `logs` continues, the folder scanned once, as a
 /// lapse of the record of orchestrations asks only where a claim lapses;
 /// none where the folder can't be read, so what lapses is kept until it
-/// can be. That, and each folder in it passed over as unreadable, is
-/// said once, so claims kept with no end name their cause.
+/// can be. That, each folder in it passed over as unreadable, and each
+/// session two logs are named for, is said once, so claims kept with no
+/// end name their cause.
 fn continuing(
     logs: &Path,
     unreadable: &through::Unreadable,
-) -> Option<impl Fn(&str) -> Option<String> + use<>> {
+) -> Option<impl Fn(&str) -> chain::Continued + use<>> {
     let say = |why: String| {
         if unreadable.first(&why) {
             eprintln!("{why}");
@@ -477,7 +478,16 @@ fn continuing(
             "the sessions logged in a folder that can't be read continue none: {why}"
         ));
     }
-    Some(move |session: &str| found.continues(session))
+    // Kept where a lapse follows one back (`chain::Orchestrations::lapse`).
+    for session in found.doubled() {
+        say(format!(
+            "claims are kept, rather than lapse, while a lapse has to read what {}'s log \
+             continues, as two logs under {} are named for it",
+            crate::carry::shown(session),
+            logs.display()
+        ));
+    }
+    Some(move |session: &str| found.follows(session))
 }
 
 /// Whether `session` stands where a carry reaches it: running, or parked

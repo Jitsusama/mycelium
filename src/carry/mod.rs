@@ -1388,6 +1388,21 @@ pub fn runs_on(sessions: &[Session], quest: &str) -> Result<String, String> {
     }
 }
 
+/// `text` as a finding or a log line shows it: as it was written, but for
+/// each control character, escaped, so none moves the terminal it is read
+/// in or writes a line of its own.
+pub(crate) fn shown(text: &str) -> String {
+    let mut shown = String::new();
+    for character in text.chars() {
+        if character.is_control() {
+            shown.extend(character.escape_default());
+        } else {
+            shown.push(character);
+        }
+    }
+    shown
+}
+
 /// The session's own id, as its presence names it and its done file does.
 pub(crate) fn session_id(session: &Session) -> Option<&str> {
     session.presence.get("session").and_then(Value::as_str)
