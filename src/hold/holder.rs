@@ -841,7 +841,7 @@ fn away(record: &Record, shown: &Shown, how: Gone) {
 
 /// Parks the program in its record, with `line` standing in every
 /// joined window and each joining until it starts again.
-fn stands_parked(record: &Record, shown: &Shown, line: &[u8]) {
+fn stands_parked(record: &Record, shown: &Shown, line: &'static [u8]) {
     record.parks();
     shown.show(FOCUS_ON);
     shown.stands(line);
