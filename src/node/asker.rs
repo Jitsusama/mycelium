@@ -3447,7 +3447,7 @@ mod tests {
     /// under its one thread, from each one's parent, and marks `procs` as
     /// a kernel that tells them, as Linux's does.
     fn tells_children(procs: &Path) {
-        let mut children: BTreeMap<i32, String> = BTreeMap::new();
+        let mut children: BTreeMap<i32, Vec<i32>> = BTreeMap::new();
         for entry in fs::read_dir(procs)
             .expect("the processes are read")
             .flatten()
@@ -3459,15 +3459,13 @@ mod tests {
                 continue;
             };
             if let Some((_, parent)) = named(&status) {
-                children
-                    .entry(parent)
-                    .or_default()
-                    .push_str(&format!("{pid} "));
+                children.entry(parent).or_default().push(pid);
             }
         }
-        let me = std::process::id().to_string();
-        children.entry(me.parse().expect("an id")).or_default();
-        for (parent, told) in children {
+        let me = i32::try_from(std::process::id()).expect("an id");
+        children.entry(me).or_default();
+        for (parent, pids) in children {
+            let told: String = pids.iter().map(|pid| format!("{pid} ")).collect();
             let thread = procs
                 .join(parent.to_string())
                 .join("task")
