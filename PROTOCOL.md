@@ -1554,6 +1554,7 @@ reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events; no `groups`, no messages |
 | `"Present"` | `"Present"`, then held open while its process runs |
 | `{"Spawned": {"pid", "started", "session"}}` | `"Spawned"`, from a pi host, of its own spawner (A Hosted Session's Spawner) |
+| `{"Mint": {"session", "address", "want", "digest"}}` | `{"Minted": {"token", "until"}}`, from pi's own process, for the person's typed answer (A Typed Answer) |
 | `{"Carry": {"machine", "reopens"}}` | `"Carrying"`, then what it asks of `machine` |
 | `"Health"` | `{"Health": health}`, then another each time it moves |
 | `{"Turn": {"session"}}` | `"Turn"`, once a holder may resume `session` (A Held Session) |
@@ -3228,6 +3229,69 @@ namespace, where no spawner's `/proc` shows, and lays an empty
 folder over the one holding the host's socket, since a socket in a
 read-only folder still connects. A Mac's fence must deny connecting
 to that socket for the same.
+
+### A Typed Answer
+
+The person types in a pi session, and every pi session's process is
+an agent's, so a steer it sends `"from": "person"` is refused, as
+The Socket says of steers. A typed answer is the one exception:
+pi's command line, and nothing else in pi, may answer one cell's open
+ask as the person, once, with the words typed. It asks the node for a
+token first, then spends it on that one steer.
+
+`{"Mint": {"session", "address", "want", "digest"}}` asks for one:
+
+- `session` is the asker's own session, the one the person typed in.
+- `address` is the cell answered, and `want` the ask it raised, as an
+  `answer` steer names them.
+- `digest` is the SHA-256 of the answer's words, as 64 lowercase hex
+  digits: of `value` where the answer picks a choice, else of `other`,
+  each as UTF-8, exactly as the steer will carry it.
+
+The node answers `{"Minted": {"token", "until"}}`: `token` is 128
+random bits as 32 lowercase hex digits, and `until` the RFC 3339 time,
+60 seconds on, past which it is refused. A session holds one token
+at a time, so minting again forgets the one before. It mints only
+where each of these holds, and otherwise refuses, saying which:
+
+- The kernel names the connection's other end as `session`'s own pi:
+  the process its presence names as owner, by pid and start time, or
+  the pi host it proves under, taken only where the node takes that
+  host's word at all (A Hosted Session's Spawner).
+- No other pi, pi host or pi-spawner is among that process's
+  forebears, so a pi a command started never gets one.
+- `session` was never seen strict (`fences.json`), and its presence
+  doesn't name its `fence` strict. A session started to read a
+  stranger's words never asks: the harness knows that, and the node
+  doesn't.
+- The node runs without `--no-typed-answers`, which turns minting off.
+
+The token is spent by an `answer` steer to `address`, as
+`{"Steer": {"address", "steer"}}` with a steer of exactly `act`
+(`answer`), `want`, one of `value` or `other`, `from` (`person`) and
+`token`. The node takes it as the person's own steer only where the
+token is one it minted, unspent and before `until`; the asking
+process is the one it was minted to, by pid and start time; and
+`address`, `want` and the digest of the words match the mint. A token
+is spent by its first try, taken or not, so it is never tried twice.
+Never taken, whatever the token: a steer with any other field (an
+`endsHold`, a `look`, a `now`), an answer whose `want` names a
+message the store keeps as a hold, since the person alone ends a hold
+from their own login, and any act but `answer`, so no token pauses,
+carries, merges, lends or rules on a risk. The
+steer reaches the cell without its token, wherever the cell is, as
+the person's own steers do.
+
+Each mint, spend and refusal is a line in `typed-answers.jsonl`
+beside `carries.jsonl`: `at`, `did` (`minted`, `spent` or
+`refused`), `session`, `address`, `want` and, for a refusal, `why`.
+It never holds the token or the words.
+
+This is a fence against habit and mistakes, as the check of who
+steers is: within one account, code an agent brought into pi's own
+process can mint as pi does. The harness keeps the mint in its
+command line's own handler, where no tool, extension or event reaches
+it, and its own test says so.
 
 ### The Daemon Interface
 
