@@ -2028,6 +2028,7 @@ impl<S: Store> End<S> {
                         machine: here,
                         by: None,
                         carries_on: false,
+                        carries_with: false,
                     })
             }
             None => Err(format!("{here} carries no steers over this link")),

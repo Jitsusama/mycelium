@@ -161,7 +161,16 @@ impl Hands for Through {
             steer,
         };
         match self.ask(&asked)? {
-            Response::Steered { by, carries_on, .. } => Ok(Told { by, carries_on }),
+            Response::Steered {
+                by,
+                carries_on,
+                carries_with,
+                ..
+            } => Ok(Told {
+                by,
+                carries_on,
+                carries_with,
+            }),
             other => Err(format!("the node answered {other:?} for a steer")),
         }
     }

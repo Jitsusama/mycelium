@@ -422,19 +422,19 @@ fn gone(pid: u32) -> bool {
         .is_some_and(|pid| rustix::process::test_kill_process(pid) == Err(rustix::io::Errno::SRCH))
 }
 
-/// Whether a session `asker` carrying itself from `here` carries its
+/// Whether the sessions `carried` from `here`, by id, carry their
 /// `quest`'s own trees too: where no other of `sessions` stands here in
-/// it, and only where the quests' record holds it there (`recorded`). A
-/// quest it only says it runs is carried no further than its own trees,
-/// since that name could be another quest's.
+/// it, and only where the quests' record holds them there (`recorded`). A
+/// quest a session only says it runs is carried no further than its own
+/// trees, since that name could be another quest's.
 fn carries_whole(
     recorded: bool,
-    (quest, asker, here): (&str, &str, &str),
+    (quest, carried, here): (&str, &[&str], &str),
     sessions: &[Session],
 ) -> bool {
     recorded
         && !sessions.iter().any(|one| {
-            easing::id(one) != asker
+            !carried.contains(&easing::id(one))
                 && one.machine == here
                 && stands(one)
                 && one.quest.as_deref() == Some(quest)
@@ -1621,6 +1621,99 @@ impl Drop for Stops {
     }
 }
 
+/// An ordered carry this node told a session here, kept a while so the
+/// command telling several of a quest's sessions in a row may have the
+/// node carry them all on with the last it tells, as it names them
+/// `with` ([`Shared::ordered_carry`]).
+#[derive(Clone)]
+struct ToldCarry {
+    /// The session told, as it stood then.
+    session: Session,
+    /// The quest it was carried in.
+    quest: String,
+    /// The orchestrator the node proved ordered it.
+    by: String,
+    /// The machine it goes to.
+    to: String,
+    /// When it was told, just before it was.
+    began: jiff::Timestamp,
+    /// Whether the node carries it on already.
+    carried_on: bool,
+}
+
+/// How long a told carry is kept for a later one to name `with`. A
+/// command tells each of a quest's sessions in a row, a few seconds
+/// apart, so this is ample, and a carry asked again later is its own.
+const TOLD_KEPT_FOR: jiff::SignedDuration = jiff::SignedDuration::from_mins(10);
+
+/// What a carry an orchestrator ordered is kept saying beside its steer:
+/// the session asking, the quest, the chain the order was proved by, and
+/// where that chain came from, so a forged one is traced.
+fn ordered_kept(asker: &str, order: &ordered::Order) -> serde_json::Value {
+    serde_json::json!({
+        "asker": asker,
+        "quest": order.quest,
+        "chain": order.chain.iter().map(|link| serde_json::json!({
+            "quest": link.quest,
+            "orchestrator": link.orchestrator,
+        })).collect::<Vec<_>>(),
+        "source": chain::SOURCE,
+    })
+}
+
+/// The addresses an ordered carry's steer names `with`, in capitals:
+/// sessions of its quest told the same carry before it, which the node
+/// may carry on with it. None where it names none.
+fn carried_with(said: &serde_json::Value) -> Result<Vec<String>, String> {
+    let Some(with) = said.get("with") else {
+        return Ok(Vec::new());
+    };
+    let refused = || "an ordered carry's `with` is a list of addresses".to_owned();
+    let mut addresses = with
+        .as_array()
+        .ok_or_else(refused)?
+        .iter()
+        .map(|one| {
+            one.as_str()
+                .filter(|it| !it.is_empty() && it.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+                .map(str::to_ascii_uppercase)
+                .ok_or_else(refused)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    addresses.sort();
+    addresses.dedup();
+    Ok(addresses)
+}
+
+/// The carries `told` lately of the sessions going by `with`'s addresses
+/// that a carry naming them is carried on with: each told this same carry
+/// of `quest`, ordered `by` the same orchestrator and going `to` the same
+/// machine, and none carried on yet, so none is carried twice. None where
+/// `with` names none, or any it names wasn't so told.
+fn told_with(
+    told: &[ToldCarry],
+    with: &[String],
+    (quest, by, to): (&str, &str, &str),
+) -> Option<Vec<ToldCarry>> {
+    if with.is_empty() {
+        return None;
+    }
+    with.iter()
+        .map(|address| {
+            told.iter()
+                .rev()
+                .find(|one| {
+                    one.session.address.eq_ignore_ascii_case(address)
+                        && one.quest == quest
+                        && one.by == by
+                        && one.to == to
+                })
+                .filter(|one| !one.carried_on)
+                .cloned()
+        })
+        .collect()
+}
+
 /// Who asked a carry of itself, as the node judged them while they ran,
 /// which the node's own asks carrying it on are judged as, since by then
 /// the session and the command below it have ended.
@@ -1728,8 +1821,9 @@ struct Shared<S> {
     /// two claims at once never undo each other.
     claiming: Arc<Mutex<()>>,
     /// Held while a carry from here is judged and kept, so an ordered
-    /// carry and the node's own never both pass for one session.
-    carrying: Arc<tokio::sync::Mutex<()>>,
+    /// carry and the node's own never both pass for one session, over the
+    /// ordered carries told lately.
+    carrying: Arc<tokio::sync::Mutex<Vec<ToldCarry>>>,
     /// The socket its machine's updater takes asks on.
     updater: PathBuf,
     starter: Option<Arc<Starter>>,
@@ -4751,6 +4845,7 @@ impl<S: Store> Shared<S> {
             machine,
             by: None,
             carries_on: false,
+            carries_with: false,
         })
     }
 
@@ -5821,6 +5916,25 @@ impl<S: Store> Shared<S> {
         ordered::agreed(&order, asking, &quests, &running)
     }
 
+    /// Where the node shares quests, those it shares into and how the
+    /// command asking now is judged, for the node's own asks carrying a
+    /// carry on once the command has ended: judged now, while it runs.
+    async fn vouched_on(&self) -> Result<Option<(Arc<Places>, Vouched)>, String> {
+        let Some(shares) = self.shares.clone() else {
+            return Ok(None);
+        };
+        let (by, _, charged) = self.judged_charging().await?;
+        let unfenced = self.unfenced_asking(by, None).await;
+        Ok(Some((
+            shares,
+            Vouched {
+                by,
+                charged,
+                unfenced,
+            },
+        )))
+    }
+
     /// Puts a carry an orchestrator orders into the inbox of the session
     /// going by `address`, once the node has proved from its own record
     /// that the session asking orchestrates that session's quest: the
@@ -5833,7 +5947,11 @@ impl<S: Store> Shared<S> {
     /// machine is refused.
     async fn ordered_carry(&self, address: &str, said: &serde_json::Value) -> Reply {
         let address = Steer::new(address, said)?.address;
-        let _carrying = self.carrying.lock().await;
+        let with = carried_with(said)?;
+        if with.contains(&address) {
+            return Err(format!("{address} isn't carried with itself"));
+        }
+        let mut carrying = self.carrying.lock().await;
         let sessions = self.lock().state.sessions();
         let target = self.alone_here(&sessions, &address)?;
         let asker = self.asking_session().await?;
@@ -5847,57 +5965,82 @@ impl<S: Store> Shared<S> {
             address: &address,
         };
         let order = self.ordered_by(asking, carried, &sessions)?;
-        // The quests' record holds it in its quest alone, as the order
-        // was proved by, so where no other of the quest's sessions stands
-        // here the node carries the rest on itself, the quest's own trees
-        // with it, as it does a session's carry of itself: the command
-        // that asked then may end, as a timeout ends it, without leaving
-        // the quest carried into the handover and started nowhere. One
-        // of several sessions goes on as before, the command carrying
-        // the rest, since only it knows which of them it told.
-        let carrying_on = match self.shares.clone() {
-            Some(shares)
-                if carries_whole(true, (&order.quest, session, &self.machine), &sessions) =>
-            {
-                // Judged now, while the command that asked runs.
-                let (by, _, charged) = self.judged_charging().await?;
-                let unfenced = self.unfenced_asking(by, None).await;
-                Some((
-                    shares,
-                    Vouched {
-                        by,
-                        charged,
-                        unfenced,
-                    },
-                ))
-            }
-            _ => None,
+        let said_of = |field: &str| {
+            said.get(field)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
         };
-        let extra = serde_json::json!({
-            "asker": asker,
-            "quest": order.quest,
-            "chain": order.chain.iter().map(|link| serde_json::json!({
-                "quest": link.quest,
-                "orchestrator": link.orchestrator,
-            })).collect::<Vec<_>>(),
-            "source": chain::SOURCE,
-        });
+        let to = said_of("to");
+        let now = jiff::Timestamp::now();
+        carrying.retain(|told| now.duration_since(told.began) < TOLD_KEPT_FOR);
+        // Those it names `with`, each told this carry before it, go on
+        // with it, so a carry of several is carried on as one.
+        let together = told_with(&carrying, &with, (&order.quest, &order.by, &to));
+        let mut carried: Vec<Session> = together
+            .iter()
+            .flatten()
+            .map(|told| told.session.clone())
+            .collect();
+        carried.push(target.clone());
+        let ids: Vec<String> = carried
+            .iter()
+            .map(|one| easing::id(one).to_owned())
+            .collect();
+        let whole = {
+            let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+            carries_whole(true, (&order.quest, &ids, &self.machine), &sessions)
+        };
+        // The quests' record holds them in their quest alone, as the
+        // order was proved by, so where no other of the quest's sessions
+        // stands here the node carries the rest on itself, the quest's
+        // own trees with it, as it does a session's carry of itself: the
+        // command that asked then may end, as a timeout ends it, without
+        // leaving the quest carried into the handover and started
+        // nowhere. One of several told goes on as before, the command
+        // carrying the rest, unless the last names the others `with`,
+        // since only the command knows which of them it told.
+        let carrying_on = if whole {
+            self.vouched_on().await?
+        } else {
+            None
+        };
+        let extra = ordered_kept(&asker, &order);
         // Before it is told, so a refusal it writes at once is read as
         // this carry's, not passed over as an earlier one's.
         let began = jiff::Timestamp::now();
         self.carry_from_here(target, &address, said, &order.by, extra)
             .await?;
         let carries_on = carrying_on.is_some();
+        let carries_with = carries_on && together.is_some();
+        if carries_with {
+            for told in carrying.iter_mut() {
+                if told.quest == order.quest && ids.iter().any(|id| id == easing::id(&told.session))
+                {
+                    told.carried_on = true;
+                }
+            }
+        }
+        carrying.push(ToldCarry {
+            session: target.clone(),
+            quest: order.quest.clone(),
+            by: order.by.clone(),
+            to: to.clone(),
+            began,
+            carried_on: carries_on,
+        });
         if let Some((shares, vouched)) = carrying_on {
-            let said_of = |field: &str| {
-                said.get(field)
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned()
-            };
+            // The earliest told, so a done file written before this one
+            // was told is read as this carry's.
+            let since = together
+                .iter()
+                .flatten()
+                .map(|told| told.began)
+                .min()
+                .unwrap_or(began);
             self.carry_on(
-                (target.clone(), true, began),
-                (order.quest.clone(), said_of("to"), shares),
+                (carried, true, since),
+                (order.quest.clone(), to, shares),
                 crate::carry::Ordered {
                     by: order.by.clone(),
                     why: said_of("why"),
@@ -5909,6 +6052,7 @@ impl<S: Store> Shared<S> {
             machine: self.machine.clone(),
             by: Some(order.by),
             carries_on,
+            carries_with,
         })
     }
 
@@ -5980,14 +6124,18 @@ impl<S: Store> Shared<S> {
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        let whole = carries_whole(recorded, (&quest, &asker, &self.machine), &sessions);
+        let whole = carries_whole(
+            recorded,
+            (&quest, &[asker.as_str()], &self.machine),
+            &sessions,
+        );
         let to = said
             .get("to")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .to_owned();
         self.carry_on(
-            (target.clone(), whole, began),
+            (vec![target.clone()], whole, began),
             (quest, to, shares),
             crate::carry::Ordered {
                 by: address.clone(),
@@ -6003,18 +6151,19 @@ impl<S: Store> Shared<S> {
             machine: self.machine.clone(),
             by: Some(address),
             carries_on: true,
+            carries_with: false,
         })
     }
 
-    /// Carries on, in the background, the carry of `session` that `ordered`
-    /// names, once told, as [`crate::carry::carry_told`] does, through this
-    /// node answering as `vouched`, who asked as it judged them while they
-    /// ran: a session's of itself, or an orchestrator's of a quest's only
-    /// session here. Each line goes to the node's log, since no command
-    /// waits for it.
+    /// Carries on, in the background, the carry of `sessions` that
+    /// `ordered` names, once told, as [`crate::carry::carry_told`] does,
+    /// through this node answering as `vouched`, who asked as it judged
+    /// them while they ran: a session's of itself, or an orchestrator's of
+    /// a quest's only sessions here. Each line goes to the node's log, since
+    /// no command waits for it.
     fn carry_on(
         &self,
-        (session, whole, began): (Session, bool, jiff::Timestamp),
+        (sessions, whole, began): (Vec<Session>, bool, jiff::Timestamp),
         (quest, to, places): (String, String, Arc<Places>),
         ordered: crate::carry::Ordered,
         vouched: Vouched,
@@ -6046,15 +6195,20 @@ impl<S: Store> Shared<S> {
                     .asking(asking)
                     .stopping(stopped)
                     .since(began);
+            let names = sessions
+                .iter()
+                .map(|one| one.address.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
             let carried = crate::carry::carry_told(
                 &mut hands,
                 (&quest, &here, &to),
-                (&session, whole),
+                (&sessions, whole),
                 &ordered,
-                &mut |line| eprintln!("{} carried by {by}: {line}", session.address),
+                &mut |line| eprintln!("{names} carried by {by}: {line}"),
             );
             if carried.is_err() {
-                eprintln!("{} carried by {by} to {to} failed", session.address);
+                eprintln!("{names} carried by {by} to {to} failed");
             }
         });
     }
@@ -9710,6 +9864,7 @@ mod tests {
                 machine: "kestrel".to_owned(),
                 by: None,
                 carries_on: false,
+                carries_with: false,
             }),
             "a session on another machine is steered there"
         );
@@ -13959,6 +14114,7 @@ esac
                 machine: "skiff".to_owned(),
                 by: Some("HARBOR".to_owned()),
                 carries_on: true,
+                carries_with: false,
             }),
             "HARBOR's own session carries itself, needing no quest's record or orchestrator"
         );
@@ -14076,6 +14232,7 @@ esac
                 machine: "skiff".to_owned(),
                 by: Some("WCJQSG".to_owned()),
                 carries_on: false,
+                carries_with: false,
             }),
             "its orchestrator, by the record, orders the carry"
         );
@@ -14128,6 +14285,109 @@ esac
     }
 
     #[tokio::test]
+    async fn an_ordered_carry_of_several_is_carried_on_whole_with_the_last_told() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let places = dir.path().join("places");
+        let sharing = Places {
+            quests: places.join("quests"),
+            scratch: places.join("scratch"),
+            home: places.join("home"),
+            state: places.join("state"),
+        };
+        let mut quests = orchestrations();
+        quests["quests"][2]["sessions"] = json!(["s-harbour", "s-ferry"]);
+        let ferry = json!({
+            "session": "s-ferry", "addresses": ["FERRY1"],
+            "groups": ["#orchestration/wcjqsg"], "busy": false, "state": "listening",
+            "at": jiff::Timestamp::now().to_string(), "quest": "QEST-20261115-HARBOR",
+            "orchestratedBy": "WCJQSG", "fence": "strict",
+            "owner": {"pid": 7004, "startTicks": started_at(7004)},
+        });
+        let store = Memory::default();
+        let (_stop, _node, _client) = harbour_sharing(
+            &store,
+            &socket,
+            (&quests, &[]),
+            ("strict", STRICT),
+            Some(sharing),
+        )
+        .await;
+        // Filed under its own name, since a claim filed under another
+        // names no owner at all.
+        store.start_here("s-ferry", ferry, true);
+        // A second machine of the realm, for a carry going elsewhere.
+        store
+            .put_machine(&fenced("wren", &["remote"]))
+            .expect("what it said is kept");
+        pi_runs(&socket, 7004, STRICT);
+        holds_log(&socket, 7004, "s-ferry");
+        steward_claims(&socket).await;
+        let order = |address: &str, said: Value| {
+            ask(
+                socket.clone(),
+                Request::Steer {
+                    address: address.to_owned(),
+                    steer: said,
+                },
+            )
+        };
+        let steered = |carries_on, carries_with| {
+            Ok(Response::Steered {
+                machine: "skiff".to_owned(),
+                by: Some("WCJQSG".to_owned()),
+                carries_on,
+                carries_with,
+            })
+        };
+        let to = |machine: &str| {
+            let mut said = json!({"act": "ordered-carry", "to": machine, "why": "memory"});
+            said["with"] = json!(["ferry1"]);
+            said
+        };
+        asks_below(&socket, 7001);
+        assert_eq!(
+            order(
+                "ferry1",
+                json!({"act": "ordered-carry", "to": "tern", "why": "memory"})
+            )
+            .await,
+            steered(false, false),
+            "the first of two is left to the command, HARBOR standing beside it"
+        );
+        assert_eq!(
+            order("harbor", to("wren")).await,
+            steered(false, false),
+            "one going elsewhere isn't carried with FERRY1"
+        );
+        assert_eq!(
+            order("harbor", to("tern")).await,
+            steered(true, true),
+            "the last told, naming the first, carries both on with the quest's trees"
+        );
+        assert_eq!(
+            order("harbor", to("tern")).await,
+            steered(false, false),
+            "and never carries FERRY1 on twice"
+        );
+        assert!(
+            held_in(&inboxes(&socket).join("HARBOR"))
+                .iter()
+                .all(|steer| steer.get("with").is_none()),
+            "`with` is the node's to read, never the session's"
+        );
+        assert_eq!(
+            order(
+                "harbor",
+                json!({"act": "ordered-carry", "to": "tern", "why": "memory", "with": ["harbor"]})
+            )
+            .await,
+            Err("HARBOR isn't carried with itself".to_owned()),
+            "a carry naming itself is refused"
+        );
+    }
+
+    #[tokio::test]
     async fn a_persons_carry_keeps_nothing_where_no_quests_record_holds_its_session() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
@@ -14148,6 +14408,7 @@ esac
                 machine: "skiff".to_owned(),
                 by: None,
                 carries_on: false,
+                carries_with: false,
             }),
             "the person carries it"
         );
@@ -14201,6 +14462,7 @@ esac
                 machine: "skiff".to_owned(),
                 by: None,
                 carries_on: false,
+                carries_with: false,
             }),
             "the person carries it"
         );
@@ -24060,7 +24322,7 @@ esac
     fn a_session_carrying_itself_takes_its_quests_trees_only_where_recorded_in_it() {
         let quest = "QEST-20261115-HARBOR";
         let alone = [on_quest("s-harbour", "HARBOR", "skiff", "idle", quest)];
-        let asking = (quest, "s-harbour", "skiff");
+        let asking = (quest, &["s-harbour"][..], "skiff");
         assert!(
             carries_whole(true, asking, &alone),
             "recorded in it, and alone in it here, it takes the quest's trees"
@@ -24077,6 +24339,68 @@ esac
             !carries_whole(true, asking, &beside),
             "and never while another of the quest stands here"
         );
+        assert!(
+            carries_whole(true, (quest, &["s-harbour", "s-ferry"], "skiff"), &beside),
+            "unless it is carried with them"
+        );
+    }
+
+    #[test]
+    fn a_carry_is_carried_on_with_only_those_told_it_and_not_yet_carried_on() {
+        let told = |address: &str, quest: &str, carried_on: bool| ToldCarry {
+            session: on_quest("s-one", address, "skiff", "busy", quest),
+            quest: quest.to_owned(),
+            by: "WCJQSG".to_owned(),
+            to: "tern".to_owned(),
+            began: jiff::Timestamp::UNIX_EPOCH,
+            carried_on,
+        };
+        let quest = "QEST-20261115-HARBOR";
+        let carrying = [
+            told("BUSY01", quest, false),
+            told("NAPS02", quest, true),
+            told("ELSE03", "QEST-20261108-OSPHT4", false),
+        ];
+        let order = (quest, "WCJQSG", "tern");
+        let with = |addresses: &[&str]| -> Vec<String> {
+            addresses.iter().map(|one| (*one).to_owned()).collect()
+        };
+        assert_eq!(
+            told_with(&carrying, &with(&["BUSY01"]), order).map(|found| found.len()),
+            Some(1),
+            "one told this carry goes with it"
+        );
+        for (named, why) in [
+            (with(&[]), "naming none carries none with it"),
+            (
+                with(&["NAPS02"]),
+                "one already carried on is never carried twice",
+            ),
+            (with(&["ELSE03"]), "one of another quest isn't this carry's"),
+            (
+                with(&["BUSY01", "GONE04"]),
+                "nor are any where one named wasn't told",
+            ),
+        ] {
+            assert!(told_with(&carrying, &named, order).is_none(), "{why}");
+        }
+        assert!(
+            told_with(&carrying, &with(&["BUSY01"]), (quest, "OSPHT4", "tern")).is_none()
+                && told_with(&carrying, &with(&["BUSY01"]), (quest, "WCJQSG", "wren")).is_none(),
+            "nor one another orchestrator ordered, or going elsewhere"
+        );
+        assert_eq!(
+            carried_with(&json!({"with": ["busy01", "BUSY01"]})),
+            Ok(vec!["BUSY01".to_owned()]),
+            "its addresses are read in capitals, once each"
+        );
+        for said in [
+            json!({"with": "BUSY01"}),
+            json!({"with": ["../X"]}),
+            json!({"with": [7]}),
+        ] {
+            assert!(carried_with(&said).is_err(), "{said} names no addresses");
+        }
     }
 
     #[tokio::test]

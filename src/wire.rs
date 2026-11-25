@@ -478,6 +478,12 @@ pub enum Response {
         /// old to say leaves the rest to the command, as before.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         carries_on: bool,
+        /// Whether it carries on, with this one, every session the steer
+        /// named `with`, told the same carry before it, so the command
+        /// that told them all has none left to carry. A node too old to
+        /// say carries on this one alone, as `carries_on` says.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        carries_with: bool,
     },
     /// The held session asked for, ended on `machine`.
     Ended {

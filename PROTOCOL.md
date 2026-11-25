@@ -1010,7 +1010,18 @@ standing here, the node answers `"carries_on": true` as well and
 carries the rest on itself once the session has carried and ended,
 waiting up to an hour for it: the command then ends at step `handed`,
 so its own lifetime can't leave the quest half carried. A node too old
-to say leaves the rest to the command. A blank reason is refused, by
+to say leaves the rest to the command. Where several of the quest's
+sessions stand here, the command tells them in order, and its steer
+to the last names those told before it, `"with": [<address>, ...]`.
+The node carries them on together, the quest's own trees with them,
+and answers `"carries_with": true` beside `"carries_on"`, only where
+it told each named one this carry, of the same quest, ordered by the
+same orchestrator and going to the same machine, within the last ten
+minutes, and has carried none of them on already; otherwise it carries
+on none of them, and the command carries the rest. A node too old to
+answer `carries_with` means by `carries_on` the last session alone. A
+carry naming itself `with` is refused. `with` never reaches the
+session's inbox. A blank reason is refused, by
 the command and by the node. A parked session its quest's record doesn't hold alone,
 as one no record holds, two hold, or another quest's does, is passed
 over, never told, since the node would refuse its steer and so stop the
@@ -1525,7 +1536,7 @@ reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Takes": {"starts", "ordered"}}` | `{"Placement": placement}`, the last start's, placed as `"Start"` would, or a refusal; starts nothing |
 | `{"Sprout": {"words", "folder", "from", "on", "cwd"}}` | `{"Started": {"machine", "held", "folder", "attach"}}`, as for `"Start"`, or `{"Refused": {"code", "why"}}` |
 | `{"Places": {}}` | `{"Places": [{"folder", "name", "kind", "out", "checkOut"}]}`, where work can begin, as the asker sees the disk |
-| `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by", "carries_on"}}`, where it was put, who ordered a carry, and whether the node carries it on |
+| `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by", "carries_on", "carries_with"}}`, where it was put, who ordered a carry, whether the node carries it on, and whether with those it named |
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
 | `{"Free": {"quest"}}` | `"Orchestrated"`, freed, from the person's own login |
 | `{"Starts": {"act"}}` | `{"Starts": {"stopped", "newest"}}`, `stop`, `resume` or `list` from the person's own login |
