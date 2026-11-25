@@ -93,10 +93,14 @@ pub enum Scope {
     /// held there shared their memory's floor, and a call of theirs froze
     /// while it was reclaimed (23 November).
     Apart,
-    /// In the slice of the terminal that started it. A terminal's own
-    /// scope signals nothing when stopped (kitty makes its with
+    /// In a scope of its own, for a hold a terminal started. A terminal's
+    /// own scope signals nothing when stopped (kitty makes its with
     /// `KillMode=process` and no main process), so a holder left in it was
-    /// killed only once the shutdown gave up waiting (2026-11-11).
+    /// killed only once the shutdown gave up waiting (2026-11-11). Its
+    /// scope goes in the agents' slice, as [`Scope::Apart`]'s does, never
+    /// the terminal's: a terminal the person opened runs in their own
+    /// programs' slice, where 18 reopened sessions held 6 GiB of its
+    /// memory and its floor (25 November).
     Beside,
 }
 
@@ -118,8 +122,7 @@ impl Scope {
     pub(crate) fn command(self, program: &Path, id: &str) -> Command {
         let slice = match self {
             Self::None => return Command::new(program),
-            Self::Apart => "--slice=agents.slice",
-            Self::Beside => "--slice-inherit",
+            Self::Apart | Self::Beside => "--slice=agents.slice",
         };
         let mut scoped = Command::new("systemd-run");
         // systemd-run expands `${...}` in the command it runs unless told
@@ -439,7 +442,7 @@ mod tests {
         );
         assert!(
             !says_on_its_log(Scope::Beside, false),
-            "nor does one beside a terminal's slice"
+            "nor does one a terminal started"
         );
     }
 
@@ -471,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn a_holder_beside_its_terminal_keeps_the_terminals_slice() {
+    fn a_holder_goes_among_the_agents_whatever_slice_started_it() {
         let words = |scope: Scope| -> Vec<String> {
             let command = scope.command(Path::new("/bin/mycelium"), "f00d");
             std::iter::once(command.get_program())
@@ -506,8 +509,8 @@ mod tests {
         );
         assert_eq!(
             words(Scope::Beside),
-            scoped("--slice-inherit"),
-            "a terminal's stays in the terminal's slice, weighed as it was"
+            scoped("--slice=agents.slice"),
+            "a terminal's goes among the agents too, never the person's programs' slice"
         );
     }
 
