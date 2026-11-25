@@ -7,14 +7,15 @@
 
 use std::fs;
 use std::io;
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use pty_process::OwnedWritePty;
-use rustix::process::{Pid, kill_process};
+use rustix::process::{Pid, kill_process, kill_process_group};
 use tokio::io::AsyncWriteExt;
 use tokio::io::unix::AsyncFd;
 use tokio::net::UnixStream;
@@ -401,7 +402,7 @@ fn starting(
     holding: &Holding<'_>,
     command: &[String],
     files: &Files,
-) -> io::Result<pty_process::Command> {
+) -> io::Result<tokio::process::Command> {
     let words: Vec<&String> = holding.through.iter().chain(command).collect();
     let Some((program, arguments)) = words.split_first() else {
         return Err(io::Error::other("there is nothing to start"));
@@ -410,7 +411,8 @@ fn starting(
     // takes away below is its own whatever that environment holds.
     let person = holding.environment.now();
     let proxy = agents_proxy(&person, std::env::var("XDG_RUNTIME_DIR").ok().as_deref());
-    let mut command = pty_process::Command::new(program)
+    let mut command = tokio::process::Command::new(program);
+    command
         .args(arguments)
         .current_dir(holding.folder)
         .envs(keeping_path(person, std::env::var("PATH").ok().as_deref()))
@@ -423,15 +425,49 @@ fn starting(
         .env(PARKED_SAID, &files.parked)
         .env(REACHED_SAID, &files.reached);
     for variable in WINDOW_VARIABLES {
-        command = command.env_remove(variable);
+        command.env_remove(variable);
     }
     for (variable, value) in agents(proxy.as_deref(), !holding.through.is_empty()) {
-        command = match value {
+        match value {
             Some(value) => command.env(variable, value),
             None => command.env_remove(variable),
         };
     }
     Ok(command)
+}
+
+/// Starts `command` with the terminal's child end `end` as its input,
+/// output and errors, in a session of its own that has no controlling
+/// terminal. A program the terminal controlled would let anything that
+/// writes to a process's controlling terminal write over what it draws:
+/// on a Mac, Santa's file-access rules write a "Process Path" notice to
+/// that of any process touching a watched file, which stuck in pi's screen
+/// whenever its grep started rg (A2VLJN, 24 November 2026). With none, it
+/// has nowhere to write, and opening `/dev/tty` fails. Only on Linux may a
+/// program take the terminal back, by opening it by name without
+/// `O_NOCTTY` while it leads its session, as bash does as it starts, even
+/// with `-c`; a Mac gives one only to a program asking with `TIOCSCTTY`,
+/// and the notices are a Mac's. The program is told
+/// a new size by [`Terminal::resize`] instead, as no terminal of its own
+/// tells it, and reads a key that would interrupt as raw input, as pi does.
+fn on_end(
+    mut command: tokio::process::Command,
+    end: BorrowedFd<'_>,
+) -> io::Result<tokio::process::Child> {
+    command
+        .stdin(end.try_clone_to_owned()?)
+        .stdout(end.try_clone_to_owned()?)
+        .stderr(end.try_clone_to_owned()?);
+    // SAFETY: setsid is async-signal-safe and touches no memory the fork
+    // shares, which is all pre_exec asks of what runs in the child.
+    #[expect(
+        unsafe_code,
+        reason = "std starts a program in a session of its own only through pre_exec"
+    )]
+    unsafe {
+        command.pre_exec(|| rustix::process::setsid().map(drop).map_err(io::Error::from));
+    }
+    command.spawn()
 }
 
 /// Holds the program until it ends, answering its exit code, if it gave
@@ -482,6 +518,7 @@ pub async fn hold(
     // terminal outlives it and the program starts again on the same one.
     let start =
         |command: &[String], size: Size| end.start(starting(holding, command, &files)?, size);
+    let running = |child: &tokio::process::Child| child.id().unwrap_or_default();
     let mut command = holding.command.to_vec();
     let waits = holding
         .node
@@ -516,6 +553,7 @@ pub async fn hold(
         size: Mutex::new(FIRST_SIZE),
         drawn: output.clone(),
         parked: watch::Sender::new(false),
+        running: AtomicU32::new(first.as_ref().map_or(0, running)),
     });
     let shown = Arc::new(Shown {
         modes: Mutex::new(Modes::default()),
@@ -536,6 +574,7 @@ pub async fn hold(
             match joining_until(waited, &socket, &mut joined, &serving).await {
                 Some(()) => {
                     let child = start(&command, terminal.size())?;
+                    terminal.runs(running(&child));
                     record.runs(child.id().unwrap_or_default(), &command);
                     Some(child)
                 }
@@ -558,6 +597,7 @@ pub async fn hold(
                 None => (ends(&mut child, pid).await?, true),
             };
             ended(holding, pid, &command, status);
+            terminal.runs(0);
             // Taken whatever the code, so none is left to a later run; a
             // program exiting so with none written ends, as any other, and
             // so does one whose file a process under it wrote.
@@ -632,7 +672,10 @@ pub async fn hold(
                 let its_own = named(&files.naming);
                 command = named(&files.chosen).or(its_own).unwrap_or(command);
                 match start(&command, terminal.size()) {
-                    Ok(child) => break (child, Instant::now()),
+                    Ok(child) => {
+                        terminal.runs(running(&child));
+                        break (child, Instant::now());
+                    }
                     Err(error) => {
                         parked = Some(terminal.parks());
                         parks(&record, &shown, &unstarted(&error));
@@ -903,9 +946,28 @@ struct Terminal {
     drawn: broadcast::Sender<Arc<[u8]>>,
     /// Whether the program is parked, so a key typed wakes it.
     parked: watch::Sender<bool>,
+    /// The program running, which leads a session and group of its own
+    /// ([`on_end`]), or 0 while none runs.
+    running: AtomicU32,
 }
 
 impl Terminal {
+    /// Says `pid` runs now, 0 once none does, so the word of a new size
+    /// never goes to a group whose leader has gone.
+    fn runs(&self, pid: u32) {
+        self.running.store(pid, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Tells the program running that its size changed, as a terminal it
+    /// had for its own would. Its whole group is told, as a terminal tells
+    /// what runs in front, and one already gone is told nothing.
+    fn tells_size(&self) {
+        let pid = self.running.load(std::sync::atomic::Ordering::SeqCst);
+        if let Some(group) = i32::try_from(pid).ok().and_then(Pid::from_raw) {
+            let _ = kill_process_group(group, rustix::process::Signal::WINCH);
+        }
+    }
+
     /// Wakes a parked program, answering whether it was parked: the key
     /// that woke it is then not the program's to read.
     fn wakes(&self) -> bool {
@@ -955,6 +1017,7 @@ impl Terminal {
             writing
                 .resize(size_of(narrower))
                 .map_err(io::Error::other)?;
+            self.tells_size();
             let _ = tokio::time::timeout(NUDGE_HELD, async {
                 // Drawing too much to keep up with, or ended, it has drawn
                 // all the same.
@@ -963,7 +1026,9 @@ impl Terminal {
             })
             .await;
         }
-        writing.resize(size_of(size)).map_err(io::Error::other)
+        writing.resize(size_of(size)).map_err(io::Error::other)?;
+        self.tells_size();
+        Ok(())
     }
 }
 
@@ -1315,8 +1380,9 @@ trait Again: Send + 'static {
 #[cfg(not(target_os = "macos"))]
 mod kept {
     use std::io;
+    use std::os::fd::AsFd;
 
-    use super::{Again, Size, size_of};
+    use super::{Again, Size, on_end, size_of};
 
     /// The terminal's child end, open for as long as the holder holds it.
     pub(super) struct ChildEnd {
@@ -1337,10 +1403,10 @@ mod kept {
         /// closed, keeps from the last start.
         pub(super) fn start(
             &self,
-            mut command: pty_process::Command,
+            command: tokio::process::Command,
             _size: Size,
         ) -> io::Result<tokio::process::Child> {
-            command.spawn_borrowed(&self.pts).map_err(io::Error::other)
+            on_end(command, self.pts.as_fd())
         }
     }
 
@@ -1364,10 +1430,11 @@ mod kept {
 #[cfg(target_os = "macos")]
 mod reopened {
     use std::io;
+    use std::os::fd::AsFd;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use super::{Again, Size, size_of};
+    use super::{Again, Size, on_end, size_of};
 
     /// The terminal's child end by its name, opened anew at each start.
     pub(super) struct ChildEnd {
@@ -1397,7 +1464,7 @@ mod reopened {
         /// forgets a terminal's size once nothing holds its child end.
         pub(super) fn start(
             &self,
-            command: pty_process::Command,
+            command: tokio::process::Command,
             size: Size,
         ) -> io::Result<tokio::process::Child> {
             use rustix::fs::{Mode, OFlags};
@@ -1412,15 +1479,9 @@ mod reopened {
                     ws_ypixel: 0,
                 },
             )?;
-            // SAFETY: `opened` was just opened by this terminal's child end's
-            // own name, so it is valid, open and the child end of a pty, as
-            // `from_fd` asks.
-            #[expect(
-                unsafe_code,
-                reason = "pty-process makes a Pts of an end opened again only by from_fd"
-            )]
-            let pts = unsafe { pty_process::Pts::from_fd(opened) };
-            let child = command.spawn(pts).map_err(io::Error::other)?;
+            // The program holds its own copies, so this one goes once it
+            // has started, as the end then closes with the program.
+            let child = on_end(command, opened.as_fd())?;
             self.starts.started.notify_one();
             Ok(child)
         }
@@ -1626,6 +1687,13 @@ mod tests {
         rows: 30,
         cols: 100,
     };
+
+    /// A program that says "42 set", then its size each time it is told
+    /// of a new one, as a program drawing a window does.
+    const TOLD_ITS_SIZE: &str = concat!(
+        "sh -c 'trap \"stty size\" WINCH; echo $((6 * 7)) set; ",
+        "while :; do sleep 0.05; done'\r",
+    );
 
     /// A terminal joined to a holder: what it types, and what it shows.
     struct Joined {
@@ -1879,6 +1947,7 @@ mod tests {
             size: Mutex::new(WINDOW),
             drawn,
             parked: watch::Sender::new(false),
+            running: AtomicU32::new(0),
         };
         let dir = tempfile::tempdir().expect("a temporary folder");
         // Parked before a window is told, the key it types once told, before
@@ -1949,6 +2018,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_held_program_has_no_terminal_of_its_own_and_is_still_told_a_new_size() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        // Only a process a terminal controls can open /dev/tty, and only
+        // such a terminal can be written to over what the program draws.
+        // A shell isn't held: on Linux, bash leading its own session takes
+        // the terminal as it starts, even with -c, where a Mac gives a
+        // terminal only to one that asks. So awk leads, waiting for a line,
+        // since what it shows before a window joins is never shown to it,
+        // and then starts the shell that is told a new size, which leads
+        // no session and so can take no terminal.
+        let program = concat!(
+            "BEGIN { getline go; ",
+            "if ((getline line < \"/dev/tty\") < 0) print \"none\", 6 * 7; ",
+            "else print \"its own\"; fflush(); ",
+            "system(\"trap 'stty size' WINCH; echo $((6 * 7)) set; ",
+            "while :; do sleep 0.05; done\") }",
+        );
+        let command = ["awk", program].map(str::to_owned).to_vec();
+        let (dir, held, _holder) =
+            holding_in(root.path(), Vec::new(), Given(Vec::new()), command, None).await;
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        window.types("go\n").await;
+        window.sees("none 42").await;
+        // With no terminal of its own to say so, the holder tells it.
+        window.sees("42 set").await;
+        window
+            .sizes
+            .send(Size {
+                rows: 40,
+                cols: 120,
+            })
+            .expect("a new size is told");
+        window.sees("40 120").await;
+    }
+
+    #[tokio::test]
     async fn a_program_joined_at_the_size_it_has_is_told_its_size_changed() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, _holder) = holding_sh(root.path()).await;
@@ -1958,9 +2063,7 @@ mod tests {
         // program busy drawing reads it after its frame. A shell of its
         // own keeps no job control, so its sleeps share its group and the
         // terminal's word of a new size reaches it every time.
-        first
-            .types("sh -c 'trap \"stty size\" WINCH; echo $((6 * 7)) set; while :; do sleep 0.05; done'\r")
-            .await;
+        first.types(TOLD_ITS_SIZE).await;
         first.sees("42 set").await;
         first.task.abort();
         let _ = first.task.await;
