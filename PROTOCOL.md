@@ -662,10 +662,12 @@ reads it:
   said on stderr: `refused` when the quest couldn't be shared or the
   machine is this one, `no-link` when no link has reached the machine
   for 5 seconds, `not-shared` when its node hasn't said it shares the
-  quest within 30 seconds of a link reaching it (too old to share one,
-  or too busy to say yet), and `behind` when it
-  still lacks a file at the bound. An end older than `theirs` never says
-  it took a file, so a wait for it ends `behind`.
+  quest within 30 seconds of the link standing now reaching it, or by
+  the bound when that is shorter (too old to share one, or too busy to
+  say yet), and `behind` when it says it shares the quest but still
+  lacks a file at the bound. An end older than `theirs` says it shares
+  the quest but never that it took a file, so a wait for it ends
+  `behind`.
 
 ## Carrying a Quest
 

@@ -222,7 +222,9 @@ pub fn reach(
         .scratch
         .into_iter()
         .collect();
-    // When a link last didn't reach `to`, and when one first did.
+    // When a link last didn't reach `to`, and when the link standing now
+    // first did, so a node whose link drops and comes back is given its
+    // whole time again.
     let mut unlinked_since = None;
     let mut linked_since = None;
     loop {
@@ -250,6 +252,7 @@ pub fn reach(
             unlinked_since = None;
             linked_since.get_or_insert(waited);
         } else {
+            linked_since = None;
             unlinked_since.get_or_insert(waited);
         }
         let past = |since: Option<Duration>, bound: Duration| {
@@ -259,11 +262,16 @@ pub fn reach(
             let why = format!("no link reaches {to} from {machine}, so {quest} can't reach it");
             return Ok(reached(Some(Reason::NoLink), Some(why)));
         }
-        if theirs.is_none() && past(linked_since, HOLDS_SAID_WITHIN) {
+        // A node that has never said it holds the quest by the bound, a
+        // short one included, hasn't taken it up, whatever it lacks.
+        if theirs.is_none()
+            && let Some(since) = linked_since
+            && (past(linked_since, HOLDS_SAID_WITHIN) || waited >= within)
+        {
             let why = format!(
                 "{to}'s node hasn't said it holds {quest} within {} s of its link: it may \
                  be too old to share one, or too busy to say yet",
-                HOLDS_SAID_WITHIN.min(within).as_secs()
+                waited.saturating_sub(since).as_secs()
             );
             return Ok(reached(Some(Reason::NotShared), Some(why)));
         }
@@ -510,17 +518,19 @@ mod tests {
 
     /// A clock that moves on `step` at each pause, with a link to skiff
     /// or not, to a worker or not, doing `between` at each pause.
+    /// while the link drops for the times in `down`.
     struct Clock<F: FnMut(Duration)> {
         at: Duration,
         step: Duration,
         linked: bool,
+        down: std::ops::Range<Duration>,
         worker: bool,
         between: F,
     }
 
     impl<F: FnMut(Duration)> Watching for Clock<F> {
         fn linked(&mut self, machine: &str) -> bool {
-            self.linked && machine == "skiff"
+            self.linked && !self.down.contains(&self.at) && machine == "skiff"
         }
 
         fn withholds_above(&mut self, _machine: &str) -> bool {
@@ -542,6 +552,7 @@ mod tests {
             at: Duration::ZERO,
             step: Duration::from_secs(1),
             linked,
+            down: Duration::ZERO..Duration::ZERO,
             worker: false,
             between: |_| {},
         }
@@ -655,6 +666,7 @@ mod tests {
             at: Duration::ZERO,
             step: Duration::from_secs(1),
             linked: true,
+            down: Duration::ZERO..Duration::ZERO,
             worker: false,
             between: |at: Duration| {
                 if at == Duration::from_secs(3) {
@@ -694,7 +706,7 @@ mod tests {
 
     /// A worker still taking the quest in, holding none of its files as
     /// kestrel does, is waited for as behind, not read as a machine that
-    /// never took the quest up once its link has stood a few seconds.
+    /// never took the quest up once its link has stood half a minute.
     #[test]
     fn a_worker_holding_none_yet_is_waited_for_as_behind() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -748,7 +760,7 @@ mod tests {
     }
 
     #[test]
-    fn no_link_or_a_quest_not_taken_up_is_said_within_seconds() {
+    fn no_link_is_said_within_seconds_and_a_quest_not_taken_up_within_half_a_minute() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let places = kestrel(dir.path());
         let reached = reach(
@@ -776,8 +788,7 @@ mod tests {
         .expect("waited");
         assert_eq!(reached.reason, Some(Reason::NotShared), "{reached:?}");
         assert!(
-            reached.waited >= HOLDS_SAID_WITHIN.as_secs_f64()
-                && reached.waited <= HOLDS_SAID_WITHIN.as_secs_f64() + 1.0,
+            (reached.waited - HOLDS_SAID_WITHIN.as_secs_f64()).abs() < f64::EPSILON,
             "a linked node is given its half minute to say, and no more: {reached:?}"
         );
         assert_eq!(
@@ -786,6 +797,67 @@ mod tests {
                 "skiff's node hasn't said it holds QEST-20261115-5XF89V within 30 s of its \
                  link: it may be too old to share one, or too busy to say yet"
             )
+        );
+    }
+
+    #[test]
+    fn a_wait_shorter_than_half_a_minute_still_says_a_quest_not_taken_up() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let places = kestrel(dir.path());
+        let mut watching = clock(true);
+        // The link first stands a second in, so the bound is reached
+        // before the link has stood the whole of it.
+        watching.down = Duration::ZERO..Duration::from_secs(1);
+        let reached = reach(
+            &places,
+            QUEST,
+            ("kestrel", "skiff"),
+            Duration::from_secs(10),
+            &mut watching,
+        )
+        .expect("waited");
+        assert_eq!(reached.reason, Some(Reason::NotShared), "{reached:?}");
+        assert!((reached.waited - 10.0).abs() < f64::EPSILON, "{reached:?}");
+    }
+
+    #[test]
+    fn a_slow_node_answering_inside_half_a_minute_holds_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let places = kestrel(dir.path());
+        let here = holds_here(&places, QUEST, "kestrel").expect("read");
+        let mut watching = Clock {
+            at: Duration::ZERO,
+            step: Duration::from_secs(1),
+            linked: true,
+            down: Duration::ZERO..Duration::ZERO,
+            worker: false,
+            between: |at: Duration| {
+                if at == Duration::from_secs(20) {
+                    says_skiff_holds(&places, here.clone());
+                }
+            },
+        };
+        let reached =
+            reach(&places, QUEST, ("kestrel", "skiff"), WITHIN, &mut watching).expect("waited");
+        assert!(
+            reached.held,
+            "a node slow past five seconds holds it: {reached:?}"
+        );
+        assert!((reached.waited - 20.0).abs() < f64::EPSILON, "{reached:?}");
+    }
+
+    #[test]
+    fn a_link_that_drops_and_comes_back_is_given_its_half_minute_again() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let places = kestrel(dir.path());
+        let mut watching = clock(true);
+        watching.down = Duration::from_secs(20)..Duration::from_secs(22);
+        let reached =
+            reach(&places, QUEST, ("kestrel", "skiff"), WITHIN, &mut watching).expect("waited");
+        assert_eq!(reached.reason, Some(Reason::NotShared), "{reached:?}");
+        assert!(
+            (reached.waited - 52.0).abs() < f64::EPSILON,
+            "half a minute from the link standing now, at 22 s: {reached:?}"
         );
     }
 }
