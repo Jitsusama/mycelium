@@ -24,10 +24,15 @@ use crate::client::Client;
 use crate::facts::Readiness;
 use crate::wire::{Request, Response};
 
-/// How long a wait gives a link to reach the machine, and the machine to
-/// take the quest up once one does, before saying which it lacks: a link
-/// looks once a second, so a few seconds is ample.
+/// How long a wait gives a link to reach the machine before saying none
+/// does: a link looks once a second, so a few seconds is ample.
 pub const SAYS_WITHIN: Duration = Duration::from_secs(5);
+
+/// How long a wait gives a linked machine to say it holds the quest
+/// before saying it hasn't. Its node takes the share up and answers in
+/// its own time, and a Mac at a load of 56 was past five seconds when it
+/// had only been slow, so a busy node is given half a minute.
+pub const HOLDS_SAID_WITHIN: Duration = Duration::from_secs(30);
 
 /// How long a wait gives the machine to hold the quest unless told.
 pub const WITHIN: Duration = Duration::from_secs(120);
@@ -196,8 +201,9 @@ pub fn lacking(here: &BTreeMap<String, State>, there: &BTreeMap<String, State>) 
 }
 
 /// Waits, as long as `within`, for `quest`, shared from `machine`, to
-/// reach `to`, saying so within [`SAYS_WITHIN`] when no link reaches it
-/// or it doesn't take the quest up. The READMEs of the quests above it
+/// reach `to`, saying so within [`SAYS_WITHIN`] when no link reaches it,
+/// or within [`HOLDS_SAID_WITHIN`] when it doesn't say it took the quest
+/// up. The READMEs of the quests above it
 /// are waited for only while the link serves them to `to`, so a worker,
 /// served the quest alone, holds it once it holds the quest's own files.
 pub fn reach(
@@ -253,11 +259,11 @@ pub fn reach(
             let why = format!("no link reaches {to} from {machine}, so {quest} can't reach it");
             return Ok(reached(Some(Reason::NoLink), Some(why)));
         }
-        if theirs.is_none() && past(linked_since, SAYS_WITHIN) {
+        if theirs.is_none() && past(linked_since, HOLDS_SAID_WITHIN) {
             let why = format!(
-                "{to}'s node hasn't said it holds {quest} within {} s of its link, as a \
-                 node too old to share it wouldn't",
-                SAYS_WITHIN.min(within).as_secs()
+                "{to}'s node hasn't said it holds {quest} within {} s of its link: it may \
+                 be too old to share one, or too busy to say yet",
+                HOLDS_SAID_WITHIN.min(within).as_secs()
             );
             return Ok(reached(Some(Reason::NotShared), Some(why)));
         }
@@ -769,12 +775,16 @@ mod tests {
         )
         .expect("waited");
         assert_eq!(reached.reason, Some(Reason::NotShared), "{reached:?}");
-        assert!(reached.waited <= SAYS_WITHIN.as_secs_f64(), "{reached:?}");
+        assert!(
+            reached.waited >= HOLDS_SAID_WITHIN.as_secs_f64()
+                && reached.waited <= HOLDS_SAID_WITHIN.as_secs_f64() + 1.0,
+            "a linked node is given its half minute to say, and no more: {reached:?}"
+        );
         assert_eq!(
             reached.why.as_deref(),
             Some(
-                "skiff's node hasn't said it holds QEST-20261115-5XF89V within 5 s of its \
-                 link, as a node too old to share it wouldn't"
+                "skiff's node hasn't said it holds QEST-20261115-5XF89V within 30 s of its \
+                 link: it may be too old to share one, or too busy to say yet"
             )
         );
     }
