@@ -401,13 +401,8 @@ impl Logs {
     /// another session, or where it continues none.
     #[must_use]
     pub fn continues(&self, session: &str) -> Option<String> {
-        let mut first = String::new();
-        io::BufRead::read_line(
-            &mut io::BufReader::new(fs::File::open(self.found.get(session)?).ok()?),
-            &mut first,
-        )
-        .ok()?;
-        let header: serde_json::Value = serde_json::from_str(&first).ok()?;
+        let header: serde_json::Value =
+            serde_json::from_str(&first_line(self.found.get(session)?)?).ok()?;
         (header.get("id")?.as_str()? == session)
             .then(|| header.get("parentSession")?.as_str().map(parent_of))
             .flatten()
@@ -422,6 +417,32 @@ impl Logs {
             .filter_map(|session| Some(((*session).to_owned(), self.continues(session)?)))
             .collect()
     }
+}
+
+/// The most of a log's first line read: pi's header is a few hundred
+/// bytes, so one longer is no header, and isn't read on.
+const FIRST_LINE_MOST: u64 = 64 * 1024;
+
+/// The first line of the log at `path`, up to [`FIRST_LINE_MOST`] bytes.
+/// None where it isn't a plain file or can't be read: it is opened
+/// without waiting, so a FIFO named as a log never holds the node for a
+/// writer, and a device is never read from.
+fn first_line(path: &Path) -> Option<String> {
+    use io::{BufRead as _, Read as _};
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let log = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open(path)
+        .ok()?;
+    if !log.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut first = String::new();
+    io::BufReader::new(log.take(FIRST_LINE_MOST))
+        .read_line(&mut first)
+        .ok()?;
+    Some(first)
 }
 
 /// The session a log file named `name` holds, as pi names it:
@@ -1038,6 +1059,57 @@ mod tests {
                 .continues("01a1667f-f5bc-7ba6-9290-033e899fff34"),
             Some("01a12d21-3813-76ee-b875-6702b23f353a".to_owned()),
             "the session the parent's log file is named for"
+        );
+    }
+
+    #[test]
+    fn a_parent_path_not_named_as_pi_names_a_log_is_taken_whole() {
+        let logs = tempfile::tempdir().expect("a temporary folder");
+        let folder = logs.path().join("--home-joel-src-mycelium--");
+        fs::create_dir_all(&folder).expect("made");
+        fs::write(
+            folder.join("2026-11-15T15-23-41-665Z_s-weigh-2.jsonl"),
+            "{\"id\":\"s-weigh-2\",\"parentSession\":\"/home/joel/notes/s-weigh.json\"}\n",
+        )
+        .expect("written");
+        assert_eq!(
+            Logs::scan(logs.path())
+                .expect("scanned")
+                .continues("s-weigh-2"),
+            Some("/home/joel/notes/s-weigh.json".to_owned()),
+            "a file name that isn't <time>_<id>.jsonl names no session, so the whole is kept"
+        );
+    }
+
+    #[test]
+    fn a_log_that_is_no_plain_file_or_no_header_continues_none() {
+        let logs = tempfile::tempdir().expect("a temporary folder");
+        let folder = logs.path().join("--home-joel-src-mycelium--");
+        fs::create_dir_all(&folder).expect("made");
+        let made = std::process::Command::new("mkfifo")
+            .arg(folder.join("2026-11-15T15-23-41-665Z_s-fifo.jsonl"))
+            .status()
+            .expect("mkfifo runs");
+        assert!(made.success(), "the FIFO is made");
+        let long = format!(
+            "{{\"id\":\"s-long\",\"parentSession\":\"s-weigh\",\"pad\":\"{}\"}}\n",
+            "x".repeat(usize::try_from(super::FIRST_LINE_MOST).expect("a size"))
+        );
+        fs::write(folder.join("2026-11-15T15-23-41-665Z_s-long.jsonl"), long).expect("written");
+        let found = Logs::scan(logs.path()).expect("scanned");
+        // Read off the test's thread, so a read that waits for a writer
+        // fails the test in time rather than hanging it.
+        let (told, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            told.send((found.continues("s-fifo"), found.continues("s-long")))
+                .expect("the test waits");
+        });
+        assert_eq!(
+            heard
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("a FIFO among the logs never holds the read"),
+            (None, None),
+            "a FIFO is never read, and a first line past the most is no header"
         );
     }
 
