@@ -8342,7 +8342,7 @@ impl<S: Store> Shared<S> {
             // A machine made for the person is theirs, a peer as any
             // machine of the realm is; one an agent's make asked for is a
             // worker, so no agent makes a peer for itself.
-            worker: made.asker.as_deref() != Some(crate::made::PERSON),
+            worker: made.asker.as_deref() != Some(made::PERSON),
         })
     }
 
@@ -24208,9 +24208,9 @@ esac
         );
         let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
         for (asker, worker) in [
-            (Some(crate::made::PERSON), false),
+            (Some(made::PERSON), false),
             (Some("P9R1KI"), true),
-            (Some(crate::made::UNKNOWN), true),
+            (Some(made::UNKNOWN), true),
             (None, true),
         ] {
             let mut made = made_by("/nowhere/lend", "kestrel", later);
