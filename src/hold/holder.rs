@@ -54,9 +54,10 @@ pub const PARKED: i32 = 75;
 
 /// The exit code a held program ends with when it quit though nobody
 /// asked it to, as a pi whose own code gave up does: just past sysexits'
-/// range, so it is never a tool's own. Its holder starts it again at
-/// once, as for a restart, rather than ending its hold and taking its
-/// window with it, up to [`UNASKED_MOST`] times within [`UNASKED_WITHIN`].
+/// range, where few tools exit. Its holder starts it again at once, as
+/// for a restart, rather than ending its hold and taking its window with
+/// it, up to [`UNASKED_MOST`] times within [`UNASKED_WITHIN`], then parks
+/// it.
 pub const UNASKED: i32 = 79;
 
 /// The signal a held pi dies by when it quit though nobody asked it to
@@ -70,9 +71,9 @@ fn ended_unasked(status: ExitStatus) -> bool {
     status.code() == Some(UNASKED) || status.signal() == Some(UNASKED_SIGNAL)
 }
 
-/// How many unasked quits in a row within [`UNASKED_WITHIN`] are started
-/// again; one more ends the hold, so a program that quits as it starts
-/// can't start forever.
+/// How many unasked quits within [`UNASKED_WITHIN`] of the newest are
+/// started again, whatever ran between them; one more parks it, so a
+/// program that quits as it starts can't start forever.
 const UNASKED_MOST: usize = 3;
 
 /// How close together unasked quits count toward [`UNASKED_MOST`].
@@ -663,26 +664,22 @@ pub async fn hold(
             if telling || (!gone && !parking && !quit_unasked) {
                 break status;
             }
-            if quit_unasked && quits_too_often(&mut unasked, Instant::now()) {
-                // Said on the node's log, beside the journal's word on
-                // each run, since the window ends as on any exit.
-                eprintln!(
-                    "mycelium: {} quit unasked {} times within {} s, so its hold ends",
-                    holding.id,
-                    UNASKED_MOST + 1,
-                    UNASKED_WITHIN.as_secs(),
-                );
-                break status;
-            }
+            // One quitting as it starts is parked, saying why, rather than
+            // started again forever; its window stays, so the person sees
+            // it and a key tries again.
+            let too_often = quit_unasked && quits_too_often(&mut unasked, Instant::now());
             gone_runs = gone_runs_after(gone_runs, gone, began.elapsed());
             // Its wake file is taken either way, so none is left to read a
             // later park as a restart.
-            let mut restarting = !gone && (restarting(&files.waking) || quit_unasked);
+            let mut restarting =
+                !gone && (restarting(&files.waking) || (quit_unasked && !too_often));
             // Parked before any window is told so, so a key typed the
             // moment it is told wakes it rather than going to no program.
             let mut parked = (!restarting).then(|| terminal.parks());
             if let Some(how) = how {
                 away(&record, &shown, how);
+            } else if too_often && !restarting {
+                parks(&record, &shown, &unasked_line());
             } else if !restarting {
                 parks(&record, &shown, PARKED_LINE);
             }
@@ -893,6 +890,18 @@ fn unstarted(error: &io::Error) -> Vec<u8> {
 /// joined window, each asked to say when it comes in front, which wakes
 /// the program as a key does. A window joining while it's parked is
 /// asked as it's given the modes.
+/// What a window is told as a program that quit unasked too often is
+/// parked rather than started again.
+fn unasked_line() -> Vec<u8> {
+    format!(
+        "\r\nIt quit unasked {} times within {} s, so it's parked. A key or a message \
+         starts it again.\r\n",
+        UNASKED_MOST + 1,
+        UNASKED_WITHIN.as_secs(),
+    )
+    .into_bytes()
+}
+
 fn parks(record: &Record, shown: &Shown, line: &[u8]) {
     record.parks();
     shown.show(&[FOCUS_ON, line].concat());
@@ -2205,8 +2214,25 @@ mod tests {
     async fn a_programs_copy_reaches_every_joined_window_as_it_asked() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, _holder) = holding_sh(root.path()).await;
-        let mut typing = Joined::join(socket(&dir, &held.id), WINDOW, None);
-        let mut watching = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        let (_listing, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let kitty = |id: &str| {
+            Some(Window {
+                terminal: "kitty".to_owned(),
+                id: id.to_owned(),
+                within: None,
+                app_id: None,
+            })
+        };
+        let mut typing = Joined::join(socket(&dir, &held.id), WINDOW, kitty("21"));
+        let mut watching = Joined::join(socket(&dir, &held.id), WINDOW, kitty("22"));
+        // Joining replays nothing, so the copy waits for both to be joined.
+        let both = tokio::time::timeout(PATIENCE, async {
+            while listed(&dir).first().map_or(0, |one| one.windows.len()) < 2 {
+                changes.recv().await;
+            }
+        })
+        .await;
+        assert!(both.is_ok(), "both windows are joined");
         // Spelt out as typed, so only the program's own output asks it.
         typing
             .types("printf '\\033]52;c;%s\\007' \"$(printf copied | base64)\"\r")
@@ -2368,6 +2394,25 @@ mod tests {
 
     // 85PKB2 and KP0L6A (2026-11-25): a pi that quit though nobody asked
     // it to took its window with it, and the person found it closed.
+    /// Waits until what is listed in `dir` runs a process other than
+    /// `before`, unparked, answering its pid: typed sooner, a key would
+    /// go into the gap between runs, which a Mac's terminal may drop.
+    async fn runs_anew(dir: &Path, changes: &mut mpsc::UnboundedReceiver<()>, before: u32) -> u32 {
+        let found = tokio::time::timeout(PATIENCE, async {
+            loop {
+                let anew = listed(dir)
+                    .into_iter()
+                    .find(|one| !one.parked && one.pid != 0 && one.pid != before);
+                if let Some(one) = anew {
+                    return one.pid;
+                }
+                changes.recv().await;
+            }
+        })
+        .await;
+        found.unwrap_or_else(|_| panic!("nothing ran again after {before}"))
+    }
+
     #[tokio::test]
     async fn a_program_quitting_unasked_starts_again_in_its_window() {
         let root = tempfile::tempdir().expect("a temporary folder");
@@ -2376,44 +2421,48 @@ mod tests {
         let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
         window.types("echo first $((40 + 2)); exit 79\r").await;
         window.sees("first 42").await;
+        let second = runs_anew(&dir, &mut changes, held.pid).await;
         // As a pi whose name lookup held its exit dies, by its own signal.
         window.types("echo then $((60 + 6)); kill -USR2 $$\r").await;
         window.sees("then 66").await;
+        runs_anew(&dir, &mut changes, second).await;
         window.types("echo again $((50 + 5))\r").await;
         window.sees("again 55").await;
-        let anew = tokio::time::timeout(PATIENCE, async {
-            while !listed(&dir)
-                .iter()
-                .any(|one| !one.parked && one.pid != 0 && one.pid != held.pid)
-            {
-                changes.recv().await;
-            }
-        })
-        .await;
-        assert!(anew.is_ok(), "it runs again as a new process");
         assert!(
-            !window.seen.contains("Parked"),
+            !window.seen.contains("Parked") && !window.seen.contains("parked"),
             "it is never shown as parked: {:?}",
             window.seen
         );
     }
 
     #[tokio::test]
-    async fn a_program_quitting_unasked_too_often_ends_its_hold() {
+    async fn a_program_quitting_unasked_too_often_is_parked_saying_why() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, holder) = holding_sh(root.path()).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
         let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
-        for run in 1..=UNASKED_MOST + 1 {
+        let mut pid = held.pid;
+        for run in 1..=UNASKED_MOST {
             window
                 .types(&format!("echo run $(({run} * 11)); exit 79\r"))
                 .await;
             window.sees(&format!("run {}", run * 11)).await;
+            pid = runs_anew(&dir, &mut changes, pid).await;
         }
-        assert_eq!(
-            exited(holder).await,
-            Some(UNASKED),
-            "one more quit than it starts again within a minute ends it"
-        );
+        window.types("echo last $((4 * 11)); exit 79\r").await;
+        window.sees("last 44").await;
+        window
+            .sees("quit unasked 4 times within 60 s, so it's parked")
+            .await;
+        let parked = listed_parked(&dir, &mut changes, true).await;
+        assert_eq!(parked.pid, 0, "one more quit within a minute parks it");
+
+        // Its window stayed, so a key starts it again, as any park's.
+        window.types("x").await;
+        runs_anew(&dir, &mut changes, pid).await;
+        window.types("echo woken $((6 * 7)); exit 3\r").await;
+        window.sees("woken 42").await;
+        assert_eq!(exited(holder).await, Some(3), "a release still ends it");
     }
 
     #[test]
@@ -3570,8 +3619,7 @@ mod tests {
 
         // Told as its service manager tells it, which tells only the
         // holder here, this test's own process.
-        kill_process(rustix::process::getpid(), rustix::process::Signal::TERM)
-            .expect("the holder is told to end");
+        kill_process(rustix::process::getpid(), Signal::TERM).expect("the holder is told to end");
         joined.sees("saved").await;
         let ended = tokio::time::timeout(PATIENCE, holder)
             .await

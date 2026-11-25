@@ -105,9 +105,10 @@ pub enum Scope {
 }
 
 impl Scope {
-    /// The scope for a hold from a terminal: beside its slice where a user
-    /// service manager answers in `runtime`, the user's runtime folder,
-    /// and none otherwise, as on a Mac.
+    /// The scope for a hold from a terminal: one of its own in the agents'
+    /// slice where a user service manager answers in `runtime`, the
+    /// user's runtime folder, and none otherwise, as on a Mac. Its name
+    /// is from when it went beside the terminal's own slice.
     #[must_use]
     pub fn of_a_terminal(runtime: Option<&Path>) -> Self {
         let managed = runtime.is_some_and(|runtime| runtime.join("systemd/private").exists());
