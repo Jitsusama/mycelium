@@ -22,6 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 
 use super::{address, title, unmarked};
+use crate::forage::BRAILLE_BLANK;
 
 /// The small words that name nothing, which a short name never holds.
 const SMALL: [&str; 38] = [
@@ -131,9 +132,19 @@ fn short(title: &str, shared: &dyn Fn(&str) -> bool) -> Option<String> {
     (!leading.is_empty()).then(|| leading.join("-"))
 }
 
-/// The name `team`'s quest gives it in the swarm, as it's typed.
+/// The name `team`'s quest gives it in the swarm, as it's typed: in lower
+/// case, with each run of spaces or braille blanks one hyphen, as a typed
+/// name's words are joined. So what a page draws is what reaches it:
+/// `tide plan` drawn as said would be typed as `tide-plan`, another
+/// team's, and a braille blank drawn like a space would let `reef pause`
+/// through as one word.
 fn given(team: &Value) -> Option<String> {
-    let name = team.get("swarm")?.as_str()?.trim().to_lowercase();
+    let said = team.get("swarm")?.as_str()?.to_lowercase();
+    let name = said
+        .split(|each: char| each.is_whitespace() || each == BRAILLE_BLANK)
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
     (!name.is_empty()).then_some(name)
 }
 
@@ -162,7 +173,9 @@ pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
             }
             Some((me, short(title(team), &shared)?)).filter(|(_, name)| !chosen.contains(name))
         })
-        .filter(|(_, name)| !acts_for(name))
+        // One that cleans to nothing would be drawn blank, and offered to
+        // a shell as an empty word.
+        .filter(|(_, name)| !acts_for(name) && !unmarked(name).is_empty())
         .collect();
     named
         .iter()
