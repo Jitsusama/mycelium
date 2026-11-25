@@ -1229,6 +1229,64 @@ pub fn may_say(asker: Option<i32>, processes: &Processes, said: &Value) -> Resul
     }
 }
 
+/// Whether process `asker`, by its id and its start in clock ticks since
+/// boot as read when the node took its connection, is `session`'s own pi,
+/// as `owners` prove it from `claims`, with no pi, pi host or pi-spawner
+/// among its forebears, so a typed answer's token may be minted to it
+/// (PROTOCOL.md's A Typed Answer) and a pi a command started never gets
+/// one. A hosted session's own process is its host, whose word counts
+/// only where [`Processes::takes_word_of`] says. Only a machine whose
+/// process folder the node reads proves it, so a Mac's node, or one run
+/// unattended, mints none.
+///
+/// # Errors
+///
+/// Where any of that doesn't hold, or can't be read, saying which.
+pub fn may_mint(
+    asker: (i32, u64),
+    session: &str,
+    owners: &[(String, i32)],
+    claims: &[Claim],
+    processes: &Processes,
+) -> Result<(), String> {
+    let Processes::Folder(procs) = processes else {
+        return Err(
+            "this machine can't prove whose pi asks, so it mints no typed answer".to_owned(),
+        );
+    };
+    let Some(&(_, pid)) = owners.iter().find(|(owned, _)| owned == session) else {
+        return Err(format!(
+            "who owns {session} can't be proved here, so no typed answer is minted for it"
+        ));
+    };
+    let claim = claims.iter().find(|claim| claim.session == session);
+    if pid != asker.0 || claim.and_then(|claim| claim.start_ticks) != Some(asker.1) {
+        return Err(format!(
+            "this asks from a process other than {session}'s own pi, so no typed answer is \
+             minted"
+        ));
+    }
+    if claim.is_some_and(|claim| claim.host.is_some()) && !processes.takes_word_of(pid) {
+        return Err(format!(
+            "{session}'s pi host's word isn't taken here, so no typed answer is minted"
+        ));
+    }
+    let unread =
+        || "a process above the one asking can't be read, so no typed answer is minted".to_owned();
+    for forebear in processes.lineage(pid).into_iter().skip(1) {
+        let status = fs::read_to_string(procs.join(forebear.to_string()).join("status"))
+            .map_err(|_| unread())?;
+        let (name, _) = named(&status).ok_or_else(unread)?;
+        if [PI, PI_HOST, SPAWNER].contains(&name) {
+            return Err(format!(
+                "a {name} runs above the one asking, so a pi a command started mints no typed \
+                 answer"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Whether process `asker` is the person's own login, as `processes` tell
 /// it, as only the person frees a quest an orchestrator holds or carries
 /// a quest in one act: what it may then `do`, as a person says it.
@@ -3041,6 +3099,71 @@ mod tests {
             Ok(owned(&[("s-own", 58)])),
             "a process started later under an old id, or one that says no start or is gone, \
              owns nothing"
+        );
+    }
+
+    #[test]
+    fn a_typed_answer_is_minted_only_to_its_sessions_own_pi_with_none_above_it() {
+        // 58 is a pi the person typed in, under their shell and terminal;
+        // 70 a pi one of 58's commands started; 75 one below a spawner;
+        // 80 a hosted session's host, its word not taken while tracing
+        // is open.
+        let procs = procs(&[
+            (40, "kitty", 1, "app.slice/kitty.scope"),
+            (41, "zsh", 40, "app.slice/kitty.scope"),
+            (58, "pi", 41, "agents.slice/mycelium-pi-f3d9.scope"),
+            (69, "bash", 58, "agents.slice/mycelium-pi-f3d9.scope"),
+            (70, "pi", 69, "agents.slice/mycelium-pi-f3d9.scope"),
+            (74, "pi-spawner", 1, "app.slice/x.scope"),
+            (75, "pi", 74, "app.slice/x.scope"),
+            (80, "node", 1, "agents.slice/pi-host-a1.service"),
+        ]);
+        for (pid, name, ticks) in [(58, "pi", 500), (70, "pi", 900), (75, "pi", 950)] {
+            started(procs.path(), pid, name, ticks);
+        }
+        started(procs.path(), 80, "node", 300);
+        traced_by_forebears(procs.path(), "0");
+        let claims = [
+            claim("s-own", 58, Some(500), None),
+            claim("s-nested", 70, Some(900), None),
+            claim("s-spawned", 75, Some(950), None),
+            claim("s-hosted", 80, Some(300), Some("host-a1")),
+        ];
+        let owners = owned(&[
+            ("s-own", 58),
+            ("s-nested", 70),
+            ("s-spawned", 75),
+            ("s-hosted", 80),
+        ]);
+        let here = folder(procs.path());
+        let mint = |asker, session, processes: &Processes| {
+            may_mint(asker, session, &owners, &claims, processes)
+        };
+        assert_eq!(mint((58, 500), "s-own", &here), Ok(()));
+        let refused = |asker, session, processes: &Processes, says: &str| {
+            let minted = mint(asker, session, processes);
+            assert!(
+                minted.as_ref().is_err_and(|why| why.contains(says)),
+                "{session} by {asker:?}: {minted:?}"
+            );
+        };
+        refused((70, 900), "s-nested", &here, "a pi runs above");
+        refused((75, 950), "s-spawned", &here, "a pi-spawner runs above");
+        refused((58, 501), "s-own", &here, "other than s-own's own pi");
+        refused((70, 900), "s-own", &here, "other than s-own's own pi");
+        refused((58, 500), "s-unproved", &here, "can't be proved");
+        refused((80, 300), "s-hosted", &here, "host's word isn't taken");
+        refused(
+            (58, 500),
+            "s-own",
+            &Processes::Listed,
+            "can't prove whose pi",
+        );
+        refused(
+            (58, 500),
+            "s-own",
+            &here.clone().unattended(),
+            "can't prove whose pi",
         );
     }
 

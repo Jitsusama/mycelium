@@ -92,6 +92,7 @@ pub use tie::{
     records as tie_records, talk,
 };
 mod turns;
+mod typed;
 mod worker;
 pub use worker::Worker;
 
@@ -843,6 +844,10 @@ pub struct Given {
     /// The gates this machine answers for the workers it names, the one
     /// start a worker may ask of it, if it answers any (`gate`).
     pub gates: Option<Arc<crate::gate::Gates>>,
+    /// Where each typed answer's mint, spend and refusal is kept, if the
+    /// node mints any (`typed`): none where it runs with
+    /// `--no-typed-answers`, so every mint and token is refused.
+    pub typed_answers: Option<PathBuf>,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -1814,6 +1819,8 @@ struct Shared<S> {
     lender: Option<Arc<crate::lend::lender::Lender>>,
     /// The gates this machine answers its workers, if it answers any.
     gates: Option<Arc<crate::gate::Gates>>,
+    /// The typed answers' tokens standing, if the node mints any.
+    typed: Option<Arc<typed::Typed>>,
     /// The ids of the signals this node said as its receptors this run,
     /// the only messages from a receptor's name it takes (`signals`).
     spoken: Arc<Mutex<HashSet<String>>>,
@@ -1983,6 +1990,7 @@ impl<S: Clone> Clone for Shared<S> {
             lends_from: self.lends_from.clone(),
             lender: self.lender.clone(),
             gates: self.gates.clone(),
+            typed: self.typed.clone(),
             spoken: Arc::clone(&self.spoken),
             refused: Arc::clone(&self.refused),
             receptors_at: self.receptors_at.clone(),
@@ -3113,6 +3121,7 @@ impl<S: Store> Shared<S> {
             // Bound and served by `run` alone.
             worker: _,
             gates,
+            typed_answers,
         } = given;
         let lender = lend.map(|file| {
             Arc::new(crate::lend::lender::Lender::from_file(
@@ -3192,6 +3201,7 @@ impl<S: Store> Shared<S> {
             lends_from: lends_from.map(Into::into),
             lender,
             gates,
+            typed: typed_answers.map(|log| Arc::new(typed::Typed::new(log))),
             spoken: Arc::default(),
             refused: Arc::default(),
             receptors_at: receptors,
@@ -4594,6 +4604,7 @@ impl<S: Store> Shared<S> {
             Request::Free { .. } => Err("freeing a quest is answered by `frees`".to_owned()),
             Request::Starts { .. } => Err("starts are answered by `starts_asked`".to_owned()),
             Request::Spawned { .. } => Err("a spawner is answered by `spawned`".to_owned()),
+            Request::Mint { .. } => Err("a mint is answered by `mint`".to_owned()),
             Request::Update { .. } => Err("an update is answered by `update`".to_owned()),
             Request::Carry { .. } => Err("carrying is answered by `carried`".to_owned()),
             Request::Health => Err("health is answered by `own_health::tell`".to_owned()),
@@ -4703,13 +4714,20 @@ impl<S: Store> Shared<S> {
             Some(ordered::ITSELF) => return self.own_carry(address, said).await,
             _ => {}
         }
-        // A Mac's `ps` takes tens of milliseconds, too long to hold the
-        // node's other work up for.
-        let (client, processes, asked) = (self.client, self.processes.clone(), said.clone());
-        let checked =
+        // A typed answer is the person's own words by its token alone, which
+        // the steer written never carries, as `Steer::new` keeps only the
+        // fields the harness reads.
+        let checked = if said.get("token").is_some() {
+            self.spend_typed(address, said)?;
+            true
+        } else {
+            // A Mac's `ps` takes tens of milliseconds, too long to hold the
+            // node's other work up for.
+            let (client, processes, asked) = (self.client, self.processes.clone(), said.clone());
             tokio::task::spawn_blocking(move || asker::may_say(client, &processes, &asked))
                 .await
-                .map_err(|error| format!("who asks couldn't be told: {error}"))??;
+                .map_err(|error| format!("who asks couldn't be told: {error}"))??
+        };
         let mut steer = Steer::new(address, said)?;
         steer.checked = checked;
         // The person's words are kept, and go with a talk, so whether they
@@ -5138,6 +5156,153 @@ impl<S: Store> Shared<S> {
             }
         }
         registered.map(|()| Response::Spawned)
+    }
+
+    /// A typed answer's token for `session`'s own pi, bound to `bound`, as
+    /// PROTOCOL.md's A Typed Answer says, and when it is refused from; or
+    /// why none is minted, kept in the typed answers' log as each mint is.
+    async fn mint(&self, session: &str, bound: typed::Bound) -> Reply {
+        let Some(typed) = self.typed.clone() else {
+            return Err(
+                "this node mints no typed answer: it runs with --no-typed-answers".to_owned(),
+            );
+        };
+        let minted = match self.may_mint(session, &bound).await {
+            Ok(asker) => typed.mint(session, asker, bound.clone()),
+            Err(why) => Err(why),
+        };
+        match minted {
+            Ok((token, until)) => Ok(Response::Minted { token, until }),
+            Err(why) => {
+                typed.refused(session, &bound, &why);
+                Err(why)
+            }
+        }
+    }
+
+    /// The asker, by its process's id and start, where a typed answer's
+    /// token for `session`, bound to `bound`, may be minted to it: it is
+    /// that session's own pi with none above it ([`asker::may_mint`]), and
+    /// the session was never seen strict, nor shows or names itself strict,
+    /// as a strict session never speaks as the person. A session started to
+    /// read a stranger's words is the harness's to refuse; nothing here
+    /// tells one.
+    async fn may_mint(&self, session: &str, bound: &typed::Bound) -> Result<(i32, u64), String> {
+        // Ids and addresses are far shorter; longer is refused before
+        // anything is weighed.
+        const LONGEST: usize = 256;
+        if [session, &bound.address, &bound.want]
+            .iter()
+            .any(|said| said.len() > LONGEST)
+        {
+            return Err(format!(
+                "a session, a cell and an ask are each named in at most {LONGEST} bytes"
+            ));
+        }
+        if !typed::is_digest(&bound.digest) {
+            return Err("a digest is the words' SHA-256, as 64 lowercase hex digits".to_owned());
+        }
+        let (Some(pid), Some(started)) = (self.client, self.client_started) else {
+            return Err(
+                "nothing names the process that asks, so no typed answer is minted".to_owned(),
+            );
+        };
+        let claims = self.claims();
+        let (processes, hosts, logs, owned) = (
+            self.processes.clone(),
+            self.hosts.clone(),
+            self.logs.clone(),
+            session.to_owned(),
+        );
+        tokio::task::spawn_blocking(move || {
+            let owners = asker::proved(&claims, &processes, &hosts, &logs).map_err(|_| {
+                "who owns the sessions here can't be proved, so no typed answer is minted"
+                    .to_owned()
+            })?;
+            asker::may_mint((pid, started), &owned, &owners, &claims, &processes)
+        })
+        .await
+        .map_err(|error| format!("who asks couldn't be told: {error}"))??;
+        let named = self
+            .standing()
+            .iter()
+            .find(|presence| presence.session == session)
+            .and_then(|presence| presence.body.get("fence").cloned())
+            .and_then(|kind| serde_json::from_value::<crate::declared::Kind>(kind).ok());
+        let strictest = self
+            .fences
+            .strictest(session)?
+            .max(self.shown_fence(session).await?)
+            .max(named.unwrap_or(crate::declared::Kind::None));
+        if strictest == crate::declared::Kind::Strict {
+            return Err(format!(
+                "{session} runs strict, so no typed answer is minted for it"
+            ));
+        }
+        Ok((pid, started))
+    }
+
+    /// Spends the typed answer's token `said` carries on its one answer to
+    /// the cell at `address`, as PROTOCOL.md's A Typed Answer says: taken
+    /// as the person's own only where the steer is exactly an answer from
+    /// the person with its token, to an ask the store keeps as no hold,
+    /// from the process it was minted to, for that cell, ask and words,
+    /// within its minute. The token is spent by this try, taken or not.
+    fn spend_typed(&self, address: &str, said: &serde_json::Value) -> Result<(), String> {
+        /// The fields a typed answer carries, and no others.
+        const TYPED: [&str; 6] = ["act", "want", "value", "other", "from", "token"];
+        let Some(typed) = self.typed.clone() else {
+            return Err(
+                "this node takes no typed answer: it runs with --no-typed-answers".to_owned(),
+            );
+        };
+        let fields = said.as_object();
+        let text = |field: &str| {
+            fields
+                .and_then(|fields| fields.get(field))
+                .and_then(serde_json::Value::as_str)
+        };
+        let Some(token) = text("token") else {
+            return Err("a typed answer's token is a string".to_owned());
+        };
+        let words = match (text("value"), text("other")) {
+            (Some(words), None) | (None, Some(words)) => Some(words),
+            _ => None,
+        };
+        let want = text("want").unwrap_or_default();
+        let extra =
+            fields.and_then(|fields| fields.keys().find(|field| !TYPED.contains(&field.as_str())));
+        let held = self
+            .store
+            .message(want)
+            .as_ref()
+            .and_then(mesh::message)
+            .is_some_and(|message| message.intent == Some(Intent::Hold));
+        let refused = if let Some(extra) = extra {
+            Some(format!(
+                "a typed answer carries only act, want, value or other, from and token, not {extra}"
+            ))
+        } else if text("act") != Some("answer") || text("from") != Some("person") {
+            Some("a typed answer is an answer from the person".to_owned())
+        } else if want.is_empty() {
+            Some("a typed answer names the ask it answers, as want".to_owned())
+        } else if words.is_none() {
+            Some("a typed answer carries its words as one of value or other".to_owned())
+        } else if held {
+            Some(
+                "a typed answer never answers a hold: the person ends one from their own login"
+                    .to_owned(),
+            )
+        } else {
+            None
+        };
+        let asker = self.client.zip(self.client_started);
+        let bound = typed::Bound {
+            address: address.to_owned(),
+            want: want.to_owned(),
+            digest: typed::digest(words.unwrap_or_default()),
+        };
+        typed.spend(token, asker, &bound, refused)
     }
 
     /// The fence `session` shows it runs in, by its owner's process,
@@ -8533,6 +8698,19 @@ async fn answered<S: Store>(shared: &Shared<S>, request: Result<Request, String>
             started,
             session,
         }) => shared.spawned((pid, started), session).await.into(),
+        Ok(Request::Mint {
+            session,
+            address,
+            want,
+            digest,
+        }) => {
+            let bound = typed::Bound {
+                address,
+                want,
+                digest,
+            };
+            shared.mint(&session, bound).await.into()
+        }
         Ok(Request::Update { machine }) => shared.update(&machine).await.into(),
         Ok(Request::Offers) => Answer::Ok(Response::Offers(shared.offers().await)),
         // A receptor's cell is named `<source>@<machine>`, and only the
@@ -9259,6 +9437,7 @@ mod tests {
             lend: None,
             worker: None,
             gates: None,
+            typed_answers: None,
         }
     }
 
@@ -9606,6 +9785,7 @@ mod tests {
             lend: None,
             worker: None,
             gates: None,
+            typed_answers: None,
         }
     }
 
@@ -23584,6 +23764,137 @@ esac
             hubs.contains("HARBOR") && !hubs.contains("STAND1"),
             "it hubs as its cell, whose talk it is heard by: {hubs}"
         );
+    }
+
+    /// A node on skiff minting typed answers into `dir`, unless `mints` is
+    /// false, asked by process 4242 started at 77 ticks.
+    fn typing(dir: &Path, store: &Memory, mints: bool) -> Shared<Memory> {
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let given = Given {
+            typed_answers: mints.then(|| dir.join("typed-answers.jsonl")),
+            ..bare("/nowhere/steer".into(), None)
+        };
+        let (mut shared, _) = Shared::of(
+            store.clone(),
+            (membership.hello(), "/nowhere/node".into()),
+            given,
+            to_dial,
+        );
+        shared.client = Some(4242);
+        shared.client_started = Some(77);
+        shared
+    }
+
+    #[tokio::test]
+    async fn a_typed_answer_is_taken_only_as_exactly_the_persons_answer_to_no_hold() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let store = Memory::default();
+        let now = jiff::Timestamp::now();
+        store.send_here(
+            "m-hold",
+            json!({"v": 1, "id": "m-hold", "at": now.to_string(), "from": "TERN02",
+                   "to": ["#machine"], "intent": "hold", "text": "a reboot", "pid": 1}),
+        );
+        let shared = typing(dir.path(), &store, true);
+        let typed = shared.typed.clone().expect("it mints");
+        let tried = |want: &str, more: Value| {
+            let bound = typed::Bound {
+                address: "TERN02".to_owned(),
+                want: want.to_owned(),
+                digest: typed::digest("yes"),
+            };
+            let (token, _) = typed.mint("s-own", (4242, 77), bound).expect("it mints");
+            let mut said = json!({"act": "answer", "want": want, "value": "yes",
+                                  "from": "person", "token": token});
+            if let (Some(said), Some(more)) = (said.as_object_mut(), more.as_object()) {
+                said.extend(more.clone());
+            }
+            let spent = shared.spend_typed("tern02", &said);
+            let again = shared.spend_typed("tern02", &said);
+            assert!(
+                again.is_err_and(|why| why.contains("no token like it")),
+                "each token is tried once: {said}"
+            );
+            spent
+        };
+        assert_eq!(
+            tried("m-ask", json!({})),
+            Ok(()),
+            "the person's answer is taken"
+        );
+        for (more, says) in [
+            (json!({"endsHold": true}), "not endsHold"),
+            (json!({"look": "l-1"}), "not look"),
+            (json!({"act": "carry"}), "an answer from the person"),
+            (json!({"from": "agent"}), "an answer from the person"),
+            (json!({"other": "yes"}), "one of value or other"),
+        ] {
+            let refused = tried("m-ask", more.clone());
+            assert!(
+                refused.as_ref().is_err_and(|why| why.contains(says)),
+                "{more}: {refused:?}"
+            );
+        }
+        let held = tried("m-hold", json!({}));
+        assert!(
+            held.as_ref()
+                .is_err_and(|why| why.contains("never answers a hold")),
+            "{held:?}"
+        );
+        let log = fs::read_to_string(dir.path().join("typed-answers.jsonl")).expect("its log");
+        assert!(
+            !log.contains("\"yes\""),
+            "the log never holds the words: {log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_typed_answer_is_minted_by_no_node_told_not_to_nor_to_a_nameless_asker() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let store = Memory::default();
+        let bound = |digest: &str| typed::Bound {
+            address: "TERN02".to_owned(),
+            want: "m-ask".to_owned(),
+            digest: digest.to_owned(),
+        };
+        let said = json!({"act": "answer", "want": "m-ask", "value": "yes",
+                          "from": "person", "token": "0".repeat(32)});
+        let off = typing(dir.path(), &store, false);
+        for refused in [
+            off.mint("s-own", bound(&typed::digest("yes")))
+                .await
+                .map(|_| ()),
+            off.spend_typed("TERN02", &said),
+        ] {
+            assert!(
+                refused
+                    .as_ref()
+                    .is_err_and(|why| why.contains("--no-typed-answers")),
+                "{refused:?}"
+            );
+        }
+        let mut on = typing(dir.path(), &store, true);
+        let short = on.mint("s-own", bound("ab")).await;
+        assert!(
+            short
+                .as_ref()
+                .is_err_and(|why| why.contains("64 lowercase hex")),
+            "{short:?}"
+        );
+        on.client_started = None;
+        let nameless = on.mint("s-own", bound(&typed::digest("yes"))).await;
+        assert!(
+            nameless
+                .as_ref()
+                .is_err_and(|why| why.contains("nothing names the process")),
+            "{nameless:?}"
+        );
+        let log = fs::read_to_string(dir.path().join("typed-answers.jsonl")).expect("its log");
+        assert_eq!(log.lines().count(), 2, "each refused mint is kept: {log}");
     }
 
     #[tokio::test]

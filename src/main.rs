@@ -882,6 +882,20 @@ struct Node {
     /// them all.
     #[arg(long, requires = "answers_with")]
     answers_for: Option<PathBuf>,
+    #[command(flatten)]
+    typed: Typed,
+}
+
+/// Whether the node mints typed answers (PROTOCOL.md's A Typed Answer),
+/// apart from the node's other switches since it is a fence of its own.
+#[derive(clap::Args)]
+struct Typed {
+    /// Mint no typed answer, so no pi session's command line answers a
+    /// cell's ask as the person, and refuse every token. Unsaid, each
+    /// mint, spend and refusal is kept in `typed-answers.jsonl` in the
+    /// node's state.
+    #[arg(long)]
+    no_typed_answers: bool,
 }
 
 /// A machines file of builders to dial, as `--builders` gives it.
@@ -2224,6 +2238,7 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
         lend: node.lend,
         worker: worker_given(node.worker_socket, node.worker_uid),
         gates: gates_given(node.answers_with, node.answers_for)?,
+        typed_answers: (!node.typed.no_typed_answers).then(|| state.join("typed-answers.jsonl")),
     };
     tell!(
         "mycelium: {}",

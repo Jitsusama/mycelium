@@ -178,6 +178,21 @@ pub enum Request {
         /// The session it serves.
         session: String,
     },
+    /// A token for one typed answer: the person's words, typed on `session`'s
+    /// own pi command line, answering `want` of the cell at `address` once,
+    /// the words' SHA-256 `digest`. Minted only to that session's own pi,
+    /// as the kernel names the process at the other end, and spent by one
+    /// `answer` steer; see PROTOCOL.md's A Typed Answer.
+    Mint {
+        /// The asker's own session.
+        session: String,
+        /// The cell answered.
+        address: String,
+        /// The ask answered, by its message's id.
+        want: String,
+        /// The words' SHA-256, as 64 lowercase hex digits.
+        digest: String,
+    },
     /// What this node asks of `machine`, handed to the connection one ask
     /// a line for as long as it stays, each answered on a line of its own:
     /// a link `machine` dialled, which runs outside the node, carries them.
@@ -531,6 +546,13 @@ pub enum Response {
     Present,
     /// The spawner said, registered for its session.
     Spawned,
+    /// A typed answer's token, spent by one steer before `until`.
+    Minted {
+        /// 128 random bits, as 32 lowercase hex digits.
+        token: String,
+        /// When it is refused from, in RFC 3339.
+        until: String,
+    },
     /// Asks follow, one per line, each to be answered on a line back.
     Carrying,
     /// This machine's own health, or none while it is unknown: one at
@@ -630,6 +652,30 @@ mod tests {
             serde_json::to_string(&Response::Spawned).expect("its answer writes"),
             r#""Spawned""#,
             "the answer is the bare word"
+        );
+    }
+
+    #[test]
+    fn a_mint_is_said_and_answered_as_the_protocol_writes_it() {
+        let said =
+            r#"{"Mint":{"session":"s-one","address":"TERN02@kestrel","want":"m-1","digest":"ab"}}"#;
+        assert_eq!(
+            serde_json::from_str::<Request>(said).expect("a mint reads"),
+            Request::Mint {
+                session: "s-one".to_owned(),
+                address: "TERN02@kestrel".to_owned(),
+                want: "m-1".to_owned(),
+                digest: "ab".to_owned(),
+            },
+            "{said}"
+        );
+        let minted = Response::Minted {
+            token: "0f".to_owned(),
+            until: "2026-11-25T05:00:00Z".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_string(&minted).expect("its answer writes"),
+            r#"{"Minted":{"token":"0f","until":"2026-11-25T05:00:00Z"}}"#,
         );
     }
 
