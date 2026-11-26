@@ -81,11 +81,15 @@ pub enum Lent {
 }
 
 impl Lent {
-    /// What `machine` is, as the realm last knew it.
+    /// What `machine` is, as the realm last knew it. One of the person's
+    /// own cloud machines is no worker, as placement judges it now, so a
+    /// carry goes there as to any of theirs.
     #[must_use]
     pub fn of(machine: &Machine) -> Self {
         let declared = machine.declared.as_ref();
-        if !(machine.worker || declared.is_some_and(Declared::is_worker)) {
+        if !(machine.worker || declared.is_some_and(Declared::is_worker))
+            || crate::placement::is_the_persons_cloud(machine, jiff::Timestamp::now())
+        {
             Self::Not
         } else if declared.is_some_and(|said| said.takes_carries) {
             Self::TakesCarries
@@ -746,6 +750,7 @@ mod tests {
             worker: false,
             declared: Some(Declared {
                 costs_money: true,
+                leaves_at: Some(jiff::Timestamp::now() + jiff::SignedDuration::from_hours(240)),
                 ..declaring(None)
             }),
             ..tern(None, Readiness::Ready)
@@ -758,6 +763,28 @@ mod tests {
                     .to_owned()
             ),
             "a machine that says it is lent is a worker, whatever its link says"
+        );
+        let theirs = Machine {
+            declared: Some(Declared {
+                leaves_at: Some("9999-01-01T00:00:00Z".parse().expect("a time")),
+                ..lent.declared.clone().expect("declared")
+            }),
+            ..lent.clone()
+        };
+        for kind in [Kind::Fence, Kind::Strict] {
+            assert_eq!(
+                worker_takes(Some(kind), "tern", &theirs),
+                Ok(()),
+                "one of the person's own cloud machines takes a {kind} session"
+            );
+        }
+        assert_eq!(
+            Lent::of(&Machine {
+                worker: true,
+                ..theirs
+            }),
+            Lent::TakesNone,
+            "unless its link marks it a worker"
         );
         assert_eq!(
             worker_takes(Some(Kind::Strict), "tern", &tern(None, Readiness::Ready)),

@@ -5136,8 +5136,8 @@ impl<S: Store> Shared<S> {
             .unwrap_or_default();
         // This machine is measured first, so work asked on a worker stays
         // there unless it names another.
-        let work = &placement::asked_on(work, &machines[0], &machines);
         let now = jiff::Timestamp::now();
+        let work = &placement::asked_on(work, &machines[0], &machines, now);
         let (loads, decision, start) = {
             let mut inner = self.lock();
             let inner = &mut *inner;

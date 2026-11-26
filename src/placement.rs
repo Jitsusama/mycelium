@@ -1447,14 +1447,18 @@ fn worker_refuses() -> Because {
     })
 }
 
-/// `work` asked on `here`, as it is to be placed: where `here` is a worker
-/// and the work names no worker of `machines`, it stays on `here`, so an
-/// agent on a machine lent for its work runs that work where it was lent,
-/// never on the person's own machines, which it was never given.
+/// `work` asked on `here`, as it is to be placed at `now`: where `here` is
+/// a worker and the work names no worker of `machines`, it stays on
+/// `here`, so an agent on a machine lent for its work runs that work
+/// where it was lent, never on the person's own machines, which it was
+/// never given. One of the person's own cloud machines is no worker here,
+/// so work asked on it spreads as work asked on any of theirs.
 #[must_use]
-pub fn asked_on(work: &Work, here: &Machine, machines: &[Machine]) -> Work {
+pub fn asked_on(work: &Work, here: &Machine, machines: &[Machine], now: jiff::Timestamp) -> Work {
     let mut work = work.clone();
-    let is_worker = |one: &Machine| one.declared.as_ref().is_some_and(Declared::is_worker);
+    let is_worker = |one: &Machine| {
+        one.declared.as_ref().is_some_and(Declared::is_worker) && !is_the_persons_cloud(one, now)
+    };
     let names_one = names_worker(&work, &lasting_reach(machines))
         || work.needs.iter().any(|need| {
             machines
@@ -1510,17 +1514,19 @@ fn judge(
     // Over is read from the room even where it is unheard, and harmlessly:
     // a machine unheard ranks with those over either way.
     let cloud = is_the_persons_cloud(machine, now);
-    let by_its_facts = cloud && !heard(machine, now) && heard_by_its_facts(machine, now);
-    // A cloud machine heard by its facts alone has no queue's limits to
-    // be over, so its processors stand in for them: busy past what
-    // balance counts as room, it ranks with those over, after every
-    // machine with room, rather than taking every start however loaded.
+    let busy = machine.cpu.busy.filter(|busy| busy.is_finite());
+    // A cloud machine with no queue's room is heard by its facts only
+    // where they say how busy it is, so one too old or too new to say
+    // ranks with the unheard rather than taking every start unweighed.
+    let by_its_facts =
+        cloud && busy.is_some() && !heard(machine, now) && heard_by_its_facts(machine, now);
+    // A cloud machine ranks ahead of headroom, and a felt room is over
+    // only at the kernel's pressure, so its processors are weighed too,
+    // whatever its room says: busy past what balance counts as room, it
+    // ranks with those over, after every machine with room, rather than
+    // taking every start however loaded.
     let over = rather_not.iter().any(|taint| is_over(&taint))
-        || (by_its_facts
-            && machine
-                .cpu
-                .busy
-                .is_some_and(|busy| busy >= crate::balance::ROOM_PROCESSOR));
+        || (cloud && busy.is_some_and(|busy| busy >= crate::balance::ROOM_PROCESSOR));
     let lately = heard(machine, now) || by_its_facts;
     // A room unheard says nothing of its processors now, so it neither
     // ranks the machine saturated nor is given as why it was passed.
@@ -1572,7 +1578,8 @@ const LASTS_AS_THE_PERSONS: jiff::SignedDuration = jiff::SignedDuration::from_ho
 /// worker still, taking only work that names it, and so is one its link
 /// marks a worker, whatever it declares of itself, since the link is this
 /// node's own word and the declaration the machine's.
-fn is_the_persons_cloud(machine: &Machine, now: jiff::Timestamp) -> bool {
+#[must_use]
+pub fn is_the_persons_cloud(machine: &Machine, now: jiff::Timestamp) -> bool {
     let lasting = now.checked_add(LASTS_AS_THE_PERSONS).ok();
     !machine.worker
         && machine.declared.as_ref().is_some_and(|declared| {
@@ -1585,9 +1592,10 @@ fn is_the_persons_cloud(machine: &Machine, now: jiff::Timestamp) -> bool {
 }
 
 /// Whether `machine`, saying no room, was measured within
-/// [`ROOM_HEARD_WITHIN`] of `now`: a cloud machine keeps no queue, and a
-/// node from before it said its kernel's room says none, yet its facts
-/// still come each minute, so it isn't silent.
+/// [`ROOM_HEARD_WITHIN`] of `now`: a cloud machine keeps no queue, a node
+/// from before it said its kernel's room says none, and one whose queue
+/// has gone quiet says none either, yet its facts still come each
+/// minute, measured afresh, so it isn't silent.
 fn heard_by_its_facts(machine: &Machine, now: jiff::Timestamp) -> bool {
     machine.room.is_none()
         && machine
@@ -3585,14 +3593,16 @@ pub(crate) mod tests {
         let mut cloud = machine("cloud", "linux", 2, &["aquifer", "internet"]);
         cloud.declared.as_mut().expect("declared").costs_money = true;
         let mut lent = machine("lent", "linux", 60, &["lent-net"]);
-        lent.declared.as_mut().expect("declared").costs_money = true;
+        let declared = lent.declared.as_mut().expect("declared");
+        declared.costs_money = true;
+        declared.leaves_at = Some(now() + jiff::SignedDuration::from_hours(240));
         let realm = [
             cloud.clone(),
             machine("skiff", "linux", 60, &["home", "internet"]),
             lent,
         ];
         for need in [Vec::new(), vec![Need::Reach("internet".to_owned())]] {
-            let work = asked_on(&needing(need.clone()), &cloud, &realm);
+            let work = asked_on(&needing(need.clone()), &cloud, &realm, now());
             assert_eq!(
                 placed(&place(&work, &realm)),
                 Some("cloud"),
@@ -3603,6 +3613,7 @@ pub(crate) mod tests {
             &needing(vec![Need::Reach("lent-net".to_owned())]),
             &cloud,
             &realm,
+            now(),
         );
         assert_eq!(
             placed(&place(&elsewhere, &realm)),
@@ -3611,9 +3622,18 @@ pub(crate) mod tests {
         );
         let at_home = needing(Vec::new());
         assert_eq!(
-            asked_on(&at_home, &realm[1], &realm),
+            asked_on(&at_home, &realm[1], &realm, now()),
             at_home,
             "work asked on the person's own machine is placed as asked"
+        );
+        let mut theirs = machine("wren", "linux", 30, &["internet"]);
+        let declared = theirs.declared.as_mut().expect("declared");
+        declared.costs_money = true;
+        declared.leaves_at = Some("9999-01-01T00:00:00Z".parse().expect("a time"));
+        assert_eq!(
+            asked_on(&at_home, &theirs, &realm, now()),
+            at_home,
+            "and so is work asked on one of the person's own cloud machines"
         );
     }
 
@@ -3812,6 +3832,20 @@ pub(crate) mod tests {
             placed(&place(&anything, &[laptop.clone(), mac.clone(), busy])),
             Some("osprey"),
             "one heard by its facts and busy past room ranks after a machine with room"
+        );
+        let mut felt = busy.clone();
+        felt.room.clone_from(&mac.room);
+        assert_eq!(
+            placed(&place(&anything, &[laptop.clone(), mac.clone(), felt])),
+            Some("osprey"),
+            "and so does one saying the room its kernel feels, busy past room"
+        );
+        let mut unsaid = cloud.clone();
+        unsaid.cpu.busy = None;
+        assert_eq!(
+            placed(&place(&anything, &[laptop.clone(), mac.clone(), unsaid])),
+            Some("osprey"),
+            "one heard by its facts that says nothing of how busy it is ranks unheard"
         );
         let mut lent = cloud.clone();
         lent.worker = true;

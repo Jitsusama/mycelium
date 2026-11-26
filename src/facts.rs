@@ -398,11 +398,9 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
     // queue rather than ranking it last, as unheard. Keeping no queue is
     // having no queue's file, whether or not there is a runtime folder
     // for one; a queue whose file is there but has gone quiet still says
-    // nothing, so its machine ranks unheard.
-    let keeps_no_queue = sources
-        .queue
-        .as_deref()
-        .is_none_or(|queue| !queue.exists());
+    // no room, as a harness's queue always has, and placement hears a
+    // cloud machine's by its facts alone.
+    let keeps_no_queue = sources.queue.as_deref().is_none_or(|queue| !queue.exists());
     let room = sources
         .queue
         .as_deref()
@@ -1602,7 +1600,9 @@ mod tests {
             procs,
         };
         assert_eq!(
-            measure("tern", &sources).room.map(|room| room.memory_available),
+            measure("tern", &sources)
+                .room
+                .map(|room| room.memory_available),
             Some(1024 * 1024),
             "a queue's path with no file says the kernel's room"
         );

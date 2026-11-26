@@ -1887,10 +1887,11 @@ share of the last minute some work waited on a processor, machine-wide,
 in percent, as its own kernel says it (`some avg60` of
 `/proc/pressure/cpu`), which no queue's record carries; it is left out
 where the kernel says none, as a Mac's, or by a node too old to read
-it. The room is `null` where
-no harness keeps a queue, or where the queue's record is of another
-shape or unwritten for two minutes. A machine keeps no reserve of
-mycelium's: its own slices keep its person's share.
+it. Where no harness keeps a queue, no queue's file being there, the
+room is the one its kernel feels, judged by the same lines; it is
+`null` where the kernel says none, as a Mac's, or where the queue's
+record is of another shape or unwritten for two minutes. A machine
+keeps no reserve of mycelium's: its own slices keep its person's share.
 
 Its `declared` is what its configuration says of it, which can't be
 measured: `reach`, the networks work there always reaches, such as
@@ -2118,10 +2119,13 @@ Those rank in four tiers, each after the one before: heard and neither
 over nor saturated; heard and over; heard and saturated; then unheard.
 Heard, its `room` was said within three minutes either way (three of
 the minutes a link carries it in); a cloud machine saying no `room`,
-as one whose node keeps no queue does, is heard while its facts were
-measured within three minutes, its `cpu`'s `busy` standing for its
-processor; an unheard room earns no processor or memory headroom. Over, it carries a `memory-pressure` or
-`cpu-pressure` the work doesn't tolerate. Saturated, it carries a
+as a node from before it said its kernel's room does, or one whose
+queue went quiet, is heard while its facts were measured within three
+minutes and say its `cpu`'s `busy`, which stands for its processor.
+A cloud machine whose `busy` is at least 0.75 is over, whatever its
+room says, since cloud ranks ahead of headroom; an unheard room earns
+no processor or memory headroom. Over, it carries a `memory-pressure`
+or `cpu-pressure` the work doesn't tolerate. Saturated, it carries a
 `cpu-saturated` the work doesn't tolerate, so work starts where it runs
 at once, and still goes to the roomiest where every machine is
 saturated, never refused; an unheard room is never saturated, nor
