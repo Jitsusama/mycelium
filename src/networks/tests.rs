@@ -656,6 +656,30 @@ fn a_folder_two_cells_share_by_key_is_a_network_named_for_what_it_is_for() {
 }
 
 #[test]
+fn a_cell_s_own_folder_titled_wide_is_cut_to_its_room_in_cells() {
+    // A key is ASCII, so it pads alike in characters and cells, but a
+    // title of Han and kana takes two cells to a character, and cut by
+    // its characters it would run past the terminal's edge.
+    let about = "港湾の見張り ".repeat(12);
+    let sessions = [sharing(
+        "KELP01",
+        4,
+        &json!([{"key": "quest:QEST-20261112-KELPED", "for": about, "folder": "/k"}]),
+    )];
+    let mycelium = Mycelium::of("home", &[], &sessions, &[]);
+    let kelped = mycelium.cell("KELP01").expect("Kelp");
+    for width in [60, 80] {
+        let drawn = cell(&mycelium, kelped, &Look { width, ..look() });
+        let line = drawn.lines().last().expect("its folder's line");
+        assert!(
+            line.starts_with("  quest:qest-20261112-kelped  \u{6e2f}\u{6e7e}")
+                && crate::swarm::drawn_width(line) <= width,
+            "{line:?} passed {width} cells:\n{drawn}"
+        );
+    }
+}
+
+#[test]
 fn a_shared_folder_is_titled_by_what_most_of_its_cells_say_it_is_for() {
     let titled = |address: &str, n: u8, about: &str| {
         let share = json!({"key": "quest:QEST-20261112-HARBOR", "for": about, "folder": "/q"});

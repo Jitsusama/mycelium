@@ -3003,6 +3003,56 @@ mod tests {
     }
 
     #[test]
+    fn a_wide_purpose_wraps_and_is_cut_in_cells() {
+        // Each Han or kana character takes two cells, so a purpose of them
+        // wrapped by its characters would run past its room, and its mark
+        // off the line's end. Among many it is cut to its lines; named,
+        // it is drawn whole. Words of two such characters fill each line
+        // at 36 columns exactly, so its mark is pushed past only when it
+        // has no room of its own.
+        let said = "港湾の 見張りを 続けて 潮の 満ち引きを 記録する ".repeat(6);
+        let full = "港湾 ".repeat(40);
+        let mut cell = forage("KESTRL", "kestrel", "QEST-1");
+        for (said, named, width) in [
+            (&said, None, 40),
+            (&said, None, 80),
+            (&said, Some("KESTRL"), 40),
+            (&full, None, 36),
+        ] {
+            cell["purpose"] = json!(said.trim());
+            let drawn = draw(std::slice::from_ref(&cell), named, width);
+            let purpose: Vec<&str> = drawn
+                .lines()
+                .skip(1)
+                .take_while(|line| !line.starts_with("  plan"))
+                .collect();
+            for line in &purpose {
+                assert!(
+                    crate::swarm::drawn_width(line) <= width,
+                    "{line:?} passed {width} cells:\n{drawn}"
+                );
+            }
+            if named.is_none() {
+                assert!(
+                    purpose.len() == PURPOSE_LINES
+                        && purpose
+                            .last()
+                            .is_some_and(|last| last.ends_with(" \u{2026}")),
+                    "{width}: a cut wide purpose took more lines or lost its mark:\n{drawn}"
+                );
+            } else {
+                assert!(
+                    purpose.len() > PURPOSE_LINES
+                        && purpose
+                            .last()
+                            .is_some_and(|last| said.trim().ends_with(last.trim())),
+                    "{width}: a named wide purpose wasn't drawn whole:\n{drawn}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_purpose_cut_on_a_space_keeps_its_last_word() {
         // Its 277th character is a space, so the word before it is whole.
         let mut cell = forage("KESTRL", "kestrel", "QEST-1");
