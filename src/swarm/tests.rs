@@ -784,9 +784,7 @@ fn a_short_name_is_drawn_as_it_is_typed_and_reaches_only_its_team() {
         acting.teams[1]["swarm"] = json!(given);
         let names = typed(&acting);
         assert!(
-            !names
-                .iter()
-                .any(|name| name.contains("pause") || name.contains("names")),
+            names.iter().any(|name| name == "Harbour"),
             "{given} was given as Harbour's name: {names:?}"
         );
     }
