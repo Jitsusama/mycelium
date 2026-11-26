@@ -356,10 +356,16 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         busy: busy_now(),
         ..read.cpu
     };
+    // The queue says the last ten seconds' pressure; the last minute's is
+    // the kernel's own, which no queue's record carries.
     let room = sources
         .queue
         .as_deref()
-        .and_then(|queue| room::read(queue, now.as_second()));
+        .and_then(|queue| room::read(queue, now.as_second()))
+        .map(|room| Room {
+            cpu_minute: room::cpu_minute(Path::new("/proc")),
+            ..room
+        });
     // A machine within another has its host's power and room while its
     // host's word stands, since it reads neither of its own truly.
     let host = declared

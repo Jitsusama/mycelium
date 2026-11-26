@@ -1337,10 +1337,16 @@ struct Judged {
 /// Why a machine kept lively to `lively` is past its ceiling, as `room`
 /// says, if it is.
 fn past_lively(lively: Lively, room: &Room) -> Option<String> {
-    let cpu = room.pressure.cpu;
+    // Over the last minute where its node says it, so a burst of a few
+    // seconds never crosses the ceiling; over ten from a node too old.
+    let (cpu, over) = room
+        .cpu_minute
+        .map_or((room.pressure.cpu, "ten seconds"), |minute| {
+            (minute, "a minute")
+        });
     if cpu > f64::from(lively.cpu) {
         return Some(format!(
-            "it is kept lively, at processor pressure {} at most, and is at {:.0}",
+            "it is kept lively, at processor pressure {} at most, and is at {:.0} over {over}",
             lively.cpu,
             // Rounded up, so a pressure just past the ceiling never
             // reads as the ceiling.
@@ -1973,6 +1979,7 @@ pub(crate) mod tests {
                 },
                 over: Some(Vec::new()),
                 saturated: None,
+                cpu_minute: None,
             }),
             declared: Some(Declared {
                 reach: reach.iter().map(|&one| one.to_owned()).collect(),
@@ -2528,7 +2535,7 @@ pub(crate) mod tests {
         assert_eq!(
             said(passed),
             "kestrel would rather not: it is kept lively, at processor pressure 28 at most, \
-             and is at 30",
+             and is at 30 over ten seconds",
             "and says why"
         );
         let alone = decide_as(
@@ -2650,6 +2657,39 @@ pub(crate) mod tests {
         assert!(
             decision.judged.iter().all(|one| !one.kept_lively),
             "and records it as not kept lively"
+        );
+    }
+
+    #[test]
+    fn a_machine_kept_lively_is_judged_by_its_minute_where_its_node_says_one() {
+        let saturated = pressed(machine("osprey", "macos", 8, &[]), 90.0);
+        let anything = needing(Vec::new());
+        let over_a_minute = |seconds: f64, minute: f64| {
+            let mut kestrel = lively(
+                pressed(machine("kestrel", "linux", 60, &[]), seconds),
+                28,
+                None,
+            );
+            kestrel.room.as_mut().expect("a room").cpu_minute = Some(minute);
+            judged_now(&anything, &[kestrel, saturated.clone()])
+        };
+        let burst = over_a_minute(60.0, 20.0);
+        assert_eq!(
+            placed(&burst.placement),
+            Some("kestrel"),
+            "a burst of seconds over the ceiling, within it over a minute, is within it"
+        );
+        let steady = over_a_minute(5.0, 29.4);
+        assert_eq!(
+            placed(&steady.placement),
+            Some("osprey"),
+            "a minute past the ceiling is past it, however calm the last seconds"
+        );
+        assert_eq!(
+            said_of(&steady),
+            "kestrel would rather not: it is kept lively, at processor pressure 28 at most, \
+             and is at 30 over a minute",
+            "and says which it read"
         );
     }
 

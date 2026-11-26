@@ -1870,7 +1870,12 @@ answer within five seconds measures for itself and says none, so it is
 judged by the line. A node with no room to read, or told its host's
 verdict, forgets its own, and one restarted starts with none held. It
 is left out of a room a node too old to judge says, and placement then
-judges the pressure by the line of 80 alone. The room is `null` where
+judges the pressure by the line of 80 alone. Its `cpu_minute` is the
+share of the last minute some work waited on a processor, machine-wide,
+in percent, as its own kernel says it (`some avg60` of
+`/proc/pressure/cpu`), which no queue's record carries; it is left out
+where the kernel says none, as a Mac's, or by a node too old to read
+it. The room is `null` where
 no harness keeps a queue, or where the queue's record is of another
 shape or unwritten for two minutes. A machine keeps no reserve of
 mycelium's: its own slices keep its person's share.
@@ -2098,9 +2103,10 @@ saturated, never refused; an unheard room is never saturated, nor
 passed for it. A machine whose `declared` says `kept_lively`, as
 `{"cpu": 28, "memory_available": bytes}` (the second may be left out),
 is one the person works at that the others take new work from first:
-within its ceiling (processor pressure, `some` over ten seconds
-machine-wide, at or under `cpu`, and as much memory available as it
-keeps), over a limit of its queue's or not, it ranks after every other
+within its ceiling (processor pressure machine-wide at or under `cpu`,
+as its `cpu_minute` says it, or over ten seconds where its room says
+none, and as much memory available as it keeps), over a limit of its
+queue's or not, it ranks after every other
 heard machine neither saturated nor unheard, and before those
 saturated; past it, it carries `kept-lively`, `prefer_not`, ranks over,
 and goes after every other heard machine. Unheard, it ranks with the

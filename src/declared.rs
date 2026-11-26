@@ -116,7 +116,9 @@ pub struct Declared {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lively {
     /// The processor pressure it stays at or under, in percent of the
-    /// last ten seconds in which some work waited on a processor.
+    /// last minute in which some work waited on a processor, machine-wide
+    /// (its room's `cpu_minute`), or of the last ten seconds where its
+    /// room says no minute.
     pub cpu: u32,
     /// The memory it keeps available at least, in bytes; none where it
     /// keeps no more than any machine does.
