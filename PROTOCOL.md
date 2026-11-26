@@ -2355,12 +2355,12 @@ to wake it, and a marker outlasting its park counts for nothing, so
 either is reopened as any ended session), held by a holder there,
 carried away or waiting for its turn, each refused with why. One that
 never ended there is refused as held or coming back where a holder
-resumes that very id, in whatever words or script it names it, or it
-was carried away from there or waits its turn there, and otherwise as
-never
-ended there, whatever ids it begins; nor
-while the carries can't be read. Once taken, the session is
-held as being reopened while its start runs, and another reopening of
+resumes it, as it names it in the words and scripts read below (an
+id or log path ending in `_` and then the id counts too), or it was
+carried away from there or waits its turn there, and otherwise as
+never ended there, whatever ids it begins; nor while the carries
+can't be read. Once taken, the session is held as being reopened
+while its start runs, and another reopening of
 it meanwhile is refused as `<id> is being reopened on <machine>
 already`. The hold ends when the start here answers, which it does
 within seconds, since a holder silent for ten is killed, whether or
@@ -2392,8 +2392,13 @@ carry is held so too. A refusal of a session a word begins names the
 word as asked, and a log path's tail begins nothing. An id a script
 works out as it runs, a script in any other shape or shell, as after
 `-o pipefail` or `--` or reading `$@`, or a resume naming none, as
-`pi --continue`, is not judged. A reopening
-let through without its asker's fence is asked only of a node whose
+`pi --continue`, is not judged. A start asked of the node itself and
+placed on its own machine takes the same holds while it starts there,
+never as it waits for room or a machine, and is not judged by them: it
+is refused where another start, relayed or asked here, holds one of
+them, as a relayed start is, and the two refuse each other only while
+both start. A reopening let through without its asker's fence is
+asked only of a node whose
 link says `reopens`, since one older
 would take it as any relayed start, so one asked of an older node is
 refused as
@@ -2881,9 +2886,11 @@ there then wakes it, when it parked this boot, by writing its holder's
 names as `wake`, taken only as a holder's in a realm's `.held` folder
 beside its own. An ended session whose presence never said parked
 counts too where a park marker of this boot names a running holder
-whose own record says its program is parked, and is woken through it;
-one live in a pi of its own is never woken through a marker. A talk's
-file, `<ADDRESS>/replies/<id>.jsonl`, is opened on the asking machine
+whose own record says its program is parked, and is woken through it.
+So is one whose presence said parked but names no such file, where a
+park marker of this boot names a running holder, whatever its record
+says. One live in a pi of its own is never woken through a marker.
+A talk's file, `<ADDRESS>/replies/<id>.jsonl`, is opened on the asking machine
 first, and the lines its session writes are carried back to it, so a
 talk reads the same wherever its session runs.
 An `act` of `wake`, alone, as the launcher's Wake asks, puts nothing in
