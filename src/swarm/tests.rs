@@ -7,8 +7,8 @@
 use serde_json::{Value, json};
 
 use super::{
-    Look, Swarm, WHOLE, aligned, drawn_width, fit, most_steps, overview, padded, team, typed,
-    unmarked, within, wrapped,
+    LONGEST_RUN, Look, Swarm, WHOLE, aligned, drawn_width, fit, most_steps, overview, padded, team,
+    typed, unmarked, within, wrapped,
 };
 
 /// A look 72 columns wide, without colour, at 17:00 on Thursday
@@ -915,6 +915,21 @@ fn width_is_counted_in_the_cells_a_terminal_draws() {
             2,
             "a couple joined through a heart takes two",
         ),
+        (
+            "👩\u{1F3FD}\u{200D}💻",
+            2,
+            "a toned emoji joined on takes two",
+        ),
+        (
+            "🏴\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}",
+            2,
+            "a flag spelled in tags takes two",
+        ),
+        (
+            "👩\u{200D}\u{3001}",
+            4,
+            "a wide mark joined to an emoji takes its own two",
+        ),
     ] {
         assert_eq!(drawn_width(text), wide, "{what}: {text:?}");
     }
@@ -1286,11 +1301,15 @@ fn a_cut_keeps_the_longest_start_that_fits_as_measured_whole() {
         "🇨🇦🇺🇸 1\u{FE0F}\u{20E3}x",
         "لا ab لآ",
         "ꓹꓼ a ⵏ\u{2D7F}ⴾ b",
+        "\u{1780}\u{17D2}\u{1780} \u{1781}\u{17D2}\u{1782}\u{17D2}\u{1783}",
         "港\u{200D}湾 e\u{301}\u{302}x",
         "a\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}b",
         // A selector past a run of steps with no fresh start, where a cut
         // that settled between it and its heart would count a cell less.
         &format!("{}\u{200D}❤\u{FE0F}x", "ب".repeat(30)),
+        // The same, its run held by accents, which never start afresh,
+        // so the selector falls just past the longest run.
+        &format!("a{}\u{200D}❤\u{FE0F}x", "\u{301}".repeat(LONGEST_RUN - 3)),
     ] {
         for room in 0..36 {
             let (cut, whole) = (within(text, room), longest(text, room));
