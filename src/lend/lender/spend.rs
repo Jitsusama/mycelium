@@ -338,23 +338,31 @@ pub(super) fn spend_watch_allows(runtime: Option<&Path>, named: &str) -> Result<
             SPEND_WATCH_WITHIN.as_mins()
         )));
     }
-    let standing = said
+    // Every entry of the name is read, so one listed twice can't lend on
+    // the strength of its first.
+    let standings: Vec<&Standing> = said
         .budgets
         .iter()
-        .find(|budget| budget.name == named)
-        .ok_or_else(|| silent(format!("it says nothing of the budget {named}")))?;
+        .filter(|budget| budget.name == named)
+        .collect();
+    if standings.is_empty() {
+        return Err(silent(format!("it says nothing of the budget {named}")));
+    }
     // spend-watch lists a budget it has seen spent but was never told of,
     // with no allowances, so a misspelt name would otherwise be lent as
     // if nothing capped it.
-    if standing.undeclared() {
+    if standings.iter().any(|standing| standing.undeclared()) {
         return Err(refused(
             503,
-            format!("spend-watch declares no budget {named}, so no model is lent"),
+            format!(
+                "spend-watch declares no budget {named}, so no model is lent; declare it in \
+                 spend-watch, or lend under a budget it declares"
+            ),
         ));
     }
-    match standing
-        .allowances
+    match standings
         .iter()
+        .flat_map(|standing| &standing.allowances)
         .find(|allowance| allowance.past())
     {
         Some(allowance) => Err(refused(
