@@ -1020,13 +1020,20 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
         short: shorts.get(address(team)).map(String::as_str),
         title: title(team),
     };
-    match picked(&swarm.teams, asked, true, naming) {
+    let held = names::held_back(&swarm.teams, &shorts, asked);
+    // A name a quest gave its team and that's held back meant that team,
+    // so no other is found by a title holding it, as no steer is.
+    let found = if held.is_empty() {
+        picked(&swarm.teams, asked, true, naming)
+    } else {
+        picked(&swarm.teams, asked, true, |team| Naming {
+            title: "",
+            ..naming(team)
+        })
+    };
+    match found {
         Picked::One(team) => Ok(team),
-        Picked::None => Err(names::unnamed(
-            asked,
-            names::held_back(&swarm.teams, &shorts, asked),
-            "no team is named",
-        )),
+        Picked::None => Err(names::unnamed(asked, &held, "no team is named")),
         Picked::Several(many) => {
             // Each is a peer's text, so it is held to one line.
             let named = told_apart(

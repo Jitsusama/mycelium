@@ -609,14 +609,16 @@ fn a_short_spelt_with_any_dash_is_drawn_with_a_hyphen_and_reached_however_dashed
 fn a_short_a_keyboard_types_is_kept_and_one_it_cannot_is_not() {
     // Letters, digits, `-`, `_` and `.` are typed as drawn, and so is a
     // mark or joiner on a letter: an accent, held composed as a keyboard
-    // types it, Hindi's virama, Thai's tone mark, Persian's non-joiner;
+    // types it, Hindi's virama, after a nukta too, Thai's tone mark,
+    // Persian's non-joiner; a word of one script not drawn as Latin;
     // and ASCII beside Han or Hangul, and Latin letters past Latin-1, as
     // Azerbaijani's schwa and Hawaiian's okina are. What's drawn like a
     // hyphen and isn't one, what a shell reads otherwise, an emoji, a
     // lone mark or a pile of them, a mark on an ASCII letter, another
     // script's letter drawn like Latin's beside it or two such scripts
-    // mixed, and ASCII's fullwidth, mathematical, circled or superscript
-    // forms aren't, so the team goes by its title.
+    // mixed, a word wholly of letters drawn as Latin's, and ASCII's
+    // fullwidth, mathematical, circled or superscript forms aren't, so
+    // the team goes by its title.
     for (given, kept) in [
         ("kelp_beds", "kelp_beds"),
         ("v2.1", "v2.1"),
@@ -637,6 +639,11 @@ fn a_short_a_keyboard_types_is_kept_and_one_it_cannot_is_not() {
             "\u{939}\u{93F}\u{928}\u{94D}\u{926}\u{940}",
         ),
         ("\u{E44}\u{E21}\u{E48}", "\u{E44}\u{E21}\u{E48}"),
+        (
+            "\u{91C}\u{93C}\u{94D}\u{92F}\u{93E}\u{926}\u{93E}",
+            "\u{91C}\u{93C}\u{94D}\u{92F}\u{93E}\u{926}\u{93E}",
+        ),
+        ("\u{43C}\u{438}\u{440}", "\u{43C}\u{438}\u{440}"),
         (
             "\u{645}\u{6CC}\u{200C}\u{62E}\u{648}\u{627}\u{647}\u{645}",
             "\u{645}\u{6CC}\u{200C}\u{62E}\u{648}\u{627}\u{647}\u{645}",
@@ -668,6 +675,9 @@ fn a_short_a_keyboard_types_is_kept_and_one_it_cannot_is_not() {
         "tide\u{2CBB}plan",
         "tide\u{4E00}plan",
         "t\u{456}de",
+        // Wholly Cyrillic and wholly Greek, drawn as coco and opo.
+        "\u{441}\u{43E}\u{441}\u{43E}",
+        "\u{3BF}\u{3C1}\u{3BF}",
         "\u{435}\u{441}\u{43E}-\u{440}\u{430}\u{57D}\u{455}\u{435}",
         "\u{FF54}\u{FF49}\u{FF44}\u{FF45}",
         "\u{1D5CD}\u{1D5C2}\u{1D5BD}\u{1D5BE}",
@@ -715,6 +725,12 @@ fn a_name_a_quest_gave_and_that_is_held_back_says_why_it_reaches_no_team() {
         ),
         "a held-back name said nothing of why"
     );
+    // Nor does another team whose title holds it show in Harbour's place.
+    held.teams[2]["title"] = json!("Kelp tide;plan drills");
+    assert!(
+        team(&held, "tide;plan", &look()).is_err_and(|why| why.contains("Harbour's quest")),
+        "a held-back name showed a team found by its title"
+    );
     assert_eq!(
         team(&held, "ebb", &look()),
         Err("no team is named ebb".to_owned()),
@@ -725,7 +741,9 @@ fn a_name_a_quest_gave_and_that_is_held_back_says_why_it_reaches_no_team() {
 #[test]
 fn two_shorts_drawn_alike_keep_neither() {
     // So a lookalike drawn as another team's short is never a twin that
-    // steers it: the keyboard's spelling keeps its team.
+    // steers it: the keyboard's spelling keeps its team. A hyphen bullet
+    // is refused as untypable before the twin rule judges it; the cases
+    // after it reach the rule.
     let mut twins = swarm();
     twins.teams[0]["swarm"] = json!("tide-plan");
     twins.teams[1]["swarm"] = json!("tide\u{2043}plan");

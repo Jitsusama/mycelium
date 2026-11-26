@@ -111,7 +111,8 @@ fn flags(given: &str) -> bool {
 /// letter or mark; and its scripts no more mixed than Highly Restrictive
 /// allows, one script, or ASCII beside Han, kana or Hangul, so a Latin
 /// name with a Cyrillic or Greek letter drawn like its own, or a name
-/// mixing two such scripts, isn't kept.
+/// mixing two such scripts, isn't kept; nor is one wholly of letters
+/// drawn as ASCII, as [`drawn_as_ascii`] says.
 ///
 /// A hyphen bullet, as U+2043 is, a heavy minus or a box line, drawn as a
 /// hyphen by many fonts, would join `reef` to `pause` unseen, and two
@@ -151,12 +152,25 @@ fn typable(name: &str) -> bool {
     // doesn't allow, so it judges both, past the joiners, which the
     // profile allows only in context, and which are judged above.
     let unjoined: String = each.iter().filter(|now| !joiner(**now)).collect();
-    kept && matches!(
-        unjoined.as_str().detect_restriction_level(),
-        RestrictionLevel::ASCIIOnly
-            | RestrictionLevel::SingleScript
-            | RestrictionLevel::HighlyRestrictive
-    )
+    kept && !drawn_as_ascii(&unjoined)
+        && matches!(
+            unjoined.as_str().detect_restriction_level(),
+            RestrictionLevel::ASCIIOnly
+                | RestrictionLevel::SingleScript
+                | RestrictionLevel::HighlyRestrictive
+        )
+}
+
+/// Whether `name` holds no ASCII letter and is drawn as ASCII alone, as
+/// Unicode's confusables draw it: a word wholly of one script's letters
+/// drawn like Latin's, as Cyrillic's es and o (U+0441, U+043E) draw
+/// `coco`. One script, it passes the restriction level, but drawn as a
+/// Latin word it isn't reached by the keyboard's spelling, which may
+/// reach another that is.
+fn drawn_as_ascii(name: &str) -> bool {
+    !name.chars().any(|each| each.is_ascii_alphabetic())
+        && name.chars().any(char::is_alphabetic)
+        && skeleton(name).all(|each| each.is_ascii())
 }
 
 /// The most marks a short keeps in a row on one letter, as a syllable
@@ -399,34 +413,45 @@ pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// The team whose quest gives it the name `asked` is typed as, where that
-/// name was held back, so one asking for it is told why it reaches
-/// nothing, rather than nothing at all, or a session whose title holds it.
+/// Each team whose quest gives it the name `asked` is typed as, where
+/// that name was held back, so one asking for it is told why it reaches
+/// nothing, rather than nothing at all, or another whose title holds it;
+/// every such team, as two quests may give the same name.
 pub(crate) fn held_back<'a>(
     teams: &'a [Value],
     shorts: &BTreeMap<String, String>,
     asked: &str,
-) -> Option<&'a Value> {
+) -> Vec<&'a Value> {
     let asked = typed_form(asked);
-    teams.iter().find(|team| {
-        given(team).is_some_and(|name| name == asked) && !shorts.contains_key(address(team))
-    })
+    teams
+        .iter()
+        .filter(|team| {
+            given(team).is_some_and(|name| name == asked) && !shorts.contains_key(address(team))
+        })
+        .collect()
 }
 
-/// Why nothing answers `asked`, naming `team` where its quest gives it
-/// that name and it's held back.
-pub(crate) fn unnamed(asked: &str, team: Option<&Value>, nothing: &str) -> String {
-    team.map_or_else(
-        || format!("{nothing} {asked}"),
-        |team| {
+/// Why nothing answers `asked`, naming each of `held` whose quest gives
+/// it that name, held back.
+pub(crate) fn unnamed(asked: &str, held: &[&Value], nothing: &str) -> String {
+    let why = "held back as, typed or drawn, it reads as more than one name or as other than \
+               a name";
+    match held {
+        [] => format!("{nothing} {asked}"),
+        [team] => format!(
+            "{nothing} {asked}: {}'s quest gives it that name, {why}; ask for it by its title",
+            unmarked(title(team))
+        ),
+        [many @ .., last] => {
+            let many: Vec<String> = many.iter().map(|team| unmarked(title(team))).collect();
             format!(
-                "{nothing} {asked}: {}'s quest gives it that name, held back as, typed or \
-                 drawn, it reads as more than one name or as other than a name; ask for it by \
-                 its title",
-                unmarked(title(team))
+                "{nothing} {asked}: the quests of {} and {} each give their team that name, \
+                 {why}; ask for one by its title",
+                many.join(", "),
+                unmarked(title(last))
             )
-        },
-    )
+        }
+    }
 }
 
 /// What a person types to reach `team`: its short name, else its title.

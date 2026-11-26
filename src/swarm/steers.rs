@@ -6,6 +6,10 @@
 //! person, so the harness reads it as the person's own words rather than
 //! a peer's. A team is named as the swarm's overview names it; a session
 //! by its address, or by its name when no team's matches.
+//!
+//! Long because its cases are most of it: each way a typed name could
+//! reach another than the one a page draws is pinned beside the order
+//! that keeps it from doing so.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -188,7 +192,11 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
     } else {
         by_address
     };
-    let mut found: Vec<Named<'_>> = if whole.is_empty() {
+    // A name a quest gave its team and that's held back meant that team,
+    // so it steers nothing found only by a title holding it, team or
+    // session.
+    let held = names::held_back(&swarm.teams, &shorts, asked);
+    let mut found: Vec<Named<'_>> = if whole.is_empty() && held.is_empty() {
         // A team found only once its dashes fold is drawn alike with a
         // session whose title holds what's asked as typed, however that
         // spells its dashes, as it may be pasted from either, so each is
@@ -204,19 +212,17 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
     } else {
         whole
     };
-    // A name a quest gave its team and that's held back meant that team,
-    // so it steers no session whose title only holds it.
-    let held = names::held_back(&swarm.teams, &shorts, asked);
-    if held.is_some() && !found.iter().any(|one| matches!(one, Named::Team(_))) {
-        found.clear();
-    }
     if found.len() == 1
         && let Some(one) = found.pop()
     {
         return Ok(one);
     }
     match found.as_slice() {
-        [] => Err(names::unnamed(asked, held, "nothing in the swarm is named")),
+        [] => Err(names::unnamed(
+            asked,
+            &held,
+            "nothing in the swarm is named",
+        )),
         many => {
             // Each is a peer's text, so each is held to one line.
             // Two drawn alike are each given their address too, where
@@ -683,6 +689,35 @@ mod tests {
                     .to_owned()
             ),
             "a held-back name steered a session, or said nothing of why"
+        );
+    }
+
+    #[test]
+    fn a_held_back_name_steers_no_team_by_its_title_and_names_each_quest_giving_it() {
+        // Kelp's title holds the name Harbour's quest gave Harbour, which
+        // a person typing it meant, so Kelp doesn't take the steer.
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!("reef pause");
+        swarm.teams[2]["title"] = json!("Kelp reef-pause drills");
+        let why = "held back as, typed or drawn, it reads as more than one name or as other \
+                   than a name";
+        assert_eq!(
+            aim(&swarm, Act::Pause, "reef-pause").map(|aimed| addresses(&aimed).len()),
+            Err(format!(
+                "nothing in the swarm is named reef-pause: Harbour's quest gives it that name, \
+                 {why}; ask for it by its title"
+            )),
+            "a held-back name steered a team found by its title"
+        );
+        // Given by two quests, it names both, not the first alone.
+        swarm.teams[0]["swarm"] = json!("reef pause");
+        assert_eq!(
+            aim(&swarm, Act::Pause, "reef-pause").map(|aimed| addresses(&aimed).len()),
+            Err(format!(
+                "nothing in the swarm is named reef-pause: the quests of Reef and Harbour each \
+                 give their team that name, {why}; ask for one by its title"
+            )),
+            "a held-back name given by two quests named one"
         );
     }
 
