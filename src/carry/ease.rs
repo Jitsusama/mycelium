@@ -995,6 +995,7 @@ pub(super) mod tests {
                 Vec::new()
             }),
             saturated: None,
+            cpu_minute: None,
         });
         machine
     }
