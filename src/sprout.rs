@@ -1579,6 +1579,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_declared_folder_named_whole_is_the_one_within_home() {
+        let rules = [NeedsIn {
+            folders: vec![PathBuf::from("/home/kestrel/zone")],
+            words: Vec::new(),
+            needs: vec![Need::Cloud],
+        }];
+        for begun in ["zone/src", "/home/kestrel/zone/src"] {
+            let mut start = placed_in(begun);
+            needs_as_declared(
+                &mut start,
+                &["tidy".to_owned()],
+                Path::new("/home/kestrel"),
+                &rules,
+                &Held::default(),
+            );
+            assert_eq!(start.work.needs, [Need::Cloud], "{begun} is within it");
+        }
+    }
+
+    #[test]
     fn a_rule_naming_home_itself_names_no_work() {
         for home in [".", "/home/kestrel", "src/.."] {
             let rules = [NeedsIn {
