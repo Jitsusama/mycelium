@@ -53,6 +53,18 @@ tokio = { version = "1", features = [
   "sync",
   "time",
 ] }
+# The composed form a keyboard types (NFC), so a swarm short spelt with
+# its accents apart meets the one typed, and two spelt either way are one
+# name. Pinned with unicode-security, which builds on it.
+unicode-normalization = "=0.1.26"
+# Unicode's own rules for telling identifiers apart (UTS #39), for the
+# swarm's short names: which characters an identifier may hold, which
+# scripts it may mix, and the skeleton two drawn alike share, so a short
+# drawn as another team's or as an act is refused. Pinned exactly, as
+# each release moves its tables (this one's are Unicode 18's). A short is
+# worked out on the node that reads it and isn't sent, so nodes either
+# side of a bump only shorten a team's name differently.
+unicode-security = "=0.1.3"
 # How many of a terminal's cells a name or line takes, as Unicode's East
 # Asian Width and emoji presentation say: two for a wide character or an
 # emoji, none for a joiner or combining mark, so a table lines up in any

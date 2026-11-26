@@ -20,6 +20,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
+use unicode_normalization::UnicodeNormalization;
+use unicode_security::mixed_script::AugmentedScriptSet;
+use unicode_security::{
+    GeneralSecurityProfile, RestrictionLevel, RestrictionLevelDetection, skeleton,
+};
 
 use super::{address, title, unmarked};
 use crate::forage::BRAILLE_BLANK;
@@ -63,64 +68,124 @@ pub(super) fn one_word(name: &str) -> bool {
 /// `pause` hides no act; and a name led by a hyphen may be typed as a
 /// flag, as one a quest gives with a word led by hyphens is, as
 /// [`flags`] says.
+///
+/// Each word is judged as Unicode's confusables draw it, by its skeleton,
+/// so one spelt in letters drawn like an act's, as Cyrillic's dze, a and
+/// u (U+0455, U+0430, U+0443) draw `say`, hides it as surely.
 fn acts_for(name: &str) -> bool {
-    let drawn: String = unmarked(name)
-        .to_lowercase()
-        .chars()
-        .filter(|each| !on_what_is_before(*each))
+    let drawn: String = skeleton(&unmarked(name).to_lowercase())
+        .filter(|each| each.is_alphanumeric() || !on_what_is_before(*each))
         .collect();
     let flagged = drawn.split(blank).any(|word| word.starts_with('-'));
     flagged
         || drawn
             .split(|each: char| blank(each) || each == '-')
-            .any(|word| ACTS.contains(&word) || word == "team")
+            .any(|word| {
+                ACTS.iter()
+                    .chain(&["team"])
+                    .any(|act| skeleton(act).eq(word.chars()))
+            })
 }
 
 /// Whether a quest's own words for its team, `given`, hold one led by a
 /// hyphen and then more than a blank: `kelp --names`, held as
 /// `kelp---names`, typed as the quest wrote it would hand `swarm` the
-/// flag `--names`, and a lone `--` ends its flags. A dash between words,
-/// as an en dash spaced between `Kelp` and `Beds` is, flags nothing, and
-/// is kept.
+/// flag `--names`, and a lone `--` ends its flags. A lookalike dash, as a
+/// minus sign is, counts as a hyphen, since a person retyping the words
+/// by eye types the keyboard's, though one pasting them hands no parser
+/// a flag. A dash between words, as an en dash spaced between `Kelp` and
+/// `Beds` is, flags nothing, and is kept.
 fn flags(given: &str) -> bool {
     hyphens(&unmarked(given))
         .split(blank)
         .any(|word| word.starts_with('-') && word.chars().count() > 1)
 }
 
-/// Whether a person types `name` into a shell as it's drawn, and `swarm`
-/// reads it as drawn: each character a letter or a digit, `-`, `_` or
-/// `.`, or a mark or joiner drawn on a letter before it, as a word's
-/// accents, viramas and tone marks are.
+/// Whether a person types `name`, in the composed form a keyboard types
+/// it in, into a shell as it's drawn, and `swarm` reads it as drawn, as
+/// Unicode's rules for identifiers (UTS #39) judge one: in ASCII a
+/// letter, a digit, `-`, `_` or `.`, which no shell splits or acts on;
+/// past ASCII, a letter, digit or mark its General Security Profile
+/// allows, so no fullwidth, mathematical, circled or superscript form of
+/// ASCII, no Roman numeral and no script kept only for scholars; a mark
+/// only on a letter past ASCII, as a word's accents, viramas and tone
+/// marks are, [`MOST_MARKS`] at most in a row; a joiner only after a
+/// letter or mark; and its scripts no more mixed than Highly Restrictive
+/// allows, one script, or ASCII beside Han, kana or Hangul, so a Latin
+/// name with a Cyrillic or Greek letter drawn like its own, or a name
+/// mixing two such scripts, isn't kept.
 ///
 /// A hyphen bullet, as U+2043 is, a heavy minus or a box line, drawn as a
 /// hyphen by many fonts, would join `reef` to `pause` unseen, and two
-/// teams drawn as `tide-plan` would go by two names. A shell reads `;`,
-/// `$`, quotes and the like as other than the name. An emoji or a mark
-/// standing alone can't be typed at all.
-///
-/// A name holding a Latin letter holds only Latin letters, so another
-/// script's letter drawn like one, a Cyrillic a (U+0430) in `pause` or a
-/// katakana prolonged mark drawn like a hyphen, can't hide an act or
-/// twin another team's name; and none is ASCII's fullwidth or
-/// mathematical form, which Unicode's compatibility mapping reads as
-/// ASCII itself. A name wholly in another script whose letters are drawn
-/// like Latin's, as a Cyrillic one may be, is still kept, which only
-/// Unicode's confusables would tell apart.
+/// teams drawn as `tide-plan` would go by two names; so would a letter
+/// drawn as a long dash, as the katakana prolonged mark and Han's one
+/// are, kept only between Han, kana or Hangul. A shell reads `;`, `$`,
+/// quotes and the like as other than the name. An emoji or a mark
+/// standing alone can't be typed at all, nor a mark a keyboard has no
+/// composed letter for on an ASCII one.
 fn typable(name: &str) -> bool {
-    let latin = name.chars().any(|each| each.is_ascii_alphabetic());
-    let mut on_a_letter = false;
-    name.chars().all(|each| {
-        let kept = if each.is_ascii() {
-            each.is_ascii_alphanumeric() || matches!(each, '-' | '_' | '.')
-        } else if each.is_alphanumeric() {
-            !ascii_again(each) && (!latin || latin_letter(each))
+    let each: Vec<char> = name.chars().collect();
+    let mut marks = 0;
+    let kept = (0..each.len()).all(|at| {
+        let (now, before) = (each[at], at.checked_sub(1).map(|before| each[before]));
+        let on_a_letter = before.is_some_and(|before| before.is_alphabetic() || marks > 0);
+        let kept = if now.is_ascii() {
+            now.is_ascii_alphanumeric() || matches!(now, '-' | '_' | '.')
+        } else if joiner(now) {
+            on_a_letter
+        } else if now.is_alphanumeric() {
+            now.identifier_allowed()
+                && (!long_dash(now)
+                    || (before.is_some_and(cjk)
+                        && each.get(at + 1).is_none_or(|after| cjk(*after))))
         } else {
-            on_a_letter && on_what_is_before(each)
+            now.identifier_allowed()
+                && on_what_is_before(now)
+                && on_a_letter
+                && marks < MOST_MARKS
+                && !before.is_some_and(|before| before.is_ascii())
         };
-        on_a_letter = each.is_alphanumeric() || (on_a_letter && on_what_is_before(each));
+        marks = if !now.is_alphanumeric() && on_what_is_before(now) && !joiner(now) {
+            marks + 1
+        } else {
+            0
+        };
         kept
-    })
+    });
+    let unjoined: String = each.iter().filter(|now| !joiner(**now)).collect();
+    kept && matches!(
+        unjoined.as_str().detect_restriction_level(),
+        RestrictionLevel::ASCIIOnly
+            | RestrictionLevel::SingleScript
+            | RestrictionLevel::HighlyRestrictive
+    )
+}
+
+/// The most marks a short keeps in a row on one letter, as a syllable
+/// stacks a vowel sign, a tone and one more at most, so a pile of them
+/// can't draw over the letters around it.
+const MOST_MARKS: usize = 3;
+
+/// Whether `each` is a joiner or non-joiner, which Persian and Indic
+/// words are spelt with, and which Unicode's profile allows only in
+/// context, as after a letter.
+const fn joiner(each: char) -> bool {
+    matches!(each, '\u{200C}' | '\u{200D}')
+}
+
+/// Whether `each` is drawn as a long dash, as Unicode's confusables draw
+/// the katakana prolonged mark, Han's one and Hangul's eu alike.
+fn long_dash(each: char) -> bool {
+    let drawn: String = skeleton(each.encode_utf8(&mut [0; 4])).collect();
+    drawn == "\u{30FC}"
+}
+
+/// Whether `each` is of Han, kana or Hangul, among which a long dash is
+/// a letter of the word; a character of every script, as a digit is,
+/// isn't.
+fn cjk(each: char) -> bool {
+    let scripts = AugmentedScriptSet::for_char(each);
+    (scripts.hanb || scripts.jpan || scripts.kore) && !scripts.is_all()
 }
 
 /// Whether `each` draws on what's before it, taking no cell of its own:
@@ -129,21 +194,19 @@ fn on_what_is_before(each: char) -> bool {
     unicode_width::UnicodeWidthChar::width(each) == Some(0)
 }
 
-/// Whether `each` is ASCII written again in another form: fullwidth, or
-/// one of Unicode's mathematical letters and digits.
-const fn ascii_again(each: char) -> bool {
-    matches!(each, '\u{FF01}'..='\u{FF5E}' | '\u{1D400}'..='\u{1D7FF}')
-}
-
-/// Whether `each` is a letter of the Latin script past ASCII: those of
-/// Latin-1, Latin Extended A and B, and Latin Extended Additional.
-const fn latin_letter(each: char) -> bool {
-    matches!(each, '\u{00AA}' | '\u{00BA}' | '\u{00C0}'..='\u{024F}' | '\u{1E00}'..='\u{1EFF}')
-}
-
 /// Whether `each` is drawn as a space between words.
 fn blank(each: char) -> bool {
     each.is_whitespace() || each == BRAILLE_BLANK
+}
+
+/// `text` as it's drawn, for what a person asks for to meet a name or a
+/// title by: cleaned, composed as a keyboard types an accented letter
+/// (NFC), in lower case, and with each dash the keyboard's hyphen where
+/// `folded`, as a page draws them alike. One form for both sides and for
+/// every lookup, so a name asked as drawn finds what it's drawn from.
+pub(crate) fn drawn_form(text: &str, folded: bool) -> String {
+    let lower: String = unmarked(text).to_lowercase().nfc().collect();
+    if folded { hyphens(&lower) } else { lower }
 }
 
 /// `text` with each dash the keyboard's hyphen, as a short is held, so
@@ -187,7 +250,8 @@ fn dash(each: char) -> bool {
 }
 
 /// `name` as a page draws it and a person types it: cleaned, so each
-/// control is the space it's drawn as, in lower case, with each dash the
+/// control is the space it's drawn as, in lower case, composed as a
+/// keyboard types an accented letter (NFC), with each dash the
 /// keyboard's hyphen, and with each run of what's drawn as a space one
 /// hyphen, as a typed name's words are joined. So what a page draws is
 /// what reaches it: `tide plan` drawn as said would be typed as
@@ -197,7 +261,8 @@ fn dash(each: char) -> bool {
 /// check on each part, and miss the keyboard's `reef-pause` it seems to
 /// be.
 fn typed_form(name: &str) -> String {
-    hyphens(&unmarked(name).to_lowercase())
+    let lower: String = unmarked(name).to_lowercase().nfc().collect();
+    hyphens(&lower)
         .split(blank)
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
@@ -321,17 +386,49 @@ pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
         .collect();
     named
         .iter()
-        // Two that clean alike are drawn alike, and typed reach both.
+        // Two that clean alike, or whose letters Unicode's confusables
+        // draw alike, as a dotless i is drawn as an i, are drawn alike,
+        // and typed reach both.
         .filter(|(_, name)| {
-            let drawn = unmarked(name);
+            let drawn: String = skeleton(&unmarked(name)).collect();
             named
                 .iter()
-                .filter(|(_, other)| unmarked(other) == drawn)
+                .filter(|(_, other)| skeleton(&unmarked(other)).eq(drawn.chars()))
                 .count()
                 == 1
         })
         .map(|(team, name)| ((*team).to_owned(), name.clone()))
         .collect()
+}
+
+/// The team whose quest gives it the name `asked` is typed as, where that
+/// name was held back, so one asking for it is told why it reaches
+/// nothing, rather than nothing at all, or a session whose title holds it.
+pub(crate) fn held_back<'a>(
+    teams: &'a [Value],
+    shorts: &BTreeMap<String, String>,
+    asked: &str,
+) -> Option<&'a Value> {
+    let asked = typed_form(asked);
+    teams.iter().find(|team| {
+        given(team).is_some_and(|name| name == asked) && !shorts.contains_key(address(team))
+    })
+}
+
+/// Why nothing answers `asked`, naming `team` where its quest gives it
+/// that name and it's held back.
+pub(crate) fn unnamed(asked: &str, team: Option<&Value>, nothing: &str) -> String {
+    team.map_or_else(
+        || format!("{nothing} {asked}"),
+        |team| {
+            format!(
+                "{nothing} {asked}: {}'s quest gives it that name, held back as, typed or \
+                 drawn, it reads as more than one name or as other than a name; ask for it by \
+                 its title",
+                unmarked(title(team))
+            )
+        },
+    )
 }
 
 /// What a person types to reach `team`: its short name, else its title.
@@ -350,11 +447,12 @@ pub fn shown<'a>(team: &Value, shorts: &'a BTreeMap<String, String>) -> Option<&
 
 /// Whether `short` only says `title` again, as `reef` says Reef, the
 /// title's words in the [`typed_form`] a swarm short is held in, and
-/// the short's dashes folded as that form folds them, as a network's
-/// short isn't held in it.
+/// the short in its [`drawn_form`], folded as that form is, as a
+/// network's short isn't held in it, so `Kelp-Beds` says Kelp Beds
+/// again whatever its case or its dashes.
 pub(crate) fn says_again(title: &str, short: &str) -> bool {
     let spelt: Vec<String> = words(title).into_iter().map(|word| word.typed).collect();
-    typed_form(&spelt.join("-")) == hyphens(short)
+    typed_form(&spelt.join("-")) == drawn_form(short, true)
 }
 
 #[cfg(test)]
@@ -404,6 +502,7 @@ mod tests {
         // A network's short isn't held in typed form, so both sides fold.
         assert!(says_again("Kelp\u{2011}Beds", "kelp\u{2011}beds"));
         assert!(says_again("Kelp\u{2011}Beds", "kelp-beds"));
+        assert!(says_again("Kelp\u{2011}Beds", "Kelp-Beds"));
         assert!(!says_again("Kelp\u{2011}Beds", "kelp"));
     }
 

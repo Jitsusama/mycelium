@@ -27,7 +27,7 @@ pub(crate) use asks::{ASKS_FIT, together};
 pub(crate) use asks::{asked, asking};
 pub use asks::{read, records};
 pub use names::short_names;
-pub(crate) use names::{hyphens, says_again, shell_word};
+pub(crate) use names::{drawn_form, says_again, shell_word};
 pub use shapes::Shapes;
 
 /// The swarm as the node holds it.
@@ -1022,7 +1022,11 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
     };
     match picked(&swarm.teams, asked, true, naming) {
         Picked::One(team) => Ok(team),
-        Picked::None => Err(format!("no team is named {asked}")),
+        Picked::None => Err(names::unnamed(
+            asked,
+            names::held_back(&swarm.teams, &shorts, asked),
+            "no team is named",
+        )),
         Picked::Several(many) => {
             // Each is a peer's text, so it is held to one line.
             let named = told_apart(
@@ -1073,8 +1077,10 @@ pub(crate) enum Picked<'a, T> {
 /// name is a group a peer may pick as well, so it isn't. An address
 /// matched in its own case comes before one matched in another, so two
 /// keyed alike but for case are each reached by the address told apart.
-/// A short name and a title are matched as they are drawn, cleaned on
-/// both sides, so what a page or hint shows finds what it names.
+/// A short name and a title are matched in their [`drawn_form`], as is
+/// what's asked, so what a page or hint shows finds what it names, and
+/// two titles a page draws alike, however their dashes are spelt, are
+/// several, whichever spelling is asked: one may be pasted from another.
 pub(crate) fn picked<'a: 'n, 'n, T>(
     things: &'a [T],
     asked: &str,
@@ -1083,9 +1089,10 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
 ) -> Picked<'a, T> {
     // A short name's words may be typed apart, as `part deux`, and its
     // dashes spelt as the keyboard's hyphen or as the quest wrote them.
-    let joined = hyphens(&unmarked(
+    let joined = drawn_form(
         &asked.split_whitespace().collect::<Vec<_>>().join("-"),
-    ));
+        true,
+    );
     let exactly: Vec<&T> = things
         .iter()
         .filter(|thing| naming(thing).address == asked)
@@ -1101,7 +1108,7 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
     let by_short = |thing: &'a T| {
         naming(thing)
             .short
-            .is_some_and(|short| hyphens(&unmarked(short)).eq_ignore_ascii_case(&joined))
+            .is_some_and(|short| drawn_form(short, true) == joined)
     };
     let whole: Vec<&T> = if first && !by_address.is_empty() {
         by_address
@@ -1113,31 +1120,14 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
             })
             .collect()
     };
-    // Titles are matched with their dashes folded, so two a page draws
-    // alike are several; only one asked with a dash a keyboard doesn't
-    // type is first matched as spelt, as the person chose it.
-    let titled = |folded: bool| -> Vec<&T> {
-        let spelt = |text: &str| {
-            let lower = unmarked(text).to_lowercase();
-            if folded { hyphens(&lower) } else { lower }
-        };
-        let lower = spelt(asked);
+    let found = if whole.is_empty() {
+        let lower = drawn_form(asked, true);
         things
             .iter()
-            .filter(|thing| spelt(naming(thing).title).contains(&lower))
+            .filter(|thing| drawn_form(naming(thing).title, true).contains(&lower))
             .collect()
-    };
-    let found = if !whole.is_empty() {
-        whole
-    } else if hyphens(asked) != asked {
-        let spelt = titled(false);
-        if spelt.is_empty() {
-            titled(true)
-        } else {
-            spelt
-        }
     } else {
-        titled(true)
+        whole
     };
     match found.as_slice() {
         [] => Picked::None,

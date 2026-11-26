@@ -563,20 +563,17 @@ fn a_team_held_back_by_its_title_s_act_is_reached_by_its_title_however_dashed() 
         found.starts_with("Bootstrap"),
         "a title's dash missed the keyboard's: {found}"
     );
-    // Where two titles spell it apart, a page draws both alike, so the
-    // keyboard's spelling finds both, to be told apart; the lookalike,
-    // which only a person choosing it asks, finds its own.
+    // Where two titles spell it apart, a page draws both alike, so either
+    // spelling, which may be pasted from either, finds both, to be told
+    // apart, each by the short worked out from its title.
     titled.teams[0]["title"] = json!("Coral reef-pause notes");
-    let found = team(&titled, "reef\u{2011}pause", &look()).unwrap_or_default();
-    assert!(
-        found.starts_with("Bootstrap"),
-        "the lookalike missed its own: {found}"
-    );
-    let both = team(&titled, "reef-pause", &look());
-    assert!(
-        both.as_ref().is_err_and(|why| why.contains(" could be ")),
-        "two titles drawn alike, one was picked: {both:?}"
-    );
+    for asked in ["reef-pause", "reef\u{2011}pause"] {
+        assert_eq!(
+            team(&titled, asked, &look()),
+            Err(format!("{asked} could be notes or tools")),
+            "two titles drawn alike, one was picked"
+        );
+    }
 }
 
 #[test]
@@ -611,17 +608,30 @@ fn a_short_spelt_with_any_dash_is_drawn_with_a_hyphen_and_reached_however_dashed
 #[test]
 fn a_short_a_keyboard_types_is_kept_and_one_it_cannot_is_not() {
     // Letters, digits, `-`, `_` and `.` are typed as drawn, and so is a
-    // mark or joiner on a letter: a decomposed accent, Hindi's virama,
-    // Thai's tone mark, Persian's non-joiner. What's drawn like a hyphen
-    // and isn't one, what a shell reads otherwise, an emoji or a lone
-    // mark isn't, nor another script's letter beside Latin's or ASCII's
-    // own fullwidth or mathematical letters, so the team goes by its title.
+    // mark or joiner on a letter: an accent, held composed as a keyboard
+    // types it, Hindi's virama, Thai's tone mark, Persian's non-joiner;
+    // and ASCII beside Han or Hangul, and Latin letters past Latin-1, as
+    // Azerbaijani's schwa and Hawaiian's okina are. What's drawn like a
+    // hyphen and isn't one, what a shell reads otherwise, an emoji, a
+    // lone mark or a pile of them, a mark on an ASCII letter, another
+    // script's letter drawn like Latin's beside it or two such scripts
+    // mixed, and ASCII's fullwidth, mathematical, circled or superscript
+    // forms aren't, so the team goes by its title.
     for (given, kept) in [
         ("kelp_beds", "kelp_beds"),
         ("v2.1", "v2.1"),
-        ("paus\u{E9}", "paus\u{E9}"),
-        ("tide\u{301}", "tide\u{301}"),
+        ("tid\u{E9}", "tid\u{E9}"),
+        ("tide\u{301}", "tid\u{E9}"),
         ("\u{6E2F}\u{6E7E}", "\u{6E2F}\u{6E7E}"),
+        ("ai\u{6226}\u{7565}", "ai\u{6226}\u{7565}"),
+        ("k8s-\u{C6B4}\u{C601}", "k8s-\u{C6B4}\u{C601}"),
+        ("G\u{259}nc\u{259}", "g\u{259}nc\u{259}"),
+        ("hawai\u{2BB}i", "hawai\u{2BB}i"),
+        ("\u{6E2F}\u{4E00}\u{6E7E}", "\u{6E2F}\u{4E00}\u{6E7E}"),
+        (
+            "\u{30BF}\u{30A4}\u{30C9}\u{30FC}",
+            "\u{30BF}\u{30A4}\u{30C9}\u{30FC}",
+        ),
         (
             "\u{939}\u{93F}\u{928}\u{94D}\u{926}\u{940}",
             "\u{939}\u{93F}\u{928}\u{94D}\u{926}\u{940}",
@@ -656,9 +666,26 @@ fn a_short_a_keyboard_types_is_kept_and_one_it_cannot_is_not() {
         "tide\u{FF70}plan",
         "tide\u{30FC}plan",
         "tide\u{2CBB}plan",
+        "tide\u{4E00}plan",
         "t\u{456}de",
+        "\u{435}\u{441}\u{43E}-\u{440}\u{430}\u{57D}\u{455}\u{435}",
         "\u{FF54}\u{FF49}\u{FF44}\u{FF45}",
         "\u{1D5CD}\u{1D5C2}\u{1D5BD}\u{1D5BE}",
+        "\u{24E3}\u{24D8}\u{24D3}\u{24D4}",
+        "\u{1D57}\u{2071}\u{1D48}\u{1D49}",
+        "\u{217D}\u{217C}\u{2170}",
+        "ke\u{1C0}p",
+        "q\u{301}",
+        "v2\u{20E3}",
+        "g\u{259}\u{301}\u{302}\u{303}\u{304}",
+        "-\u{200C}tide",
+        // Drawn like a hyphen by many fonts, and no dash: a hyphen
+        // bullet, a heavy minus, a box line and a modifier minus.
+        "reef\u{2043}pause",
+        "reef\u{2796}pause",
+        "reef\u{2500}pause",
+        "reef\u{2D7}pause",
+        "\u{2043}\u{2043}names",
     ] {
         let mut swarm = swarm();
         swarm.teams[1]["swarm"] = json!(refused);
@@ -668,6 +695,10 @@ fn a_short_a_keyboard_types_is_kept_and_one_it_cannot_is_not() {
             "{refused} was given as Harbour's name"
         );
     }
+}
+
+#[test]
+fn two_shorts_drawn_alike_keep_neither() {
     // So a lookalike drawn as another team's short is never a twin that
     // steers it: the keyboard's spelling keeps its team.
     let mut twins = swarm();
@@ -682,6 +713,24 @@ fn a_short_a_keyboard_types_is_kept_and_one_it_cannot_is_not() {
         ["tide-plan"],
         "a lookalike twin was drawn beside its team: {names:?}"
     );
+    // Two whose letters Unicode's confusables draw alike, as a dotless i
+    // and an i, or spelt composed and apart, are drawn alike, so neither
+    // keeps it.
+    for (one, other) in [
+        ("tide-plan", "t\u{131}de-plan"),
+        ("tid\u{E9}", "tide\u{301}"),
+    ] {
+        let mut twins = swarm();
+        twins.teams[0]["swarm"] = json!(one);
+        twins.teams[1]["swarm"] = json!(other);
+        let names = typed(&twins);
+        assert!(
+            !names
+                .iter()
+                .any(|name| name.starts_with("tid") || name.starts_with("t\u{131}d")),
+            "{one} and {other}, drawn alike, kept a short: {names:?}"
+        );
+    }
 }
 
 #[test]
@@ -725,15 +774,11 @@ fn a_short_name_is_drawn_as_it_is_typed_and_reaches_only_its_team() {
         "reef\u{FE63}pause",
         "\u{2212}\u{2212}names",
         "\u{FF0D}names",
-        // Drawn like a hyphen by many fonts, and no dash: a hyphen
-        // bullet, a heavy minus, a box line and a modifier minus.
-        "reef\u{2043}pause",
-        "reef\u{2796}pause",
-        "reef\u{2500}pause",
-        "reef\u{2D7}pause",
-        "\u{2043}\u{2043}names",
-        // A mark on the act's own word.
+        // A mark on the act's own word, apart or composed, and an act
+        // spelt in Cyrillic letters drawn as its own, dze, a and u.
         "reef-pause\u{301}",
+        "reef-paus\u{E9}",
+        "\u{455}\u{430}\u{443}",
     ] {
         let mut acting = swarm();
         acting.teams[1]["swarm"] = json!(given);

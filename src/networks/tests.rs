@@ -1875,6 +1875,40 @@ fn a_name_matching_none_or_several_networks_is_said_plainly() {
 }
 
 #[test]
+fn a_network_or_cell_titled_with_a_lookalike_dash_is_found_by_the_keyboard_s() {
+    // Titles are matched as a page draws them, dashes folded, so the
+    // hyphen a person types finds a title spelt with a non-breaking
+    // hyphen or an en dash, and the title's own spelling finds it too.
+    let mut mycelium = mycelium();
+    let network = mycelium
+        .networks
+        .iter()
+        .position(|each| each.name == "quest.harbor")
+        .expect("Harbor's network");
+    mycelium.networks[network].title = Some("Harbour\u{2011}Tides".to_owned());
+    let cell = mycelium
+        .cells
+        .iter()
+        .position(|each| each.name == "NAPS01")
+        .expect("the napping cell");
+    mycelium.cells[cell].title = Some("Napping\u{2013}one".to_owned());
+    for asked in ["harbour-tides", "harbour\u{2011}tides"] {
+        assert_eq!(
+            mycelium.named_network(asked).map(|each| each.name.as_str()),
+            Ok("quest.harbor"),
+            "{asked} missed the network titled with a lookalike"
+        );
+    }
+    for asked in ["napping-one", "napping\u{2013}one"] {
+        assert_eq!(
+            mycelium.named_cell(asked).map(|each| each.name.as_str()),
+            Ok("NAPS01"),
+            "{asked} missed the cell titled with a lookalike"
+        );
+    }
+}
+
+#[test]
 fn what_a_name_could_be_names_each_on_one_line() {
     let (cell, network) = ("ASKS\u{1b}]0;x\u{7}01", "quest.\u{200b}harbor\u{fdd0}");
     assert_eq!(
