@@ -1243,6 +1243,11 @@ struct Sprouting {
     /// checkout holds uncommitted.
     #[arg(long)]
     on: Option<String>,
+    /// What the machine it starts on must be, as for `place`, such as
+    /// `cloud`; given again for each. Where no `--on` names one, it
+    /// starts on whichever meets them, made for the person if none does.
+    #[arg(long = "need", value_parser = need)]
+    needs: Vec<Need>,
     /// The folder it works in, or a place by name, such as
     /// `//system/reef` or `reef`.
     #[arg(long = "in")]
@@ -1281,8 +1286,8 @@ struct Running {
 struct Asked {
     /// What a machine must be, as `kind=value`: `machine`, `system`,
     /// `arch`, `reach`, `accelerator` or `tool` (one the realm's kit
-    /// holds), such as `system=linux` or `tool=gcloud`; given again for
-    /// each.
+    /// holds), such as `system=linux` or `tool=gcloud`, or `cloud` alone
+    /// for a machine that costs money; given again for each.
     #[arg(long = "need", value_parser = need)]
     needs: Vec<Need>,
     /// What a machine had rather be, in the same words, most wanted first.
@@ -3013,6 +3018,7 @@ fn sprout(socket: &Path, asked: Sprouting) -> io::Result<()> {
         folder,
         from: asked.from,
         on: asked.on,
+        needs: asked.needs,
         cwd: Some(cwd.clone()),
     };
     // Judged first here, where this process stands and sees the disk as
@@ -3728,12 +3734,17 @@ fn write_line(out: &mut impl Write, value: &impl serde::Serialize) -> io::Result
 }
 
 fn need(said: &str) -> Result<Need, String> {
+    // The cloud is a need with no value: any machine a provider made.
+    if said == "cloud" {
+        return Ok(Need::Cloud);
+    }
     let (kind, value) = said
         .split_once('=')
         .ok_or_else(|| format!("{said:?} is not kind=value, such as system=linux"))?;
     serde_json::from_value(serde_json::json!({ kind: value })).map_err(|_| {
         format!(
-            "{said:?} is not a need: machine, system, arch, reach, accelerator (gpu, npu) or tool"
+            "{said:?} is not a need: cloud, machine, system, arch, reach, accelerator (gpu, \
+             npu) or tool"
         )
     })
 }
@@ -3779,9 +3790,20 @@ mod tests {
 
     use super::{
         Action, Command, HELP_WIDTH, SAID_MOST, SWARM_WIDTH, SwarmAsked, Tree, held_through,
-        in_place, kit, orchestrates, processes_here, reader_left, room_of, said_text, swarm_asked,
-        tree, width, within, write_line,
+        in_place, kit, need, orchestrates, processes_here, reader_left, room_of, said_text,
+        swarm_asked, tree, width, within, write_line,
     };
+
+    #[test]
+    fn the_cloud_is_a_need_with_no_value() {
+        use mycelium::placement::Need;
+        assert_eq!(need("cloud"), Ok(Need::Cloud));
+        assert_eq!(need("reach=basin"), Ok(Need::Reach("basin".to_owned())));
+        assert!(
+            need("clouds").is_err_and(|why| why.contains("cloud, machine")),
+            "a word that isn't one names those that are"
+        );
+    }
 
     #[test]
     fn a_held_program_starts_within_its_fence_outside_the_login_shell() {

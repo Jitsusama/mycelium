@@ -15,7 +15,7 @@ use crate::facts::Machine;
 use crate::flow::{Crossing, Refusal};
 use crate::group::{Group, Pattern};
 use crate::offer::Offer;
-use crate::placement::{Placement, Work};
+use crate::placement::{Need, Placement, Work};
 use crate::record::{Intent, Message, Session};
 
 /// What a client asks of the node.
@@ -271,10 +271,11 @@ pub struct Taking {
 /// `words`, a link or what the work is, and its folder is the one named,
 /// the checkout a link's repository has under home, or where the asker
 /// is, judged as the asker could reach it and never home itself. It
-/// starts on `on`; else where placement chooses, where its folder is a
-/// repository's own checkout under `~/src` fetching from a remote,
-/// beginning here instead where the machine chosen hasn't it; here
-/// otherwise; and never on one that costs money.
+/// starts on `on`; else where `needs` say, wherever its folder is; else
+/// where placement chooses, where its folder is a repository's own
+/// checkout under `~/src` fetching from a remote, beginning here instead
+/// where the machine chosen hasn't it; here otherwise; and never on one
+/// that costs money unless it names one or needs the cloud.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sprout {
     /// The work: a link alone, or words.
@@ -288,6 +289,10 @@ pub struct Sprout {
     /// The machine it starts on, by name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<String>,
+    /// What the machine it starts on must be, such as `cloud`, where no
+    /// machine is named; placement chooses among those that are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<Need>,
     /// Where the asker says it is, which counts only for the person and
     /// only where the node can't see where the asker is itself, as on a
     /// Mac.

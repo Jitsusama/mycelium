@@ -277,6 +277,7 @@ impl fmt::Display for Because {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Because::Lacks(Need::Machine(name)) => write!(f, "isn't {name}"),
+            Because::Lacks(Need::Cloud) => write!(f, "isn't a cloud machine"),
             Because::Lacks(need) => write!(f, "lacks {need}"),
             Because::Unknown(need) => write!(f, "hasn't said {need}"),
             Because::Refuses(taint) => write!(f, "refuses: {}", taint.why),
@@ -3079,11 +3080,11 @@ pub(crate) mod tests {
             "of the two that reach what it needs, the cheaper, by amount and not by how it is written"
         );
 
-        work.lasts = Some(jiff::SignedDuration::from_hours(1));
+        work.lasts = Some(jiff::SignedDuration::from_hours(2));
         assert_eq!(
             to_make(&work, &offers, &[]).map(|chosen| chosen.shape.as_str()),
             Ok("large"),
-            "not one that would end before the work does"
+            "not one that would end before the work does, and one living exactly as long will do"
         );
 
         work.needs.push(Need::Accelerator(AcceleratorKind::Gpu));
@@ -3096,6 +3097,50 @@ pub(crate) mod tests {
             "large from lender hasn't said a gpu, isn't skiff; small from lender \
              would live only 1h, ending before the work, hasn't said a gpu, isn't skiff",
             "each offer says why not, a fact it doesn't promise meeting no need"
+        );
+    }
+
+    #[test]
+    fn work_needing_the_cloud_goes_only_to_a_machine_that_costs_money() {
+        let mut made = machine("wren", "linux", 4, &["work"]);
+        made.declared.as_mut().expect("declared").costs_money = true;
+        let realm = [machine("skiff", "linux", 30, &["work"]), made];
+        let cloud = needing(vec![Need::Cloud]);
+        let Placement::Placed { machine, passed } = place(&cloud, &realm) else {
+            panic!("a machine that costs money is in the cloud")
+        };
+        assert_eq!(
+            machine, "wren",
+            "to the one that costs money, though skiff has more room"
+        );
+        assert_eq!(
+            said(&passed),
+            "skiff isn't a cloud machine",
+            "the person's own machine isn't the cloud"
+        );
+
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &realm)),
+            Some("skiff"),
+            "work that says nothing still never goes to one that costs money"
+        );
+    }
+
+    #[test]
+    fn work_needing_the_cloud_is_made_a_machine_naming_no_network() {
+        let offers = [offer("large", "1.16", Some(43_200), &["work"])];
+        let mut work = needing(vec![Need::Cloud]);
+        assert_eq!(
+            to_make(&work, &offers, &[]).map(|chosen| chosen.shape.as_str()),
+            Ok("large"),
+            "whatever a provider makes is in the cloud, and the need names it"
+        );
+
+        work.lasts = Some(jiff::SignedDuration::from_hours(12));
+        assert_eq!(
+            to_make(&work, &offers, &[]).map(|chosen| chosen.shape.as_str()),
+            Ok("large"),
+            "one that lives exactly as long as the work will do"
         );
     }
 

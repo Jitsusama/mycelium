@@ -8445,7 +8445,8 @@ impl<S: Store> Shared<S> {
     /// `unknown`. A start relayed by another machine's node never makes
     /// one, since the link pins it to this machine by name, which no offer
     /// meets. It is read before any provider is asked what it offers, so
-    /// an asker that ends meanwhile is still told as it was.
+    /// an asker that ends meanwhile is still told as it was. A session the
+    /// person granted ([`made::Grant`]) is told as the person.
     async fn asker_of_a_make(&self) -> Asker {
         let unknown = |why: String| Asker {
             told: made::UNKNOWN.to_owned(),
@@ -8464,6 +8465,17 @@ impl<S: Store> Shared<S> {
                     .and_then(|presence| presence.body.get("addresses")?.get(0)?.as_str())
                     .and_then(address_told);
                 match address {
+                    // The person's grant makes and places for it as for
+                    // them, so their own starts may use what it made.
+                    Some(address)
+                        if self
+                            .book
+                            .granted(&address, jiff::Timestamp::now())
+                            .is_some() =>
+                    {
+                        eprintln!("{address} asks for the person, by the person's grant to it");
+                        told(made::PERSON)
+                    }
                     Some(address) => told(&address),
                     None => unknown(format!("{session} says no address")),
                 }
@@ -10808,6 +10820,20 @@ esac
             told_asker(&socket, &told).await,
             "WCJQSG\n",
             "the session whose pi the asker runs below, by its own presence's address"
+        );
+
+        let until = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        fs::write(
+            socket.with_file_name(made::GRANTS),
+            json!([{"address": "WCJQSG", "said": "you may make it as me",
+                    "at": jiff::Timestamp::now(), "until": until}])
+            .to_string(),
+        )
+        .expect("the grant is written");
+        assert_eq!(
+            told_asker(&socket, &told).await,
+            "person\n",
+            "a session the person granted asks as the person"
         );
     }
 
@@ -23869,6 +23895,7 @@ esac
             folder: Some(folder.clone()),
             from: Some("QEST-1".to_owned()),
             on: Some(on.to_owned()),
+            needs: Vec::new(),
             cwd: None,
         };
         let logged = || {
@@ -24742,6 +24769,7 @@ esac
             folder: None,
             from: None,
             on: None,
+            needs: Vec::new(),
             cwd: cwd.map(Path::to_owned),
         }
     }
