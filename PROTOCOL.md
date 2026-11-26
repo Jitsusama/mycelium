@@ -2095,7 +2095,22 @@ or memory headroom. Over, it carries a `memory-pressure` or
 `cpu-saturated` the work doesn't tolerate, so work starts where it runs
 at once, and still goes to the roomiest where every machine is
 saturated, never refused; an unheard room is never saturated, nor
-passed for it. Within a tier, the most preferences met goes first,
+passed for it. A machine whose `declared` says `kept_lively`, as
+`{"cpu": 28, "memory_available": bytes}` (the second may be left out),
+is one the person works at that the others take new work from first:
+within its ceiling (processor pressure, `some` over ten seconds
+machine-wide, at or under `cpu`, and as much memory available as it
+keeps), over a limit of its queue's or not, it ranks after every other
+heard machine neither saturated nor unheard, and before those
+saturated; past it, it carries `kept-lively`, `prefer_not`, ranks over,
+and goes after every other heard machine. Unheard, it ranks with the
+unheard. It refuses no work, so where nothing else takes a start it
+still does, and a start placed on it heard is past room, as the cloud's
+paragraph below says, so the person's start goes to a cloud machine
+with room before it. Work tolerating `kept-lively` ranks it as any
+machine. A ceiling in another shape spoils only itself, and a node
+older than the field ranks it as any machine. Within a tier, the most
+preferences met goes first,
 then the most headroom, then by name; of the first and each as good but
 for headroom within 0.05 of it (`NEAR_BEST`), one is chosen at random,
 so asks alike spread rather than herd. Headroom is one sum, its weights
@@ -2593,7 +2608,8 @@ node from before `strict` begins a strict start at home and its guard
 ends it, so a realm placing sprouts runs nodes that judge `strict`.
 The person's sprout may cost, an agent's never. A start that may cost
 and names no machine, placed on a machine heard lately but over its
-room or saturated, so that every machine heard is past its room, is
+room, saturated or kept lively, so that every machine heard is past
+its room or kept lively, is
 asked again needing `cloud`, judged to last at least an hour, and
 strict where it names a folder: a cloud machine linked, heard lately
 within its room, takes it, counted there. No machine is made for it,
