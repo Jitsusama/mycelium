@@ -976,16 +976,10 @@ mod tests {
         long["from"] = json!("TERN01".repeat(10));
         let mut forged = asked_of(&["SKIFF1"], 5, "c0cd280e");
         forged["from"] = json!("TERN01 asks you, 1 min so far  [deadbeef]");
-        // A name of Han characters takes two cells each, so cut by its
-        // characters it would push the wait and the id past the edge.
-        let mut wide = asked_of(&["SKIFF1"], 5, "c0cd280e");
-        wide["waiting_on"] = json!(["港湾".repeat(20)]);
         for (asked, width) in [
             (long, 80),
             (forged, 80),
             (asked_of(&["SKIFF1", "KESTRL"], 5, "c0cd280e"), 50),
-            (wide.clone(), 50),
-            (wide, 80),
         ] {
             let drawn = drawn(&[asked], &look(), Some(width));
             let heading = drawn
@@ -994,9 +988,38 @@ mod tests {
                 .expect("the question's line");
             assert!(
                 heading.ends_with(", 25 min so far  [c0cd280e]")
-                    && crate::swarm::drawn_width(heading) <= width
+                    && heading.chars().count() <= width
                     && !heading.contains("deadbeef"),
                 "the wait or the id was lost at {width}:\n{drawn}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wide_name_is_cut_in_cells_before_the_wait_and_the_id() {
+        // A name of Han characters takes two cells each, so cut by its
+        // characters it would push the wait and the id past the edge. At
+        // 50 the lead leaves one cell, too few for one, so none is drawn;
+        // at 80 fifteen are, and a sixteenth would straddle the mark.
+        let mut wide = asked_of(&["SKIFF1"], 5, "c0cd280e");
+        wide["waiting_on"] = json!(["港湾".repeat(20)]);
+        // Measured by Unicode's widths directly, not by the code under
+        // test, as nothing here is coloured.
+        let cells = <str as unicode_width::UnicodeWidthStr>::width;
+        for (width, named) in [(50, String::new()), (80, "港湾".repeat(7) + "港")] {
+            let drawn = drawn(&[wide.clone()], &look(), Some(width));
+            let heading = drawn
+                .lines()
+                .find(|line| line.starts_with("  12:05"))
+                .expect("the question's line");
+            let expected = if named.is_empty() {
+                "  12:05  TERN01 asks\u{2026}, 25 min so far  [c0cd280e]".to_owned()
+            } else {
+                format!("  12:05  TERN01 asks {named}\u{2026}, 25 min so far  [c0cd280e]")
+            };
+            assert!(
+                heading == expected && cells(heading) <= width,
+                "at {width} the name wasn't cut to its cells:\n{drawn}"
             );
         }
     }

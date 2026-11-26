@@ -3006,49 +3006,65 @@ mod tests {
     fn a_wide_purpose_wraps_and_is_cut_in_cells() {
         // Each Han or kana character takes two cells, so a purpose of them
         // wrapped by its characters would run past its room, and its mark
-        // off the line's end. Among many it is cut to its lines; named,
-        // it is drawn whole. Words of two such characters fill each line
-        // at 36 columns exactly, so its mark is pushed past only when it
-        // has no room of its own.
-        let said = "港湾の 見張りを 続けて 潮の 満ち引きを 記録する ".repeat(6);
-        let full = "港湾 ".repeat(40);
-        let mut cell = forage("KESTRL", "kestrel", "QEST-1");
-        for (said, named, width) in [
-            (&said, None, 40),
-            (&said, None, 80),
-            (&said, Some("KESTRL"), 40),
-            (&full, None, 36),
-        ] {
-            cell["purpose"] = json!(said.trim());
+        // off the line's end. Measured by Unicode's widths directly, not
+        // by the code under test, as nothing here is coloured.
+        let cells = <str as unicode_width::UnicodeWidthStr>::width;
+        let drawn = |text: &str, named: Option<&str>, width: usize| {
+            let mut cell = forage("KESTRL", "kestrel", "QEST-1");
+            cell["purpose"] = json!(text);
             let drawn = draw(std::slice::from_ref(&cell), named, width);
-            let purpose: Vec<&str> = drawn
+            let purpose: Vec<String> = drawn
                 .lines()
                 .skip(1)
                 .take_while(|line| !line.starts_with("  plan"))
+                .map(str::to_owned)
                 .collect();
-            for line in &purpose {
-                assert!(
-                    crate::swarm::drawn_width(line) <= width,
-                    "{line:?} passed {width} cells:\n{drawn}"
-                );
-            }
-            if named.is_none() {
-                assert!(
-                    purpose.len() == PURPOSE_LINES
-                        && purpose
-                            .last()
-                            .is_some_and(|last| last.ends_with(" \u{2026}")),
-                    "{width}: a cut wide purpose took more lines or lost its mark:\n{drawn}"
-                );
-            } else {
-                assert!(
-                    purpose.len() > PURPOSE_LINES
-                        && purpose
-                            .last()
-                            .is_some_and(|last| said.trim().ends_with(last.trim())),
-                    "{width}: a named wide purpose wasn't drawn whole:\n{drawn}"
-                );
-            }
+            assert!(
+                purpose.iter().all(|line| cells(line) <= width),
+                "a line passed {width} cells:\n{drawn}"
+            );
+            purpose
+        };
+        // Among many, words of mixed lengths are cut to their two lines
+        // and the mark; named, every word is drawn.
+        let spaced = "港湾の 見張りを 続けて 潮の 満ち引きを 記録する ".repeat(6);
+        let spaced = spaced.trim();
+        for width in [40, 80] {
+            let purpose = drawn(spaced, None, width);
+            assert!(
+                purpose.len() == PURPOSE_LINES && purpose[1].ends_with(" \u{2026}"),
+                "{width}: a cut wide purpose took more lines or lost its mark: {purpose:?}"
+            );
+        }
+        let whole = drawn(spaced, Some("KESTRL"), 40);
+        assert_eq!(
+            whole
+                .iter()
+                .flat_map(|line| line.split_whitespace())
+                .collect::<Vec<_>>(),
+            spaced.split_whitespace().collect::<Vec<_>>(),
+            "named, a wide purpose isn't drawn whole"
+        );
+        // Words of two such characters fill each line at 36 columns
+        // exactly, so the mark takes the last word's room, no more.
+        let words = |many: usize| format!("  {}", ["港湾"; 7][..many].join(" "));
+        assert_eq!(
+            drawn("港湾 ".repeat(40).trim(), None, 36),
+            [words(7), format!("{} \u{2026}", words(6))],
+            "a full line's mark took the wrong room"
+        );
+        // Japanese and Chinese are written without spaces, so the cut falls
+        // within the one long word; a character that would straddle the
+        // edge goes down whole, leaving the 41st cell empty.
+        for width in [40, 41] {
+            assert_eq!(
+                drawn(&"港".repeat(100), None, width),
+                [
+                    format!("  {}", "港".repeat(19)),
+                    format!("  {} \u{2026}", "港".repeat(18))
+                ],
+                "{width}: an unspaced purpose was cut out of its cells"
+            );
         }
     }
 

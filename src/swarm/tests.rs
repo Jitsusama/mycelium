@@ -977,6 +977,7 @@ fn width_is_counted_in_the_cells_a_terminal_draws() {
     for (text, wide, what) in [
         ("tide", 4, "a letter takes one"),
         ("港湾", 4, "a Han character takes two"),
+        ("のを", 4, "a kana takes two"),
         ("e\u{301}", 1, "a combining accent takes none"),
         ("👩\u{200D}💻", 2, "an emoji joined from two takes two"),
         ("❤\u{FE0F}", 2, "a heart made an emoji takes two"),
