@@ -771,8 +771,11 @@ pub fn needs_as_declared(start: &mut Start, words: &[String], home: &Path, rules
         return;
     }
     let said: Vec<String> = words.iter().map(|word| word.to_lowercase()).collect();
+    // Both read within home, so a folder named whole on either side is the
+    // same folder as one named within it.
+    let begun = start.folder.clone().map(|folder| within_home(folder, home));
     let begun_in = |rule: &NeedsIn| {
-        start.folder.as_ref().is_some_and(|folder| {
+        begun.as_ref().is_some_and(|folder| {
             // An empty folder would name every one, so it names none.
             rule.folders
                 .iter()
