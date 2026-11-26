@@ -877,7 +877,7 @@ fn as_echoed(given: &[u8]) -> Vec<u8> {
             b'\r' | b'\n' => echo.push(b'\n'),
             _ if ERASES.contains(&byte) => {}
             // A tab is echoed as itself.
-            0..=0x08 | 0x0a..=0x1f => echo.extend_from_slice(&[b'^', byte + 0x40]),
+            0..=0x08 | 0x0b..=0x0c | 0x0e..=0x1f => echo.extend_from_slice(&[b'^', byte + 0x40]),
             _ => echo.push(byte),
         }
     }
@@ -3104,28 +3104,42 @@ mod tests {
             "typed is kept to its bound"
         );
         let (_, mut joined) = shown.join();
-        shown.show(&ERASED.repeat(ECHO_HELD / ERASED.len()));
-        assert_eq!(sent(&mut joined), "", "an echo up to its bound is held");
-        shown.show(b"\x08 \x08\x08 \x08");
+        // Erasures, then typed keys' echo to fill the bound exactly, since
+        // ERASED's three bytes don't divide it.
+        let erasures = ERASED.repeat(ECHO_HELD / ERASED.len());
+        let filled = vec![b'a'; ECHO_HELD - erasures.len()];
+        let held = [erasures, filled].concat();
+        shown.show(&held);
+        assert_eq!(sent(&mut joined), "", "an echo filling its bound is held");
+        shown.show(b"a");
         let cleared = std::str::from_utf8(STARTING_CLEARED).expect("plain bytes");
-        assert!(
-            sent(&mut joined).starts_with(cleared),
-            "past it, the line goes"
+        let held = std::str::from_utf8(&held).expect("plain bytes");
+        assert_eq!(
+            sent(&mut joined),
+            format!("{cleared}{held}a"),
+            "past it, the line goes, and what it held follows"
         );
     }
 
     #[test]
     fn the_starting_line_goes_before_the_holders_next_words_or_an_end() {
+        // Each holds an echo, which follows the line's going at once.
+        let echoing = |starting: &Shown| {
+            starting.keeps_typed(b"x");
+            starting.show(b"x");
+        };
+        let next = |joined: &mut broadcast::Receiver<Arc<[u8]>>| joined.try_recv().ok();
         let said = shown();
         said.says_start();
         let (_, mut joined) = said.join();
+        echoing(&said);
         said.says(PARKED_LINE);
-        let next = |joined: &mut broadcast::Receiver<Arc<[u8]>>| joined.try_recv().ok();
         assert_eq!(
             next(&mut joined).as_deref(),
             Some(STARTING_CLEARED),
             "first"
         );
+        assert_eq!(next(&mut joined).as_deref(), Some(&b"x"[..]), "its echo");
         assert_eq!(
             next(&mut joined).as_deref(),
             Some(PARKED_LINE),
@@ -3134,20 +3148,32 @@ mod tests {
         let ended = shown();
         ended.says_start();
         let (_, mut joined) = ended.join();
+        echoing(&ended);
         ended.ends();
         assert_eq!(
-            joined.try_recv().ok().as_deref(),
+            next(&mut joined).as_deref(),
             Some(STARTING_CLEARED),
             "a program ending before it drew leaves no line saying it starts"
+        );
+        assert_eq!(
+            next(&mut joined).as_deref(),
+            Some(&b"x"[..]),
+            "and its echo is shown"
         );
         let away = shown();
         away.says_start();
         let (_, mut joined) = away.join();
+        echoing(&away);
         away.stands(GONE_LINE);
         assert_eq!(
-            joined.try_recv().ok().as_deref(),
+            next(&mut joined).as_deref(),
             Some(STARTING_CLEARED),
             "a line that stands takes it away first"
+        );
+        assert_eq!(
+            next(&mut joined).as_deref(),
+            Some(&b"x"[..]),
+            "then the echo it held"
         );
         // A program parking before it drew is shown its parked words, with
         // a key typed and never echoed meanwhile.
