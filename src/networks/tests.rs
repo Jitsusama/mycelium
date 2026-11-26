@@ -2149,6 +2149,37 @@ fn drawn_whole_the_tree_is_as_wide_as_its_widest_row_and_its_counts_line_up() {
 }
 
 #[test]
+fn drawn_whole_a_cell_s_title_heavy_with_marks_is_never_cut() {
+    // A cell's line cuts a pile a terminal's row can't hold, yet a pipe
+    // keeps all of it.
+    let heavy = format!("Kelp{}", "\u{301}".repeat(400));
+    let drawn = |look: &Look| {
+        let [teams, mut sessions, machines] = records();
+        for session in &mut sessions {
+            if session["address"] == "ASKS01" {
+                session["presence"]["questInfo"]["title"] = json!(heavy);
+            }
+        }
+        cells(
+            &Mycelium::of("work", &teams, &sessions, &machines),
+            look,
+            false,
+            &[],
+        )
+    };
+    let piped = drawn(&whole());
+    assert!(
+        piped.contains(&heavy),
+        "a cell's title was cut into a pipe:\n{piped}"
+    );
+    let shown = drawn(&look());
+    assert!(
+        shown.contains("Kelp") && !shown.contains(&heavy),
+        "in a terminal a cell's pile was drawn whole:\n{shown}"
+    );
+}
+
+#[test]
 fn drawn_whole_a_cell_s_marks_and_breaks_move_no_column() {
     let drawn = |title: &str, step: &str| {
         let [teams, mut sessions, machines] = records();

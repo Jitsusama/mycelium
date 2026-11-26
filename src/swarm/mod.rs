@@ -439,7 +439,14 @@ pub(crate) fn within(text: &str, room: usize) -> &str {
     let (mut at, mut from, mut settled, mut since) = (0, 0, 0, 0);
     let mut before: Option<char> = None;
     for step in steps(text).take(most_steps(room)) {
-        if let Some(each) = step.chars().next().filter(|_| !step.starts_with("\u{1b}[")) {
+        if step.starts_with("\u{1b}[") {
+            // What's either side of an escape is measured apart, as
+            // `drawn_width` measures it, so the cells before one are
+            // settled, and a run of escapes costs what it walks too.
+            settled += drawn_width(&text[from..at]);
+            from = at + step.len();
+            since = 0;
+        } else if let Some(each) = step.chars().next() {
             if starts_a_cluster(before, each) || (since >= LONGEST_RUN && splits(before, each)) {
                 settled += drawn_width(&text[from..at]);
                 from = at;
@@ -675,6 +682,16 @@ pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> Stri
                 taken = &left[..back];
                 &left[back..]
             } else {
+                // Walked back to the start with no pile cut, what's at the
+                // cut is a selector or a mark the first character needs,
+                // as an emoji's selector is, so it takes a line of its own
+                // whole, as a wide character does.
+                if back == 0 && !capped {
+                    let whole = within(left, 2);
+                    if whole.len() > taken.len() {
+                        taken = whole;
+                    }
+                }
                 left[taken.len()..].trim_start_matches(draws_nothing)
             };
             drawn = drawn_width(taken);

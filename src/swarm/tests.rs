@@ -745,6 +745,26 @@ fn drawn_whole_a_title_heavy_with_marks_is_never_cut() {
 }
 
 #[test]
+fn drawn_whole_a_member_s_title_heavy_with_marks_is_never_cut() {
+    // A member's line cuts a pile a terminal's row can't hold, as a
+    // team's row does, yet a pipe keeps all of it.
+    let mut swarm = swarm();
+    let heavy = format!("Busy{}", "\u{301}".repeat(400));
+    swarm.sessions[2]["title"] = json!(heavy);
+    let shown = |look: &Look| team(&swarm, "harb", look).expect("Harbour is a team");
+    let piped = shown(&whole());
+    assert!(
+        piped.contains(&heavy),
+        "a member's title was cut into a pipe:\n{piped}"
+    );
+    let drawn = shown(&look());
+    assert!(
+        drawn.contains("Busy") && !drawn.contains(&heavy),
+        "in a terminal a member's pile was drawn whole:\n{drawn}"
+    );
+}
+
+#[test]
 fn drawn_whole_a_long_name_is_never_cut_and_runs_on_alone() {
     let mut swarm = swarm();
     let long = "A reef whose name runs far past every column it was given";
@@ -1606,6 +1626,38 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
         wrapped("abc\u{915}\u{94D}\u{200D}\u{937}", "", "", 4),
         "abc\n\u{915}\u{94D}\u{200D}\u{937}\n",
         "a conjunct was split at its joiner, or its joiner dropped"
+    );
+}
+
+#[test]
+fn on_a_line_of_one_cell_a_heart_keeps_its_selector() {
+    // As an indent leaves a line, a selector that widens its heart still
+    // goes with it, the two taking a line of their own.
+    for (word, lines) in [
+        ("\u{2764}\u{FE0F}", "\u{2764}\u{FE0F}\n"),
+        ("a\u{2764}\u{FE0F}", "a\n\u{2764}\u{FE0F}\n"),
+        ("\u{2764}\u{FE0F}b", "\u{2764}\u{FE0F}\nb\n"),
+    ] {
+        assert_eq!(
+            wrapped(word, "", "", 1),
+            lines,
+            "on a line of one cell, {word:?}'s selector was dropped"
+        );
+    }
+}
+
+#[test]
+fn a_run_of_escapes_costs_what_it_walks_cut_whole() {
+    // No peer's text keeps an escape, but painted text may be cut whole,
+    // and a run of escapes starts nothing afresh. Measured again at each
+    // step, these take minutes; settled at each, milliseconds.
+    let painted = format!("{}ab", "\u{1b}[m".repeat(100_000));
+    let began = std::time::Instant::now();
+    assert_eq!(within(&painted, WHOLE), painted, "a run of escapes was cut");
+    assert!(
+        began.elapsed() < std::time::Duration::from_secs(5),
+        "a run of escapes cost {:?} to cut",
+        began.elapsed()
     );
 }
 
