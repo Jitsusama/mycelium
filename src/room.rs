@@ -282,15 +282,20 @@ fn kept(meminfo: &str, name: &str) -> Option<u64> {
 /// moves slowly, where the ten seconds' flaps: on 26 November a machine
 /// whose memory was full for an hour read cool every few minutes by the
 /// ten seconds alone, and each pair of cool readings started its spell
-/// again, so it put no session to sleep. None where the `some` line
-/// can't be read; a file with no `full` line, as a kernel may write, is
-/// judged by its `some` line alone.
+/// again, so it put no session to sleep. None where either line is
+/// there and can't be read, or the `some` line isn't; a file with no
+/// `full` line, as a kernel may write, is judged by its `some` line
+/// alone.
 ///
 /// [`OVER_MEMORY_PRESSURE`]: crate::balance::OVER_MEMORY_PRESSURE
 /// [`OVER_MEMORY_FULL`]: crate::balance::OVER_MEMORY_FULL
 fn memory_over(pressure: &str) -> Option<bool> {
     let some = stalled(pressure)?;
-    let full = stall(pressure, "full ", "avg60=").unwrap_or(0.0);
+    let full = if pressure.lines().any(|line| line.starts_with("full ")) {
+        stall(pressure, "full ", "avg60=")?
+    } else {
+        0.0
+    };
     Some(some >= crate::balance::OVER_MEMORY_PRESSURE || full >= crate::balance::OVER_MEMORY_FULL)
 }
 
@@ -515,6 +520,39 @@ mod tests {
         let room =
             felt_from(&psi(0.0), &full(0.0), &psi(0.0), meminfo, FELT_AT).expect("room felt");
         assert_eq!(room.over, Some(Vec::new()));
+    }
+
+    // On 26 November a full machine read cool by the ten seconds' stall
+    // every few minutes, so its spell never ran its ten minutes.
+    #[test]
+    fn a_machine_whose_ten_seconds_flap_under_a_steady_full_stall_stays_over() {
+        for some in [12.0, 3.0, 15.0, 0.5, 9.99] {
+            let pressure = format!(
+                "some avg10={some:.2} avg60=8.00 avg300=6.00 total=1\n\
+                 full avg10=1.00 avg60=6.00 avg300=5.00 total=1\n"
+            );
+            let room = felt_from(&psi(0.0), &pressure, &psi(0.0), MEMINFO, FELT_AT);
+            assert_eq!(
+                room.and_then(|room| room.over),
+                Some(vec![Limit::Memory]),
+                "over at some avg10 {some}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_full_line_that_cannot_be_read_leaves_the_room_unfelt() {
+        for full in [
+            "full avg10=0.00 avg300=0.00 total=1",
+            "full avg10=0.00 avg60=nan total=1",
+        ] {
+            let pressure = format!("some avg10=0.00 avg60=0.00 avg300=0.00 total=1\n{full}\n");
+            assert_eq!(
+                felt_from(&psi(0.0), &pressure, &psi(0.0), MEMINFO, FELT_AT),
+                None,
+                "{full}"
+            );
+        }
     }
 
     #[test]

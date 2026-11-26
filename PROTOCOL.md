@@ -1417,6 +1417,9 @@ says, read afresh each look and kept in memory: the `some` `avg10`
 processor, memory and I/O pressure in `/proc/pressure`, and the memory
 free in `/proc/meminfo`. Over is the queue's lines judged by the node:
 processor pressure of 70 or more, or memory pressure of 10 or more.
+Memory is over too when all work stalled on it 5 or more of the last
+minute, the `full` `avg60`, which moves slowly where the ten seconds
+flap. Memory free is no line, since what holds it may be no session's.
 The queue's record, the store's facts and every presence are files or
 words a session can write, so none of them moves that verdict. A
 machine whose kernel says none of this, as a Mac's, whose files can't
