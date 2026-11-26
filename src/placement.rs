@@ -3829,11 +3829,11 @@ pub(crate) mod tests {
         let mut busy = cloud.clone();
         busy.cpu.busy = Some(crate::balance::ROOM_PROCESSOR);
         assert_eq!(
-            placed(&place(&anything, &[laptop.clone(), mac.clone(), busy])),
+            placed(&place(&anything, &[laptop.clone(), mac.clone(), busy.clone()])),
             Some("osprey"),
             "one heard by its facts and busy past room ranks after a machine with room"
         );
-        let mut felt = busy.clone();
+        let mut felt = busy;
         felt.room.clone_from(&mac.room);
         assert_eq!(
             placed(&place(&anything, &[laptop.clone(), mac.clone(), felt])),
