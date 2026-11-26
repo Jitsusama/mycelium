@@ -7045,7 +7045,13 @@ impl<S: Store> Shared<S> {
         };
         // Read as it starts, so a switch's new word counts from then.
         if let Some(declared) = crate::declared::read(&self.declared) {
-            sprout::needs_as_declared(&mut start, &words, &at_home, &declared.needs_in);
+            sprout::needs_as_declared(
+                &mut start,
+                &words,
+                &at_home,
+                &declared.needs_in,
+                &sprout::ThisDisk,
+            );
         }
         let reply = self.start(start).await;
         // A log that can't be written takes nothing from the asker, whose
