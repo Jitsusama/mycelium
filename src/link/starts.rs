@@ -184,8 +184,8 @@ impl From<Unsent> for String {
 impl Asks {
     /// Asks `machine` to start `start`, through the link reaching it,
     /// answering as its node does, with words that join it from here, or
-    /// why no answer came. It goes without the tools it would rather have,
-    /// as [`Work::asked_there`] says.
+    /// why no answer came. It goes without the tools it would rather have
+    /// and without the cloud, as [`Work::asked_there`] says.
     ///
     /// # Errors
     ///
@@ -615,13 +615,13 @@ mod tests {
     use super::*;
     use crate::placement::Work;
 
-    /// Work that needs and would rather have `gcloud`, and would rather
-    /// run on Linux.
+    /// Work that needs and would rather have `gcloud` and the cloud, and
+    /// would rather run on Linux.
     fn wanting_gcloud() -> Work {
         let gcloud = Need::Tool("gcloud".to_owned());
         Work {
-            needs: vec![gcloud.clone()],
-            prefers: vec![gcloud, Need::System("linux".to_owned())],
+            needs: vec![gcloud.clone(), Need::Cloud],
+            prefers: vec![gcloud, Need::Cloud, Need::System("linux".to_owned())],
             tolerates: Vec::new(),
             may_wait: false,
             lasts: None,
@@ -648,7 +648,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_start_or_a_run_asked_of_another_machine_prefers_no_tool_but_still_needs_one() {
+    async fn a_start_or_a_run_asked_of_another_machine_wants_no_cloud_and_needs_only_its_tool() {
         let start = Start {
             work: wanting_gcloud(),
             folder: None,
@@ -677,12 +677,13 @@ mod tests {
             assert_eq!(
                 work.prefers,
                 [Need::System("linux".to_owned())],
-                "a node too old to read a tool may have been preferred for a {asked}"
+                "a node too old to read a tool or the cloud may have been preferred for a {asked}"
             );
             assert_eq!(
                 work.needs,
                 [Need::Tool("gcloud".to_owned())],
-                "only a node naming its kit can meet a {asked}'s need for a tool"
+                "only a node naming its kit can meet a {asked}'s need for a tool, and a made \
+                 machine's may be too old to read a need for the cloud met here"
             );
         }
     }
