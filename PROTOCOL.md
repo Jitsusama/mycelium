@@ -670,10 +670,16 @@ reads it:
   files it lacks as `lacking`, and a `reason`, with `why` in words, also
   said on stderr: `refused` when the quest couldn't be shared or the
   machine is this one, `no-link` when no link has reached the machine
-  for 5 seconds, `not-shared` when its node hasn't said it shares the
-  quest within 5 seconds of a link reaching it, and `behind` when it
-  still lacks a file at the bound. An end older than `theirs` never says
-  it took a file, so a wait for it ends `behind`.
+  for 5 seconds from the wait's start or its link's drop, or by a
+  shorter bound, `not-shared` when its node hasn't said it shares the
+  quest (too old to share one, or too busy to say yet), either once the
+  link standing now has reached it for 30 seconds, a link that drops
+  and comes back starting them again, or else at the bound, a link
+  having reached it in its last 5 seconds, and `behind` when it says
+  it shares the quest but still lacks a file at the bound. An end
+  older than `theirs` says it shares the quest but never that it took
+  a file, so a wait for it ends `behind`. A look this machine's own
+  node fails to answer neither ends a link standing nor shows one.
 
 ## Carrying a Quest
 
