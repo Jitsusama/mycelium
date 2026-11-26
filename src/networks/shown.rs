@@ -21,7 +21,8 @@ use std::fmt::Write as _;
 
 use super::{Cell, Is, MACHINES, Mycelium, Network, Shape, Share};
 use crate::swarm::{
-    BOLD, FAINT, GAP, Label, Look, NARROWEST, Standing, fit, header, padded, row, says_again,
+    BOLD, DOING_AT, FAINT, GAP, Label, Look, NARROWEST, Standing, fit, header, padded, row,
+    says_again, shell_word, unmarked, without_marks,
 };
 
 impl Shape {
@@ -97,7 +98,7 @@ fn label<'a>(network: &'a Network, title: &'a str, width: usize) -> Label<'a> {
 fn shorts_width<'a>(networks: impl Iterator<Item = &'a Network>) -> usize {
     networks
         .filter_map(shown_short)
-        .map(|short| short.chars().count())
+        .map(|short| unmarked(short).chars().count())
         .max()
         .unwrap_or_default()
 }
@@ -124,7 +125,8 @@ fn counts_among(cells: &[&Cell]) -> Vec<(Standing, u64)> {
         .collect()
 }
 
-/// A machine as its row names it: whether it's ready and how busy.
+/// A machine as its row names it: whether it's ready and how busy, on
+/// one line however its node put it.
 fn machine_said(machine: &Cell) -> String {
     let mut said = machine
         .state
@@ -133,11 +135,11 @@ fn machine_said(machine: &Cell) -> String {
     if let Some(busy) = machine.busy {
         let _ = write!(said, " · {busy:.0}% busy");
     }
-    said
+    unmarked(&said)
 }
 
 /// How a receptor stands, and what it brought in today, as its line in
-/// the cells says it.
+/// the cells says it, on one line.
 fn receptor_said(receptor: &Cell) -> String {
     let mut said = receptor
         .state
@@ -150,23 +152,24 @@ fn receptor_said(receptor: &Cell) -> String {
             counts.hour, counts.today, counts.addressed
         );
     }
-    said
+    unmarked(&said)
 }
 
 /// What a builder is and how it stands, as its row says it: the files
-/// naming it, its state, its systems and how many builds it takes.
+/// naming it, its state, its systems and how many builds it takes, on
+/// one line.
 fn builder_said(builder: &Cell) -> String {
     let state = builder.state.as_deref().unwrap_or("unheard");
     let Some(builds) = &builder.builds else {
-        return state.to_owned();
+        return unmarked(state);
     };
     let jobs = if builds.jobs == 1 { "job" } else { "jobs" };
-    format!(
+    unmarked(&format!(
         "{} · {state} · {} · {} {jobs}",
         builds.lines.join(", "),
         builds.systems.join(", "),
         builds.jobs
-    )
+    ))
 }
 
 /// A builder in the few words a tree's row has room for: `lent` for a
@@ -510,7 +513,7 @@ pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool, all: bool) -
         .cells
         .iter()
         .filter(|cell| matches!(cell.is, Is::Machine | Is::Builder))
-        .map(|cell| cell.name.chars().count())
+        .map(|cell| unmarked(&cell.name).chars().count())
         .chain([shorts_width(mycelium.networks.iter())])
         .max()
         .unwrap_or_default();
@@ -545,10 +548,16 @@ pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool, all: bool) -
         drawing.networks(&mut lines, tops.collect(), 1);
     }
     lines.push(String::new());
+    // A short name comes from a peer's subject, so it is held to one line
+    // and of marks, as on its row; and the example is copied into a
+    // shell, so it is given only as one word a shell reads as one name, a
+    // group's `/` and a tree's `@` among its characters, and else not.
     let example = mycelium
         .networks
         .first()
-        .map_or("<network>", |each| each.short.as_str());
+        .map(|each| unmarked(&each.short))
+        .filter(|short| shell_word(short, &['/', '@']))
+        .unwrap_or_else(|| "<network>".to_owned());
     lines.push(look.paint(
         FAINT,
         &format!(
@@ -559,7 +568,7 @@ pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool, all: bool) -
     let cells = if with_cells { " --cells" } else { "" };
     let command = format!("mycelium --realm {} networks{cells}", mycelium.realm);
     lines.extend(folding.hint(look, &command));
-    lines.join("\n")
+    look.joined(&lines)
 }
 
 /// The lines of `cells`' sessions, set in by `depth`, worst first, then
@@ -580,7 +589,7 @@ fn cell_lines<'a>(
     });
     let name_width = sessions
         .iter()
-        .map(|(_, cell)| cell.name.chars().count())
+        .map(|(_, cell)| unmarked(&cell.name).chars().count())
         .max()
         .unwrap_or_default();
     let mut lines: Vec<String> = sessions
@@ -622,21 +631,30 @@ fn cell_line(
     let lead = indent.len() + said + GAP.len() + name_width + GAP.len();
     let room = look.width.saturating_sub(lead).max(NARROWEST);
     let doing = doing(cell);
-    let title_room = if doing.is_some() {
+    let title = unmarked(cell.title.as_deref().unwrap_or_default());
+    // Drawn whole, the title is as wide as it is, and what it does is
+    // lined up with the others' once they're drawn.
+    let title_room = if look.whole() {
+        title.chars().count()
+    } else if doing.is_some() {
         (room / 2).max(NARROWEST)
     } else {
         room
     };
-    let title = fit(cell.title.as_deref().unwrap_or_default(), title_room);
     let mut line = format!(
         "{indent}{}{GAP}{}{GAP}{}",
         look.paint(standing.colour(), &padded(standing.said(), said)),
-        padded(&cell.name, name_width),
-        padded(&title, title_room)
+        padded(&unmarked(&cell.name), name_width),
+        padded(&fit(&title, title_room), title_room)
     );
     if let Some(doing) = doing {
         let left = room.saturating_sub(title_room + GAP.len()).max(NARROWEST);
-        let _ = write!(line, "{GAP}{}", look.paint(FAINT, &fit(doing, left)));
+        let _ = write!(
+            line,
+            "{}{GAP}{}",
+            look.mark(DOING_AT),
+            look.paint(FAINT, &fit(&unmarked(doing), left))
+        );
     }
     line.trim_end().to_owned()
 }
@@ -663,7 +681,7 @@ pub fn network(mycelium: &Mycelium, asked: &str, look: &Look, all: bool) -> Resu
             above.title.as_deref().unwrap_or(&above.short)
         );
     }
-    let mut lines = vec![look.paint(BOLD, &head)];
+    let mut lines = vec![look.paint(BOLD, &unmarked(&head))];
     let sessions = network.cells.iter().filter_map(|name| mycelium.cell(name));
     let many = sessions
         .clone()
@@ -673,7 +691,9 @@ pub fn network(mycelium: &Mycelium, asked: &str, look: &Look, all: bool) -> Resu
         let on = if network.machines.is_empty() {
             String::new()
         } else {
-            let machines: Vec<&str> = network.machines.iter().map(String::as_str).collect();
+            let machines: Vec<String> =
+                network.machines.iter().map(|each| unmarked(each)).collect();
+            let machines: Vec<&str> = machines.iter().map(String::as_str).collect();
             format!(" on {}", crate::swarm::listed(&machines))
         };
         let cells = if many == 1 { "cell" } else { "cells" };
@@ -716,7 +736,7 @@ pub fn network(mycelium: &Mycelium, asked: &str, look: &Look, all: bool) -> Resu
     if let Some(hint) = folding.hint(look, &command) {
         lines.extend([String::new(), hint]);
     }
-    Ok(lines.join("\n"))
+    Ok(look.joined(&lines))
 }
 
 /// Every cell: each session, worst first, then each machine; or, where
@@ -748,14 +768,14 @@ pub fn cells(mycelium: &Mycelium, look: &Look, all: bool, standing: &[String]) -
         lines.extend([String::new(), look.paint(BOLD, MACHINES)]);
         let width = machines
             .iter()
-            .map(|cell| cell.name.chars().count())
+            .map(|cell| unmarked(&cell.name).chars().count())
             .max()
             .unwrap_or_default();
         for machine in machines {
             let runs = machine.runs.unwrap_or_default();
             lines.push(format!(
                 "  {}{GAP}{}",
-                padded(&machine.name, width),
+                padded(&unmarked(&machine.name), width),
                 look.paint(FAINT, &format!("{} · runs {runs}", machine_said(machine)))
             ));
         }
@@ -769,7 +789,7 @@ pub fn cells(mycelium: &Mycelium, look: &Look, all: bool, standing: &[String]) -
         lines.extend([String::new(), look.paint(BOLD, "builders")]);
         let width = builders
             .iter()
-            .map(|cell| cell.name.chars().count())
+            .map(|cell| unmarked(&cell.name).chars().count())
             .max()
             .unwrap_or_default();
         for builder in builders {
@@ -779,11 +799,11 @@ pub fn cells(mycelium: &Mycelium, look: &Look, all: bool, standing: &[String]) -
                 .as_ref()
                 .and_then(|builds| builds.said.as_ref())
             {
-                let _ = write!(said, " · {why}");
+                let _ = write!(said, " · {}", unmarked(why));
             }
             lines.push(format!(
                 "  {}{GAP}{}",
-                padded(&builder.name, width),
+                padded(&unmarked(&builder.name), width),
                 look.paint(FAINT, &said)
             ));
         }
@@ -797,13 +817,13 @@ pub fn cells(mycelium: &Mycelium, look: &Look, all: bool, standing: &[String]) -
         lines.extend([String::new(), look.paint(BOLD, "receptors")]);
         let width = receptors
             .iter()
-            .map(|cell| cell.name.chars().count())
+            .map(|cell| unmarked(&cell.name).chars().count())
             .max()
             .unwrap_or_default();
         for receptor in receptors {
             lines.push(format!(
                 "  {}{GAP}{}",
-                padded(&receptor.name, width),
+                padded(&unmarked(&receptor.name), width),
                 look.paint(FAINT, &receptor_said(receptor))
             ));
         }
@@ -821,7 +841,7 @@ pub fn cells(mycelium: &Mycelium, look: &Look, all: bool, standing: &[String]) -
         let _ = write!(command, " --standing {}", standing.join(","));
     }
     lines.extend(folding.hint(look, &command));
-    lines.join("\n")
+    look.joined(&lines)
 }
 
 /// That no session stands as `standing` says, as a person would say it:
@@ -849,12 +869,15 @@ fn nothing_standing(standing: &[String]) -> String {
 /// since when and on which quest, then each network it joined.
 #[must_use]
 pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
-    let title = cell.title.as_deref().unwrap_or_default();
-    let mut lines = vec![look.paint(BOLD, &format!("{} · {title}", cell.name))];
+    // Everything a peer put here is held to one line, as a row is, so
+    // none of it can draw an escape or a line of its own.
+    let title = unmarked(cell.title.as_deref().unwrap_or_default());
+    let name = unmarked(&cell.name);
+    let mut lines = vec![look.paint(BOLD, &format!("{name} · {title}"))];
     if let Some(standing) = cell.standing() {
         let mut said = look.paint(standing.colour(), standing.said());
         if let Some(doing) = doing(cell) {
-            let _ = write!(said, " · {doing}");
+            let _ = write!(said, " · {}", unmarked(doing));
         }
         lines.push(said);
     }
@@ -863,13 +886,13 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
     }
     let mut place = Vec::new();
     if let Some(machine) = &cell.machine {
-        place.push(format!("on {machine}"));
+        place.push(format!("on {}", unmarked(machine)));
     }
     if let Some(since) = cell.since.as_deref().and_then(|since| look.when(since)) {
         place.push(format!("since {since}"));
     }
     if let Some(quest) = &cell.quest {
-        place.push(quest.clone());
+        place.push(unmarked(quest));
     }
     if !place.is_empty() {
         lines.push(look.paint(FAINT, &place.join(" · ")));
@@ -883,7 +906,7 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
         lines.extend([String::new(), look.paint(BOLD, "networks")]);
         let width = joined
             .iter()
-            .map(|each| each.short.chars().count())
+            .map(|each| unmarked(&each.short).chars().count())
             .max()
             .unwrap_or_default();
         let shapes = joined
@@ -894,11 +917,11 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
         for each in joined {
             let mut line = format!(
                 "  {}{GAP}{}",
-                padded(&each.short, width),
+                padded(&unmarked(&each.short), width),
                 padded(each.shape.said(), shapes)
             );
             if each.title.is_some() {
-                let title = titled(each, look);
+                let title = unmarked(&titled(each, look));
                 let room = look
                     .width
                     .saturating_sub(line.chars().count() + GAP.len())
@@ -920,7 +943,7 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
         .collect();
     if !own.is_empty() {
         lines.extend([String::new(), look.paint(BOLD, "its own trees")]);
-        lines.extend(own.iter().map(|short| format!("  {short}")));
+        lines.extend(own.iter().map(|short| format!("  {}", unmarked(short))));
     }
     // Likewise a folder it shares with no other cell, so one it says that
     // forms no network can still be seen to be said.
@@ -952,5 +975,6 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
             lines.push(format!("{line}{about}"));
         }
     }
-    lines.join("\n")
+    // A cell's page draws no table, so any mark left in it is a peer's.
+    without_marks(&lines.join("\n"))
 }

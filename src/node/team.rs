@@ -82,8 +82,9 @@ fn address_of(quest: &str) -> &str {
 /// keeps its old address among its addresses, while the sessions it
 /// spawned before still answer to the old one, so its team is one team
 /// under its own address rather than two, one of them without a lead
-/// (H2VYOB, once 37MNI3, 2026-11-14).
-fn renamed<'a>(living: &[&'a Session]) -> BTreeMap<&'a str, &'a str> {
+/// (H2VYOB, once 37MNI3, 2026-11-14). Each old address is kept in upper
+/// case, as a team is keyed, so its sessions find it in any case.
+fn renamed<'a>(living: &[&'a Session]) -> BTreeMap<String, &'a str> {
     let mut renamed = BTreeMap::new();
     for session in living {
         let others = session
@@ -93,9 +94,11 @@ fn renamed<'a>(living: &[&'a Session]) -> BTreeMap<&'a str, &'a str> {
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
-            .filter(|other| *other != session.address);
+            .filter(|other| !other.eq_ignore_ascii_case(&session.address));
         for other in others {
-            renamed.entry(other).or_insert(session.address.as_str());
+            renamed
+                .entry(other.to_ascii_uppercase())
+                .or_insert(session.address.as_str());
         }
     }
     renamed
@@ -137,10 +140,16 @@ pub fn teams(
         .filter(|session| Attention::of(session, parked).is_some())
         .collect();
     let renamed = renamed(&living);
+    // In upper case, as the mesh reaches an address in either: a session
+    // saying its orchestrator in another case answers to the same team,
+    // and no two teams differ by case alone, so neither takes the words
+    // typed in lower case for the other.
     let own = |address: &str| -> String {
-        renamed
-            .get(address)
-            .map_or_else(|| address.to_owned(), |own| (*own).to_owned())
+        let address = address.to_ascii_uppercase();
+        match renamed.get(address.as_str()) {
+            Some(own) => own.to_ascii_uppercase(),
+            None => address,
+        }
     };
     let owned: Vec<(Option<String>, Option<String>)> = living
         .iter()
@@ -162,7 +171,16 @@ pub fn teams(
             continue;
         };
         if let Some(team) = teams.get_mut(quest) {
-            team.lead.get_or_insert(session);
+            // The orchestrator the team goes by leads it where it works on
+            // the quest, before any older session on it, as one restarted
+            // under its own address is, so its address reaches the team.
+            let led_by = |lead: &Session| own(&lead.address) == quest;
+            if team
+                .lead
+                .is_none_or(|lead| !led_by(lead) && led_by(session))
+            {
+                team.lead = Some(session);
+            }
             if session.orchestrated_by.is_none() {
                 team.members.push(session);
             }
@@ -252,7 +270,14 @@ fn fields(
     (quests, parked): (&BTreeMap<String, Value>, &HashSet<String>),
     (within, worst): (&BTreeMap<&str, &str>, &BTreeMap<&str, Attention>),
 ) -> Value {
-    let quest = quests.get(id);
+    // A team is keyed in upper case, and its quest by the address the
+    // quest's file says, in whatever case that is.
+    let quest = quests.get(id).or_else(|| {
+        quests
+            .iter()
+            .find(|(address, _)| address.eq_ignore_ascii_case(id))
+            .map(|(_, quest)| quest)
+    });
     let title = quest
         .and_then(|quest| quest.get("title")?.as_str())
         .map(str::to_owned)
@@ -410,6 +435,109 @@ mod tests {
             .into_iter()
             .map(|(id, _, fields)| (id, fields))
             .collect()
+    }
+
+    #[test]
+    fn an_orchestrator_said_in_another_case_is_the_same_team() {
+        // A peer saying its orchestrator in lower case would otherwise key a
+        // team of its own beside Harbour's, taking what's typed in lower case.
+        let sessions = [
+            session(
+                "lead",
+                State::Idle,
+                (None, Some("QEST-20261007-HARBOR")),
+                &[],
+            ),
+            session("one", State::Busy, (Some("HARBOR"), None), &[]),
+            session(
+                "peer",
+                State::Busy,
+                (Some("harbor"), Some("QEST-x-harbor")),
+                &[],
+            ),
+        ];
+        let teams = worked_out(&sessions, &[("HARBOR", "Harbour")], &[]);
+        assert_eq!(
+            teams.keys().collect::<Vec<_>>(),
+            ["HARBOR"],
+            "one team, whatever the case its orchestrator is said in"
+        );
+        assert_eq!(
+            (&teams["HARBOR"]["lead"], &teams["HARBOR"]["members"]),
+            (&json!("lead"), &json!(["one", "peer", "lead"])),
+            "led by the session on its quest, the peer only among its members"
+        );
+    }
+
+    #[test]
+    fn an_orchestrator_on_its_own_quest_leads_its_team_before_an_older_session() {
+        // A restarted orchestrator keeps its address but not its place in
+        // id order, and a team led by another wouldn't be reached by the
+        // address it goes by.
+        let mut orchestrator = session(
+            "orchestrator",
+            State::Idle,
+            (None, Some("QEST-20261007-HARBOR")),
+            &[],
+        );
+        orchestrator.address = "HARBOR".to_owned();
+        let sessions = [
+            session(
+                "elder",
+                State::Busy,
+                (Some("HARBOR"), Some("QEST-20261007-HARBOR")),
+                &[],
+            ),
+            orchestrator,
+        ];
+        let teams = worked_out(&sessions, &[("HARBOR", "Harbour")], &[]);
+        assert_eq!(
+            teams["HARBOR"]["lead"],
+            json!("orchestrator"),
+            "an older session on the quest led the team its orchestrator goes by"
+        );
+    }
+
+    #[test]
+    fn a_quest_said_in_another_case_still_titles_its_team() {
+        let sessions = [
+            session(
+                "lead",
+                State::Idle,
+                (None, Some("QEST-20261007-HARBOR")),
+                &[],
+            ),
+            session("one", State::Busy, (Some("HARBOR"), None), &[]),
+        ];
+        let teams = worked_out(&sessions, &[("harbor", "Harbour")], &[]);
+        assert_eq!(
+            teams["HARBOR"]["title"],
+            json!("Harbour"),
+            "a team keyed in upper case lost the quest its file says in lower"
+        );
+    }
+
+    #[test]
+    fn an_old_address_said_in_another_case_still_reaches_the_renamed_team() {
+        let mut lead = session(
+            "lead",
+            State::Busy,
+            (None, Some("QEST-20261114-KELP01")),
+            &[],
+        );
+        lead.address = "KELP01".to_owned();
+        lead.presence = json!({"addresses": ["KELP01", "harbor"]}).into();
+        let sessions = [
+            lead,
+            session("old", State::Busy, (Some("harbor"), None), &[]),
+            session("new", State::Idle, (Some("KELP01"), None), &[]),
+        ];
+        let teams = worked_out(&sessions, &[("KELP01", "Kelp Beds")], &[]);
+        assert_eq!(
+            teams.keys().collect::<Vec<_>>(),
+            ["KELP01"],
+            "an old address said in lower case split the team in two"
+        );
     }
 
     #[test]

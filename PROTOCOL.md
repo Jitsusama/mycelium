@@ -3584,8 +3584,10 @@ each message's `at` in UTC to the millisecond, as
 `2026-11-16T17:00:00.000Z`, whatever offset or precision it came with,
 so the order of the words is the order sent; an `at` that is no time
 is held as when the node heard it. The `team` kind
-holds each orchestrator's team, keyed by its address: the living
-sessions answering to it as `members`, its `lead` working on its quest,
+holds each orchestrator's team, keyed by its address in upper case,
+as is `within`, so a client matches a session's `orchestrated_by`
+without regard to case: the living sessions answering to it as
+`members`, its `lead` working on its quest,
 its `title` as a served `quest` names it (else its lead's), the name it
 goes by in the swarm as `swarm` where that quest gives one, the team it
 sits `within` by its lead's orchestrator, and `counts` of its members
@@ -3633,13 +3635,20 @@ as `quest:<id>`, so its short name is never a group's, as no group's
 name holds a colon; it is read in lower case, so keys differing only
 in case are one folder. `for` and `folder` are drawn on one line: each
 control character and line or paragraph separator in them is read as
-a space and each mark turning text's direction is dropped, and then
-`for` is trimmed, cut to its first 120 characters and trimmed again,
-and `folder` is 1 to 1024 bytes. A `for` said as null or as anything
-but text is unsaid, and one unsaid, empty or cleaned to nothing is
-left out of the cell record. A cell's first 16 shares are read, those
-past these bounds are passed over, and a key said twice is its first;
-each is among that cell record's `shares`. A group a presence names
+a space and each mark turning text's direction is dropped. `for` also
+drops each character that draws nothing and each of Unicode's 66
+noncharacters, keeping one selector only after a character drawn as
+part of a word past ASCII (none a space, a braille blank or a
+noncharacter), and a joiner only between two, the first perhaps
+followed by its selector, and then is trimmed of spaces
+and braille blanks (U+2800), and cut to its first 120 characters, then
+cleaned again, so it ends in no space and no joiner left joining
+nothing; `folder` is 1 to 1024 bytes. A
+`for` said as null or as anything but text is unsaid, and one unsaid,
+empty or cleaned to nothing is left out of the cell record. A cell's
+first 16 shares are read, those past these bounds are passed over,
+and a key said twice is its first; each is among that cell record's
+`shares`. A group a presence names
 holding a colon joins none, as a folder's name does, so one called
 `files`, or under it with no colon, is a group still. Its heading is
 `folders`, as a session says it works in one, and nothing asks whether

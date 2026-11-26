@@ -6,7 +6,8 @@ use super::kept::{RECORD, answered, paths, pruned};
 use super::made::asks;
 use super::{Is, Mycelium, Shape, cell, cells, network, overview};
 use crate::daemon::fields::{MOST_FIELDS, projected};
-use crate::swarm::{ASKS_FIT, Look, Shapes, together};
+use crate::forage::one_line;
+use crate::swarm::{ASKS_FIT, Look, Shapes, WHOLE, together};
 
 /// A look 80 columns wide, without colour, at 17:00 on Thursday
 /// 12 November 2026, in UTC.
@@ -890,6 +891,12 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
         json!({"key": "quest:lined", "for": "Lined\u{2028}up\u{2029}", "folder": "/l"}),
         json!({"key": "quest:joined", "for": "👩\u{200D}💻 Harbour", "folder": "/j"}),
         json!({"key": "quest:persian", "for": "می\u{200C}خواهم", "folder": "/p"}),
+        json!({"key": "quest:hidden", "for": "Tide\u{200B} plan\u{FDD0}", "folder": "/h"}),
+        json!({"key": "quest:unchars", "for": "\u{2800}Tide\u{FDD5} \u{FFFE}plan\u{1FFFF}",
+               "folder": "/x"}),
+        json!({"key": "quest:brailled", "for": "Tide\u{2800}\u{200D}\u{2800}", "folder": "/r"}),
+        json!({"key": "quest:hinged", "for": format!("{}\u{200D}é", "é".repeat(119)),
+               "folder": "/g"}),
         json!({"key": "quest:untitled", "for": "", "folder": "/u"}),
         json!({"key": "quest:unsaid", "folder": "/u"}),
         json!({"key": "quest:nulled", "for": null, "folder": "/n"}),
@@ -902,7 +909,10 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
         [
             titled("quest:accented", &"é".repeat(120)),
             untitled("quest:blank"),
+            titled("quest:brailled", "Tide"),
             titled("quest:cut", &"c".repeat(119)),
+            titled("quest:hidden", "Tide plan"),
+            titled("quest:hinged", &"é".repeat(119)),
             titled("quest:joined", "👩\u{200D}💻 Harbour"),
             titled("quest:lined", "Lined up"),
             untitled("quest:nulled"),
@@ -910,13 +920,17 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
             titled("quest:tabbed", "Tab here"),
             titled("quest:titled", &"t".repeat(120)),
             titled("quest:turned", "flynwod"),
+            titled("quest:unchars", "Tide plan"),
             untitled("quest:unsaid"),
             untitled("quest:untitled"),
         ],
         "a title past 120 characters is cut to them, however many bytes each is, counting \
          what is drawn; a control character or separator in it is a space and a mark \
-         turning its direction is gone, and a cut ends in no space; the joiners an emoji or \
-         a script spells with stay; and a share saying nothing or null it is for is kept, \
+         turning its direction is gone, as is what draws nothing or a noncharacter, a braille \
+         blank at either end too, and a cut ends in no space or lone joiner; the joiners an \
+         emoji or a \
+         script spells with stay; and a share saying \
+         nothing or null it is for is kept, \
          untitled"
     );
 }
@@ -1525,6 +1539,43 @@ fn the_tree_draws_each_shape_its_networks_nested_and_the_machines() {
 }
 
 #[test]
+fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
+    let hint = |short: &str| {
+        let mut mycelium = mycelium();
+        mycelium.networks[0].short = short.to_owned();
+        let shown = overview(&mycelium, &look(), false, false);
+        shown
+            .lines()
+            .last()
+            .and_then(|line| line.rsplit(' ').next())
+            .map(str::to_owned)
+    };
+    // Every miss is gathered, so undoing the rule names each case.
+    let mut misread = Vec::new();
+    for (given, said) in [
+        ("kelp; curl x|sh", "a peer's short name a shell acts on"),
+        ("kelp tides", "or splits"),
+        ("--cells", "or networks reads as an option"),
+    ] {
+        if hint(given).as_deref() != Some("<network>") {
+            misread.push(said);
+        }
+    }
+    assert!(
+        misread.is_empty(),
+        "each is given as no example: {misread:?}"
+    );
+    assert_eq!(
+        (hint("dock/crew"), hint("oars@jsama/tides")),
+        (
+            Some("dock/crew".to_owned()),
+            Some("oars@jsama/tides".to_owned())
+        ),
+        "a group's and a tree's names are each one word"
+    );
+}
+
+#[test]
 fn an_orchestration_wears_the_mark_its_shape_is_drawn_by() {
     let mycelium = mycelium();
     let tree = overview(&mycelium, &marked(), false, false);
@@ -1758,6 +1809,29 @@ fn a_network_with_no_leader_never_changes_a_teams_short_name() {
 }
 
 #[test]
+fn a_teams_short_name_that_is_a_sessions_address_is_never_shown() {
+    // Typed after swarm, it would reach the session BUSY, not Kelp.
+    let teams = [json!({"key": "team:KELP01", "title": "Kelp Beds", "swarm": "busy"})];
+    let sessions = [session(
+        "BUSY",
+        1,
+        "Busy one",
+        "busy",
+        &["orchestration.kelp01"],
+    )];
+    let mycelium = Mycelium::of("work", &teams, &sessions, &[]);
+    let kelp = mycelium
+        .networks
+        .iter()
+        .find(|each| each.name == "orchestration.kelp01")
+        .expect("Kelp's network");
+    assert_ne!(
+        kelp.short, "busy",
+        "networks showed a name that steers the session BUSY"
+    );
+}
+
+#[test]
 fn a_name_matching_none_or_several_networks_is_said_plainly() {
     let mycelium = mycelium();
     assert_eq!(
@@ -1783,6 +1857,30 @@ fn a_name_matching_none_or_several_networks_is_said_plainly() {
             .map(|each| each.name.as_str()),
         Ok("quest.harbor"),
         "the whole name picks one"
+    );
+    // A group's name is a peer's to pick, as a short name is, so one
+    // named like another's short name leaves the two to choose between.
+    let mut grouped = self::mycelium();
+    let mut group = grouped.networks[0].clone();
+    group.name = "harbor".to_owned();
+    group.short = "harbor".to_owned();
+    group.title = None;
+    grouped.networks.push(group);
+    assert!(
+        grouped
+            .named_network("harbor")
+            .is_err_and(|why| why.starts_with("harbor could be ") && why.contains("quest.harbor")),
+        "a peer's group took a network's short name"
+    );
+}
+
+#[test]
+fn what_a_name_could_be_names_each_on_one_line() {
+    let (cell, network) = ("ASKS\u{1b}]0;x\u{7}01", "quest.\u{200b}harbor\u{fdd0}");
+    assert_eq!(
+        super::several("as", &[&cell, &network], |each| *each),
+        format!("as could be {} or quest.harbor", one_line(cell)),
+        "a name it could be drew otherwise than on one line"
     );
 }
 
@@ -1825,6 +1923,264 @@ fn every_cell_lists_worst_first_and_one_says_its_networks() {
         expected,
         "one cell:\n{shown}"
     );
+}
+
+/// The look a pipe is drawn with: whole, never in colour.
+fn whole() -> Look {
+    Look {
+        width: WHOLE,
+        ..look()
+    }
+}
+
+#[test]
+fn drawn_whole_the_tree_is_as_wide_as_its_widest_row_and_its_counts_line_up() {
+    let shown = overview(&mycelium(), &whole(), false, false);
+    let lines: Vec<&str> = shown.lines().collect();
+    assert_eq!(
+        lines[2..15],
+        [
+            "                              need you  stuck  moving  quiet  dormant",
+            "orchestrations",
+            "  Harbour Ships                                     1               1",
+            "    kelp      Kelp: Tides            1",
+            "projects",
+            "  harbor    Harbour Ships                           1               1",
+            "repositories",
+            "  skiff                              1              1",
+            "groups",
+            "  dock/crew                                                         1",
+            "machines",
+            "  skiff     ready · 42% busy         1              1               1",
+            "  dinghy    ready",
+        ],
+        "the tree, whole:\n{shown}"
+    );
+}
+
+#[test]
+fn drawn_whole_a_cell_s_marks_and_breaks_move_no_column() {
+    let drawn = |title: &str, step: &str| {
+        let [teams, mut sessions, machines] = records();
+        for session in &mut sessions {
+            if session["address"] == "ASKS01" {
+                session["presence"]["questInfo"]["title"] = json!(title);
+            }
+            if session["address"] == "BUSY01" {
+                session["step"] = json!(step);
+            }
+        }
+        let mycelium = Mycelium::of("work", &teams, &sessions, &machines);
+        [
+            overview(&mycelium, &whole(), true, false),
+            cells(&mycelium, &whole(), false, &[]),
+        ]
+        .join("\n")
+    };
+    let clean = drawn("Kelp's question", "running the  tests");
+    assert!(
+        clean.contains("running the  tests"),
+        "the step is drawn:\n{clean}"
+    );
+    assert_eq!(
+        drawn(
+            "Kelp's\u{fdd0} question\u{fdd1}",
+            "running\u{fdd0} the\n\ntests"
+        ),
+        clean,
+        "a mark or a break in a cell's title or doing moved a column or split a block"
+    );
+}
+
+#[test]
+fn a_peer_s_escape_break_or_mark_reaches_no_page() {
+    // Kelp's own title heads its page and names its network on the
+    // others, so it is dirtied beside its session's.
+    let pages = |(team, title): (&str, &str), step: &str, machine: (&str, &str), said: &str| {
+        let [mut teams, mut sessions, mut machines] = records();
+        teams[1]["title"] = json!(team);
+        let mut lent = builders();
+        lent[1]["said"] = json!(said);
+        for session in &mut sessions {
+            if session["address"] == "ASKS01" {
+                session["presence"]["questInfo"]["title"] = json!(title);
+            }
+            if session["address"] == "BUSY01" {
+                session["step"] = json!(step);
+            }
+        }
+        machines[1]["name"] = json!(machine.0);
+        machines[1]["state"] = json!(machine.1);
+        let mycelium = Mycelium::of("work", &teams, &sessions, &machines).with_builders(&lent);
+        let page = |name: &str| {
+            let found = mycelium.cell(name).expect("the session is a cell");
+            cell(&mycelium, found, &look())
+        };
+        let one = |name: &str| network(&mycelium, name, &whole(), false).expect("a network");
+        [
+            overview(&mycelium, &whole(), true, false),
+            cells(&mycelium, &whole(), false, &[]),
+            cells(&mycelium, &look(), false, &[]),
+            page("ASKS01"),
+            page("BUSY01"),
+            one("kelp"),
+            one("machines"),
+        ]
+    };
+    let clean = pages(
+        ("Kelp: Tides", "Kelp's question"),
+        "running the tests",
+        ("dinghy", "ready"),
+        "nothing is lent",
+    );
+    assert_eq!(
+        pages(
+            (
+                "Kelp: Ti\u{200b}des\u{fdd0}",
+                "Kelp's\u{200b} question\u{fdd0}"
+            ),
+            "running\u{fdd1} the tests",
+            ("ding\u{200b}hy\u{fdd0}", "ready"),
+            "nothing\u{200b} is lent\u{fdd0}",
+        ),
+        clean,
+        "what draws nothing, or a mark, in a peer's name, title, step or state moved a column"
+    );
+    // An escape's control goes and its visible rest stays, so these pages
+    // are held to the same words set on one line, which may run on as
+    // any long title does.
+    let (team, title, step, state, said) = (
+        "Kelp: Tides\u{1b}[2J\r\nnow",
+        "Kelp's \u{1b}]0;tide\u{7}question",
+        "running\u{1b}[2J the\n\ntests",
+        "ready\r\n\nlater",
+        "nothing\u{1b}]52;c;eA==\u{7} is\nlent",
+    );
+    let dirty = pages((team, title), step, ("dinghy", state), said);
+    for page in &dirty {
+        assert!(
+            !page.contains(['\u{1b}', '\u{7}', '\r']),
+            "a peer's escape reached the page:\n{page:?}"
+        );
+    }
+    assert_eq!(
+        dirty,
+        pages(
+            (&one_line(team), &one_line(title)),
+            &one_line(step),
+            ("dinghy", &one_line(state)),
+            &one_line(said),
+        ),
+        "a peer's escape or break drew otherwise than its words on one line"
+    );
+}
+
+#[test]
+fn drawn_whole_with_cells_every_session_s_doing_shares_one_column_through_the_tree() {
+    let shown = overview(&mycelium(), &whole(), true, false);
+    let lines: Vec<&str> = shown.lines().collect();
+    assert_eq!(
+        lines[2..25],
+        [
+            "                              need you  stuck  moving  quiet  dormant",
+            "orchestrations",
+            "  Harbour Ships                                     1               1",
+            "    moving     BUSY01  Harbour Ships      running the tests",
+            "    dormant    NAPS01  Napping one",
+            "    kelp      Kelp: Tides            1",
+            "      needs you  ASKS01  Kelp's question  Which tide?",
+            "projects",
+            "  harbor    Harbour Ships                           1               1",
+            "    moving     BUSY01  Harbour Ships      running the tests",
+            "    dormant    NAPS01  Napping one",
+            "repositories",
+            "  skiff                              1              1",
+            "    needs you  ASKS01  Kelp's question    Which tide?",
+            "    moving     BUSY01  Harbour Ships      running the tests",
+            "groups",
+            "  dock/crew                                                         1",
+            "    dormant    NAPS01  Napping one",
+            "machines",
+            "  skiff     ready · 42% busy         1              1               1",
+            "    needs you  ASKS01  Kelp's question    Which tide?",
+            "    moving     BUSY01  Harbour Ships      running the tests",
+            "    dormant    NAPS01  Napping one",
+        ],
+        "the tree with its cells, whole:\n{shown}"
+    );
+}
+
+#[test]
+fn drawn_whole_what_each_cell_does_lines_up_after_the_widest_title() {
+    let shown = cells(&mycelium(), &whole(), false, &[]);
+    let lines: Vec<&str> = shown.lines().collect();
+    assert_eq!(
+        lines[2..5],
+        [
+            "needs you  ASKS01  Kelp's question  Which tide?",
+            "moving     BUSY01  Harbour Ships    running the tests",
+            "dormant    NAPS01  Napping one",
+        ],
+        "each cell, whole:\n{shown}"
+    );
+    let kelp = network(&mycelium(), "kelp", &whole(), false).expect("found by its short name");
+    assert!(
+        kelp.ends_with("\nneeds you  ASKS01  Kelp's question  Which tide?"),
+        "one network's cells, whole:\n{kelp}"
+    );
+}
+
+#[test]
+fn drawn_whole_nothing_is_cut_and_no_line_trails() {
+    let [teams, mut sessions, machines] = records();
+    let long = "A question whose title runs far past every column a terminal gave it";
+    for session in &mut sessions {
+        if session["address"] == "ASKS01" {
+            session["presence"]["questInfo"]["title"] = json!(long);
+        }
+    }
+    let mycelium = Mycelium::of("work", &teams, &sessions, &machines);
+    let drawn = [
+        overview(&mycelium, &whole(), true, false),
+        cells(&mycelium, &whole(), false, &[]),
+    ]
+    .join("\n");
+    assert!(
+        drawn.contains(long) && !drawn.contains('…'),
+        "the long title whole:\n{drawn}"
+    );
+    assert!(
+        drawn.lines().all(|line| line == line.trim_end()),
+        "no line ends in spaces:\n{drawn}"
+    );
+    // The long title's row runs on: drawn single-spaced, its own gaps
+    // too, with its doing on the next line in the column the others use.
+    for page in [
+        overview(&mycelium, &whole(), true, false),
+        cells(&mycelium, &whole(), false, &[]),
+    ] {
+        let lines: Vec<&str> = page.lines().collect();
+        let column = lines
+            .iter()
+            .find_map(|line| line.find("running the tests"))
+            .expect("a doing in its column");
+        let ran_on: Vec<usize> = (0..lines.len())
+            .filter(|at| lines[*at].contains(long))
+            .collect();
+        assert!(!ran_on.is_empty(), "the long title is drawn:\n{page}");
+        for at in ran_on {
+            assert!(
+                lines[at].ends_with(long) && !lines[at].trim_start().contains("  "),
+                "{:?} ran on other than single-spaced, or kept its doing:\n{page}",
+                lines[at]
+            );
+            assert_eq!(
+                lines[at + 1],
+                format!("{}Which tide?", " ".repeat(column)),
+                "the doing of a row that ran on left the others' column:\n{page}"
+            );
+        }
+    }
 }
 
 /// The builders the harbour's machine sends Nix builds to, as its node

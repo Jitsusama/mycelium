@@ -1359,11 +1359,22 @@ pub fn chosen(records: Vec<Value>, named: Option<&str>) -> Vec<Value> {
 /// `text` as one line for a terminal: each control character, a newline
 /// or an escape among them, and each line or paragraph separator, which
 /// an editor or a viewer breaks a line at, as a space, and each mark that
-/// turns text's direction left out, so words read from a file can't draw
-/// lines of their own, steer the terminal, or read backwards past their
-/// own end.
+/// turns text's direction or draws nothing left out, so words read from a
+/// file can't draw lines of their own, steer the terminal or read
+/// backwards past their own end. [`joins`] cleans each need with it too,
+/// so the needs a node serves in its forage records are cleaned the same.
+///
+/// A joiner or non-joiner between two characters past ASCII, and one
+/// variation selector straight after one, are kept, since Persian and
+/// Indic words are spelled with them and an emoji is drawn by them;
+/// beside ASCII, as in an address, or stacked, they only part names that
+/// read alike or carry what nobody sees. Kept there, one can still part
+/// two names past ASCII that read alike, as a letter from another script
+/// can. Each is judged by what is left once direction marks and controls
+/// are gone, in one pass, so no mark beside it can vouch for it.
 pub(crate) fn one_line(text: &str) -> String {
-    text.chars()
+    let plain: Vec<char> = text
+        .chars()
         .filter(|each| !turns_direction(*each))
         .map(|each| {
             if each.is_control() || matches!(each, '\u{2028}' | '\u{2029}') {
@@ -1372,13 +1383,90 @@ pub(crate) fn one_line(text: &str) -> String {
                 each
             }
         })
-        .collect()
+        .collect();
+    let mut kept: Vec<char> = Vec::with_capacity(plain.len());
+    for (at, &each) in plain.iter().enumerate() {
+        let before = kept.last().copied();
+        let keep = match each {
+            '\u{200C}' | '\u{200D}' => {
+                before.is_some_and(|before| spells(before) || selects(before))
+                    && plain.get(at + 1).is_some_and(|after| spells(*after))
+            }
+            each if selects(each) => before.is_some_and(spells),
+            each => !unseen(each),
+        };
+        if keep {
+            kept.push(each);
+        }
+    }
+    kept.into_iter().collect()
 }
 
 /// Whether `each` is one of Unicode's marks that turn the direction text
 /// is drawn in, which a terminal may honour past the words they came in.
 pub(crate) const fn turns_direction(each: char) -> bool {
     matches!(each, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Whether `each` draws as nothing: a soft hyphen, a zero-width space or
+/// joiner, a word joiner or invisible operator, a grapheme joiner, a
+/// Hangul or Khmer filler, a variation selector, Mongolian or not, a byte
+/// order mark, a tag, or a format control of the old shaping, interlinear
+/// annotation, shorthand or musical kinds, any of which hides text from
+/// the person or smuggles it past them. It holds what the terminal kit's
+/// list of Unicode's default-ignorables holds.
+pub(crate) const fn unseen(each: char) -> bool {
+    matches!(
+        each,
+        '\u{00AD}'
+            | '\u{034F}'
+            | '\u{115F}'
+            | '\u{1160}'
+            | '\u{17B4}'
+            | '\u{17B5}'
+            | '\u{180B}'..='\u{180F}'
+            | '\u{200B}'..='\u{200D}'
+            | '\u{2060}'..='\u{2065}'
+            | '\u{206A}'..='\u{206F}'
+            | '\u{3164}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FEFF}'
+            | '\u{FFA0}'
+            | '\u{FFF0}'..='\u{FFFB}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0000}'..='\u{E0FFF}'
+    )
+}
+
+/// Whether `each` is a variation selector, which picks how the character
+/// before it is drawn.
+const fn selects(each: char) -> bool {
+    matches!(each, '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}')
+}
+
+/// Whether `each` is drawn as part of a word past ASCII, so a joiner
+/// beside it or a selector after it may be part of the word too: not
+/// [`unseen`], not a space or a [`BRAILLE_BLANK`], which a cleaning may
+/// trim from either end, and not a noncharacter, which no font draws, a
+/// table's marks are made of and a cleaning drops.
+fn spells(each: char) -> bool {
+    !each.is_ascii()
+        && !unseen(each)
+        && !each.is_whitespace()
+        && each != BRAILLE_BLANK
+        && !noncharacter(each)
+}
+
+/// A braille blank, which draws as a space though no text calls it one,
+/// so a name may hold it to look empty.
+pub(crate) const BRAILLE_BLANK: char = '\u{2800}';
+
+/// Whether `each` is one of Unicode's 66 noncharacters, which no font
+/// draws and no text from outside should hold: U+FDD0 to U+FDEF, and the
+/// last two code points of each plane.
+pub(crate) const fn noncharacter(each: char) -> bool {
+    matches!(each, '\u{FDD0}'..='\u{FDEF}') || (each as u32) & 0xFFFE == 0xFFFE
 }
 
 /// The most lines a cell's purpose takes when drawn, so each block leads
@@ -3435,6 +3523,86 @@ mod tests {
         // Neither is a control, yet an editor or a viewer breaks a line
         // at each, so a title could draw a row of its own.
         assert_eq!(one_line("fly\u{2028}  plan\u{2029}done"), "fly   plan done");
+    }
+
+    #[test]
+    fn a_character_that_draws_nothing_is_left_out() {
+        // Each takes no room, so a name holding one reads as another's.
+        assert_eq!(
+            one_line("SK\u{200B}IFF\u{200C}1\u{200D} \u{00AD}tern\u{2060}\u{FEFF}"),
+            "SKIFF1 tern"
+        );
+        assert_eq!(
+            one_line("SKIFF1\u{3164}\u{E0041}\u{FE0F}\u{034F} tern\u{115F}\u{2065}"),
+            "SKIFF1 tern",
+            "a filler, a tag, a selector or a grapheme joiner beside ASCII was kept"
+        );
+        assert_eq!(
+            one_line("SK\u{FFF9}IFF\u{1BCA0}1\u{1D173}\u{206A} tern\u{E0080}\u{E0FFF}"),
+            "SKIFF1 tern",
+            "an annotation, shorthand, musical or old shaping control, or a tag past \
+             the flags', was kept"
+        );
+    }
+
+    #[test]
+    fn a_joiner_that_spells_a_word_or_an_emoji_is_kept() {
+        // Persian spells "I want" with a non-joiner, and a heart on fire
+        // is a heart, its emoji selector, a joiner and a fire.
+        for spelt in [
+            "\u{645}\u{6CC}\u{200C}\u{62E}\u{648}\u{627}\u{647}\u{645}",
+            "\u{2764}\u{FE0F}\u{200D}\u{1F525}",
+        ] {
+            assert_eq!(one_line(spelt), spelt, "a joiner past ASCII was dropped");
+        }
+    }
+
+    #[test]
+    fn a_joiner_or_selector_beside_ascii_is_left_out_whatever_vouches_for_it() {
+        for (said, read) in [
+            ("\u{D8}\u{200C}SKIFF", "\u{D8}SKIFF"),
+            ("SKIFF\u{200D}\u{E9}", "SKIFF\u{E9}"),
+            ("SKIFF1\u{202E}\u{FE0F}", "SKIFF1"),
+            ("SKIFF\u{2066}\u{200C}\u{2066}1", "SKIFF1"),
+            ("Reef\u{2028}\u{FE0F}", "Reef "),
+            // A space past ASCII survives as itself, and vouches for nothing.
+            ("Reef\u{A0}\u{FE0F}", "Reef\u{A0}"),
+            ("\u{E9}\u{3000}\u{200D}\u{E9}", "\u{E9}\u{3000}\u{E9}"),
+            ("Reef\u{FDD0}\u{FE0F}", "Reef\u{FDD0}"),
+            // So does one past the first plane, which a cleaning drops.
+            ("Reef\u{1FFFF}\u{FE0F}", "Reef\u{1FFFF}"),
+            // As does a braille blank, which a cleaning may trim.
+            ("\u{E9}\u{200D}\u{2800}", "\u{E9}\u{2800}"),
+            ("\u{2800}\u{FE0F}\u{E9}", "\u{2800}\u{E9}"),
+            (
+                "do\u{10FFFE}\u{200D}\u{10FFFE}ck",
+                "do\u{10FFFE}\u{10FFFE}ck",
+            ),
+            // A keycap's base is ASCII, so it loses its emoji form.
+            ("1\u{FE0F}\u{20E3}", "1\u{20E3}"),
+        ] {
+            assert_eq!(
+                one_line(said),
+                read,
+                "a joiner or selector with ASCII on one side, or vouched for only by \
+                 a mark, a break or a noncharacter, was kept from {said:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_one_selector_is_kept_even_from_a_long_run() {
+        assert_eq!(
+            one_line("caf\u{E9}\u{FE00}\u{FE0F}\u{E0100}"),
+            "caf\u{E9}\u{FE00}",
+            "a selector after a selector was kept"
+        );
+        let long = format!("\u{E9}{}", "\u{FE0F}".repeat(200_000));
+        assert_eq!(
+            one_line(&long),
+            "\u{E9}\u{FE0F}",
+            "a run of selectors was kept"
+        );
     }
 
     #[test]

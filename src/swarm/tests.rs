@@ -1,8 +1,12 @@
 //! The swarm drawn from the teams and sessions a node holds.
+//!
+//! Long because its cases draw one realm of teams and sessions,
+//! built by the helpers at its top, at the widths a terminal or a pipe
+//! gives, and a case split from them would build that realm again.
 
 use serde_json::{Value, json};
 
-use super::{Look, Swarm, overview, team, typed};
+use super::{Look, Swarm, WHOLE, aligned, overview, team, typed, unmarked};
 
 /// A look 72 columns wide, without colour, at 17:00 on Thursday
 /// 12 November 2026, in UTC.
@@ -58,7 +62,7 @@ pub(super) fn swarm() -> Swarm {
                 "REEF01",
                 "Reef",
                 None,
-                &json!({"worst": "moving", "members": ["s-reef"],
+                &json!({"worst": "moving", "members": ["s-coral"],
                        "counts": {"needs-you": 0, "stuck": 0, "moving": 1, "quiet": 0}}),
             ),
             team_of(
@@ -90,7 +94,9 @@ pub(super) fn swarm() -> Swarm {
                 busy
             },
             asking,
-            session("s-reef", "Reef's one", "busy"),
+            // Not s-reef: a living session's address takes the short
+            // name it cleans to, and Reef's short name is reef.
+            session("s-coral", "Reef's one", "busy"),
             session("s-alone", "On its own", "busy"),
             session("s-gone", "Gone", "ended"),
         ],
@@ -201,6 +207,122 @@ fn a_name_matching_none_or_several_is_said_plainly() {
         team(&swarm(), "r", &look()),
         Err("r could be reef or harbour".to_owned()),
         "several, each as it's typed, as the node lists them"
+    );
+    // Short names that clean alike go to neither, so two teams are drawn
+    // alike only by titles that clean alike.
+    let mut alike = swarm();
+    alike.teams[1]["title"] = json!("Dock");
+    alike.teams[0]["title"] = json!("Do\u{200B}ck");
+    assert_eq!(
+        team(&alike, "dock", &look()),
+        Err("dock could be Dock (REEF01) or Dock (HARBOR)".to_owned()),
+        "two drawn alike are each named by their address too, so one can be typed"
+    );
+    alike.teams[0]["key"] = json!("team:RE\u{1b}]52;c;eA==\u{7}EF");
+    assert_eq!(
+        team(&alike, "dock", &look()),
+        Err("dock could be Dock (no address to type) or Dock (HARBOR)".to_owned()),
+        "a peer's address is said only when it is one, so typing it reaches its team"
+    );
+    alike.teams[0]["key"] = json!("team:PAUSE");
+    assert_eq!(
+        team(&alike, "dock", &look()),
+        Err("dock could be Dock (no address to type) or Dock (HARBOR)".to_owned()),
+        "an address swarm reads as an act is not said, as typing it does no steer"
+    );
+    let mut hidden = swarm();
+    hidden.teams[1]["swarm"] = json!("harbor");
+    hidden.teams[0]["swarm"] = json!("har\u{200B}bor");
+    assert!(
+        team(&hidden, "HARBOR", &look()).is_ok(),
+        "a short name cleaned to a team's address does not hide it"
+    );
+    // Nor is Reef drawn or offered by it, which typed would reach Harbour.
+    let shown = overview(&hidden, &look());
+    assert!(
+        !shown
+            .lines()
+            .any(|line| line.contains("Reef") && line.contains("harbor")),
+        "Reef was drawn by a name that reaches Harbour:\n{shown}"
+    );
+    // Two short names that clean alike go to neither, so Harbour may lose
+    // its own to the one drawn like it, and is offered by its title.
+    assert!(
+        typed(&hidden)
+            .iter()
+            .filter(|name| *name == "harbor")
+            .count()
+            <= 1,
+        "harbor was offered for a team besides Harbour"
+    );
+}
+
+#[test]
+fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
+    let hint = |swarm: &Swarm| {
+        overview(swarm, &look())
+            .lines()
+            .last()
+            .and_then(|line| line.rsplit(' ').next())
+            .map(str::to_owned)
+    };
+    let mut acting = swarm();
+    acting.teams[1]["swarm"] = json!("harbour;ls");
+    assert_eq!(
+        hint(&acting).as_deref(),
+        Some("HARBOR"),
+        "a short name a shell acts on is given as the team's address"
+    );
+    acting.teams[1]["swarm"] = json!("harbour tides");
+    assert_eq!(
+        hint(&acting).as_deref(),
+        Some("harbour-tides"),
+        "a short name's words are given joined, as one word swarm reads as a name"
+    );
+    // Every miss is gathered, so undoing any one rule names its case.
+    let mut misread = Vec::new();
+    // One swarm reads as other than a name is no short name at all, so
+    // the team is given by its title, as one with none is.
+    for (given, said) in [
+        ("harbour pause", "a name with an act among its words"),
+        (
+            "harbour-pause",
+            "or among its parts, which may be typed apart",
+        ),
+        ("--names", "a name swarm reads as an option"),
+        ("-ojson", "or as its output"),
+        ("team", "a name read as the person saying what follows"),
+        // Resume, as no session is addressed by it, so the act is what
+        // refuses it, not the address a cleaned name would take.
+        ("re\u{200B}sume", "or as an act once it is cleaned"),
+        (
+            "re\u{3164}sume",
+            "or once a filler that counts as a letter is",
+        ),
+    ] {
+        acting.teams[1]["swarm"] = json!(given);
+        if hint(&acting).as_deref() != Some("Harbour") {
+            misread.push(said);
+        }
+    }
+    // Kelp stays within it, so Harbour still leads, by a short name a
+    // shell would act on, so its address is what the hint would give.
+    acting.teams[1]["swarm"] = json!("harbour;ls");
+    acting.teams[2]["within"] = json!("PAUSE");
+    acting.teams[1]["key"] = json!("team:PAUSE");
+    if hint(&acting).as_deref() != Some("<team>") {
+        misread.push("an address swarm reads as an act");
+    }
+    assert!(
+        misread.is_empty(),
+        "each is given as the address, the title or no example: {misread:?}"
+    );
+    acting.teams[1]["key"] = json!("team:HAR BOR");
+    acting.teams[2]["within"] = json!("HAR BOR");
+    assert_eq!(
+        hint(&acting).as_deref(),
+        Some("<team>"),
+        "and with no address to type, no example"
     );
 }
 
@@ -317,4 +439,510 @@ fn colour_marks_what_needs_you_and_what_is_stuck() {
         shown.contains("\x1b[33m1 needs you\x1b[0m") && shown.contains("\x1b[31m1 stuck\x1b[0m"),
         "needing you in yellow, stuck in red: {shown:?}"
     );
+}
+
+/// The look a pipe is drawn with: whole, never in colour.
+fn whole() -> Look {
+    Look {
+        width: WHOLE,
+        ..look()
+    }
+}
+
+#[test]
+fn drawn_whole_the_counts_line_up_after_the_widest_name_and_nothing_trails() {
+    let shown = overview(&swarm(), &whole());
+    let expected = [
+        "work · 6 running · 1 needs you · 1 stuck",
+        "",
+        "              need you  stuck  moving  quiet",
+        "Harbour                     1       1      1",
+        "  Kelp               1",
+        "Reef                                1",
+        "on their own                        1",
+        "",
+        "see a team by any part of its name: mycelium --realm work swarm harbour",
+    ];
+    assert_eq!(
+        shown.lines().collect::<Vec<_>>(),
+        expected,
+        "as wide as its widest name, not the terminal's room:\n{shown}"
+    );
+}
+
+#[test]
+fn a_short_name_that_is_another_s_address_is_never_drawn_or_offered() {
+    // Typed, it would reach the session BUSY, not Reef.
+    let mut swarm = swarm();
+    swarm.teams[0]["swarm"] = json!("busy");
+    let shown = overview(&swarm, &look());
+    assert!(
+        !shown.contains("busy"),
+        "a page drew a name that reaches another:\n{shown}"
+    );
+    assert!(
+        !typed(&swarm).contains(&"busy".to_owned()),
+        "a shell was offered a name that reaches another"
+    );
+}
+
+#[test]
+fn a_team_s_own_address_as_its_short_name_is_drawn_only_where_its_lead_has_it() {
+    // A team keyed by a working session's address, led by another: typed,
+    // its short name would reach the session BUSY, not the team.
+    let mut swarm = swarm();
+    swarm.teams[1]["key"] = json!("team:BUSY");
+    swarm.teams[2]["within"] = json!("BUSY");
+    swarm.teams[1]["swarm"] = json!("busy");
+    let shown = overview(&swarm, &look());
+    assert!(
+        !shown.contains("busy"),
+        "a page drew a name that reaches the session BUSY:\n{shown}"
+    );
+    // Led by BUSY, the team is what typing its address reaches.
+    swarm.teams[1]["lead"] = json!("s-busy");
+    assert!(
+        typed(&swarm).contains(&"busy".to_owned()),
+        "a team led by the session of its address lost its short name"
+    );
+}
+
+#[test]
+fn a_lead_s_address_as_its_team_s_short_name_is_never_drawn_where_the_team_goes_by_another() {
+    // Harbour goes by HARBOR, led by the session LEAD: typed, lead reaches
+    // that session alone, so pausing it would leave the rest running.
+    let mut swarm = swarm();
+    swarm.teams[1]["swarm"] = json!("lead");
+    let shown = overview(&swarm, &look());
+    assert!(
+        !shown
+            .lines()
+            .any(|line| line.trim_start().starts_with("lead ")),
+        "a page drew a name that reaches the session LEAD alone:\n{shown}"
+    );
+    assert!(
+        !typed(&swarm).contains(&"lead".to_owned()),
+        "a shell was offered a name that reaches the session LEAD alone"
+    );
+}
+
+#[test]
+fn a_short_name_that_cleans_to_an_act_is_never_drawn() {
+    // Drawn, it reads as resume, which swarm does rather than reach Harbour.
+    let mut swarm = swarm();
+    swarm.teams[1]["swarm"] = json!("re\u{200B}sume");
+    let shown = overview(&swarm, &look());
+    assert!(
+        !shown
+            .lines()
+            .any(|line| line.trim_start().starts_with("resume ")),
+        "a page drew an act as a team's name:\n{shown}"
+    );
+    assert!(
+        !typed(&swarm).iter().any(|name| unmarked(name) == "resume"),
+        "a shell was offered an act as a team's name"
+    );
+}
+
+#[test]
+fn a_short_name_is_drawn_as_it_is_typed_and_reaches_only_its_team() {
+    // Drawn with its space, `tide plan` typed would reach `tide-plan`'s
+    // team; a braille blank or a control draws like a space but parts no
+    // words, so each is folded as a space is.
+    for (given, drawn) in [
+        ("harbour  tides", "harbour-tides"),
+        ("harbour\u{2800}tides", "harbour-tides"),
+        ("harbour\u{1}tides", "harbour-tides"),
+        ("harbour\u{1b}tides", "harbour-tides"),
+    ] {
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!(given);
+        let shown = overview(&swarm, &look());
+        assert!(
+            !shown.contains(given) && typed(&swarm).iter().any(|name| name == drawn),
+            "{given} was not drawn as {drawn}:\n{shown}"
+        );
+        for asked in [drawn.to_owned(), drawn.replace('-', " ")] {
+            let found = team(&swarm, &asked, &look()).unwrap_or_default();
+            assert!(
+                found.starts_with("Harbour"),
+                "{asked}, typed as {given} is drawn, missed Harbour: {found}"
+            );
+        }
+    }
+    // A name whose words, however parted, hold an act would be typed apart
+    // as one: `reef pause` would pause Reef rather than show Harbour.
+    for given in [
+        "reef pause",
+        "reef-pause",
+        "reef\u{2800}pause",
+        "reef\u{1b}pause",
+        "--names",
+    ] {
+        let mut acting = swarm();
+        acting.teams[1]["swarm"] = json!(given);
+        let names = typed(&acting);
+        assert!(
+            !names
+                .iter()
+                .any(|name| name.contains("pause") || name.contains("names")),
+            "{given} was given as Harbour's name: {names:?}"
+        );
+    }
+    // A name worked out from a title is held in the same typed form, so a
+    // control in a title's word is drawn and reached as a hyphen.
+    let mut controlled = swarm();
+    controlled.teams[1]["title"] = json!("Bootstrap tide\u{1b}plan tools");
+    let found = team(&controlled, "tide-plan", &look()).unwrap_or_default();
+    assert!(
+        typed(&controlled).iter().any(|name| name == "tide-plan") && found.starts_with("Bootstrap"),
+        "a title's controlled word was not drawn as typed: {:?}, {found}",
+        typed(&controlled)
+    );
+    // And to the same rule on acts.
+    let worked_out = "Bootstrap reef\u{2800}pause tools";
+    let mut titled = swarm();
+    titled.teams[1]["title"] = json!(worked_out);
+    assert!(
+        !typed(&titled)
+            .iter()
+            .any(|name| name != worked_out && name.contains("pause")),
+        "a title's word was given as Harbour's name: {:?}",
+        typed(&titled)
+    );
+    // A spaced name, a controlled one and a hyphened one are typed alike,
+    // so go to neither.
+    for spaced in ["tide plan", "tide\u{1b}plan"] {
+        let mut twins = swarm();
+        twins.teams[0]["swarm"] = json!("tide-plan");
+        twins.teams[1]["swarm"] = json!(spaced);
+        assert!(
+            !typed(&twins).iter().any(|name| name.contains("tide")),
+            "one typed name was given to two teams: {:?}",
+            typed(&twins)
+        );
+    }
+    // One that cleans to nothing would be drawn blank and typed as no word.
+    let mut blank = swarm();
+    blank.teams[1]["swarm"] = json!("\u{200B}");
+    assert!(
+        !typed(&blank).iter().any(|name| unmarked(name).is_empty()),
+        "a blank was given as Harbour's name: {:?}",
+        typed(&blank)
+    );
+}
+
+#[test]
+fn two_short_names_that_clean_alike_go_to_neither_and_swarm_names_say_them_cleaned() {
+    // Drawn alike, typed they'd reach both, and the hint offered one.
+    let mut both = swarm();
+    both.teams[0]["swarm"] = json!("dock");
+    both.teams[1]["swarm"] = json!("do\u{200B}ck");
+    assert!(
+        !typed(&both).iter().any(|name| unmarked(name) == "dock"),
+        "two teams were given one name: {:?}",
+        typed(&both)
+    );
+    // Alone, the name is kept and handed to a shell as a page draws it.
+    let mut alone = swarm();
+    alone.teams[1]["swarm"] = json!("do\u{200B}ck");
+    assert!(
+        typed(&alone).iter().any(|name| name == "dock"),
+        "a name was handed to a shell otherwise than drawn: {:?}",
+        typed(&alone)
+    );
+}
+
+#[test]
+fn drawn_whole_a_long_name_is_never_cut_and_runs_on_alone() {
+    let mut swarm = swarm();
+    let long = "A reef whose name runs far past every column it was given";
+    swarm.teams[0]["title"] = json!(long);
+    let shown = overview(&swarm, &whole());
+    let lines: Vec<&str> = shown.lines().collect();
+    // Led by the short name a long title is given, one space between as
+    // a line that runs on draws it, its counts on the next line, under
+    // the column the other rows' counts are in, so its one is read as
+    // moving.
+    let named = format!("reef {long}");
+    let at = lines
+        .iter()
+        .position(|line| *line == named)
+        .unwrap_or_else(|| panic!("whole, the long name is drawn in full, alone:\n{shown}"));
+    assert!(!shown.contains('…'), "whole, nothing is cut:\n{shown}");
+    assert_eq!(
+        lines[at + 1],
+        format!("{}1", " ".repeat(36)),
+        "its count sits under its header, moving:\n{shown}"
+    );
+    assert!(
+        lines
+            .iter()
+            .filter(|line| !line.starts_with("reef"))
+            .all(|line| line.chars().count() <= 80),
+        "one long name pushed the other rows past 80 columns:\n{shown}"
+    );
+}
+
+#[test]
+fn a_title_holding_a_break_draws_on_its_one_line() {
+    let mut broken = swarm();
+    broken.teams[0]["title"] = json!("Re\n\nef");
+    let mut spaced = swarm();
+    spaced.teams[0]["title"] = json!("Re  ef");
+    assert_eq!(
+        overview(&broken, &whole()),
+        overview(&spaced, &whole()),
+        "a break in a title split the block its counts line up in"
+    );
+}
+
+#[test]
+fn drawn_whole_what_each_session_does_lines_up_after_the_widest_name() {
+    let shown = team(&swarm(), "harb", &whole()).expect("Harbour is found by its name");
+    let lines: Vec<&str> = shown.lines().collect();
+    assert_eq!(
+        lines[3..],
+        [
+            "      need you  stuck  moving  quiet",
+            "Kelp         1",
+            "",
+            "stuck      Paused one  paused",
+            "moving     Busy one    running the tests",
+            "quiet      Harbour's lead",
+            "",
+            "works in skiff beside Reef",
+        ],
+        "one team, whole:\n{shown}"
+    );
+}
+
+#[test]
+fn a_session_s_doing_draws_as_its_words_on_one_line() {
+    let doing = |step: &str| {
+        let mut swarm = swarm();
+        swarm.sessions[2]["step"] = json!(step);
+        swarm
+    };
+    let dirty = "running\u{fdd0} the\n\ntests\u{1b}[2J";
+    for look in [look(), whole()] {
+        let shown = team(&doing(dirty), "harb", &look).expect("Harbour is found");
+        assert!(
+            !shown.contains(['\u{1b}', '\u{fdd0}', '\u{fdd1}']),
+            "a doing's escape or mark reached the page:\n{shown}"
+        );
+        assert_eq!(
+            Ok(shown),
+            team(&doing(&unmarked(dirty)), "harb", &look),
+            "a doing's mark, break or escape drew otherwise than on one line at {}",
+            look.width
+        );
+    }
+}
+
+#[test]
+fn a_title_holding_a_mark_moves_no_column() {
+    // Reef is named in two of Harbour's lines, so its marks would line
+    // up with each other if either were kept.
+    let bridged = || {
+        let mut swarm = swarm();
+        swarm.teams[1]["bridges"] = json!([{"repo": "skiff", "teams": ["REEF01"]},
+                                          {"repo": "kelp", "teams": ["REEF01", "KELP01"]}]);
+        swarm
+    };
+    let mut swarm = bridged();
+    swarm.teams[0]["title"] = json!("Re\u{fdd0}e\u{fdd0}f");
+    swarm.sessions[2]["title"] = json!("Busy\u{fdd1} one");
+    // The head names the lead, and the line under it what landed, so a
+    // mark kept in both would line one up with the other.
+    for session in &mut swarm.sessions {
+        if session["id"] == "s-lead" {
+            session["title"] = json!("Harbour's\u{fdd0} lead");
+        }
+    }
+    swarm.teams[1]["landed"]["what"] = json!("Hear\u{fdd0} the Tide");
+    assert_eq!(
+        overview(&swarm, &whole()),
+        overview(&bridged(), &whole()),
+        "a team's mark is dropped, so its count stays put"
+    );
+    assert_eq!(
+        team(&swarm, "harb", &whole()),
+        team(&bridged(), "harb", &whole()),
+        "and in every line naming it, so none moves"
+    );
+}
+
+#[test]
+fn marks_line_up_within_a_block_and_each_kind_on_its_own() {
+    assert_eq!(
+        aligned("a\u{fdd0}  1\nlonger\u{fdd0}  2\n\nx\u{fdd1}  doing\nlong\u{fdd0}  3\n"),
+        "a       1\nlonger  2\n\nx  doing\nlong  3",
+        "padded to the block's widest, a blank line starting the next"
+    );
+    assert_eq!(
+        aligned("été\u{fdd0} 1\nab\u{fdd0} 2   "),
+        "été 1\nab  2",
+        "counted in characters, not bytes, and nothing trails"
+    );
+    // Swarm's four headers take 32 columns, so a lead of 48 keeps them
+    // within 80 and one of 49 doesn't.
+    let counts = "  need you  stuck  moving  quiet";
+    let (fits, runs_on) = ("x".repeat(48), "y".repeat(49));
+    assert_eq!(
+        aligned(&format!(
+            "\u{fdd0}{counts}\n{fits}\u{fdd0}  1\n{runs_on}\u{fdd0}  2\nab\u{fdd0}\u{fdd0}  3"
+        )),
+        format!(
+            "{pad}{counts}\n{fits}  1\n{runs_on}\n{pad}  2\nab{}  3",
+            " ".repeat(46),
+            pad = " ".repeat(48)
+        ),
+        "a lead that keeps the counts within 80 lines up, a longer one sets its counts \
+         on the next line under the column, and a mark left over goes"
+    );
+    assert_eq!(
+        aligned(&format!(
+            "\u{fdd0}  need you  stuck  moving  quiet  dormant\n{fits}\u{fdd0}  1"
+        )),
+        format!("  need you  stuck  moving  quiet  dormant\n{fits}\n  1"),
+        "with five headers, 41 columns, a lead of 48 runs on"
+    );
+}
+
+#[test]
+fn a_row_that_runs_on_leaves_no_gap_and_spaces_out_no_figure() {
+    let counts = "  need you  stuck  moving  quiet";
+    let pad = " ".repeat(48);
+    // A lead of 48 sets the column, as the widest that fits; a run-on
+    // row's lead never does.
+    let (fits, none) = ("x".repeat(48), "z".repeat(49));
+    assert_eq!(
+        aligned(&format!(
+            "\u{fdd0}{counts}\n{none}\u{fdd0}\n  Reef{}1{}x\u{fdd0}\n{fits}\u{fdd0}  1",
+            " ".repeat(30),
+            " ".repeat(20)
+        )),
+        format!("{pad}{counts}\n{none}\n  Reef 1 x\n{fits}  1"),
+        "a long row with no counts stays on its line, leaving no blank one to end \
+         the table early"
+    );
+    let spaced = format!("  Reef{}1{}x", " ".repeat(30), " ".repeat(20));
+    assert_eq!(
+        aligned(&format!(
+            "\u{fdd0}{counts}\n{spaced}\u{fdd0}  2\n{fits}\u{fdd0}  1"
+        )),
+        format!("{pad}{counts}\n  Reef 1 x\n{pad}  2\n{fits}  1"),
+        "a title that runs on draws each run of spaces as one, so it can't set a \
+         figure under a header"
+    );
+    let blank = format!("  Reef{}1{}x", "\u{2800}".repeat(30), " ".repeat(20));
+    assert_eq!(
+        aligned(&format!(
+            "\u{fdd0}{counts}\n{blank}\u{fdd0}  2\n{fits}\u{fdd0}  1"
+        )),
+        format!("{pad}{counts}\n  Reef 1 x\n{pad}  2\n{fits}  1"),
+        "a run of braille blanks, drawn as spaces, is drawn as one space too"
+    );
+}
+
+#[test]
+fn a_title_s_own_leading_spaces_set_no_figure_under_a_header() {
+    // Two teams of one title share its short name, so neither shows one,
+    // and the title alone leads each row. A braille blank never counts
+    // as an indent, so it isn't one of these.
+    for space in [" ", "\u{3000}"] {
+        let title = format!("{}1{}{}", space.repeat(36), " ".repeat(20), "x".repeat(30));
+        let mut swarm = swarm();
+        swarm.teams[0]["title"] = json!(title);
+        swarm.teams[2]["title"] = json!(title);
+        let shown = overview(&swarm, &whole());
+        let rows: Vec<&str> = shown.lines().filter(|line| line.contains("1 xx")).collect();
+        assert_eq!(
+            rows.len(),
+            2,
+            "both titles' rows are drawn, each once:\n{shown}"
+        );
+        for row in rows {
+            assert!(
+                row.starts_with("1 x") || row.starts_with("  1 x"),
+                "a title's own leading {space:?} passed for its row's indent:\n{shown}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_colour_s_escape_takes_no_column_where_marks_line_up() {
+    assert_eq!(
+        aligned("\u{1b}[1mab\u{1b}[0m\u{fdd0}  1\nabcd\u{fdd0}  2"),
+        "\u{1b}[1mab\u{1b}[0m    1\nabcd  2",
+        "a painted lead was padded by its characters rather than the columns it takes"
+    );
+}
+
+#[test]
+fn a_doing_past_its_column_runs_on_under_it() {
+    // What comes before a doing ends by column 48, so a lead of 48 lines
+    // its doing up and one of 49 sets it on the next line.
+    let (fits, runs_on) = ("x".repeat(48), "y".repeat(49));
+    let pad = " ".repeat(48);
+    assert_eq!(
+        aligned(&format!(
+            "{fits}\u{fdd1}  tide\nab\u{fdd1}  ebb\n{runs_on}\u{fdd1}  flood"
+        )),
+        format!(
+            "{fits}  tide\nab{}  ebb\n{runs_on}\n{pad}  flood",
+            " ".repeat(46)
+        ),
+        "a doing past column 48 runs on, under the others"
+    );
+    assert_eq!(
+        aligned(&format!(
+            "{runs_on}\u{fdd1}  flood\n{runs_on}z\u{fdd1}  ebb"
+        )),
+        format!("{runs_on}\n{pad}  flood\n{runs_on}z\n{pad}  ebb"),
+        "where no lead fits, each doing runs on under column 48"
+    );
+    assert_eq!(
+        aligned(&format!("{runs_on}\u{fdd1}")),
+        runs_on,
+        "with no doing, the line stays as it is"
+    );
+}
+
+#[test]
+fn a_short_name_holding_what_draws_nothing_moves_no_title() {
+    // The widest short name sets the column, so a name counted before it
+    // is cleaned would move every title; the narrower one is padded to
+    // it, so a name padded before it is cleaned would move its own.
+    let named = |harbour: &str, kelp: &str| {
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!(harbour);
+        swarm.teams[2]["swarm"] = json!(kelp);
+        swarm
+    };
+    let plain = overview(&named("dock", "ba"), &whole());
+    assert!(
+        plain.contains("\ndock  ") && plain.contains("ba    Kelp"),
+        "both short names are shown, Kelp's padded to Harbour's:\n{plain}"
+    );
+    for look in [look(), whole()] {
+        assert_eq!(
+            overview(&named("do\u{200B}ck\u{fdd0}", "b\u{200B}a"), &look),
+            overview(&named("dock", "ba"), &look),
+            "a character a short name loses moved a title, or reached the hint, at {}",
+            look.width
+        );
+    }
+    // The name the page shows, as typed, finds its team.
+    let dirty = named("do\u{200B}ck\u{fdd0}", "b\u{200B}a");
+    for (typed, found) in [("dock", "Harbour"), ("BA", "Kelp")] {
+        let shown = team(&dirty, typed, &look())
+            .unwrap_or_else(|why| panic!("{typed}, as the page shows it, found nothing: {why}"));
+        assert!(
+            shown.contains(found),
+            "{typed} found another team than {found}:\n{shown}"
+        );
+    }
 }
