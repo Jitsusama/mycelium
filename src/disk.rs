@@ -24,7 +24,8 @@ pub enum Band {
     /// It is nearly full, and its guard clears what it can.
     #[serde(alias = "urgent")]
     NearlyFull,
-    /// It is full or about to be.
+    /// It is full: under the room its store keeps free, or past all its
+    /// guard can clear, so what starts there may fail to write.
     #[serde(alias = "critical")]
     CriticallyFull,
 }
@@ -78,6 +79,38 @@ struct Status {
 struct Filesystem {
     path: PathBuf,
     band: Band,
+    /// Its bytes free, where the guard says them.
+    #[serde(default)]
+    free: Option<f64>,
+    /// The bytes its store keeps free by collecting its own garbage.
+    #[serde(default)]
+    nix_floor: Option<f64>,
+    /// Whether the guard has cleared all it can.
+    #[serde(default)]
+    exhausted: Option<bool>,
+}
+
+impl Filesystem {
+    /// Its band as mycelium means it. The guard bands a disk critically
+    /// full by how hard it clears, which it may reach by forecast hours
+    /// before the disk fills, so one it says is still above its store's
+    /// floor with more to clear is nearly full here. A guard that says
+    /// neither is taken at its word.
+    fn band(&self) -> Band {
+        let under_floor = match (self.free, self.nix_floor) {
+            (Some(free), Some(floor)) => Some(free < floor),
+            _ => None,
+        };
+        let full = match (under_floor, self.exhausted) {
+            (None, None) => true,
+            (under, exhausted) => under == Some(true) || exhausted == Some(true),
+        };
+        if self.band == Band::CriticallyFull && !full {
+            Band::NearlyFull
+        } else {
+            self.band
+        }
+    }
 }
 
 /// The band `status` gives the disk holding `home`, unless it isn't a
@@ -98,7 +131,7 @@ fn said(status: Status, home: &Path, now: i64) -> Option<Band> {
         .into_iter()
         .filter(|disk| home.starts_with(&disk.path))
         .max_by_key(|disk| disk.path.components().count())
-        .map(|disk| disk.band)
+        .map(|disk| disk.band())
 }
 
 #[cfg(test)]
@@ -195,6 +228,46 @@ mod tests {
             band(&folder.path().join("status.json"), home, NOW),
             None,
             "no guard keeps no band"
+        );
+    }
+
+    #[test]
+    fn a_disk_critically_full_by_forecast_alone_is_nearly_full() {
+        let home = Path::new("/home/joel");
+        let banded = |free: u64, exhausted: bool| {
+            let disk = serde_json::json!({
+                "path": "/",
+                "band": "critically-full",
+                "free": free,
+                "nix_floor": 20,
+                "exhausted": exhausted,
+            });
+            let status = serde_json::json!({
+                "version": 2,
+                "heartbeat": NOW,
+                "filesystems": [disk],
+            });
+            says(status.to_string().as_bytes(), home)
+        };
+        assert_eq!(
+            banded(42, false),
+            Some(Band::NearlyFull),
+            "above its store's floor with more to clear, it has room to write yet"
+        );
+        assert_eq!(
+            banded(19, false),
+            Some(Band::CriticallyFull),
+            "under its store's floor, it is full"
+        );
+        assert_eq!(
+            banded(42, true),
+            Some(Band::CriticallyFull),
+            "past all its guard can clear, it is full"
+        );
+        assert_eq!(
+            says(&status(NOW, &[("/", "critically-full")]), home),
+            Some(Band::CriticallyFull),
+            "a guard saying no floor and nothing of what it cleared is taken at its word"
         );
     }
 
