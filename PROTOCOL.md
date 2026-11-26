@@ -1934,6 +1934,17 @@ than every cell in it: lower-case letters, digits and hyphens, at most
 63, read as no basin in any other shape, which spoils nothing else
 declared. It is the cell's own word and only ever drawn, never weighed
 in placement.
+Where given, `needs_in` says what work sprouted here needs wherever
+placement sends it, as `[{"folders": ["src/inner"], "words":
+["forge.example"], "needs": [{"reach": "inner"}]}]`: a sprout begun
+in one of `folders` or below, each within home unless whole, or whose
+words hold one of `words` in any case, needs each of `needs`. Only a
+sprout placement chooses for gains them; one naming a machine, asking
+needs of its own or staying here is started as asked. A need met only
+by a probe is met as the probe last answered, so while no machine's
+probe answers, such work is refused, saying why each machine missed,
+rather than started where it can't work. A `Start` gains nothing,
+since its asker says its work whole.
 Where true, `takes_carries` says a worker takes carried sessions, as
 one made to take load off the person's machines does: a carry to a
 worker that doesn't say so is refused (Carrying a Quest), and one of

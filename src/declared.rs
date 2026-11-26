@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::hold::start::Kit;
+use crate::placement::Need;
 
 /// What a machine's configuration says of it. Tests alone have a
 /// default, declaring nothing at all: no reach, no taints, no fence,
@@ -108,6 +109,18 @@ pub struct Declared {
         deserialize_with = "lively_or_none"
     )]
     pub kept_lively: Option<Lively>,
+    /// What work begun here needs wherever placement sends it, by where
+    /// it begins or what it names, as work in a checkout only some
+    /// machines can work in needs a network only they reach. A rule not
+    /// in the shape this build reads is left out, never the others or the
+    /// rest of what's declared, so a link's end reading another machine's
+    /// facts keeps the link.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "rules_read"
+    )]
+    pub needs_in: Vec<NeedsIn>,
 }
 
 /// The ceiling a machine kept lively ([`Declared::kept_lively`]) holds its
@@ -124,6 +137,23 @@ pub struct Lively {
     /// keeps no more than any machine does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_available: Option<u64>,
+}
+
+/// What work begun here needs, wherever placement sends it, where it
+/// begins in one of `folders` or its words name one of `words`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NeedsIn {
+    /// The folders, each within home, as `src/rows` names `~/src/rows`,
+    /// or whole; work begun in one or anywhere below it needs `needs`.
+    /// Each is judged through its links, as the sprout's own folder is.
+    #[serde(default)]
+    pub folders: Vec<PathBuf>,
+    /// The words, as a link's host, found in any case in what the work
+    /// says, each standing on its own rather than inside a longer word.
+    #[serde(default)]
+    pub words: Vec<String>,
+    /// What such work needs.
+    pub needs: Vec<Need>,
 }
 
 /// The fence an agent session runs in, as the harness names it.
@@ -204,6 +234,20 @@ fn fence_or_none<'de, D: serde::Deserializer<'de>>(
 fn lively_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Option<Lively>, D::Error> {
     Ok(Option::<serde_json::Value>::deserialize(said)?
         .and_then(|lively| serde_json::from_value(lively).ok()))
+}
+
+/// The rules of what work needs as declared, each one not in the shape
+/// this build reads left out, which spoils only that rule, never the
+/// others or the rest of what's declared.
+fn rules_read<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Vec<NeedsIn>, D::Error> {
+    let rules = match serde_json::Value::deserialize(said)? {
+        serde_json::Value::Array(rules) => rules,
+        _ => Vec::new(),
+    };
+    Ok(rules
+        .into_iter()
+        .filter_map(|rule| serde_json::from_value(rule).ok())
+        .collect())
 }
 
 /// The longest name a basin is read by, a DNS label's.
@@ -1119,6 +1163,7 @@ mod tests {
                 basin: None,
                 sessions_at_most: None,
                 kept_lively: None,
+                needs_in: Vec::new(),
             }),
             "it reads as declared"
         );
@@ -1143,6 +1188,7 @@ mod tests {
             basin: None,
             sessions_at_most: None,
             kept_lively: None,
+            needs_in: Vec::new(),
         };
         assert!(
             !lasting.is_worker(),
@@ -1384,6 +1430,65 @@ mod tests {
                 spoiled.reach,
                 ["internet"],
                 "{misshapen} leaves the rest of the declaration standing"
+            );
+        }
+    }
+
+    #[test]
+    fn what_work_needs_reads_as_written_and_a_misshapen_rule_spoils_only_it() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let file = folder.path().join("declared.json");
+        let with = |rules: &str| {
+            format!(
+                r#"{{"reach": ["internet"], "outlives": [], "costs_money": false,
+                    "taints": [], "basin": "pond", "needs_in": {rules}}}"#
+            )
+        };
+        let rule = r#"{"folders": ["zone"], "words": ["forge.example"],
+            "needs": [{"reach": "inner"}, "cloud"]}"#;
+        let read_as = vec![NeedsIn {
+            folders: vec![PathBuf::from("zone")],
+            words: vec!["forge.example".to_owned()],
+            needs: vec![Need::Reach("inner".to_owned()), Need::Cloud],
+        }];
+        // As core.nix writes it, and said again as it was.
+        fs::write(&file, with(&format!("[{rule}]"))).expect("written");
+        let declared = read(&file).expect("it reads");
+        assert_eq!(declared.needs_in, read_as, "it reads as declared");
+        assert_eq!(
+            serde_json::to_value(&declared).expect("it says itself")["needs_in"],
+            serde_json::from_str::<serde_json::Value>(&format!("[{rule}]")).expect("json"),
+            "and is said again as it was"
+        );
+        // Beside one this build can't read, which alone is left out.
+        for misshapen in [
+            r#"{"folders": ["zone"], "needs": [{"colour": "blue"}]}"#,
+            r#"{"folders": ["zone"], "needs": "cloud"}"#,
+            r#"{"folders": "zone", "needs": ["cloud"]}"#,
+            r#"{"folders": ["zone"]}"#,
+            r#""zone""#,
+        ] {
+            fs::write(&file, with(&format!("[{misshapen}, {rule}]"))).expect("written");
+            let spoiled = read(&file).expect("a misshapen rule spoils only itself");
+            assert_eq!(
+                spoiled.needs_in, read_as,
+                "{misshapen} is left out and the rule beside it kept"
+            );
+            assert_eq!(
+                spoiled.basin.as_deref(),
+                Some("pond"),
+                "{misshapen} leaves the rest of the declaration standing"
+            );
+        }
+        // Rules not in a list are none, the rest standing.
+        for misshapen in [r#""zone""#, "7", "null", rule] {
+            fs::write(&file, with(misshapen)).expect("written");
+            let spoiled = read(&file).expect("misshapen rules spoil only themselves");
+            assert!(spoiled.needs_in.is_empty(), "{misshapen} reads as no rule");
+            assert_eq!(
+                spoiled.reach,
+                ["internet"],
+                "{misshapen} leaves the rest standing"
             );
         }
     }
