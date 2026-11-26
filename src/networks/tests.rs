@@ -2070,8 +2070,9 @@ fn a_wide_team_short_keeps_what_follows_in_line() {
         shown.lines().all(|line| cells(line) <= 80),
         "a line passed 80 cells:\n{shown}"
     );
-    // The short takes ten cells, so what follows it starts at 14 in
-    // every row the column holds, the machines' among them.
+    // The short takes ten cells, so what follows it starts at 14 in the
+    // rows at the top, the machines' among them, and a step further in
+    // for the wide short's own row, a level down.
     assert_eq!(
         before("  harbor ", "Harbour Ships"),
         Some(2 + cells("港湾見張り") + 2),
@@ -2082,6 +2083,13 @@ fn a_wide_team_short_keeps_what_follows_in_line() {
         before("  harbor ", "Harbour Ships"),
         "a machine's row left the column:\n{shown}"
     );
+    assert_eq!(
+        before("    港湾見張り ", "港湾見張り: 潮"),
+        Some(4 + cells("港湾見張り") + 2),
+        "the wide short's own title left the column:\n{shown}"
+    );
+    // Kelp's one count is under "need you", the last heading, so its row
+    // ends where "  stuck" starts.
     assert_eq!(
         Some(cells(line("    港湾見張り "))),
         before("     ", "  stuck"),
