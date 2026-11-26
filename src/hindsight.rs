@@ -408,6 +408,7 @@ mod tests {
                         over: false,
                         unheard: false,
                         saturated: false,
+                        kept_lively: false,
                         preferred: 0,
                         headroom,
                         chance: 0.0,

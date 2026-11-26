@@ -96,6 +96,27 @@ pub struct Declared {
         deserialize_with = "basin_or_none"
     )]
     pub basin: Option<String>,
+    /// How lightly it is kept loaded, where it is a machine the person
+    /// works at that the realm's other machines take new work from first:
+    /// it ranks after every other machine heard lately with room, and past
+    /// its ceiling after every machine heard lately. None where it is
+    /// ranked as any machine is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_lively: Option<Lively>,
+}
+
+/// The ceiling a machine kept lively ([`Declared::kept_lively`]) holds its
+/// load to: past either part, it counts as past its room, so work goes
+/// to any other machine heard lately before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lively {
+    /// The processor pressure it stays at or under, in percent of the
+    /// last ten seconds in which some work waited on a processor.
+    pub cpu: u32,
+    /// The memory it keeps available at least, in bytes; none where it
+    /// keeps no more than any machine does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_available: Option<u64>,
 }
 
 /// The fence an agent session runs in, as the harness names it.
