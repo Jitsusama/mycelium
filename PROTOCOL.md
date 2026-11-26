@@ -2568,12 +2568,14 @@ work says them, such as `"cloud"`, a machine that costs money
 by them, wherever its folder is, and is never placed again here. With
 no `on` or `needs`, a sprout whose folder is in a repository's own checkout
 where the person keeps them, `~/src/<repo>` or
-`~/src/<host>/<owner>/<repo>`, fetching from a remote, names no
+`~/src/<host>/<owner>/<repo>`, or in the trunk's tree of a bare
+repository kept under home outside `~/src`, either fetching from its
+origin, names no
 machine, so placement chooses, as for any start, and new work goes
-where there is room. Every other names this one, since no other
-machine has its folder as it is here: one in a tree cut from a
-repository kept elsewhere (its `.git` a file: a quest's tree, a
-zone's, a bare repository's trunk), a clone kept anywhere else, as a
+where there is room. Every other names this one, since no other machine has its
+folder as it is here: one in another tree cut from a repository kept
+elsewhere (its `.git` a file: a quest's tree, a zone's), a clone
+kept anywhere else, as a
 quest's scratch clone is, one with no remote, or in no checkout. What
 a checkout holds uncommitted isn't looked at, so work on it names this
 machine with `on`. Where the machine placement chose refuses the start
@@ -2586,6 +2588,19 @@ placements keep both. Any other answer stands, so one lost on
 its way back, which may have started there, is never asked again. A
 node from before `strict` begins a strict start at home and its guard
 ends it, so a realm placing sprouts runs nodes that judge `strict`.
+The person's sprout may cost, an agent's never. A start that may cost
+and names no machine, placed on a machine heard lately but over its
+room or saturated, so that every machine heard is past its room, is
+asked again needing `cloud`, judged to last at least an hour, and
+strict where it names a folder: a cloud machine linked, heard lately
+within its room, takes it, counted there. No machine is made for it,
+since one made holds none of the person's checkouts and making one
+outlasts the asker's wait; one made by naming `cloud` serves those
+after it. Where none is chosen, or the one chosen began nothing (no
+link took the ask, or it refused it first: lacking its folder, not
+taking it now, its strict fence keeping it from home, or, where no
+person works, pacing or stopping agents), it goes where placement
+chose, as before; any other answer, a lost one among them, stands.
 Beside its first words the
 session is given `QUEST_WORKFLOW_SPROUT`, the same work as data, a
 JSON object such as

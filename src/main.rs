@@ -1224,9 +1224,9 @@ struct Starting {
 struct Sprouting {
     /// The machine it starts on, by name; if none, where placement
     /// chooses, where its folder is a repository's own checkout under
-    /// `~/src` fetching from a remote (this one where the machine chosen
-    /// hasn't it), else this one. Name this one for work on what a
-    /// checkout holds uncommitted.
+    /// `~/src` fetching from a remote or a bare repository's trunk (this
+    /// one where the machine chosen hasn't it), else this one. Name this
+    /// one for work on what a checkout holds uncommitted.
     #[arg(long)]
     on: Option<String>,
     /// What the machine it starts on must be, as for `place`, such as

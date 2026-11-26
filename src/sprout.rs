@@ -770,34 +770,30 @@ pub fn within_home(folder: PathBuf, home: &Path) -> PathBuf {
 }
 
 /// Whether work begun in `folder` stays on this machine rather than going
-/// where placement chooses. Only work in a repository's own checkout
-/// where the person keeps them, `~/src/<repo>` or
+/// where placement chooses. Only work in a checkout the person keeps
+/// where a place is listed ([`places::checkouts`]) may go: a
+/// repository's own checkout at `~/src/<repo>` or
 /// `~/src/<host>/<owner>/<repo>` under `home`, fetching from a remote,
-/// may go, since a person's machines keep those at the same places, from
-/// the same remotes; a machine that hasn't it refuses the strict start,
-/// which then begins here. Everything else stays, since no other machine
-/// has it as it is here: the checkout nearest `folder` a tree cut from a
-/// repository kept elsewhere (a quest's tree, a zone's, a bare
-/// repository's trunk with its sparse checkout, a submodule), a clone
-/// kept anywhere else (a quest's scratch clone, each machine's own), one
-/// with no remote, and a folder in no checkout. What a checkout holds
-/// uncommitted isn't looked at: work on that is asked `--on` this one.
+/// or the trunk's tree of a bare repository kept under home, fetching
+/// from its origin, since a person's machines keep those at the same
+/// places, from the same remotes; a machine that hasn't it refuses the strict start, which
+/// then begins here. Everything else stays, since no other machine has it
+/// as it is here: the checkout nearest `folder` a tree cut from a
+/// repository kept elsewhere (a quest's tree, a zone's, a submodule), a
+/// clone kept anywhere else (a quest's scratch clone, each machine's
+/// own), one with no remote, and a folder in no checkout. What a checkout
+/// holds uncommitted isn't looked at: work on that is asked `--on` this
+/// one.
 fn stays(folder: &Path, home: &Path, disk: &impl Disk) -> bool {
+    let kept = places::checkouts(home, disk);
     let src = home.join("src");
+    // Those listed outside `~/src` are bare repositories' trunks; one under
+    // it is its own checkout. Either moves only fetching from a remote.
     let shared = |top: &Path| {
-        let Ok(within) = top.strip_prefix(&src) else {
-            return false;
-        };
-        // A host's folder holds its owners', so is no checkout itself.
-        let kept = match within.components().count() {
-            1 => true,
-            3 => within
-                .components()
-                .next()
-                .is_some_and(|host| !disk.is_checkout(&src.join(host))),
-            _ => false,
-        };
-        kept && !disk.is_cut_tree(top) && disk.origin(top).is_some()
+        kept.iter().any(|one| one == top)
+            && top.starts_with(home)
+            && disk.origin(top).is_some()
+            && (!top.starts_with(&src) || !disk.is_cut_tree(top))
     };
     folder
         .ancestors()
@@ -809,7 +805,8 @@ fn stays(folder: &Path, home: &Path, disk: &impl Disk) -> bool {
 /// What a sprout asks the node to start: its session on `machine` and
 /// nowhere else, or where placement chooses where it names none, in
 /// `folder` and never at home where that machine hasn't
-/// it (`strict`), never on a machine that costs money, its seed carrying
+/// it (`strict`), never saying it may cost (the node says so for the
+/// person's, never for an agent's), its seed carrying
 /// the sprout's own `id`, told the cell it came `from` and any `note` on
 /// where it begins; and what that seed leaves out.
 #[must_use]
@@ -1493,17 +1490,16 @@ pub(crate) mod tests {
         );
     }
 
-    // New work goes where there is room, so a sprout naming no machine
-    // leaves it to placement, unless its work is in a tree only this
-    // machine has.
-    #[test]
-    fn a_sprout_naming_no_machine_is_placed_unless_its_work_is_only_here() {
+    /// A home holding checkouts and trees of each kind a sprout may begin
+    /// in, home itself a checkout, as a person's dotfiles may make it.
+    fn a_home_of_every_kind() -> Held {
         let origin = "https://example.com/rows";
-        // Home itself a checkout, as a person's dotfiles may make it.
-        let disk = Held::of(
+        Held::of(
             &[
                 "/home/kestrel/src/rows/docs",
                 "/home/kestrel/src/rows/.worktrees/tidy",
+                "/home/kestrel/src/example.com",
+                "/home/kestrel/src/example.com/kestrel",
                 "/home/kestrel/src/example.com/kestrel/reef",
                 "/home/kestrel/src/loose",
                 "/home/kestrel/src/rows/vendor/sea",
@@ -1513,13 +1509,31 @@ pub(crate) mod tests {
                 "/home/kestrel/scratch/rows",
                 "/home/kestrel/notes",
                 "/srv/rows",
+                "/home/kestrel/reef",
+                "/home/kestrel/reef/trees/trunk/areas",
+                "/home/kestrel/reef/trees/tidy/areas",
+                "/home/kestrel/wild",
+                "/home/kestrel/wild/trees/trunk/areas",
+                "/home/kestrel/far",
+                "/srv/far/trunk/areas",
             ],
             &[
                 "/home/kestrel",
                 "/home/kestrel/trees/tidy",
                 "/home/kestrel/src/loose",
+                "/home/kestrel/reef/trees/trunk",
+                "/home/kestrel/reef/trees/tidy",
+                "/home/kestrel/wild/trees/trunk",
+                "/srv/far/trunk",
             ],
         )
+        .bare("/home/kestrel/far/git", "/srv/far/trunk")
+        .fetching("/srv/far/trunk", origin)
+        .bare("/home/kestrel/reef/git", "/home/kestrel/reef/trees/trunk")
+        .bare("/home/kestrel/wild/git", "/home/kestrel/wild/trees/trunk")
+        .fetching("/home/kestrel/reef/trees/trunk", origin)
+        .fetching("/home/kestrel/reef/trees/tidy", origin)
+        .cutting("/home/kestrel/reef/trees/tidy")
         .fetching("/home/kestrel/src/rows", origin)
         .fetching("/home/kestrel/src/example.com/kestrel/reef", origin)
         .fetching("/home/kestrel/src/rows/.worktrees/tidy", origin)
@@ -1530,7 +1544,15 @@ pub(crate) mod tests {
         .fetching("/home/kestrel/src/rows/sea", origin)
         .cutting("/home/kestrel/src/tidy")
         .cutting("/home/kestrel/trees/tidy")
-        .cutting("/home/kestrel/src/rows/.worktrees/tidy");
+        .cutting("/home/kestrel/src/rows/.worktrees/tidy")
+    }
+
+    // New work goes where there is room, so a sprout naming no machine
+    // leaves it to placement, unless its work is in a tree only this
+    // machine has.
+    #[test]
+    fn a_sprout_naming_no_machine_is_placed_unless_its_work_is_only_here() {
+        let disk = a_home_of_every_kind();
         let needs = |folder: &str, on: Option<&str>| {
             starting(
                 &sprouting("tidy the rows", Some(folder), on),
@@ -1553,6 +1575,10 @@ pub(crate) mod tests {
             needs("src/example.com/kestrel/reef", None).is_empty(),
             "one kept under its host and owner too"
         );
+        assert!(
+            needs("reef/trees/trunk/areas", None).is_empty(),
+            "so does a bare repository's trunk fetching from a remote"
+        );
         for (folder, why) in [
             ("trees/tidy/docs", "a tree cut from a repository elsewhere"),
             ("src/rows/.worktrees/tidy", "one cut inside the checkout"),
@@ -1560,6 +1586,18 @@ pub(crate) mod tests {
             ("src/rows/sea", "a clone just inside a checkout"),
             ("src/tidy", "a tree cut where checkouts are kept"),
             ("src/loose", "a checkout fetching from nowhere"),
+            (
+                "reef/trees/tidy/areas",
+                "another tree cut from a bare repository",
+            ),
+            (
+                "wild/trees/trunk/areas",
+                "a bare repository's trunk fetching from nowhere",
+            ),
+            (
+                "/srv/far/trunk/areas",
+                "a bare repository's trunk kept outside home",
+            ),
             ("scratch/rows", "a clone each machine keeps its own"),
             ("/srv/rows", "a checkout outside home"),
             ("notes", "no checkout below home, home one or not"),

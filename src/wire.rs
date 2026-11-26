@@ -273,11 +273,13 @@ pub struct Taking {
 /// is, judged as the asker could reach it and never home itself. It
 /// starts on `on`; else where `needs` say, wherever its folder is; else
 /// where placement chooses, where its folder is a repository's own
-/// checkout under `~/src` fetching from a remote, beginning here instead
-/// where the machine chosen hasn't it; here otherwise; and never on one
-/// that costs money unless it names one or needs the cloud. A field it
-/// doesn't know is refused, so work needing what this node can't read,
-/// as `needs` was to nodes before it, never starts here unsaid.
+/// checkout under `~/src` fetching from a remote, or a bare repository's
+/// trunk, beginning here instead where the machine chosen hasn't it; here
+/// otherwise. It goes to one that costs money only where it names one or
+/// needs the cloud, or, the person's, where every machine heard is past
+/// its room and a cloud machine linked has room. A field it doesn't know
+/// is refused, so work needing what this node can't read, as `needs` was
+/// to nodes before it, never starts here unsaid.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sprout {
