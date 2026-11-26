@@ -1080,6 +1080,21 @@ fn a_peer_s_name_chained_from_emoji_counts_a_cell_pair_for_each_four() {
         3,
         "a mark extending a grapheme started a run"
     );
+    // Nor does a conjoining jamo vowel, given no cell either.
+    assert_eq!(
+        kept(
+            "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{1161}\u{200D}\u{1F469}"
+        ),
+        3,
+        "a conjoining jamo vowel started a run"
+    );
+    // A non-joiner is never counted, so one after a run at the cap stays.
+    let parted = "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{200C}\u{1F469}";
+    assert_eq!(
+        unmarked(parted),
+        parted,
+        "a non-joiner was capped as a joiner"
+    );
     for (chain, emoji) in [
         (marked.as_str(), 20),
         (toned.as_str(), 20),
@@ -1130,7 +1145,11 @@ fn a_noncharacter_in_a_chain_parts_no_run_of_joiners() {
         "\u{6E2F}\u{200D}\u{6E7E}",
         "a noncharacter parted a joiner from the letter before it"
     );
-    // But what draws nothing goes in the same pass as the joiners are
+}
+
+#[test]
+fn a_for_is_cleaned_by_what_protocol_lists() {
+    // What draws nothing goes in the same pass as the joiners are
     // judged, as PROTOCOL says: before a joiner it is looked past, as
     // what is kept, and after one it parts it, as the very next
     // character left. A direction mark, gone before, as a noncharacter
@@ -1138,10 +1157,17 @@ fn a_noncharacter_in_a_chain_parts_no_run_of_joiners() {
     // of White_Space, so a joiner after one goes, and one at an end is
     // trimmed. What draws nothing and what selects are PROTOCOL's own
     // lists: a Mongolian selector and an annotation control draw nothing,
-    // and a non-joiner, as a joiner, stands only between two.
+    // both ends of the ideographic selectors select, and a non-joiner, as
+    // a joiner, stands only between two. A selector follows the last
+    // character kept, so what this pass drops before it parts nothing.
     for (said, cleaned) in [
         ("\u{1820}\u{180B}", "\u{1820}"),
         ("\u{1820}\u{FE00}", "\u{1820}\u{FE00}"),
+        ("\u{845B}\u{E0100}", "\u{845B}\u{E0100}"),
+        ("\u{845B}\u{E01EF}", "\u{845B}\u{E01EF}"),
+        ("\u{845B}\u{E01F0}", "\u{845B}"),
+        ("\u{6E2F}\u{200B}\u{FE0F}", "\u{6E2F}\u{FE0F}"),
+        ("\u{6E2F}\u{200D}\u{FE0F}", "\u{6E2F}\u{FE0F}"),
         ("\u{6E2F}\u{FFF9}\u{6E7E}", "\u{6E2F}\u{6E7E}"),
         ("\u{6E2F}\u{200C}\u{6E7E}", "\u{6E2F}\u{200C}\u{6E7E}"),
         ("\u{6E2F}\u{200C}a", "\u{6E2F}a"),
