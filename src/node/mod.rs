@@ -148,7 +148,9 @@ const LEAVING_EVERY: Duration = Duration::from_secs(60);
 
 /// How often at most the machine's processes are looked through for the
 /// fences its sessions show, as their presences change: each look reads
-/// every process's status, and presences change many times a second.
+/// below each pi where the kernel tells a process's children, and every
+/// process's status where it doesn't, and presences change many times a
+/// second.
 const FENCES_SEEN_EVERY: Duration = Duration::from_secs(2);
 
 /// The longest a session is held as being reopened by a relayed start
@@ -1504,8 +1506,11 @@ async fn keep_made(
 /// otherwise leave what keeps the machine waiting for good, and its book
 /// never saying it was let go. It is under [`ENDED_LET_GO_AFTER`], with
 /// time to spare for writing the book.
+// In tests it stays well inside their patience but long enough that a
+// stand-in's shell, slow on a loaded machine, isn't cut off mid-answer:
+// at 2 s one was, and its test failed though nothing was wrong.
 const RELEASED_WITHIN: Duration = if cfg!(test) {
-    Duration::from_secs(2)
+    Duration::from_secs(20)
 } else {
     Duration::from_secs(9 * 60)
 };
@@ -5396,16 +5401,18 @@ impl<S: Store> Shared<S> {
     /// watches when one rose.
     async fn see_fences(self) {
         let mut told = self.said.sessions.subscribe();
+        let began = Arc::new(asker::Began::default());
         loop {
             let looked = tokio::time::Instant::now();
-            let (claims, processes, hosts, logs) = (
+            let (claims, processes, hosts, logs, began) = (
                 self.claims(),
                 self.processes.clone(),
                 self.hosts.clone(),
                 self.logs.clone(),
+                Arc::clone(&began),
             );
             let shown = tokio::task::spawn_blocking(move || {
-                asker::shown_fences(&claims, &processes, &hosts, &logs)
+                asker::shown_fences(&claims, &processes, &hosts, &logs, &began)
             })
             .await
             .unwrap_or_default();
