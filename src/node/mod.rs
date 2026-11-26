@@ -25059,6 +25059,46 @@ esac
         );
     }
 
+    #[test]
+    fn a_make_standing_across_a_restart_still_ends_to_a_carry() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let gone = jiff::Timestamp::now() - jiff::SignedDuration::from_mins(1);
+        // Kept in the book by a node since restarted, which booked neither
+        // again: one's provider it no longer asks, the other's time is up.
+        for (name, until) in [("tern", soon), ("wren", gone)] {
+            let mut cloud = placement::tests::machine(name, "linux", 32, &["basin"]);
+            cloud.declared.as_mut().expect("declared").costs_money = true;
+            shared
+                .store
+                .put_machine(&cloud)
+                .expect("the made machine is kept");
+            let mut made = made_by("/usr/bin/lend", name, until);
+            made.asker = Some(made::PERSON.to_owned());
+            shared.book.made(&made).expect("the make is kept");
+        }
+        let carried = shared.as_carried(shared.others());
+        let tern = carried
+            .iter()
+            .find(|one| one.name == "tern")
+            .expect("the machine is known");
+        assert_eq!(
+            tern.declared.as_ref().and_then(|said| said.leaves_at),
+            Some(soon),
+            "the book's end stands for the leaving it doesn't declare"
+        );
+        assert_ne!(
+            ground::Lent::of(tern),
+            ground::Lent::Not,
+            "made to live an hour, it is no full place for a carried session"
+        );
+        assert!(
+            carried.iter().all(|one| one.name != "wren"),
+            "one whose make has ended is gone to a carry"
+        );
+    }
+
     #[tokio::test]
     async fn a_room_made_for_agents_takes_every_agent_and_the_persons_own_only_what_names_them() {
         let dir = tempfile::tempdir().expect("a temporary folder");
