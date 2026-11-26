@@ -915,7 +915,7 @@ mod tests {
             Lent::TakesNone,
             "unnamed, it is a worker that takes no carries"
         );
-        room.held_for = facts::HeldFor::Agents;
+        room.held_for = HeldFor::Agents;
         assert_eq!(
             Lent::at(&room, now),
             Lent::Not,
