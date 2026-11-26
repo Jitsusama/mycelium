@@ -54,8 +54,8 @@ pub fn resumes(command: &[String], session: &str) -> bool {
 
 /// Every session `command` names by `--session` or `--session-id`, under
 /// any program or in a shell's `-c` script with its positional
-/// parameters filled in: each such word, first to last, and the id that
-/// word ends in where it may be a log's path, as [`resumed`] reads it.
+/// parameters filled in: each such word, first to last, and each id that
+/// word may end in where it is a log's path, as [`tails`] reads them.
 /// It errs toward naming too many, as [`resumes`] does, since each is
 /// only held to what stands. An id a script works out as it runs, or a
 /// resume naming none, as `--continue`, is not found.
@@ -63,8 +63,8 @@ pub fn resumes(command: &[String], session: &str) -> bool {
 pub fn sessions_named(command: &[String]) -> Vec<String> {
     let mut sessions = Vec::new();
     for word in named(command) {
-        let id = trimmed(&word);
-        for session in std::iter::once(word).chain(id) {
+        let ids = tails(&word);
+        for session in std::iter::once(word).chain(ids) {
             if !session.is_empty() && !sessions.contains(&session) {
                 sessions.push(session);
             }
@@ -116,6 +116,28 @@ fn named(command: &[String]) -> Vec<String> {
                 .then(|| words.get(at + 1).copied())
                 .flatten()
         })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Each id a log's path `named` may end in, as
+/// `.../2026-11-14T22-23-37-209Z_<id>.jsonl` does: what follows each
+/// `_` of its stem, longest first, since an id may hold an `_` itself,
+/// as `a_b` does, or the whole stem where it holds none. It errs toward
+/// naming too many, as [`resumes`] does, since each only holds a start
+/// back, where a miss starts a second pi.
+fn tails(named: &str) -> Vec<String> {
+    let Some(stem) = Path::new(named).file_stem().and_then(|stem| stem.to_str()) else {
+        return Vec::new();
+    };
+    let mut starts: Vec<usize> = stem.match_indices('_').map(|(at, _)| at + 1).collect();
+    if starts.is_empty() {
+        starts.push(0);
+    }
+    starts
+        .into_iter()
+        .map(|at| &stem[at..])
+        .filter(|id| !id.is_empty() && !id.starts_with('-'))
         .map(str::to_owned)
         .collect()
 }
@@ -300,7 +322,7 @@ mod tests {
     // to every session it names, by whatever program, in whatever shape.
     #[test]
     fn every_session_a_command_names_is_found_whatever_runs_it() {
-        let cases: [(&[&str], &[&str]); 7] = [
+        let cases: [(&[&str], &[&str]); 8] = [
             (&["pi", "--session", "s-1", "--thinking", "high"], &["s-1"]),
             (&["env", "A=b", "pi", "--session=s-1", "go"], &["s-1"]),
             (&["/nix/store/x-pi/bin/pi", "--session-id", "s-2"], &["s-2"]),
@@ -311,6 +333,11 @@ mod tests {
             (
                 &["pi", "--session", "/l/2026-11-14T22-23-37-209Z_s-4.jsonl"],
                 &["/l/2026-11-14T22-23-37-209Z_s-4.jsonl", "s-4"],
+            ),
+            // An id holding an `_` is held by its log's path as by its own.
+            (
+                &["pi", "--session", "/l/2026-11-14T22-23-37-209Z_a_b.jsonl"],
+                &["/l/2026-11-14T22-23-37-209Z_a_b.jsonl", "a_b", "b"],
             ),
             (&["pi", "--session", "a", "--session", "a"], &["a"]),
             (&["pi", "QUEST_WORKFLOW_FIRST_TEXT=fix --session s-5"], &[]),

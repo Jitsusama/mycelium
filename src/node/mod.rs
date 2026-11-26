@@ -7035,11 +7035,8 @@ impl<S: Store> Shared<S> {
             .iter()
             .filter(|session| session.machine == self.machine)
             .find_map(|session| {
-                steer::wake_for(session, boot.as_deref(), &self.held).or_else(|| {
-                    parked_presence(session)
-                        .then(|| self.marked_wake(&session.id))
-                        .flatten()
-                })
+                steer::wake_for(session, boot.as_deref(), &self.held)
+                    .or_else(|| self.marked_wake(session))
             });
         match (waking, steer.only_wakes()) {
             (Some(file), true) => steer::wake(&file, address)
@@ -7618,29 +7615,33 @@ impl<S: Store> Shared<S> {
     /// has gone, has nothing to wake it and comes back by a start, as a
     /// restarted machine's wave does. A start bringing back one already
     /// coming back is refused by [`starts::Starts::admit`]. A park marker
-    /// of this boot whose wake file a running holder reads counts too,
-    /// whatever the presence says, since a message waking parked
-    /// sessions writes the marker's own wake file
-    /// ([`crate::wake::wake_for`]) without reading the presence, though
-    /// [`Self::steer_here`] wakes through one only where it says parked.
+    /// of this boot counts too, as [`Self::marked_wake`] reads it, the
+    /// same marker a steer wakes through.
     fn parked_here(&self, session: &Session) -> bool {
         session.machine == self.machine
             && (steer::wake_for(session, self.boot.id.as_deref(), &self.held).is_some()
-                || self.marked_wake(&session.id).is_some())
+                || self.marked_wake(session).is_some())
     }
 
     /// The wake file of a park marker this boot wrote for `session`,
-    /// where a running holder reads it, so a steer wakes a session whose
-    /// presence says parked as surely when only its marker names its
-    /// wake; one live is never woken this way, since a marker may outlast
-    /// its park. The boot
-    /// is the one read when the node started, so no `sysctl` runs while
-    /// the node's lock is held.
-    fn marked_wake(&self, session: &str) -> Option<PathBuf> {
+    /// where a running holder reads it and the park still stands, as the
+    /// presence says or, where the presence lags or pi's end said none,
+    /// the holder's own record of its program parked: a steer wakes
+    /// through it, and a message writes it ([`crate::wake::wake_for`]).
+    /// A marker outlasting its park, its holder running a program again,
+    /// counts for nothing, so a session it named is reopened as any
+    /// ended one. The boot is the one read when the node started, so no
+    /// `sysctl` runs while the node's lock is held.
+    fn marked_wake(&self, session: &Session) -> Option<PathBuf> {
         crate::wake::parked(&self.parked, self.boot.began)
             .into_iter()
             .find(|marked| {
-                marked.session == session && steer::read_by_a_holder(&marked.wake, &self.held)
+                marked.session == session.id
+                    && if parked_presence(session) {
+                        steer::read_by_a_holder(&marked.wake, &self.held)
+                    } else {
+                        steer::parked_by_its_holder(&marked.wake, &self.held)
+                    }
             })
             .map(|marked| marked.wake)
     }
@@ -21395,12 +21396,14 @@ esac
     }
 
     // A session ended unparked, though a marker of this boot naming a
-    // running holder outlasted its park: a steer wakes nothing through
-    // it, but a message still writes its wake file, so it holds a
-    // reopening back all the same, lest the holder's pi and the start's
-    // both open the session.
+    // running holder outlasted its park. While the holder runs its
+    // program again, the marker holds nothing back and a steer wakes
+    // nothing through it. Once the holder's own record says its program
+    // is parked, as where pi's end said no park or the presence lags,
+    // the park stands: a reopening is refused, as a message would wake
+    // the holder, and a steer wakes it, as the refusal says.
     #[tokio::test]
-    async fn a_marker_outlasting_its_park_still_holds_a_reopening_back() {
+    async fn a_marker_holds_a_reopening_back_only_while_its_park_stands() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
@@ -21427,20 +21430,43 @@ esac
                 reopening(&["pi", "--session", "s-closed"], false)
             )
             .await,
+            Err("skiff's node starts no sessions".to_owned()),
+            "a marker whose holder runs its program again holds nothing back"
+        );
+        let mut client = Speaking::greeted(&socket).await;
+        let rouse = |id| {
+            json!({"id": id, "ask": "steer", "address": "CLOSED",
+                   "steer": {"act": "wake", "from": "WCJQSG"}})
+        };
+        client.ask(rouse(1)).await;
+        assert_eq!(
+            client.next().await["error"]["message"],
+            json!("CLOSED isn't parked with a holder to wake it this boot"),
+            "as a steer wakes nothing through it"
+        );
+        let record = held.join("e0r3.json");
+        let mut parked: Value =
+            serde_json::from_slice(&fs::read(&record).expect("its record")).expect("a record");
+        parked["parked"] = json!(true);
+        fs::write(&record, parked.to_string()).expect("its program parks");
+        assert_eq!(
+            ask(
+                socket.clone(),
+                reopening(&["pi", "--session", "s-closed"], false)
+            )
+            .await,
             Err(
                 "s-closed is parked on skiff, and its holder wakes it, so it isn't reopened"
                     .to_owned()
             ),
-            "a message wakes its holder through the marker whatever the presence says"
+            "a park its holder keeps stands whatever the presence says"
         );
-        let mut client = Speaking::greeted(&socket).await;
-        let rouse = json!({"id": 1, "ask": "steer", "address": "CLOSED",
-                           "steer": {"act": "wake", "from": "WCJQSG"}});
-        client.ask(rouse).await;
-        assert_eq!(
-            client.next().await["error"]["message"],
-            json!("CLOSED isn't parked with a holder to wake it this boot"),
-            "though a steer wakes nothing through it"
+        client.ask(rouse(2)).await;
+        let woken = client.next().await;
+        assert_eq!(woken["steered"]["machine"], json!("skiff"), "{woken}");
+        assert!(
+            held.join("e0r3.wake").exists(),
+            "a steer wakes it through its marker, as the refusal says"
         );
     }
 

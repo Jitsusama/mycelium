@@ -281,6 +281,23 @@ pub fn read_by_a_holder(wake: &Path, held: &Path) -> bool {
     a_holders && id.is_some_and(|id| hold::held(folder).iter().any(|one| one.id == id))
 }
 
+/// Whether `wake` is a holder's wake file beside `held` whose holder
+/// runs with its program parked, as its own record says, so that a file
+/// written there starts the program again at once.
+#[must_use]
+pub fn parked_by_its_holder(wake: &Path, held: &Path) -> bool {
+    let Some(folder) = wake.parent() else {
+        return false;
+    };
+    let id = wake.file_stem().and_then(|it| it.to_str());
+    read_by_a_holder(wake, held)
+        && id.is_some_and(|id| {
+            hold::held(folder)
+                .iter()
+                .any(|one| one.id == id && one.parked)
+        })
+}
+
 /// Wakes the session whose wake file is `file`, for the steer left for
 /// `address`: its holder reads the file once it appears and removes it.
 ///
