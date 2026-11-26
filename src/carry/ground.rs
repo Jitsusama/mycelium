@@ -826,19 +826,18 @@ mod tests {
             Lent::Not,
             "paid for, but no provider lent it"
         );
-        for kind in [
-            None,
-            Some(Kind::None),
-            Some(Kind::Fence),
-            Some(Kind::Strict),
-        ] {
+        for kind in [Kind::None, Kind::Fence, Kind::Strict] {
             assert_eq!(
-                firm(kind, Some(&here), "tern", Some(&cloud)),
+                firm(Some(kind), Some(&here), "tern", Some(&cloud)),
                 Ok(()),
                 "a {kind:?} session lands there under its own fence, as on any of the \
                  person's machines"
             );
         }
+        assert!(
+            firm(None, Some(&here), "tern", Some(&cloud)).is_err(),
+            "one that doesn't say its fence is refused, as it is everywhere"
+        );
         let looser = in_the_cloud(BTreeMap::from([(Kind::Fence, doors(&[], &[], &[]))]));
         assert!(
             firm(Some(Kind::Strict), Some(&here), "tern", Some(&looser)).is_err(),
