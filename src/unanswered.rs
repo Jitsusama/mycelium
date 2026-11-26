@@ -1000,15 +1000,19 @@ mod tests {
         // A name of Han characters takes two cells each, so cut by its
         // characters it would push the wait and the id past the edge. At
         // 50 the lead leaves one cell, too few for one, so none is drawn;
-        // at 80 fifteen are, and a sixteenth would straddle the mark. A
-        // room a cell short draws the same at both, so its lower bound is
-        // the ASCII case's at 40 above.
+        // at 51 the lead leaves two, room for one exactly, so a room a
+        // cell short or long draws another; at 80 fifteen are, and a
+        // sixteenth would straddle the mark.
         let mut wide = asked_of(&["SKIFF1"], 5, "c0cd280e");
         wide["waiting_on"] = json!(["港湾".repeat(20)]);
         for (width, expected) in [
             (
                 50,
                 "  12:05  TERN01 asks\u{2026}, 25 min so far  [c0cd280e]".to_owned(),
+            ),
+            (
+                51,
+                "  12:05  TERN01 asks 港\u{2026}, 25 min so far  [c0cd280e]".to_owned(),
             ),
             (
                 80,

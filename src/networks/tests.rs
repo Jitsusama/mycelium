@@ -2088,12 +2088,30 @@ fn a_wide_team_short_keeps_what_follows_in_line() {
         Some(4 + cells("港湾見張り") + 2),
         "the wide short's own title left the column:\n{shown}"
     );
-    // Kelp's one count is under "need you", the last heading, so its row
-    // ends where "  stuck" starts.
+    // Kelp's one count is under "need you", the first heading, and the
+    // blank columns after it are trimmed, so its row ends where "  stuck"
+    // starts.
     assert_eq!(
         Some(cells(line("    港湾見張り "))),
         before("     ", "  stuck"),
         "the wide row's count left its heading:\n{shown}"
+    );
+    // In colour, the title is faint from the column's edge on, a cut in
+    // cells too: none of the short, nor the gap, is drawn faint.
+    let coloured = overview(
+        &mycelium,
+        &Look {
+            colour: true,
+            ..look()
+        },
+        false,
+        true,
+    );
+    assert!(
+        coloured
+            .lines()
+            .any(|line| line.starts_with("    港湾見張り  \x1b[2m港湾見張り: 潮")),
+        "the faint title doesn't start at the column's edge:\n{coloured:?}"
     );
 }
 
