@@ -36,15 +36,22 @@ let
   # The merge gate refuses a head that doesn't hold main or lacks a check
   # passed there, and asks for every check the flake has on Linux, this one
   # among them, so a check added is one the gate asks for. The merge train
-  # lands only as the gate lets its tip.
+  # lands only as the gate lets its tip. The rise cases run again under the
+  # one true awk, a Mac's own, since the gate weighs a rise with whatever
+  # awk its host has.
   gateHolds =
     named:
     inTree "merge-gate-holds" [ pkgs.git pkgs.shellcheck ] ''
       ${inUtf8}
-      shellcheck --enable=all scripts/merge-gate.sh scripts/merge-gate-test.sh \
-        scripts/merge-train.sh
+      shellcheck --enable=all --external-sources scripts/merge-gate.sh scripts/gate-test-kit.sh \
+        scripts/merge-gate-test.sh scripts/merge-gate-rise-test.sh scripts/merge-train.sh
       bash scripts/merge-gate-test.sh scripts/merge-gate.sh scripts/merge-train.sh \
         nix/counts.sh
+      bash scripts/merge-gate-rise-test.sh scripts/merge-gate.sh
+      mkdir "$TMPDIR/bwk"
+      ln -s ${pkgs.nawk}/bin/nawk "$TMPDIR/bwk/awk"
+      [[ $(PATH="$TMPDIR/bwk:$PATH" awk --version) == "awk version "* ]]
+      PATH="$TMPDIR/bwk:$PATH" bash scripts/merge-gate-rise-test.sh scripts/merge-gate.sh
       ${pkgs.lib.optionalString (static != null) ''
         asked=$(sed -n '/^checks=(/,/^)/{/^  /s/^  //p}' scripts/merge-gate.sh | sort)
         has=$(printf '%s\n' ${pkgs.lib.escapeShellArgs named} merge-gate-holds | sort)
@@ -155,7 +162,9 @@ let
     # there before the rule waits in a list beside nix/counts.sh, which only
     # shrinks, and merge-gate.sh runs main's copy of it over each head.
     # The cases run under gawk and again under the one true awk, a Mac's
-    # own, since the gate runs the counts with whatever awk its host has.
+    # own, since the gate runs the counts with whatever awk its host has;
+    # that awk is checked to answer first, so a broken link can't leave
+    # gawk to run them again.
     counts-only-fall = inTree "counts-only-fall" [ pkgs.shellcheck pkgs.git ] ''
       ${inUtf8}
       shellcheck --enable=all nix/counts.sh nix/counts-test.sh
@@ -163,7 +172,19 @@ let
       bash nix/counts-test.sh nix/counts.sh
       mkdir "$TMPDIR/bwk"
       ln -s ${pkgs.nawk}/bin/nawk "$TMPDIR/bwk/awk"
+      [[ $(PATH="$TMPDIR/bwk:$PATH" awk --version) == "awk version "* ]]
       PATH="$TMPDIR/bwk:$PATH" bash nix/counts-test.sh nix/counts.sh
+    '';
+
+    # Each line this tree's own nix/counts.sh reads as turning a lint off,
+    # as `PATH LINE`, so the merge gate can see which lines a sharper
+    # reader a head brings counts that main's doesn't, without running the
+    # head's code outside this sandbox.
+    counts-name-their-lines = pkgs.runCommand "counts-name-their-lines" { } ''
+      cp -r ${source} tree
+      chmod -R u+w tree
+      cd tree
+      bash nix/counts.sh --name-lines > $out
     '';
 
     # Every folder says what it holds, and every file is read by a linter.

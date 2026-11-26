@@ -193,6 +193,35 @@ if ((ran == 0)); then
   failed=1
 fi
 
+# Whether --name-lines says exactly `meant`, each line a suppression as
+# `PATH LINE`, and compares nothing.
+names() {
+  local meant=$1 why=$2 said code=0
+  said=$(cd "${dir}" && GIT_DIR="${git_dir}" "${shell}" "${counts}" --name-lines 2>&1) || code=$?
+  if ((code != 0)) || [[ ${said} != "${meant}" ]]; then
+    echo "FAIL ${why}: it exits ${code}, saying: ${said}" >&2
+    failed=1
+  fi
+}
+
+tree
+put b.py "$(printf '%s\n' 'x = 1' 'y = 2  # noqa: E501' 'z = 3  # noqa: F401')"
+put a.ts "$(printf '%s\n' '// @ts-ignore' 'let a = 1;')"
+lines c.sh 801
+put nix/suppressions-waiting.txt "b.py 1"
+names $'a.ts 1\nb.py 2\nb.py 3' \
+  "each line turning a linter off is named by its file and line, and nothing is compared"
+tree
+put a.ts "let a = 1;"
+names "" "a tree turning nothing off names nothing"
+tree
+put a.ts "// @ts-ignore"
+said=$(cd "${dir}" && GIT_DIR="${git_dir}" "${shell}" "${counts}" --name 2>&1) || code=$?
+if [[ ${code:-0} != 64 || ${said} != *"not --name"* ]]; then
+  echo "FAIL any other word is refused as asked wrongly: it exits ${code:-0}, saying: ${said}" >&2
+  failed=1
+fi
+
 if ((failed == 0)); then
   echo "counts-test: every case holds"
 fi
