@@ -2454,13 +2454,14 @@ though `offers`, `link` and `release` never carry it. A machine made
 is booked, before it is dialled, for the asker its make was told: once
 it links, a start or run is placed there only when that asker asks, so
 another agent's work goes elsewhere or waits, where that asker is an
-agent; a machine booked for the person, or whose book line names no
-asker, is the person's, and takes every agent's start as well as the
-person's, as the person asked on 26 November. The person's own starts
-go only to a machine booked for the person or for no asker, never to
-one an agent's make booked, whose worker home that agent wrote. An agent's start there
-leaves the person the last session it holds, as a granted session's
-does below. A
+agent; a machine booked for the person is the person's, and takes every
+agent's start as well as the person's, as the person asked on 26
+November, while one whose book line names no asker takes only the
+person's, since nothing says whose it is. The person's own starts go
+only to a machine booked for the person or for no asker, never to one
+an agent's make booked, whose worker home that agent wrote. An agent's
+start on the person's leaves the person the last session it holds, as
+a granted session's does below. A
 preview is held to it as its run would be, and an ordered carry there
 of another's session is refused; only a start pinned to the machine
 made for it is not held to it. The booking is the making node's, kept
@@ -2483,9 +2484,9 @@ it is over a limit. The node marks each one `"held_for": "agents"` as it
 places, from its own file, and every other as booked, never from what
 the machine says, and a link keeps nothing a machine says of it. A
 session the person granted is booked as the person but isn't one: its
-starts go to a machine booked for the person or for no asker, as
-every agent's do, never to one an agent's
-make booked, and even then that machine is full one session short of
+starts go to a machine booked for the person, as every agent's do,
+never to one an agent's make booked or whose book names no asker, and
+even then that machine is full one session short of
 the most it holds, kept for the person, where it says or was promised
 a most. A start of its that no machine takes goes on to a make. A
 carry takes no account of rooms, since it asks as its session, which

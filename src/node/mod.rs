@@ -2990,27 +2990,28 @@ enum Admits {
     Asker(String),
     /// A session the person granted ([`made::Grant`]), whose makes are
     /// booked for the person: of those booked, only the person's own,
-    /// those booked for the person or for nobody told.
+    /// those booked for the person.
     Granted,
 }
 
 impl Admits {
     /// Whether a machine booked for `booked` is one this placement may
-    /// choose. The person's own cloud machines, booked for the person or
-    /// for nobody told, are where every agent's sessions go, as the person
-    /// asked on 26 November, keeping the person a session there
-    /// ([`Self::keeps_the_persons`]). A room made for agents to share
-    /// (`room`, [`made::Book::agent_rooms`]) is every agent's too, since
-    /// its booking says who pays for it and may let it go, not who may use
-    /// it. A machine an agent's make booked is that agent's alone, since
-    /// that agent wrote its worker home, and the person's own starts are
-    /// held to the person's machines.
+    /// choose. The person's own cloud machines, booked for the person, are
+    /// where every agent's sessions go, as the person asked on 26
+    /// November, keeping the person a session there
+    /// ([`Self::keeps_the_persons`]). One whose make told no asker takes
+    /// only the person's own starts, since nothing says whose it is. A
+    /// room made for agents to share (`room`, [`made::Book::agent_rooms`])
+    /// is every agent's too, since its booking says who pays for it and
+    /// may let it go, not who may use it. A machine an agent's make booked
+    /// is that agent's alone, since that agent wrote its worker home, and
+    /// the person's own starts are held to the person's machines.
     fn takes(&self, booked: Option<&str>, room: bool) -> bool {
         let the_persons = booked.is_none() || booked == Some(made::PERSON);
         match self {
             Self::All => true,
             Self::Asker(told) if told == made::PERSON => the_persons,
-            _ if room || the_persons => true,
+            _ if room || booked == Some(made::PERSON) => true,
             Self::Granted => false,
             Self::Asker(told) => told != made::UNKNOWN && booked == Some(told.as_str()),
         }
@@ -24326,9 +24327,11 @@ esac
         assert!(
             [asker("QK4T7Z"), asker(made::UNKNOWN), Admits::Granted]
                 .iter()
-                .all(|admits| admits.takes(Some(made::PERSON), false)
-                    && admits.takes(None, false)),
-            "the person's own cloud machines take every agent's starts, as the person asked"
+                .all(|admits| {
+                    admits.takes(Some(made::PERSON), false) && !admits.takes(None, false)
+                }),
+            "the person's own cloud machines take every agent's starts, as the person asked, \
+             and one whose make told no asker takes none"
         );
         assert!(
             Admits::All.takes(Some("P9R1KI"), false),
@@ -24453,7 +24456,9 @@ esac
         let shared = made_for(dir.path(), &[("wren", made::PERSON), ("reef", "P9R1KI")]);
         // Lent, booked for no one here, and saying it is a room itself.
         let mut tern = placement::tests::machine("tern", "linux", 32, &[]);
-        tern.declared.as_mut().expect("declared").costs_money = true;
+        let declared = tern.declared.as_mut().expect("declared");
+        declared.costs_money = true;
+        declared.leaves_at = Some(jiff::Timestamp::now() + jiff::SignedDuration::from_hours(240));
         tern.held_for = facts::HeldFor::Agents;
         shared.store.put_machine(&tern).expect("tern is kept");
         let agent = Admits::Asker("QK4T7Z".to_owned());
@@ -26004,8 +26009,14 @@ esac
                 let mut wren = heard("wren", false, lately);
                 let declared = wren.declared.as_mut().expect("declared");
                 declared.costs_money = true;
-                declared.leaves_at =
-                    leaves.then(|| jiff::Timestamp::now() + jiff::SignedDuration::from_mins(30));
+                // Lent for days, so not the person's own cloud machine,
+                // which plain work would go to first.
+                let lent = if leaves {
+                    jiff::SignedDuration::from_mins(30)
+                } else {
+                    jiff::SignedDuration::from_hours(240)
+                };
+                declared.leaves_at = Some(jiff::Timestamp::now() + lent);
                 store.put_machine(&wren).expect("what it said is kept");
             }
             let mut skiff = holding_skiff(dir.path(), store, None, processes);

@@ -631,17 +631,19 @@ pub fn headroom(
     // A machine heard by its facts alone, saying no room, has its
     // processors' own word.
     let pressed = room.map(|room| room.pressure.cpu / 100.0);
-    let cpu = pressed.or(machine.cpu.busy.filter(|_| heard)).map_or(0.0, |pressed| {
-        let processor = machine.cpu.busy.map_or(pressed, |busy| busy.max(pressed));
-        // A reading that isn't a number says nothing, so it counts as
-        // none: a NaN would rank by nothing and leave no machine near
-        // the best.
-        if processor.is_nan() {
-            0.0
-        } else {
-            (1.0 - processor).clamp(0.0, 1.0)
-        }
-    });
+    let cpu = pressed
+        .or(machine.cpu.busy.filter(|_| heard))
+        .map_or(0.0, |pressed| {
+            let processor = machine.cpu.busy.map_or(pressed, |busy| busy.max(pressed));
+            // A reading that isn't a number says nothing, so it counts as
+            // none: a NaN would rank by nothing and leave no machine near
+            // the best.
+            if processor.is_nan() {
+                0.0
+            } else {
+                (1.0 - processor).clamp(0.0, 1.0)
+            }
+        });
     let memory = share(room.map(|room| room.memory_available), machine.memory);
     let disk = share(machine.disk_free, machine.disk);
     let cores = machine
@@ -1346,6 +1348,10 @@ pub fn taints(machine: &Machine) -> Vec<Taint> {
 }
 
 /// One machine, as work sees it.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is a judgement of its own that ranks or refuses a machine apart"
+)]
 struct Judged {
     name: String,
     /// Reasons it can't take the work at all.
@@ -3427,7 +3433,8 @@ pub(crate) mod tests {
         let mut cloud = machine("cloud", "linux", 60, &["home", "internet"]);
         let declared = cloud.declared.as_mut().expect("declared");
         declared.costs_money = true;
-        declared.leaves_at = Some(now() + jiff::SignedDuration::from_hours(8));
+        // Lent for days, so a worker rather than the person's own.
+        declared.leaves_at = Some(now() + jiff::SignedDuration::from_hours(240));
         let realm = [
             machine("kestrel", "linux", 2, &["internet"]),
             machine("osprey", "linux", 60, &["home", "internet"]),

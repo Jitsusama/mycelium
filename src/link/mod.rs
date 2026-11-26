@@ -1227,6 +1227,11 @@ enum Housed {
 }
 
 /// This end of a link, and what it knows of the other.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each says one thing the other end proved or is, read apart where a frame is \
+              taken or refused"
+)]
 struct End<S> {
     store: S,
     /// This end's machine.
@@ -6486,8 +6491,8 @@ mod tests {
                 Memory::default(),
                 &realm("skiff"),
                 Connection {
-                    worker,
                     releases,
+                    worker,
                     ..connection(reading, writing)
                 },
                 None,
