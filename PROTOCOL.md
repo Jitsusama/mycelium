@@ -2318,8 +2318,10 @@ meets no need, and none is a machine already named. An offer whose
 `hourly` is nothing, written with any number of zeros, may be made for
 any start, so a provider lending machines that cost nothing is as easy
 to start on as a machine of the realm. One that costs is made only for
-a start that says it `may_cost` (`mycelium start --may-cost`); a start
-that doesn't is refused, saying which offer would have done and what it
+a start that says it `may_cost` (`mycelium start --may-cost`), or for
+the person's own start that names a machine or needs `"cloud"`, since
+he pays for what he names; a start that doesn't is refused, saying
+which offer would have done and what it
 costs, and nothing is made. Of those that would take the work, it makes
 one of the cheapest an hour, after taints and preferences, as
 `PROGRAM make SHAPE --lasting SECONDS`: the work's

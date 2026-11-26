@@ -883,6 +883,42 @@ pub struct Given {
 /// seconds, and its node in a few more.
 const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
+/// How long a start on a machine just made is given to answer: the first
+/// start there readies what its node runs it with, and on 25 November one
+/// on a cloud machine answered past the 90 seconds a start on a machine
+/// standing is given, so the machine was let go with its session
+/// starting.
+const MADE_ANSWERED_WITHIN: Duration = Duration::from_secs(10 * 60);
+
+/// Whether a start by `by` asking `work` may cost money unasked: the
+/// person's, where it names a machine or needs the cloud, since he pays
+/// for what he names. His other starts go where room is, as an agent's
+/// do, so none makes a machine he didn't ask for.
+fn may_cost_unasked(by: By, work: &Work) -> bool {
+    by == By::Person
+        && work
+            .needs
+            .iter()
+            .any(|need| matches!(need, Need::Cloud | Need::Machine(_)))
+}
+
+/// Whether a machine made for `made`'s start is let go when nothing
+/// started on it: not one made for the person, which its provider keeps
+/// until he releases it, so asking would only be refused again.
+fn let_go_unstarted(made: &Made) -> bool {
+    made.asker.as_deref() != Some(made::PERSON)
+}
+
+impl<S: Store> Shared<S> {
+    /// Whether `machine` is one this node made and keeps, as its book of
+    /// machines made says; one the book can't be read for isn't.
+    fn was_made(&self, machine: &str) -> bool {
+        self.book
+            .standing()
+            .is_ok_and(|standing| standing.made.iter().any(|made| made.machine == machine))
+    }
+}
+
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
 pub const HOLDS: [&str; 19] = [
@@ -7531,9 +7567,9 @@ impl<S: Store> Shared<S> {
     /// `at`, in milliseconds of the wall clock. A carried session placed
     /// on a worker is told in the log ([`Self::says_carried_to_a_worker`]).
     async fn placed_held(&self, mut asked: Start, by: By, reopens: bool, at: i64) -> Reply {
-        // The person pays for what they ask for, so their start may cost
-        // unasked; a worker still takes only work that names it.
-        asked.may_cost |= by == By::Person;
+        // The person pays for what they name; a worker still takes only
+        // work that names it.
+        asked.may_cost |= may_cost_unasked(by, &asked.work);
         if reopens {
             return self
                 .placed((asked, at), None, held_screen(None), true)
@@ -7932,7 +7968,15 @@ impl<S: Store> Shared<S> {
                 .any(|one| one.machine == made.machine)
         };
         if started.is_err() && !used() {
-            unwanted.notify_one();
+            if let_go_unstarted(&made) {
+                unwanted.notify_one();
+            } else {
+                eprintln!(
+                    "nothing started on {}, but it is kept for the person, so it stands \
+                     until they release it or its time is up",
+                    made.machine
+                );
+            }
         }
         started
     }
@@ -7977,7 +8021,7 @@ impl<S: Store> Shared<S> {
             &Admits::All,
         ) {
             Placement::Placed { machine, .. } => {
-                self.start_on(machine, asked, (fence, START_ANSWERED_WITHIN))
+                self.start_on(machine, asked, (fence, MADE_ANSWERED_WITHIN))
                     .await
             }
             Placement::Pending { misses } | Placement::Refused { misses } => {
@@ -8075,6 +8119,14 @@ impl<S: Store> Shared<S> {
         (fence, within): (Option<crate::declared::Kind>, Duration),
     ) -> Reply {
         if machine != self.machine {
+            // A machine made has none of what its starts run with until
+            // the first readies it, and on 25 November one standing for
+            // ten minutes still took 80 seconds to start a pi.
+            let within = if self.was_made(&machine) {
+                within.max(MADE_ANSWERED_WITHIN)
+            } else {
+                within
+            };
             asked.work.fence = declaring_at_least(asked.work.fence, fence);
             return self.asked_there(&machine, asked, false, within).await;
         }
@@ -24428,6 +24480,53 @@ esac
                 shared.book_for(&made).worker,
                 worker,
                 "a machine made for {asker:?} is a worker: {worker}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_machine_made_for_the_person_stands_though_nothing_started_on_it() {
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        for (asker, let_go) in [
+            (Some(made::PERSON), false),
+            (Some("P9R1KI"), true),
+            (Some(made::UNKNOWN), true),
+            (None, true),
+        ] {
+            let mut made = made_by("/nowhere/lend", "kestrel", later);
+            made.asker = asker.map(str::to_owned);
+            assert_eq!(
+                let_go_unstarted(&made),
+                let_go,
+                "a machine made for {asker:?} is let go unstarted: {let_go}"
+            );
+        }
+        assert!(
+            MADE_ANSWERED_WITHIN >= 4 * START_ANSWERED_WITHIN,
+            "a first start on a machine just made has minutes, not a standing one's 90 seconds"
+        );
+    }
+
+    #[test]
+    fn the_persons_start_may_cost_unasked_only_where_he_names_where_it_goes() {
+        let agent = By::Agent(crate::declared::Kind::Fence);
+        for (by, work, may) in [
+            (By::Person, work(vec![Need::Cloud]), true),
+            (
+                By::Person,
+                work(vec![Need::Machine("kestrel".into())]),
+                true,
+            ),
+            (By::Person, work(vec![]), false),
+            (By::Person, work(vec![Need::System("linux".into())]), false),
+            (agent, work(vec![Need::Cloud]), false),
+            (agent, work(vec![Need::Machine("kestrel".into())]), false),
+        ] {
+            assert_eq!(
+                may_cost_unasked(by, &work),
+                may,
+                "{by:?} asking {:?} may cost unasked: {may}",
+                work.needs
             );
         }
     }

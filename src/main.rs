@@ -1221,7 +1221,8 @@ struct Starting {
     folder: Option<PathBuf>,
     /// Makes a machine for it from a provider's offer that costs money,
     /// where no machine of the realm takes it. One that costs nothing is
-    /// made without it.
+    /// made without it, as is one for the person's own start that names
+    /// a machine or needs the cloud.
     #[arg(long)]
     may_cost: bool,
     /// A name for this one start, given again when asking again after no
