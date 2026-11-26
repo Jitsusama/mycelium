@@ -4955,11 +4955,9 @@ impl<S: Store> Shared<S> {
     }
 
     /// Each other machine of the realm that hasn't left, as its links last
-    /// carried it, each this node made leaving no later than its make
-    /// ends ([`leaving_as_made`]).
+    /// carried it.
     fn others(&self) -> Vec<facts::Machine> {
         let now = jiff::Timestamp::now();
-        let ends = self.lock().ends.clone();
         self.store
             .machines()
             .into_iter()
@@ -4967,6 +4965,18 @@ impl<S: Store> Shared<S> {
                 one.name != self.machine
                     && !one.declared.as_ref().is_some_and(|said| said.has_left(now))
             })
+            .collect()
+    }
+
+    /// `machines` as a carry reads them: each this node made leaving no
+    /// later than its make ends ([`leaving_as_made`]), since a carried
+    /// session lasts. Only carries read them so: a make lives as long as
+    /// the work it was made for, so placement reading its end as a
+    /// leaving would refuse that very work once the machine links.
+    fn as_carried(&self, machines: Vec<facts::Machine>) -> Vec<facts::Machine> {
+        let ends = self.lock().ends.clone();
+        machines
+            .into_iter()
             .map(|one| leaving_as_made(one, &ends))
             .collect()
     }
@@ -5262,7 +5272,9 @@ impl<S: Store> Shared<S> {
         match request {
             Request::Sessions => Ok(Response::Sessions(self.lock().state.sessions())),
             Request::Machine => Ok(Response::Machine(Box::new(self.measure()))),
-            Request::Machines => Ok(Response::Machines(self.machines())),
+            // A carry's hands read the realm through this, so it answers
+            // each machine as a carry reads it.
+            Request::Machines => Ok(Response::Machines(self.as_carried(self.machines()))),
             Request::Builders => Ok(Response::Builders(self.builders.builders())),
             Request::StartedBy(held) => {
                 let sessions = self.lock().state.sessions();
@@ -6328,7 +6340,7 @@ impl<S: Store> Shared<S> {
             Processes::Folder(procs) => room::felt(procs, &now.to_string()),
             Processes::Listed | Processes::Unattended(_) => None,
         };
-        let machines = easing::felt_here(self.machines(), &self.machine, felt);
+        let machines = easing::felt_here(self.as_carried(self.machines()), &self.machine, felt);
         let (sessions, loads) = {
             let mut inner = self.lock();
             let inner = &mut *inner;
@@ -7112,7 +7124,10 @@ impl<S: Store> Shared<S> {
             .await?
             .max(self.fences.strictest(session)?);
         let kind = ground::as_shown(claimed, shown, &address)?;
-        let there = self.others().into_iter().find(|machine| machine.name == to);
+        let there = self
+            .as_carried(self.others())
+            .into_iter()
+            .find(|machine| machine.name == to);
         ground::firm(
             kind,
             crate::declared::read(&self.declared).as_ref(),
@@ -7715,7 +7730,7 @@ impl<S: Store> Shared<S> {
         let Some(arriving) = arriving else {
             return;
         };
-        let worker = self.others().into_iter().any(|one| {
+        let worker = self.as_carried(self.others()).into_iter().any(|one| {
             one.name == started.machine && crate::carry::Lent::of(&one) != crate::carry::Lent::Not
         });
         if worker {
@@ -24758,7 +24773,7 @@ esac
             made.asker = Some(made::PERSON.to_owned());
             shared.book_for(&made);
         }
-        let others = shared.others();
+        let others = shared.as_carried(shared.others());
         let seen = |name: &str| {
             others
                 .iter()
@@ -24802,7 +24817,7 @@ esac
         shared.unbook(&made_by("/usr/bin/lend", "tern", soon));
         assert_eq!(
             shared
-                .others()
+                .as_carried(shared.others())
                 .iter()
                 .find(|one| one.name == "tern")
                 .and_then(|one| one.declared.as_ref())
