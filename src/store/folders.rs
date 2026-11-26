@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 use notify::event::ModifyKind;
-use notify::{EventKind, RecursiveMode, Watcher};
+use notify::{EventKind, RecursiveMode};
 use rustix::fs::FlockOperation;
 use serde::Deserialize;
 use serde_json::Value;
@@ -1379,8 +1379,7 @@ mod tests {
             notify::Config::default(),
         )
         .expect("a watcher");
-        watch
-            .watch(&presence, RecursiveMode::NonRecursive)
+        notify::Watcher::watch(&mut watch, &presence, RecursiveMode::NonRecursive)
             .expect("the folder is watched");
 
         assert_eq!(folders.presence_bodies().len(), 2, "both read");

@@ -51,7 +51,7 @@ pub fn watch_all(
     gone: &[PathBuf],
     new: &[(PathBuf, RecursiveMode)],
 ) -> Vec<bool> {
-    let mut watched = vec![true; new.len()];
+    let mut answers = vec![true; new.len()];
     let mut change: Vec<PathOp> = gone
         .iter()
         .map(|path| PathOp::unwatch(path.clone()))
@@ -66,8 +66,8 @@ pub fn watch_all(
         };
         match failed.origin {
             Some(PathOp::Watch(path, _)) => {
-                for (watched, (at, _)) in watched.iter_mut().zip(new) {
-                    *watched &= *at != path;
+                for (took, (at, _)) in answers.iter_mut().zip(new) {
+                    *took &= *at != path;
                 }
             }
             // A path not watched has nothing to give back.
@@ -77,7 +77,7 @@ pub fn watch_all(
         }
         change = failed.remaining;
     }
-    watched
+    answers
 }
 
 /// A watcher for tests that counts how often its stream would start, as
