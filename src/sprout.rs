@@ -1473,12 +1473,14 @@ pub(crate) mod tests {
             inner,
             "named whole, it is still within home"
         );
-        assert!(
-            needs_once_declared(placed_in("zones/rows"), "tidy").is_empty(),
+        assert_eq!(
+            needs_once_declared(placed_in("zones/rows"), "tidy"),
+            Vec::new(),
             "a folder whose name only begins the same is another"
         );
-        assert!(
-            needs_once_declared(placed_in("/srv/zone"), "tidy").is_empty(),
+        assert_eq!(
+            needs_once_declared(placed_in("/srv/zone"), "tidy"),
+            Vec::new(),
             "one outside home is another"
         );
     }
@@ -1490,8 +1492,9 @@ pub(crate) mod tests {
             [Need::Reach("inner".to_owned())],
             "found in any case, inside a word"
         );
-        assert!(
-            needs_once_declared(placed_in("src/rows"), "forge example").is_empty(),
+        assert_eq!(
+            needs_once_declared(placed_in("src/rows"), "forge example"),
+            Vec::new(),
             "split across words it isn't named"
         );
     }
