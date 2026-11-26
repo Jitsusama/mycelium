@@ -270,11 +270,11 @@ fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
             .map(str::to_owned)
     };
     let mut acting = swarm();
-    acting.teams[1]["swarm"] = json!("harbour;ls");
+    acting.teams[1]["swarm"] = json!("_harbour");
     assert_eq!(
         hint(&acting).as_deref(),
         Some("HARBOR"),
-        "a short name a shell acts on is given as the team's address"
+        "a short name not led by a letter is given as the team's address"
     );
     acting.teams[1]["swarm"] = json!("harbour tides");
     assert_eq!(
@@ -294,6 +294,11 @@ fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
         ),
         ("--names", "a name swarm reads as an option"),
         ("-ojson", "or as its output"),
+        ("harbour;ls", "a name a shell acts on"),
+        (
+            "kelp --names",
+            "or one written with an option among its words",
+        ),
         ("team", "a name read as the person saying what follows"),
         // Resume, as no session is addressed by it, so the act is what
         // refuses it, not the address a cleaned name would take.
@@ -308,9 +313,9 @@ fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
             misread.push(said);
         }
     }
-    // Kelp stays within it, so Harbour still leads, by a short name a
-    // shell would act on, so its address is what the hint would give.
-    acting.teams[1]["swarm"] = json!("harbour;ls");
+    // Kelp stays within it, so Harbour still leads, by a short name not
+    // led by a letter, so its address is what the hint would give.
+    acting.teams[1]["swarm"] = json!("_harbour");
     acting.teams[2]["within"] = json!("PAUSE");
     acting.teams[1]["key"] = json!("team:PAUSE");
     if hint(&acting).as_deref() != Some("<team>") {
@@ -558,13 +563,20 @@ fn a_team_held_back_by_its_title_s_act_is_reached_by_its_title_however_dashed() 
         found.starts_with("Bootstrap"),
         "a title's dash missed the keyboard's: {found}"
     );
-    // Where two titles spell it apart, each spelling finds its own, as
-    // the very spelling asked is matched before dashes are folded.
+    // Where two titles spell it apart, a page draws both alike, so the
+    // keyboard's spelling finds both, to be told apart; the lookalike,
+    // which only a person choosing it asks, finds its own.
     titled.teams[0]["title"] = json!("Coral reef-pause notes");
-    for (asked, own) in [("reef\u{2011}pause", "Bootstrap"), ("reef-pause", "Coral")] {
-        let found = team(&titled, asked, &look()).unwrap_or_default();
-        assert!(found.starts_with(own), "{asked} missed {own}: {found}");
-    }
+    let found = team(&titled, "reef\u{2011}pause", &look()).unwrap_or_default();
+    assert!(
+        found.starts_with("Bootstrap"),
+        "the lookalike missed its own: {found}"
+    );
+    let both = team(&titled, "reef-pause", &look());
+    assert!(
+        both.as_ref().is_err_and(|why| why.contains(" could be ")),
+        "two titles drawn alike, one was picked: {both:?}"
+    );
 }
 
 #[test]
@@ -598,31 +610,62 @@ fn a_short_spelt_with_any_dash_is_drawn_with_a_hyphen_and_reached_however_dashed
 
 #[test]
 fn a_short_a_keyboard_types_is_kept_and_one_it_cannot_is_not() {
-    // Letters, digits and ASCII's punctuation are typed as drawn; what's
-    // drawn like a hyphen and isn't one, an emoji or a lone mark isn't,
-    // so the team goes by its title.
-    for kept in [
-        "kelp_beds",
-        "v2.1",
-        "paus\u{E9}",
-        "\u{6E2F}\u{6E7E}",
-        "harbour;ls",
+    // Letters, digits, `-`, `_` and `.` are typed as drawn, and so is a
+    // mark or joiner on a letter: a decomposed accent, Hindi's virama,
+    // Thai's tone mark, Persian's non-joiner. What's drawn like a hyphen
+    // and isn't one, what a shell reads otherwise, an emoji or a lone
+    // mark isn't, nor another script's letter beside Latin's or ASCII's
+    // own fullwidth or mathematical letters, so the team goes by its title.
+    for (given, kept) in [
+        ("kelp_beds", "kelp_beds"),
+        ("v2.1", "v2.1"),
+        ("paus\u{E9}", "paus\u{E9}"),
+        ("tide\u{301}", "tide\u{301}"),
+        ("\u{6E2F}\u{6E7E}", "\u{6E2F}\u{6E7E}"),
+        (
+            "\u{939}\u{93F}\u{928}\u{94D}\u{926}\u{940}",
+            "\u{939}\u{93F}\u{928}\u{94D}\u{926}\u{940}",
+        ),
+        ("\u{E44}\u{E21}\u{E48}", "\u{E44}\u{E21}\u{E48}"),
+        (
+            "\u{645}\u{6CC}\u{200C}\u{62E}\u{648}\u{627}\u{647}\u{645}",
+            "\u{645}\u{6CC}\u{200C}\u{62E}\u{648}\u{627}\u{647}\u{645}",
+        ),
+        ("Kelp \u{2013} Beds", "kelp---beds"),
     ] {
         let mut swarm = swarm();
-        swarm.teams[1]["swarm"] = json!(kept);
+        swarm.teams[1]["swarm"] = json!(given);
         assert!(
             typed(&swarm).iter().any(|name| name == kept),
-            "{kept} was refused: {:?}",
+            "{given} was refused: {:?}",
             typed(&swarm)
         );
     }
-    for refused in ["tide\u{2043}plan", "\u{1F30A}tide", "tide\u{301}"] {
+    // Refused, Harbour has no short, so the swarm's names are those of
+    // the others alone.
+    let mut untitled = swarm();
+    untitled.teams[1]["swarm"] = json!("\u{1F30A}");
+    let others = typed(&untitled);
+    for refused in [
+        "tide\u{2043}plan",
+        "\u{1F30A}tide",
+        "\u{301}tide",
+        "tide;ls",
+        "tide$(ls)",
+        "tide'-'plan",
+        "tide\u{FF70}plan",
+        "tide\u{30FC}plan",
+        "tide\u{2CBB}plan",
+        "t\u{456}de",
+        "\u{FF54}\u{FF49}\u{FF44}\u{FF45}",
+        "\u{1D5CD}\u{1D5C2}\u{1D5BD}\u{1D5BE}",
+    ] {
         let mut swarm = swarm();
         swarm.teams[1]["swarm"] = json!(refused);
-        assert!(
-            !typed(&swarm).iter().any(|name| name.contains("tide")),
-            "{refused} was given as Harbour's name: {:?}",
-            typed(&swarm)
+        assert_eq!(
+            typed(&swarm),
+            others,
+            "{refused} was given as Harbour's name"
         );
     }
     // So a lookalike drawn as another team's short is never a twin that

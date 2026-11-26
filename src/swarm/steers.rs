@@ -109,10 +109,10 @@ fn session_by_address<'a>(swarm: &'a Swarm, asked: &str) -> Option<&'a Value> {
 }
 
 /// The teams whose titles hold `asked`, else the living sessions whose
-/// titles do, with dashes `folded` or not. A title is matched as it's
-/// spelt first, and folded only where nothing is, so a session whose
-/// title holds the very spelling asked is never taken over by a team's
-/// spelt otherwise.
+/// titles do, with dashes `folded` or not. Titles are matched folded,
+/// so two a page draws alike are several and a team's comes before a
+/// session's; only where `asked` holds a dash a keyboard doesn't type,
+/// which the person chose, is a title spelt as asked matched first.
 fn titled<'a>(swarm: &'a Swarm, asked: &str, folded: bool) -> Vec<Named<'a>> {
     let spelt = |text: &str| {
         let lower = unmarked(text).to_lowercase();
@@ -144,7 +144,9 @@ fn titled<'a>(swarm: &'a Swarm, asked: &str, folded: bool) -> Vec<Named<'a>> {
 /// before one keyed alike but for case. Several are each named as
 /// they're typed, a team by its short name, so one can be picked; two
 /// teams whose short names clean alike are several, as `picked` finds
-/// them, so neither takes a steer meant for the other.
+/// them, so neither takes a steer meant for the other; so are a team
+/// whose title holds what's asked only once its dashes fold and a
+/// session whose title holds it as typed, as a page draws them alike.
 fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
     let shorts = shorts_of(swarm);
     // A short name's words may be typed apart, as `part deux`. Short
@@ -189,7 +191,9 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
     } else {
         by_address
     };
-    let mut found: Vec<Named<'_>> = if whole.is_empty() {
+    let mut found: Vec<Named<'_>> = if !whole.is_empty() {
+        whole
+    } else if hyphens(asked) != asked {
         let spelt = titled(swarm, asked, false);
         if spelt.is_empty() {
             titled(swarm, asked, true)
@@ -197,7 +201,17 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
             spelt
         }
     } else {
-        whole
+        // A team found only once its dashes fold is drawn alike with a
+        // session whose title holds what's asked as typed, so each is
+        // named for the person to pick, rather than one taking the steer.
+        let folded = titled(swarm, asked, true);
+        let spelt = titled(swarm, asked, false);
+        match (folded.first(), spelt.first()) {
+            (Some(Named::Team(_)), Some(Named::Session(_))) => {
+                folded.into_iter().chain(spelt).collect()
+            }
+            _ => folded,
+        }
     };
     if found.len() == 1
         && let Some(one) = found.pop()
@@ -638,6 +652,17 @@ mod tests {
                 .unwrap_or_else(|why| panic!("{asked} steered nothing: {why}"));
             assert_eq!(addresses(&aimed), steered, "{asked} steered another");
         }
+        // Spelt the other way round, a page draws the team's title and the
+        // session's alike, and the keyboard's hyphen a person types for
+        // both can't say which was meant, so neither takes the steer; each
+        // is named to be picked.
+        swarm.teams[1]["title"] = json!("Bootstrap harbour\u{2011}tides tools");
+        swarm.sessions[4]["title"] = json!("harbour-tides notes");
+        let both = aim(&swarm, Act::Pause, "harbour-tides").map(|aimed| addresses(&aimed));
+        assert!(
+            both.as_ref().is_err_and(|why| why.contains(" could be ")),
+            "one of two drawn alike took the steer: {both:?}"
+        );
     }
 
     #[test]

@@ -1113,8 +1113,9 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
             })
             .collect()
     };
-    // A title as it's spelt first, and with its dashes folded only where
-    // none is, so one holding the very spelling asked is the one found.
+    // Titles are matched with their dashes folded, so two a page draws
+    // alike are several; only one asked with a dash a keyboard doesn't
+    // type is first matched as spelt, as the person chose it.
     let titled = |folded: bool| -> Vec<&T> {
         let spelt = |text: &str| {
             let lower = unmarked(text).to_lowercase();
@@ -1126,7 +1127,9 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
             .filter(|thing| spelt(naming(thing).title).contains(&lower))
             .collect()
     };
-    let found = if whole.is_empty() {
+    let found = if !whole.is_empty() {
+        whole
+    } else if hyphens(asked) != asked {
         let spelt = titled(false);
         if spelt.is_empty() {
             titled(true)
@@ -1134,7 +1137,7 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
             spelt
         }
     } else {
-        whole
+        titled(true)
     };
     match found.as_slice() {
         [] => Picked::None,

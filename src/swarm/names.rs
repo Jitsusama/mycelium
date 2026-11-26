@@ -59,32 +59,86 @@ pub(super) fn one_word(name: &str) -> bool {
 /// drew it, `reef pause` would pause Reef, and `pause` reach no team.
 /// A short's words may be typed apart, so each part between hyphens
 /// counts as a word too: `reef-pause`, typed as `reef pause`, would pause
-/// Reef. A word led by a hyphen may be typed as a flag, and so may one
-/// after two hyphens: `kelp --names`, held as `kelp---names`, typed
-/// apart would be read as `--names`.
+/// Reef. What draws on the letter before it is passed over, so a mark on
+/// `pause` hides no act; and a name led by a hyphen may be typed as a
+/// flag, as one a quest gives with a word led by hyphens is, as
+/// [`flags`] says.
 fn acts_for(name: &str) -> bool {
-    let drawn = unmarked(name).to_lowercase();
-    let flagged = drawn
-        .split(blank)
-        .any(|word| word.starts_with('-') || word.contains("--"));
+    let drawn: String = unmarked(name)
+        .to_lowercase()
+        .chars()
+        .filter(|each| !on_what_is_before(*each))
+        .collect();
+    let flagged = drawn.split(blank).any(|word| word.starts_with('-'));
     flagged
         || drawn
             .split(|each: char| blank(each) || each == '-')
             .any(|word| ACTS.contains(&word) || word == "team")
 }
 
-/// Whether a keyboard types `name` as it's drawn: each of its characters
-/// a letter, a digit or printable ASCII, so none is punctuation drawn
-/// like what a keyboard types and read otherwise. A hyphen bullet, as
-/// U+2043 is, a heavy minus or a box line, drawn as a hyphen by many
-/// fonts, would join `reef` to `pause` unseen, and two teams drawn as
-/// `tide-plan` would go by two names; an emoji or a mark standing alone
-/// can't be typed at all. A letter drawn like another, a Cyrillic one in
-/// Latin's place, is still kept, which only Unicode's confusables would
-/// tell apart.
+/// Whether a quest's own words for its team, `given`, hold one led by a
+/// hyphen and then more than a blank: `kelp --names`, held as
+/// `kelp---names`, typed as the quest wrote it would hand `swarm` the
+/// flag `--names`, and a lone `--` ends its flags. A dash between words,
+/// as an en dash spaced between `Kelp` and `Beds` is, flags nothing, and
+/// is kept.
+fn flags(given: &str) -> bool {
+    hyphens(&unmarked(given))
+        .split(blank)
+        .any(|word| word.starts_with('-') && word.chars().count() > 1)
+}
+
+/// Whether a person types `name` into a shell as it's drawn, and `swarm`
+/// reads it as drawn: each character a letter or a digit, `-`, `_` or
+/// `.`, or a mark or joiner drawn on a letter before it, as a word's
+/// accents, viramas and tone marks are.
+///
+/// A hyphen bullet, as U+2043 is, a heavy minus or a box line, drawn as a
+/// hyphen by many fonts, would join `reef` to `pause` unseen, and two
+/// teams drawn as `tide-plan` would go by two names. A shell reads `;`,
+/// `$`, quotes and the like as other than the name. An emoji or a mark
+/// standing alone can't be typed at all.
+///
+/// A name holding a Latin letter holds only Latin letters, so another
+/// script's letter drawn like one, a Cyrillic a (U+0430) in `pause` or a
+/// katakana prolonged mark drawn like a hyphen, can't hide an act or
+/// twin another team's name; and none is ASCII's fullwidth or
+/// mathematical form, which Unicode's compatibility mapping reads as
+/// ASCII itself. A name wholly in another script whose letters are drawn
+/// like Latin's, as a Cyrillic one may be, is still kept, which only
+/// Unicode's confusables would tell apart.
 fn typable(name: &str) -> bool {
-    name.chars()
-        .all(|each| each.is_alphanumeric() || each.is_ascii_graphic())
+    let latin = name.chars().any(|each| each.is_ascii_alphabetic());
+    let mut on_a_letter = false;
+    name.chars().all(|each| {
+        let kept = if each.is_ascii() {
+            each.is_ascii_alphanumeric() || matches!(each, '-' | '_' | '.')
+        } else if each.is_alphanumeric() {
+            !ascii_again(each) && (!latin || latin_letter(each))
+        } else {
+            on_a_letter && on_what_is_before(each)
+        };
+        on_a_letter = each.is_alphanumeric() || (on_a_letter && on_what_is_before(each));
+        kept
+    })
+}
+
+/// Whether `each` draws on what's before it, taking no cell of its own:
+/// a mark, as an accent or a virama is, or a joiner.
+fn on_what_is_before(each: char) -> bool {
+    unicode_width::UnicodeWidthChar::width(each) == Some(0)
+}
+
+/// Whether `each` is ASCII written again in another form: fullwidth, or
+/// one of Unicode's mathematical letters and digits.
+const fn ascii_again(each: char) -> bool {
+    matches!(each, '\u{FF01}'..='\u{FF5E}' | '\u{1D400}'..='\u{1D7FF}')
+}
+
+/// Whether `each` is a letter of the Latin script past ASCII: those of
+/// Latin-1, Latin Extended A and B, and Latin Extended Additional.
+const fn latin_letter(each: char) -> bool {
+    matches!(each, '\u{00AA}' | '\u{00BA}' | '\u{00C0}'..='\u{024F}' | '\u{1E00}'..='\u{1EFF}')
 }
 
 /// Whether `each` is drawn as a space between words.
@@ -250,7 +304,11 @@ pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
                     .any(|(other, typed)| *other != me && typed.contains(&word))
             };
             if let Some(name) = given(team) {
-                return Some((me, name));
+                let spelt = team
+                    .get("swarm")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                return (!flags(spelt)).then_some((me, name));
             }
             // A worked-out name is held in its typed form too, as a
             // title's word may hold a braille blank or a control.
@@ -328,8 +386,16 @@ mod tests {
         for code in dashes {
             assert_eq!(typed(code), "a-b", "U+{code:04X} is a dash");
         }
+        // Each is kept as it is, but the direction mark, which a cleaning
+        // drops, so none is folded to a hyphen or parts the words either.
         for code in beside {
-            assert_ne!(typed(code), "a-b", "U+{code:04X} is no dash");
+            let each = char::from_u32(code).expect("a character");
+            let kept = if code == 0x200F {
+                "ab".to_owned()
+            } else {
+                format!("a{each}b").to_lowercase()
+            };
+            assert_eq!(typed(code), kept, "U+{code:04X} is no dash");
         }
     }
 
