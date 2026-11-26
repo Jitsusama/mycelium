@@ -28,10 +28,13 @@
 //! A queue's record is a file any session can write, so that verdict
 //! comes only from the kernel's own readings, [`felt`], judged by
 //! [`crate::balance`]'s copy of the queue's lines. Should the queue's
-//! lines move, its copy moves with them by hand. Memory is judged by
-//! two slower lines besides, which a machine kept lively is held to: all
-//! work stalled for part of the last minute, and too little free.
-//! The ten seconds' stall alone flaps on a machine whose memory is full.
+//! lines move, its copy moves with them by hand. Memory is judged by a
+//! slower line besides, which a machine kept lively is held to: all work
+//! stalled for part of the last minute. The ten seconds' stall alone
+//! flaps on a machine whose memory is full. Memory free is no line of
+//! its own, since what holds it may be no session's, so easing would
+//! park sessions for what they never caused; the kernel's stall says
+//! when the want of it slows work.
 //!
 //! [`Room`] and [`Limit`] say a queue's room; a room felt says the same
 //! fields, judged by the node.
@@ -245,7 +248,7 @@ fn felt_from(cpu: &str, memory: &str, io: &str, meminfo: &str, at: &str) -> Opti
     };
     let memory_available = kept(meminfo, "MemAvailable:")?;
     let mut over = Vec::new();
-    if memory_over(memory, memory_available, kept(meminfo, "MemTotal:"))? {
+    if memory_over(memory)? {
         over.push(Limit::Memory);
     }
     if pressure.cpu >= crate::balance::OVER_CPU_PRESSURE {
@@ -272,27 +275,24 @@ fn kept(meminfo: &str, name: &str) -> Option<u64> {
     })
 }
 
-/// Whether a machine is past its memory limit, by any of three lines:
-/// the queue's, some work stalled [`OVER_MEMORY_PRESSURE`] of the last
-/// ten seconds; all of it stalled [`OVER_MEMORY_FULL`] of the last
-/// minute; or less free than [`memory_floor`] of its `total`. The
-/// minute's stall and the memory free move slowly, where the ten
-/// seconds' stall flaps: on 26 November a machine whose memory was full
-/// for an hour read cool every few minutes by the ten seconds alone, and
-/// each pair of cool readings started its spell again, so it put no
-/// session to sleep. None where the pressure file can't be read.
+/// Whether a machine is past its memory limit by the kernel's memory
+/// `pressure`, by either of two lines: the queue's, some work stalled
+/// [`OVER_MEMORY_PRESSURE`] of the last ten seconds; or all of it
+/// stalled [`OVER_MEMORY_FULL`] of the last minute. The minute's stall
+/// moves slowly, where the ten seconds' flaps: on 26 November a machine
+/// whose memory was full for an hour read cool every few minutes by the
+/// ten seconds alone, and each pair of cool readings started its spell
+/// again, so it put no session to sleep. None where the `some` line
+/// can't be read; a file with no `full` line, as a kernel may write, is
+/// judged by its `some` line alone.
 ///
 /// [`OVER_MEMORY_PRESSURE`]: crate::balance::OVER_MEMORY_PRESSURE
 /// [`OVER_MEMORY_FULL`]: crate::balance::OVER_MEMORY_FULL
-/// [`memory_floor`]: crate::balance::memory_floor
-fn memory_over(pressure: &str, available: u64, total: Option<u64>) -> Option<bool> {
+fn memory_over(pressure: &str) -> Option<bool> {
     let some = stalled(pressure)?;
     let full = stall(pressure, "full ", "avg60=").unwrap_or(0.0);
-    let short = total.is_some_and(|total| available < crate::balance::memory_floor(total));
     Some(
-        some >= crate::balance::OVER_MEMORY_PRESSURE
-            || full >= crate::balance::OVER_MEMORY_FULL
-            || short,
+        some >= crate::balance::OVER_MEMORY_PRESSURE || full >= crate::balance::OVER_MEMORY_FULL,
     )
 }
 
@@ -494,15 +494,6 @@ mod tests {
         )
     }
 
-    /// What a machine with `total` and `available` kB is over by memory
-    /// alone, with no work stalled.
-    fn over_with(total: u64, available: u64) -> Vec<Limit> {
-        let meminfo = format!("MemTotal: {total} kB\nMemAvailable: {available} kB\n");
-        felt_from(&psi(0.0), &psi(0.0), &psi(0.0), &meminfo, FELT_AT)
-            .and_then(|room| room.over)
-            .expect("room felt")
-    }
-
     // On 26 November a machine whose memory was full for an hour read cool
     // every few minutes by the ten seconds' stall alone, and each pair of
     // cool readings started its spell again.
@@ -517,36 +508,27 @@ mod tests {
         assert_eq!(over(4.99), Vec::new(), "just under it");
     }
 
+    // Our council on #488: a machine short of free memory for reasons no
+    // session caused would park every session waiting there, and keep
+    // them parked.
     #[test]
-    fn a_machine_short_of_free_memory_is_over_memory_however_calm() {
-        let sixteen_gib = 16 * 1024 * 1024;
-        assert_eq!(
-            over_with(128 * 1024 * 1024, sixteen_gib - 1),
-            vec![Limit::Memory],
-            "a large machine keeps 16 GiB free"
-        );
-        assert_eq!(
-            over_with(128 * 1024 * 1024, sixteen_gib),
-            Vec::new(),
-            "and has room at 16 GiB"
-        );
-        assert_eq!(
-            over_with(8 * 1024 * 1024, 2 * 1024 * 1024 - 1),
-            vec![Limit::Memory],
-            "a small one keeps a quarter of its whole"
-        );
-        assert_eq!(
-            over_with(8 * 1024 * 1024, 2 * 1024 * 1024),
-            Vec::new(),
-            "and has room at a quarter, so it isn't over for ever"
-        );
+    fn a_machine_short_of_free_memory_but_unstalled_is_not_over() {
+        let meminfo = "MemTotal: 67108864 kB\nMemAvailable: 1024 kB\n";
+        let room =
+            felt_from(&psi(0.0), &full(0.0), &psi(0.0), meminfo, FELT_AT).expect("room felt");
+        assert_eq!(room.over, Some(Vec::new()));
     }
 
     #[test]
-    fn a_machine_whose_whole_is_unsaid_is_judged_by_its_pressure_alone() {
-        let meminfo = "MemAvailable: 1024 kB\n";
-        let room = felt_from(&psi(0.0), &psi(0.0), &psi(0.0), meminfo, FELT_AT).expect("room felt");
-        assert_eq!(room.over, Some(Vec::new()));
+    fn a_pressure_file_with_no_full_line_is_judged_by_its_some_line() {
+        let over = |some: f64| {
+            let pressure = format!("some avg10={some:.2} avg60=0.00 avg300=0.00 total=1\n");
+            felt_from(&psi(0.0), &pressure, &psi(0.0), MEMINFO, FELT_AT)
+                .and_then(|room| room.over)
+                .expect("room felt")
+        };
+        assert_eq!(over(10.0), vec![Limit::Memory], "over by its some line");
+        assert_eq!(over(0.0), Vec::new(), "and cool by it");
     }
 
     #[test]

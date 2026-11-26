@@ -51,23 +51,6 @@ pub const OVER_MEMORY_PRESSURE: f64 = 10.0;
 /// memory together.
 pub const OVER_MEMORY_FULL: f64 = 5.0;
 
-/// The most free memory a machine is held to keep: past it, what it
-/// keeps free is a quarter of its whole, so a small machine isn't over
-/// for ever.
-pub const MEMORY_FLOOR: u64 = 16 << 30;
-
-/// The memory free, in bytes, under which a machine with `total` is
-/// over: [`MEMORY_FLOOR`], or a quarter of its whole where that is less.
-#[must_use]
-pub const fn memory_floor(total: u64) -> u64 {
-    let quarter = total / 4;
-    if quarter < MEMORY_FLOOR {
-        quarter
-    } else {
-        MEMORY_FLOOR
-    }
-}
-
 /// The most a machine with room may stall, 0 to 1.
 pub const ROOM_STALL: f64 = 0.25;
 
