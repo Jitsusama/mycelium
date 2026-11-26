@@ -117,6 +117,17 @@ impl Quest {
         }
     }
 
+    /// The same quest, carrying none of its scratch, as for a machine
+    /// the quest wasn't given to that is sent only what it was given.
+    #[must_use]
+    pub fn without_scratch(self) -> Self {
+        Self {
+            scratch: None,
+            folders: BTreeSet::new(),
+            ..self
+        }
+    }
+
     /// The same quest, with its scratch in `scratch`, sharing `folders`
     /// of it.
     #[must_use]

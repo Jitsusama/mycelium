@@ -305,8 +305,23 @@ pub enum Ending {
 /// declare nothing, so it is never sent a quest above, and this node logs
 /// so unless the link is a worker's, which is never sent one whatever its
 /// node.
-fn exchange_with(places: Places, here: &Hello, there: &Hello, worker: bool) -> Exchange {
+///
+/// A machine this end's way in `releases` was made for this machine, and
+/// is reached over a provider's link of a few kilobytes a second shared
+/// with the person's own work, so it is sent only the scratch of quests
+/// given to it ([`Exchange::scratch_where_given`]).
+fn exchange_with(
+    places: Places,
+    here: &Hello,
+    there: &Hello,
+    (worker, releases): (bool, bool),
+) -> Exchange {
     let exchange = Exchange::new(places, here.machine.clone(), there.machine.clone());
+    let exchange = if releases {
+        exchange.scratch_where_given()
+    } else {
+        exchange
+    };
     let mut exchange = if worker {
         exchange.for_worker()
     } else {
@@ -414,7 +429,7 @@ pub async fn run(
         runs,
         next_ask: 0,
         exchange: shares.map(|places| {
-            let exchange = exchange_with(places, &membership.hello(), &other, worker);
+            let exchange = exchange_with(places, &membership.hello(), &other, (worker, releases));
             if worker {
                 exchange.gating(gates.clone())
             } else {
