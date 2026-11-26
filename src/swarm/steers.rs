@@ -78,7 +78,10 @@ fn paused(session: &Value) -> bool {
 /// orchestrates them, so a peer could otherwise key one by a working
 /// session's address, lead it, and take the words meant for that
 /// session. One whose address is `asked` in its own case comes first.
-fn session_by_address<'a>(swarm: &'a Swarm, asked: &str) -> Option<&'a Value> {
+/// Where any session holding that address leads the team, none is
+/// named, so a second session saying the same address can't take the
+/// team's words by being found before its lead.
+pub(super) fn session_by_address<'a>(swarm: &'a Swarm, asked: &str) -> Option<&'a Value> {
     let leads = |team: &Value, session: &Value| {
         team["lead"]
             .as_str()
@@ -90,21 +93,23 @@ fn session_by_address<'a>(swarm: &'a Swarm, asked: &str) -> Option<&'a Value> {
             .iter()
             .filter(|session| Standing::of(session).is_some())
     };
+    let holding = |session: &&Value| {
+        session["address"]
+            .as_str()
+            .is_some_and(|address| address.eq_ignore_ascii_case(asked))
+    };
+    let led = living().filter(holding).any(|session| {
+        swarm
+            .teams
+            .iter()
+            .any(|team| address(team).eq_ignore_ascii_case(asked) && leads(team, session))
+    });
+    if led {
+        return None;
+    }
     living()
         .find(|session| session["address"].as_str() == Some(asked))
-        .or_else(|| {
-            living().find(|session| {
-                session["address"]
-                    .as_str()
-                    .is_some_and(|address| address.eq_ignore_ascii_case(asked))
-            })
-        })
-        .filter(|session| {
-            !swarm
-                .teams
-                .iter()
-                .any(|team| address(team).eq_ignore_ascii_case(asked) && leads(team, session))
-        })
+        .or_else(|| living().find(holding))
 }
 
 /// Whether a steer naming `asked` goes to `team` alone, as `named`
@@ -624,6 +629,18 @@ mod tests {
             addresses(&aimed),
             addresses(&whole),
             "an orchestrator's team goes by its address, as it leads it"
+        );
+        // A second session saying the lead's address, found before it,
+        // still leaves the steer to the team the lead leads.
+        let mut twin = swarm.sessions[0].clone();
+        twin["id"] = json!("s-twin");
+        twin["address"] = json!("LEAD");
+        swarm.sessions.insert(0, twin);
+        let aimed = aim(&swarm, Act::Pause, "LEAD").expect("aimed");
+        assert_eq!(
+            addresses(&aimed),
+            addresses(&whole),
+            "a session saying its lead's address took the team's steer"
         );
     }
 

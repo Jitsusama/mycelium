@@ -1949,21 +1949,49 @@ fn a_name_matching_none_or_several_networks_is_said_plainly() {
     group.short = "harbor".to_owned();
     group.title = None;
     grouped.networks.push(group);
+    let why = grouped
+        .named_network("harbor")
+        .expect_err("a peer's group took a network's short name");
     assert!(
-        grouped
-            .named_network("harbor")
-            .is_err_and(|why| why.starts_with("harbor could be ") && why.contains("quest.harbor")),
-        "a peer's group took a network's short name"
+        why.starts_with("harbor could be ")
+            && why.contains("quest.harbor")
+            && why.contains("#harbor"),
+        "each wasn't named by what reaches it alone: {why}"
     );
+    // Spelt as the mesh spells a group, each is reached by its name.
+    for (asked, name) in [("#harbor", "harbor"), ("#quest/harbor", "quest.harbor")] {
+        assert_eq!(
+            grouped.named_network(asked).map(|each| each.name.as_str()),
+            Ok(name),
+            "{asked} missed the network named so"
+        );
+    }
 }
 
 #[test]
 fn what_a_name_could_be_names_each_on_one_line() {
     let (cell, network) = ("ASKS\u{1b}]0;x\u{7}01", "quest.\u{200b}harbor\u{fdd0}");
     assert_eq!(
-        super::several("as", &[&cell, &network], |each| *each),
+        super::several("as", &[&cell, &network], |each| (*each).to_owned()),
         format!("as could be {} or quest.harbor", one_line(cell)),
         "a name it could be drew otherwise than on one line"
+    );
+}
+
+#[test]
+fn a_machine_is_found_by_its_name_as_drawn() {
+    // A machine's name is drawn cleaned, so typed as drawn it finds it.
+    let mut mycelium = mycelium();
+    let machine = mycelium
+        .cells
+        .iter_mut()
+        .find(|each| each.is == Is::Machine)
+        .expect("a machine");
+    machine.name = "os\u{200B}prey\u{fdd0}".to_owned();
+    assert_eq!(
+        mycelium.named_cell("osprey").map(|each| each.name.as_str()),
+        Ok("os\u{200B}prey\u{fdd0}"),
+        "a machine drawn as osprey wasn't found by it"
     );
 }
 

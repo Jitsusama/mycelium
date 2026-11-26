@@ -1257,6 +1257,16 @@ pub fn team(swarm: &Swarm, asked: &str, look: &Look) -> Result<String, String> {
     if let Some(landed) = landed(team, look) {
         lines.push(look.paint(FAINT, &unmarked(&landed)));
     }
+    // A session holding the address asked that doesn't lead the team
+    // takes a steer typed with it, so the page says so rather than let
+    // one act on the team shown reach that session alone.
+    if steers::session_by_address(swarm, asked).is_some() {
+        let asked = unmarked(asked);
+        lines.push(look.paint(
+            FAINT,
+            &format!("a steer to {asked} reaches the session {asked} alone"),
+        ));
+    }
     let inner = ordered(
         swarm
             .teams

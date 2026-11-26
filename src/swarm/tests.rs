@@ -182,6 +182,30 @@ fn into_a_pipe_a_time_is_stamped_in_the_looks_zone_on_its_own_day() {
 }
 
 #[test]
+fn a_team_page_by_a_session_s_address_says_a_steer_reaches_that_session() {
+    // Keyed by a session it isn't led by, the team is shown by that
+    // address, but a steer typed with it reaches the session alone.
+    let mut swarm = swarm();
+    swarm.teams[1]["key"] = json!("team:BUSY");
+    swarm.teams[2]["within"] = json!("BUSY");
+    let shown = team(&swarm, "BUSY", &look()).expect("Harbour is found by its key");
+    assert_eq!(
+        shown.lines().take(3).collect::<Vec<_>>(),
+        [
+            "Harbour · led by Harbour's lead",
+            "landed Hear the Tide · skiff#12 · 15:54",
+            "a steer to BUSY reaches the session BUSY alone",
+        ],
+        "the page let a steer seem to reach the team:\n{shown}"
+    );
+    let led = team(&self::swarm(), "HARBOR", &look()).expect("Harbour");
+    assert!(
+        !led.contains("a steer to"),
+        "a team its address steers said otherwise:\n{led}"
+    );
+}
+
+#[test]
 fn a_lead_titled_as_its_team_is_named_by_its_address() {
     let mut swarm = swarm();
     if let Some(lead) = swarm

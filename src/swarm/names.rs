@@ -168,7 +168,13 @@ fn given(team: &Value) -> Option<String> {
 /// theirs alone.
 #[must_use]
 pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
-    let chosen: Vec<String> = teams.iter().filter_map(given).collect();
+    // As drawn, so a worked-out name that only cleans like a given one
+    // gives way to it, rather than both going as two drawn alike.
+    let chosen: Vec<String> = teams
+        .iter()
+        .filter_map(given)
+        .map(|name| unmarked(&name))
+        .collect();
     let held: Vec<(&str, BTreeSet<String>)> = teams
         .iter()
         .map(|team| {
@@ -190,7 +196,7 @@ pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
             // A worked-out name is held in its typed form too, as a
             // title's word may hold a braille blank or a control.
             Some((me, typed_form(&short(title(team), &shared)?)))
-                .filter(|(_, name)| !chosen.contains(name))
+                .filter(|(_, name)| !chosen.contains(&unmarked(name)))
         })
         // One that cleans to nothing would be drawn blank, and offered to
         // a shell as an empty word.
@@ -303,6 +309,20 @@ mod tests {
             [("QUICKW", "harbour")],
             "the quest's own name, typed in lower case, over the one the other's title \
              would give; and an act given as a name goes to none"
+        );
+    }
+
+    #[test]
+    fn a_given_name_wins_over_a_worked_out_one_that_only_cleans_like_it() {
+        let teams = [
+            json!({"key": "team:QUICKW", "title": "Quick Wins", "swarm": "Harbour"}),
+            json!({"key": "team:HARBOR", "title": "Harb\u{fdd0}our"}),
+        ];
+        let named = short_names(&teams);
+        assert_eq!(
+            named.get("QUICKW").map(String::as_str),
+            Some("harbour"),
+            "a quest's own name was lost to a title drawn like it: {named:?}"
         );
     }
 
