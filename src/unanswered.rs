@@ -997,8 +997,9 @@ mod tests {
         // characters it would push the wait and the id past the edge. At
         // 50 the lead leaves one cell, too few for one, so none is drawn;
         // at 51 the lead leaves two, room for one exactly, so a room a
-        // cell short or long draws another; at 80 fifteen are, and a
-        // sixteenth would straddle the mark.
+        // cell short draws none; at 80 fifteen are, and a sixteenth would
+        // straddle the mark. A room a cell long draws one at 50 and a
+        // sixteenth at 80, so each row bounds a side.
         let mut wide = asked_of(&["SKIFF1"], 5, "c0cd280e");
         wide["waiting_on"] = json!(["港湾".repeat(20)]);
         for (width, expected) in [
