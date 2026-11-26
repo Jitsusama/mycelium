@@ -236,6 +236,16 @@ impl Quest {
             shared.path
         )))
     }
+
+    /// Takes back `aside`, a name [`Self::keep_aside`] gave this end's
+    /// copy, where nothing was written in the copy's place, so the copy
+    /// stands only where it was. Best effort, since the copy is whole
+    /// either way.
+    pub fn forget_aside(&self, aside: &Shared) {
+        if let Ok(Some(path)) = self.unlinked(aside) {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 /// Whether a file's text names places, and so crosses with its home

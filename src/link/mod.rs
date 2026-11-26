@@ -3129,6 +3129,28 @@ mod tests {
         }
     }
 
+    // Our council on #481: what a link's way in releases is sent only
+    // the scratch given to it, and any other link all it shares.
+    #[test]
+    fn a_made_machines_link_sends_only_the_scratch_given_to_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let places = || Places {
+            quests: dir.path().join("quests"),
+            scratch: dir.path().join("scratch"),
+            home: dir.path().to_owned(),
+            state: dir.path().join("state"),
+        };
+        let (skiff, kestrel) = (realm("skiff").hello(), realm("kestrel").hello());
+        for (worker, releases) in [(false, false), (false, true), (true, false), (true, true)] {
+            assert_eq!(
+                exchange_with(places(), &skiff, &kestrel, (worker, releases))
+                    .sends_only_given_scratch(),
+                releases,
+                "a link whose way in releases (worker {worker}) sends only what was given"
+            );
+        }
+    }
+
     /// The other end's hello, said `after` this long, as a provider's
     /// program says it once it has made the machine; the end's sender is
     /// kept until then, so the wait is never ended by its closing.
