@@ -40,7 +40,7 @@ use crate::awake;
 use crate::declared::Declared;
 use crate::declared::{Effect, Lively, Taint};
 use crate::disk::Band;
-use crate::facts::{AcceleratorKind, Machine, Readiness};
+use crate::facts::{AcceleratorKind, HeldFor, Machine, Readiness};
 use crate::offer::Offer;
 use crate::room::{Limit, Room};
 
@@ -848,6 +848,20 @@ pub fn full(
     loads: &Loads,
     promised: &BTreeMap<String, u32>,
 ) -> Vec<Miss> {
+    full_keeping(machines, holding, loads, promised, &BTreeSet::new())
+}
+
+/// As [`full`], each machine named in `keeping` full one session short of
+/// the most it holds, and said to hold that many at most, so the last is
+/// kept for the person whose machine it is.
+#[must_use]
+pub fn full_keeping(
+    machines: &[Machine],
+    holding: &BTreeMap<String, u32>,
+    loads: &Loads,
+    promised: &BTreeMap<String, u32>,
+    keeping: &BTreeSet<String>,
+) -> Vec<Miss> {
     machines
         .iter()
         .filter_map(|machine| {
@@ -856,6 +870,7 @@ pub fn full(
                 .as_ref()
                 .and_then(|declared| declared.sessions_at_most)
                 .or_else(|| promised.get(&machine.name).copied())?;
+            let most = most.saturating_sub(u32::from(keeping.contains(&machine.name)));
             let held = holding
                 .get(&machine.name)
                 .copied()
@@ -952,7 +967,10 @@ fn decide_at(
         .map(|one| {
             let load = loads.get(&one.name).copied().unwrap_or_default();
             let mut judged = judge(work, one, load, now, weights);
+            // A room made for agents to share is paid for by being up, so
+            // it takes work that names none of the workers.
             if one.declared.as_ref().is_some_and(Declared::is_worker)
+                && one.held_for != HeldFor::Agents
                 && !names_worker(work, &lasting)
                 && !work.needs.contains(&Need::Machine(one.name.clone()))
             {
@@ -2085,6 +2103,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_machine_kept_for_its_person_is_full_one_short_of_its_most() {
+        let machines = [capped("wren", None), capped("tern", None)];
+        let promised = BTreeMap::from([("wren".to_owned(), 4), ("tern".to_owned(), 4)]);
+        let holding = BTreeMap::from([("wren".to_owned(), 3), ("tern".to_owned(), 3)]);
+        let keeping = BTreeSet::from(["wren".to_owned()]);
+        assert_eq!(
+            full_keeping(&machines, &holding, &Loads::new(), &promised, &keeping),
+            vec![Miss {
+                machine: "wren".to_owned(),
+                because: vec![Because::Full(3)],
+            }],
+            "its last is kept, though a machine not kept takes its fourth"
+        );
+        assert!(
+            full(&machines, &holding, &Loads::new(), &promised).is_empty(),
+            "and for its person, it takes the fourth"
+        );
+    }
+
+    #[test]
     fn an_offers_promised_most_caps_a_machine_saying_none_of_its_own() {
         let machines = [capped("wren", None), capped("tern", Some(3))];
         let holding = BTreeMap::from([("wren".to_owned(), 1), ("tern".to_owned(), 1)]);
@@ -2695,6 +2733,38 @@ pub(crate) mod tests {
             placed(&over_a_minute(60.0, 28.0).placement),
             Some("kestrel"),
             "a minute at the ceiling itself is within it"
+        );
+    }
+
+    #[test]
+    fn a_room_made_for_agents_takes_work_naming_no_worker_ahead_of_a_machine_kept_lively() {
+        let kestrel = lively(
+            pressed(machine("kestrel", "linux", 60, &[]), 20.0),
+            28,
+            None,
+        );
+        let mut wren = machine("wren", "linux", 30, &[]);
+        wren.declared.as_mut().expect("declared").costs_money = true;
+        let anything = needing(Vec::new());
+        let chosen_of = |wren: &Machine| {
+            placed(&judged_now(&anything, &[kestrel.clone(), wren.clone()]).placement)
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            chosen_of(&wren).as_deref(),
+            Some("kestrel"),
+            "a machine that costs money, not made for agents, takes none of it"
+        );
+        wren.held_for = HeldFor::Agents;
+        assert_eq!(
+            chosen_of(&wren).as_deref(),
+            Some("wren"),
+            "a room made for agents takes it, ahead of a machine kept lively"
+        );
+        assert_eq!(
+            placed(&judged_now(&needing(vec![Need::Cloud]), &[kestrel.clone(), wren]).placement),
+            Some("wren"),
+            "and is in the cloud still"
         );
     }
 
