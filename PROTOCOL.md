@@ -3542,8 +3542,9 @@ whose every cell is parked counts them `dormant`, so it draws after
 the living ones. A network is heard when the latest of its cells was,
 or its team where its cells say nothing. Its records change as the
 sessions do, so a machine come or gone shows with the next change to a
-session. Ten thousand cells, each holding two trees and 24 subjects,
-make their networks within 30 MB, in time that grows with them.
+session. Ten thousand cells, each holding two trees, three in ten of
+them saying from 1 to 24 subjects, make their networks within 30 MB,
+in time that grows with them.
 
 The `cell` kind holds each cell of the realm, keyed by its name: a
 session's address, a machine's name, or a receptor's source and machine,
@@ -3582,8 +3583,8 @@ sent at once. A watch is sent only the cells that changed, each with
 only the fields that moved. A node holds each record of every kind as
 the bytes it is sent as, and reads only the fields that moved, so ten
 thousand cells make their records within 30 MB while each holds two
-trees and 24 subjects of about 30 characters each, in time that grows
-with them.
+trees and three in ten say from 1 to 24 subjects of about 30
+characters each, in time that grows with them.
 
 The `tie` kind holds who talked with whom in the last day, made from the
 messages the node holds: never what a message said, nor its id, only

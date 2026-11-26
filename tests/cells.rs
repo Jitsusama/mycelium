@@ -45,7 +45,8 @@ fn ten_thousand_cells_make_their_cell_records_within_the_bar() {
         realm::CELLS,
         "every session, machine and receptor is a cell",
         // Each record held as the bytes it is sent as, while each cell
-        // holds two trees and as many subjects as it may say.
+        // holds two trees and three in ten say subjects (realm's
+        // `subjects`).
         30_000_000,
         &GROWTH,
         |holding| mycelium::node::cell_records(holding, &|_| None),
