@@ -776,8 +776,9 @@ pub struct Judgement {
     /// Records kept before it was judged read as not.
     #[serde(default)]
     pub saturated: bool,
-    /// Whether it was kept lively, so ranked after machines that weren't.
-    /// Records kept before it was judged read as not.
+    /// Whether it was kept lively, so ranked after machines that weren't,
+    /// and not where the work tolerated [`KEPT_LIVELY`]. Records kept
+    /// before it was judged read as not.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub kept_lively: bool,
     /// How many of the work's preferences it met.
@@ -796,19 +797,20 @@ pub fn place(work: &Work, machines: &[Machine], loads: &Loads) -> Placement {
 }
 
 /// Whether `decision` placed its work on a machine heard lately but past
-/// its room, over a limit of its queue's or saturated. Machines are
-/// ranked by those tiers first, so then every heard machine that takes
-/// it is past its room, and a machine made for it would have more. One
-/// unheard isn't judged past it, as nothing says so.
+/// its room, over a limit of its queue's or saturated, or on one kept
+/// lively, which the person would have take work only where nothing else
+/// does. Machines are ranked by those tiers first, so then every heard
+/// machine that takes it is past its room or kept lively, and a machine
+/// made for it would have more. One unheard isn't judged past it, as
+/// nothing says so.
 #[must_use]
 pub fn placed_past_room(decision: &Decision) -> bool {
     let Placement::Placed { machine, .. } = &decision.placement else {
         return false;
     };
-    decision
-        .judged
-        .iter()
-        .any(|one| one.machine == *machine && !one.unheard && (one.over || one.saturated))
+    decision.judged.iter().any(|one| {
+        one.machine == *machine && !one.unheard && (one.over || one.saturated || one.kept_lively)
+    })
 }
 
 /// Whether `decision` placed its work on a machine heard lately and within
@@ -1004,7 +1006,7 @@ fn decide_at(
             over: one.over,
             unheard: one.unheard,
             saturated: one.saturated,
-            kept_lively: one.lively.is_some(),
+            kept_lively: !matches!(one.kept, Kept::Not),
             preferred: one.preferred.iter().filter(|&&met| met).count(),
             headroom: one.headroom,
             chance: if near.contains(&at) { chance } else { 0.0 },
@@ -1036,20 +1038,31 @@ const fn tier(one: &Judged) -> u8 {
 }
 
 /// Where `one` ranks, first first: by its [`tier`], but a machine kept
-/// lively within its ceiling after every other heard machine with room or
-/// over, and past its ceiling or saturated after every other heard
+/// lively within its ceiling, over a limit of its queue's or not, after
+/// every other heard machine with room or over and before those
+/// saturated, and past its ceiling or saturated after every other heard
 /// machine, so other machines take what they can before it. Unheard, it
 /// ranks with the unheard, since an unheard room shows no room for work.
 const fn rank(one: &Judged) -> u8 {
     let tier = tier(one);
-    if one.lively.is_none() {
-        return tier * 2;
-    }
-    match tier {
-        0 => 3,
-        3 => 6,
+    match one.kept {
+        Kept::Not => tier * 2,
+        _ if tier == 3 => 6,
+        Kept::Within if tier < 2 => 3,
         _ => 5,
     }
+}
+
+/// Whether a machine is kept lively, as the work judging it sees it.
+#[derive(Debug, Clone, Copy)]
+enum Kept {
+    /// Not kept lively, or kept so but the work tolerates
+    /// [`KEPT_LIVELY`], so ranked as any machine.
+    Not,
+    /// Kept lively and within its ceiling.
+    Within,
+    /// Kept lively and past its ceiling.
+    Past,
 }
 
 /// Where `work` goes, `chosen` from among those `judged`, if any was.
@@ -1198,7 +1211,7 @@ fn judge_offer(work: &Work, offer: &Offer) -> Judged {
         over: false,
         unheard: false,
         saturated: false,
-        lively: None,
+        kept: Kept::Not,
     }
 }
 
@@ -1317,9 +1330,8 @@ struct Judged {
     unheard: bool,
     /// Whether its processors are saturated, as its room said lately.
     saturated: bool,
-    /// The ceiling it is kept lively to, so ranked after machines that
-    /// aren't, or None where it isn't.
-    lively: Option<Lively>,
+    /// Whether it is kept lively, so ranked after machines that aren't.
+    kept: Kept,
 }
 
 /// Why a machine kept lively to `lively` is past its ceiling, as `room`
@@ -1328,8 +1340,11 @@ fn past_lively(lively: Lively, room: &Room) -> Option<String> {
     let cpu = room.pressure.cpu;
     if cpu > f64::from(lively.cpu) {
         return Some(format!(
-            "it is kept lively, at processor pressure {} at most, and is at {cpu:.0}",
-            lively.cpu
+            "it is kept lively, at processor pressure {} at most, and is at {:.0}",
+            lively.cpu,
+            // Rounded up, so a pressure just past the ceiling never
+            // reads as the ceiling.
+            cpu.ceil()
         ));
     }
     lively
@@ -1464,6 +1479,12 @@ fn judge(
         .map(|taint| costs(machine, taint, weights))
         .sum();
     let saturated = rather_not.iter().any(|taint| is_saturated(&taint));
+    let kept = match machine.declared.as_ref().and_then(|said| said.kept_lively) {
+        Some(_) if work.tolerating(KEPT_LIVELY) => Kept::Not,
+        Some(_) if rather_not.iter().any(|taint| taint.key == KEPT_LIVELY) => Kept::Past,
+        Some(_) => Kept::Within,
+        None => Kept::Not,
+    };
     Judged {
         name: machine.name.clone(),
         hard,
@@ -1477,7 +1498,7 @@ fn judge(
         over,
         unheard: !lately,
         saturated,
-        lively: machine.declared.as_ref().and_then(|said| said.kept_lively),
+        kept,
     }
 }
 
@@ -2437,19 +2458,29 @@ pub(crate) mod tests {
                 "and its record says which was kept lively, within its ceiling"
             );
         }
+        let decision = judged_now(
+            &needing(Vec::new()),
+            &[kestrel.clone(), over(osprey.clone(), &[Limit::Memory])],
+        );
         assert_eq!(
-            placed(&place(
-                &needing(Vec::new()),
-                &[kestrel.clone(), over(osprey.clone(), &[Limit::Memory])]
-            )),
+            placed(&decision.placement),
             Some("osprey"),
             "so does one over a limit of its queue's"
         );
+        assert!(
+            placed_past_room(&decision),
+            "and is past its room, so the person's start goes to the cloud before it"
+        );
         let saturated = pressed(osprey.clone(), 90.0);
+        let decision = judged_now(&needing(Vec::new()), &[kestrel.clone(), saturated]);
         assert_eq!(
-            placed(&place(&needing(Vec::new()), &[kestrel.clone(), saturated])),
+            placed(&decision.placement),
             Some("kestrel"),
             "but one kept lively within its ceiling goes before one saturated"
+        );
+        assert!(
+            placed_past_room(&decision),
+            "and counts as past room, so the person's start still goes to the cloud first"
         );
         let mut unheard = osprey.clone();
         unheard.room.as_mut().expect("a room").said_at = "2026-10-29T05:50:00Z".to_owned();
@@ -2548,6 +2579,98 @@ pub(crate) mod tests {
             !placed_past_room(&decision),
             "work tolerating its ceiling counts it within its room"
         );
+    }
+
+    #[test]
+    fn a_machine_kept_lively_is_judged_by_its_ceiling_and_tolerated_as_any() {
+        let saturated = pressed(machine("osprey", "macos", 8, &[]), 90.0);
+        let chosen_of = |one: Machine, other: &Machine, work: &Work| {
+            let decision = judged_now(work, &[one, other.clone()]);
+            (
+                placed(&decision.placement).map(str::to_owned),
+                said_of(&decision),
+            )
+        };
+        let at = |cpu: f64| lively(pressed(machine("kestrel", "linux", 60, &[]), cpu), 28, None);
+        let anything = needing(Vec::new());
+        for (kestrel, why) in [
+            (at(28.0), "at its ceiling it is within it"),
+            (
+                over(at(5.0), &[Limit::Cpu]),
+                "over its queue's limit, within its ceiling",
+            ),
+        ] {
+            let (chosen, _) = chosen_of(kestrel, &saturated, &anything);
+            assert_eq!(
+                chosen.as_deref(),
+                Some("kestrel"),
+                "{why}, before one saturated"
+            );
+        }
+        let mut unheard = pressed(machine("osprey", "macos", 8, &[]), 40.0);
+        unheard.room.as_mut().expect("a room").said_at = "2026-10-29T05:50:00Z".to_owned();
+        let (chosen, _) = chosen_of(at(30.0), &unheard, &anything);
+        assert_eq!(
+            chosen.as_deref(),
+            Some("kestrel"),
+            "past its ceiling, it still goes before one unheard"
+        );
+        let keeping = |free| {
+            lively(
+                pressed(machine("kestrel", "linux", free, &[]), 5.0),
+                28,
+                Some(16 << 30),
+            )
+        };
+        let (chosen, _) = chosen_of(keeping(20), &saturated, &anything);
+        assert_eq!(
+            chosen.as_deref(),
+            Some("kestrel"),
+            "with more memory available than it keeps, it is within its ceiling"
+        );
+        let osprey = pressed(machine("osprey", "macos", 8, &[]), 40.0);
+        assert_eq!(
+            chosen_of(keeping(12), &osprey, &anything),
+            (
+                Some("osprey".to_owned()),
+                "kestrel would rather not: it is kept lively, with 16384 MiB available at \
+                 least, and has 12288"
+                    .to_owned()
+            ),
+            "with less, it is past it, and says why"
+        );
+        let mut tolerant = needing(Vec::new());
+        tolerant.tolerates.push(KEPT_LIVELY.to_owned());
+        let decision = judged_now(&tolerant, &[at(30.0), osprey]);
+        assert_eq!(
+            placed(&decision.placement),
+            Some("kestrel"),
+            "work tolerating its ceiling ranks it as any machine, roomiest first"
+        );
+        assert!(
+            decision.judged.iter().all(|one| !one.kept_lively),
+            "and records it as not kept lively"
+        );
+    }
+
+    /// How `work` is decided among `machines`, as the tests' clock says now.
+    fn judged_now(work: &Work, machines: &[Machine]) -> Decision {
+        decide_as(
+            work,
+            machines,
+            &Loads::new(),
+            &[],
+            now(),
+            &Weights::STARTING,
+        )
+    }
+
+    /// Why each machine `decision` passed was passed, as [`said`] says it.
+    fn said_of(decision: &Decision) -> String {
+        match &decision.placement {
+            Placement::Placed { passed, .. } => said(passed),
+            Placement::Pending { misses } | Placement::Refused { misses } => said(misses),
+        }
     }
 
     #[test]

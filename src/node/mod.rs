@@ -8144,7 +8144,7 @@ impl<S: Store> Shared<S> {
     }
 
     /// `asked`, which may cost, started in the cloud, as every machine of
-    /// the realm heard lately is past its room
+    /// the realm heard lately is past its room or kept lively
     /// ([`placement::placed_past_room`]), so new work goes where there is
     /// room rather than onto a machine already past it: on a cloud machine
     /// linked, heard lately within its room ([`placement::placed_with_room`])

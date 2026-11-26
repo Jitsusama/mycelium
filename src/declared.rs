@@ -100,8 +100,13 @@ pub struct Declared {
     /// works at that the realm's other machines take new work from first:
     /// it ranks after every other machine heard lately with room, and past
     /// its ceiling after every machine heard lately. None where it is
-    /// ranked as any machine is.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// ranked as any machine is, and where it isn't in the shape this
+    /// build reads.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lively_or_none"
+    )]
     pub kept_lively: Option<Lively>,
 }
 
@@ -189,6 +194,14 @@ fn fence_or_none<'de, D: serde::Deserializer<'de>>(
 ) -> Result<Option<BTreeMap<Kind, Doors>>, D::Error> {
     Ok(Option::<serde_json::Value>::deserialize(said)?
         .and_then(|fence| serde_json::from_value(fence).ok()))
+}
+
+/// A ceiling as declared, or none where it isn't in the shape this build
+/// reads, which spoils only the ceiling, never the rest of what's
+/// declared.
+fn lively_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Option<Lively>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(said)?
+        .and_then(|lively| serde_json::from_value(lively).ok()))
 }
 
 /// The longest name a basin is read by, a DNS label's.
@@ -1317,6 +1330,63 @@ mod tests {
     }
 
     #[test]
+    fn a_machine_kept_lively_reads_its_ceiling_and_a_misshapen_one_spoils_only_it() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let file = folder.path().join("declared.json");
+        let with = |lively: &str| {
+            format!(
+                r#"{{"reach": ["internet"], "outlives": [], "costs_money": false,
+                    "taints": [], "kept_lively": {lively}}}"#
+            )
+        };
+        // As core.nix writes it, with and without the memory it keeps.
+        for (said, memory_available) in [
+            (
+                r#"{"cpu": 28, "memory_available": 25769803776}"#,
+                Some(24 << 30),
+            ),
+            (r#"{"cpu": 28}"#, None),
+        ] {
+            fs::write(&file, with(said)).expect("written");
+            let declared = read(&file).expect("it reads");
+            assert_eq!(
+                declared.kept_lively,
+                Some(Lively {
+                    cpu: 28,
+                    memory_available
+                }),
+                "{said} reads as declared"
+            );
+            assert_eq!(
+                serde_json::to_value(&declared).expect("it says itself")["kept_lively"],
+                serde_json::from_str::<serde_json::Value>(said).expect("json"),
+                "and is said again as it was"
+            );
+        }
+        for misshapen in [
+            "28",
+            r#"{"cpu": 28.5}"#,
+            r#"{"cpu": 0.28}"#,
+            r#"{"cpu": "28"}"#,
+            r#"{"cpu": -1}"#,
+            r#"{"cpu": 28, "memory_available": "16G"}"#,
+            r#"{"memory_available": 1024}"#,
+        ] {
+            fs::write(&file, with(misshapen)).expect("written");
+            let spoiled = read(&file).expect("a misshapen ceiling spoils only itself");
+            assert_eq!(
+                spoiled.kept_lively, None,
+                "{misshapen} keeps it lively to nothing"
+            );
+            assert_eq!(
+                spoiled.reach,
+                ["internet"],
+                "{misshapen} leaves the rest of the declaration standing"
+            );
+        }
+    }
+
+    #[test]
     fn a_cell_names_the_basin_it_is_one_of() {
         let folder = tempfile::tempdir().expect("a temporary folder");
         let file = folder.path().join("declared.json");
@@ -1400,6 +1470,7 @@ mod tests {
         .expect("written");
         let lasting = read(&file).expect("it reads");
         assert_eq!(lasting.basin, None, "a machine of no basin names none");
+        assert_eq!(lasting.kept_lively, None, "nor is it kept lively");
         assert!(
             serde_json::to_value(&lasting)
                 .expect("it says itself")
