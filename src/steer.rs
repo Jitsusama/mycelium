@@ -278,31 +278,42 @@ pub fn wake_for(session: &Session, boot: Option<&str>, held: &Path) -> Option<Pa
 /// still runs, so that a file written there wakes a session.
 #[must_use]
 pub fn read_by_a_holder(wake: &Path, held: &Path) -> bool {
-    let Some(folder) = wake.parent() else {
-        return false;
-    };
+    its_holder(wake, held).is_some()
+}
+
+/// Where `wake` is a holder's wake file beside `held` whose holder still
+/// runs, whether its own record says its program is parked, so that a
+/// file written there starts the program again at once, both read from
+/// one look at its holders' records; none where it isn't.
+#[must_use]
+pub fn its_holder(wake: &Path, held: &Path) -> Option<bool> {
+    let (folder, id) = holder_of(wake, held)?;
+    its_holder_among(id, &hold::held(folder))
+}
+
+/// Where `wake` is a holder's wake file beside `held`, the holders'
+/// folder it sits in and the id of the holder that reads it; none where
+/// it is no holder's.
+#[must_use]
+pub fn holder_of<'a>(wake: &'a Path, held: &Path) -> Option<(&'a Path, &'a str)> {
+    let folder = wake.parent()?;
     let a_holders = wake.extension().is_some_and(|it| it == "wake")
         && folder.extension().is_some_and(|it| it == "held")
         && folder.parent() == held.parent();
-    let id = wake.file_stem().and_then(|it| it.to_str());
-    a_holders && id.is_some_and(|id| hold::held(folder).iter().any(|one| one.id == id))
+    if !a_holders {
+        return None;
+    }
+    Some((folder, wake.file_stem()?.to_str()?))
 }
 
-/// Whether `wake` is a holder's wake file beside `held` whose holder
-/// runs with its program parked, as its own record says, so that a file
-/// written there starts the program again at once.
+/// Among `holders`, read once from their folder, whether the one named
+/// `id` still runs, and if so whether its own record says its program is
+/// parked; none where no record names it.
 #[must_use]
-pub fn parked_by_its_holder(wake: &Path, held: &Path) -> bool {
-    let Some(folder) = wake.parent() else {
-        return false;
-    };
-    let id = wake.file_stem().and_then(|it| it.to_str());
-    read_by_a_holder(wake, held)
-        && id.is_some_and(|id| {
-            hold::held(folder)
-                .iter()
-                .any(|one| one.id == id && one.parked)
-        })
+pub fn its_holder_among(id: &str, holders: &[hold::Held]) -> Option<bool> {
+    let mut its = holders.iter().filter(|one| one.id == id).peekable();
+    its.peek()?;
+    Some(its.any(|one| one.parked))
 }
 
 /// Wakes the session whose wake file is `file`, for the steer left for
@@ -887,6 +898,30 @@ mod tests {
             None,
             "nor once its holder has gone, so no wake is left where none reads it"
         );
+    }
+
+    #[test]
+    fn a_running_holder_says_from_one_look_whether_it_is_parked() {
+        let (dir, answers) = a_live_hold();
+        let held = &dir.path().join("personal.held");
+        let work = dir.path().join("work.held");
+        let its = |file: &str| its_holder(&work.join(file), held);
+        assert_eq!(
+            its("5e551011.wake"),
+            Some(true),
+            "parked, as its record says"
+        );
+        assert_eq!(its("0dd0beef.wake"), None, "no holder serves it");
+        assert_eq!(its("5e551011.json"), None, "a record, not a wake file");
+        let running = json!({
+            "id": "5e551011", "command": ["pi"], "folder": "/",
+            "holder": std::process::id(), "pid": 0, "parked": false,
+            "since": "2026-11-17T18:00:00Z",
+        });
+        fs::write(work.join("5e551011.json"), running.to_string()).expect("written");
+        assert_eq!(its("5e551011.wake"), Some(false), "running its program");
+        assert!(read_by_a_holder(&work.join("5e551011.wake"), held));
+        drop(answers);
     }
 
     #[test]

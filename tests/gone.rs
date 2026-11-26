@@ -16,7 +16,8 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use mycelium::hold::holder::GONE_AGAIN;
-use mycelium::hold::{Said, socket};
+use mycelium::hold::{Said, socket, watch};
+use mycelium::record;
 
 /// How long anything here has to happen before the test gives up.
 const PATIENCE: Duration = Duration::from_secs(20);
@@ -114,9 +115,42 @@ struct Window {
 }
 
 impl Window {
-    /// Joins the holder `window1` held in `held`.
+    /// Joins the holder `window1` held in `held`, once it serves this
+    /// window. A connect alone returns before then, and under load the
+    /// holder could show its program's first words before the window was
+    /// joined to them, leaving it only the redraw that follows. The holder
+    /// lists a window that says which it is only once that window is
+    /// joined to what its program shows, so this waits for the listing.
     fn joins(held: &Path) -> Self {
-        let stream = UnixStream::connect(socket(held, "window1")).expect("a window joins");
+        let (_watching, mut changed) = watch(held).expect("the held folder is watched");
+        let mut stream = UnixStream::connect(socket(held, "window1")).expect("a window joins");
+        let window = record::Window {
+            terminal: "kitty".into(),
+            id: "1".into(),
+            within: None,
+            app_id: None,
+        };
+        stream
+            .write_all(&Said::Window(window).encode())
+            .expect("the window says which it is");
+        let waiting = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("the window has a clock to wait by");
+        // This very window on this holder, so another listed never stands
+        // in for it.
+        while !mycelium::hold::held(held)
+            .iter()
+            .any(|one| one.id == "window1" && one.windows.iter().any(|window| window.id == "1"))
+        {
+            // Its timer is made within the clock's runtime, which it needs.
+            let told =
+                waiting.block_on(async { tokio::time::timeout(PATIENCE, changed.recv()).await });
+            assert!(
+                matches!(told, Ok(Some(()))),
+                "the holder never listed the window as joined"
+            );
+        }
         Self {
             stream,
             unseen: String::new(),

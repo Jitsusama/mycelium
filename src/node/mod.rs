@@ -173,8 +173,8 @@ fn held_already(asked: &str, machine: &str) -> String {
     format!("{shown} is held on {machine} already{NOT_REOPENED}")
 }
 
-/// How `machine` refuses a start of `asked`, a session carried there or
-/// waiting there for its turn.
+/// How `machine` refuses a start of `asked`, a session carried away from
+/// there lately, or waiting there for its turn.
 fn coming_back_here(asked: &str, machine: &str) -> String {
     let shown = asked.escape_debug();
     format!("{shown} is coming back on {machine}, carried or waiting for its turn{NOT_REOPENED}")
@@ -223,15 +223,15 @@ const LEAVING_EVERY: Duration = Duration::from_secs(60);
 /// second.
 const FENCES_SEEN_EVERY: Duration = Duration::from_secs(2);
 
-/// The longest a session is held as being reopened by a relayed start
-/// that hasn't answered. One answered is let go at once, since its
-/// holder's record then says it is held, or it failed and may be asked
-/// again. A start here runs to its answer even once its asker hangs up,
-/// and a holder silent for ten seconds is killed, so this bounds only a
-/// start stuck before it answers: a minute past the longest an asker waits
-/// on one, a first start on a machine just made, so no second ask, as the
-/// harness's after its own two minutes, is let in beside a start still
-/// waited on.
+/// The longest a session is held as being reopened by a start running
+/// here, relayed or asked of this node, that hasn't answered. One
+/// answered is let go at once, since its holder's record then says it is
+/// held, or it failed and may be asked again. A start here runs to its
+/// answer even once its asker hangs up, and a holder silent for ten
+/// seconds is killed, so this bounds only a start stuck before it
+/// answers: a minute past the longest an asker waits on one, a first
+/// start on a machine just made, so no second ask, as the harness's after
+/// its own two minutes, is let in beside a start still waited on.
 const REOPENING_HELD: Duration = Duration::from_secs(MADE_ANSWERED_WITHIN.as_secs() + 60);
 const _: () = assert!(
     REOPENING_HELD.as_secs() > MADE_ANSWERED_WITHIN.as_secs()
@@ -2842,6 +2842,47 @@ struct Seen<'a> {
     held: &'a [hold::Held],
     /// The sessions carried away lately or waiting for their turn.
     coming_back: &'a HashSet<String>,
+    /// The park markers this boot wrote, as [`Shared::marked`] reads them.
+    marked: &'a [Marked],
+}
+
+/// A park marker this boot wrote, with what its holder's records said of
+/// it, read once per judgement outside the node's lock
+/// ([`Shared::marked`]), so the lock is never held over the markers'
+/// folder and the holders' records, once per session judged.
+struct Marked {
+    /// The session it parks.
+    session: String,
+    /// The file that wakes it.
+    wake: PathBuf,
+    /// Whether a running holder reads it, and if so whether that holder's
+    /// own record says its program is parked ([`steer::holder_of`],
+    /// [`steer::its_holder_among`]).
+    holder: Option<bool>,
+}
+
+/// The reopenings a start asked of this node holds while it starts here
+/// ([`Shared::hold_while_starting`]), let go if it is dropped, as where
+/// a later hold is refused, unless they were [`kept`](Self::kept).
+struct Reopenings<'a, S: Store> {
+    node: &'a Shared<S>,
+    holds: Vec<(String, u64)>,
+}
+
+impl<S: Store> Reopenings<'_, S> {
+    /// The holds, kept past this guard for their start to let go once
+    /// it ends: a start stopped part way may leave its pi still
+    /// starting, so its holds then stand till [`REOPENING_HELD`] runs
+    /// out rather than going before it does.
+    fn kept(mut self) -> Vec<(String, u64)> {
+        std::mem::take(&mut self.holds)
+    }
+}
+
+impl<S: Store> Drop for Reopenings<'_, S> {
+    fn drop(&mut self) {
+        self.node.let_reopenings_go(&self.holds);
+    }
 }
 
 /// Whether the messages the store holds are being read apart
@@ -2895,13 +2936,14 @@ impl Drop for Reading<'_> {
     }
 }
 
-/// The sessions being reopened here by a relayed start, each held while
-/// its start runs, and at most [`REOPENING_HELD`] where that start is
-/// stuck before it answers. Each hold is told by its own number, so a
-/// start outliving its while lets go only its own hold, never a later
-/// ask's that took the session since. Each says, too, whether it is a
-/// word a start names as written, which its pi may take for the start of
-/// a longer id, or an id it opens as it is.
+/// The sessions being reopened here by a start, relayed or asked of this
+/// node and placed here, each held while its start runs here, and at
+/// most [`REOPENING_HELD`] where that start is stuck before it answers.
+/// Each hold is told by its own number, so a start outliving its while
+/// lets go only its own hold, never a later ask's that took the session
+/// since. Each says, too, whether it is a word a start names as written,
+/// which its pi may take for the start of a longer id, or an id it opens
+/// as it is.
 #[derive(Default)]
 struct Reopening {
     held: HashMap<String, (std::time::Instant, u64, bool)>,
@@ -5364,6 +5406,9 @@ impl<S: Store> Shared<S> {
             steer.body.insert("id".to_owned(), words::talk_id().into());
         }
         let address = steer.address.clone();
+        // The markers are read only where a session here neither runs nor
+        // is parked by its presence, and then once, for the wake too.
+        let marked = std::cell::OnceCell::new();
         let sessions: Vec<Session> = self
             .lock()
             .state
@@ -5376,7 +5421,9 @@ impl<S: Store> Shared<S> {
             .filter(|session| {
                 matches!(session.state, SessionState::Busy | SessionState::Idle)
                     || parked_presence(session)
-                    || (session.machine == self.machine && self.marked_wake(session).is_some())
+                    || (session.machine == self.machine
+                        && Self::marked_wake(session, marked.get_or_init(|| self.marked()))
+                            .is_some())
             })
             .map(|session| session.machine.clone())
             .collect();
@@ -5424,7 +5471,7 @@ impl<S: Store> Shared<S> {
             return steered;
         }
         self.keep_persons_carry(&steer, &sessions)?;
-        self.steer_here(&steer, &sessions)?;
+        self.steer_here(&steer, &sessions, &marked)?;
         if person {
             self.keep_word(&steer, &machine);
         }
@@ -5860,7 +5907,7 @@ impl<S: Store> Shared<S> {
         });
         if one.is_some_and(|one| one.state != SessionState::Ended) {
             Err(format!("{shown} is still live on {machine}{NOT_REOPENED}"))
-        } else if one.is_some_and(|one| self.parked_here(one)) {
+        } else if one.is_some_and(|one| self.parked_here(one, seen.marked)) {
             Err(format!(
                 "{shown} is parked on {machine}, and its holder wakes it{NOT_REOPENED}"
             ))
@@ -7080,7 +7127,11 @@ impl<S: Store> Shared<S> {
             .map_err(|error| format!("the carry couldn't be kept, so it isn't ordered: {error}"))?;
         self.said.sessions.send_modify(|said| *said += 1);
         self.tell_carries();
-        self.steer_here(&steer, std::slice::from_ref(target))
+        self.steer_here(
+            &steer,
+            std::slice::from_ref(target),
+            &std::cell::OnceCell::new(),
+        )
     }
 
     /// Carries the session a look `chosen` to ease this machine, under
@@ -7216,8 +7267,15 @@ impl<S: Store> Shared<S> {
     /// Puts `steer` in its session's inbox here, unless it only wakes,
     /// then wakes the session where it is parked this boot: a wake that
     /// can't is refused, but a steer told and not woken is read at the
-    /// session's next wake, whatever wakes it.
-    fn steer_here(&self, steer: &Steer, sessions: &[Session]) -> Result<(), String> {
+    /// session's next wake, whatever wakes it. The park markers are read
+    /// only where no holder's own record wakes it, unless `marked` holds
+    /// them already.
+    fn steer_here(
+        &self,
+        steer: &Steer,
+        sessions: &[Session],
+        marked: &std::cell::OnceCell<Vec<Marked>>,
+    ) -> Result<(), String> {
         let address = &steer.address;
         if !steer.only_wakes() {
             steer
@@ -7230,7 +7288,7 @@ impl<S: Store> Shared<S> {
             .filter(|session| session.machine == self.machine)
             .find_map(|session| {
                 steer::wake_for(session, boot.as_deref(), &self.held)
-                    .or_else(|| self.marked_wake(session))
+                    .or_else(|| Self::marked_wake(session, marked.get_or_init(|| self.marked())))
             });
         match (waking, steer.only_wakes()) {
             (Some(file), true) => steer::wake(&file, address)
@@ -7556,7 +7614,9 @@ impl<S: Store> Shared<S> {
         };
         // After the join, so an ask again under its name is answered the
         // first's start rather than refused for it; and kept, as every
-        // refusal is.
+        // refusal is. A start asked here holds the sessions it names only
+        // while it starts here ([`Self::start_on`]), never as it waits
+        // for room or a machine.
         let admitted = match left_to_its_holder(parked, turning) {
             Some(why) => Err(self.starts.refuse(kept, why)),
             None => self.admitted(kept, waits).await,
@@ -7731,17 +7791,25 @@ impl<S: Store> Shared<S> {
             .filter(|session| !starts::begins_another(session, &all))
             .map(|session| (session.id.clone(), session.machine.clone(), ran_in(session)))
             .filter(|(_, _, folder)| asked.folder.is_none() || asked.folder == *folder);
+        let turning = brought
+            .filter(|session| by != By::Person && inner.turns.holds(&session.id))
+            .map(|session| session.id.clone());
+        drop(inner);
+        // The markers are read after the sessions, so a marker is never
+        // older than the state it is judged with, outside the lock, and
+        // only where a park could refuse the start: an agent's, of a
+        // session that ran on this machine.
+        let parked = brought
+            .filter(|session| by != By::Person && session.machine == self.machine)
+            .filter(|session| self.parked_here(session, &self.marked()))
+            .map(|session| session.id.clone());
         Judged {
             started_by,
             reopened,
             reopens: brought.map(|session| session.id.clone()),
             on: brought.map(|session| session.machine.clone()),
-            parked: brought
-                .filter(|session| by != By::Person && self.parked_here(session))
-                .map(|session| session.id.clone()),
-            turning: brought
-                .filter(|session| by != By::Person && inner.turns.holds(&session.id))
-                .map(|session| session.id.clone()),
+            parked,
+            turning,
         }
     }
 
@@ -7823,12 +7891,37 @@ impl<S: Store> Shared<S> {
     /// has gone, has nothing to wake it and comes back by a start, as a
     /// restarted machine's wave does. A start bringing back one already
     /// coming back is refused by [`starts::Starts::admit`]. A park marker
-    /// of this boot counts too, as [`Self::marked_wake`] reads it, the
-    /// same marker a steer wakes through.
-    fn parked_here(&self, session: &Session) -> bool {
+    /// of this boot counts too, as [`Self::marked_wake`] finds it in
+    /// `marked`, the same marker a steer wakes through.
+    fn parked_here(&self, session: &Session, marked: &[Marked]) -> bool {
         session.machine == self.machine
             && (steer::wake_for(session, self.boot.id.as_deref(), &self.held).is_some()
-                || self.marked_wake(session).is_some())
+                || Self::marked_wake(session, marked).is_some())
+    }
+
+    /// The park markers this boot wrote, each with what its holder's
+    /// records say of it, read once for a judgement before the node's
+    /// lock is taken. The boot is the one read when the node started, so
+    /// no `sysctl` runs for it, and each holders' folder is read once
+    /// however many markers name a holder in it.
+    fn marked(&self) -> Vec<Marked> {
+        let mut folders: HashMap<PathBuf, Vec<hold::Held>> = HashMap::new();
+        crate::wake::parked(&self.parked, self.boot.began)
+            .into_iter()
+            .map(|parked| {
+                let holder = steer::holder_of(&parked.wake, &self.held).and_then(|(folder, id)| {
+                    let holders = folders
+                        .entry(folder.to_path_buf())
+                        .or_insert_with(|| hold::held(folder));
+                    steer::its_holder_among(id, holders)
+                });
+                Marked {
+                    holder,
+                    session: parked.session,
+                    wake: parked.wake,
+                }
+            })
+            .collect()
     }
 
     /// The wake file of a park marker this boot wrote for `session`,
@@ -7840,21 +7933,19 @@ impl<S: Store> Shared<S> {
     /// waking one there would open a second pi on it.
     /// A marker outlasting its park, its holder running a program again,
     /// counts for nothing, so a session it named is reopened as any
-    /// ended one. The boot is the one read when the node started, so no
-    /// `sysctl` runs while the node's lock is held.
-    fn marked_wake(&self, session: &Session) -> Option<PathBuf> {
-        crate::wake::parked(&self.parked, self.boot.began)
-            .into_iter()
+    /// ended one. Judged from `marked`, as [`Self::marked`] read them.
+    fn marked_wake(session: &Session, marked: &[Marked]) -> Option<PathBuf> {
+        marked
+            .iter()
             .find(|marked| {
                 marked.session == session.id
                     && if parked_presence(session) {
-                        steer::read_by_a_holder(&marked.wake, &self.held)
+                        marked.holder.is_some()
                     } else {
-                        session.state == SessionState::Ended
-                            && steer::parked_by_its_holder(&marked.wake, &self.held)
+                        session.state == SessionState::Ended && marked.holder == Some(true)
                     }
             })
-            .map(|marked| marked.wake)
+            .map(|marked| marked.wake.clone())
     }
 
     /// The session `asked` brings back uncounted, `reopened` as the node
@@ -8169,25 +8260,31 @@ impl<S: Store> Shared<S> {
         } else {
             self.hold_begun(begins, sessions, away.clone())?
         };
-        let held = hold::held(&self.held);
-        let judged = {
+        // The sessions are read first, then the holders' records and the
+        // park markers outside the lock, so neither is older than the
+        // state it is judged with: a holder that parks between the two
+        // reads is seen parked.
+        let (known, coming_back) = {
             let inner = self.lock();
             let known = inner.state.sessions();
-            let coming_back = ended::coming_back(away, inner.turns.waiting());
-            let seen = Seen {
-                held: &held,
-                coming_back: &coming_back,
-            };
-            sessions.iter().try_for_each(|session| {
-                if ended_here {
-                    self.reopened_here(session, &known, &seen)
-                } else if begins.contains(session) {
-                    self.unclaimed_here(session, &known, &seen)
-                } else {
-                    self.unclaimed_as_named(session, session, &known, &seen)
-                }
-            })
+            (known, ended::coming_back(away, inner.turns.waiting()))
         };
+        let held = hold::held(&self.held);
+        let marked = self.marked();
+        let seen = Seen {
+            held: &held,
+            coming_back: &coming_back,
+            marked: &marked,
+        };
+        let judged = sessions.iter().try_for_each(|session| {
+            if ended_here {
+                self.reopened_here(session, &known, &seen)
+            } else if begins.contains(session) {
+                self.unclaimed_here(session, &known, &seen)
+            } else {
+                self.unclaimed_as_named(session, session, &known, &seen)
+            }
+        });
         match judged {
             Ok(()) => Ok(begun),
             Err(why) => {
@@ -8215,9 +8312,12 @@ impl<S: Store> Shared<S> {
             let inner = self.lock();
             let known = inner.state.sessions();
             let coming_back = ended::coming_back(away, inner.turns.waiting());
+            // What begins a word is found whether or not it is parked, so
+            // no marker is read.
             let seen = Seen {
                 held: &held,
                 coming_back: &coming_back,
+                marked: &[],
             };
             let now = std::time::Instant::now();
             let mut begun = Vec::new();
@@ -8384,9 +8484,9 @@ impl<S: Store> Shared<S> {
             held_screen(fence),
             &admits,
         ) {
+            // [`Self::relayed`] holds what it names already.
             Placement::Placed { machine, .. } if machine == self.machine => {
-                self.start_on(machine, asked, (fence, START_ANSWERED_WITHIN))
-                    .await
+                self.start_here(machine, asked, fence).await
             }
             Placement::Placed { machine, .. } => Err(format!("{RELAYED_ELSEWHERE}{machine}")),
             Placement::Pending { misses } | Placement::Refused { misses } => Err(format!(
@@ -9136,6 +9236,47 @@ impl<S: Store> Shared<S> {
             asked.work.fence = declaring_at_least(asked.work.fence, fence);
             return self.asked_there(&machine, asked, false, within).await;
         }
+        // Held only while it starts here, never as it waited for room or
+        // a machine, so a start relayed here meanwhile starts no second
+        // pi on it (followup 423). Let go once its start answers, as
+        // `relayed` lets go, so one stopped part way holds on.
+        let held = self.hold_while_starting(&asked.command)?.kept();
+        let started = self.start_here(machine, asked, fence).await;
+        self.let_reopenings_go(&held);
+        started
+    }
+
+    /// Holds each session `command` names, as
+    /// [`hold::turn::sessions_named`] finds them, each word it names
+    /// them by, and each longer id a word begins ([`Self::hold_begun`]),
+    /// as a start relayed here holds them ([`Self::relayed`]), or refuses
+    /// where another start holds one already.
+    fn hold_while_starting(&self, command: &[String]) -> Result<Reopenings<'_, S>, String> {
+        let sessions = hold::turn::sessions_named(command);
+        let words = hold::turn::words_named(command);
+        let mut held = Reopenings {
+            node: self,
+            holds: self.hold_reopenings(&sessions, None, &words)?,
+        };
+        if !words.is_empty() {
+            // Where the carries can't be read, the ids a word begins are
+            // found among the sessions and the turns alone.
+            let away = self.carried_away().unwrap_or_default();
+            held.holds.extend(self.hold_begun(&words, &sessions, away)?);
+        }
+        Ok(held)
+    }
+
+    /// Starts `asked` on this machine, by its own starter, in `fence`
+    /// alone, so the person's and an agent's shown unfenced start as they
+    /// always have, and an agent's in a fence starts in it however pi
+    /// fences here.
+    async fn start_here(
+        &self,
+        machine: String,
+        asked: Start,
+        fence: Option<crate::declared::Kind>,
+    ) -> Reply {
         // Its launcher first, so a fence whose launcher is refused starts
         // nothing, whatever else this node lacks. The holder runs each
         // start within it, the first and every one after a park.
@@ -21284,6 +21425,7 @@ esac
             ("s-ended", "ENDED1", false),
             ("s-live", "LIVE01", true),
             ("s-held", "HELD01", false),
+            ("a_b", "AB0001", true),
         ] {
             let presence = json!({"session": session, "addresses": [address],
                                   "at": "2026-11-19T06:00:00Z"});
@@ -21341,6 +21483,17 @@ esac
             (
                 &["pi", "--session-id", "s-pa"],
                 "s-pa is held on skiff already, so it isn't reopened",
+            ),
+            // A start naming a live session by its log's path is held to
+            // each id the path may end in, so an id holding an underscore
+            // is refused as itself, not as its last part (followup 404).
+            (
+                &[
+                    "pi",
+                    "--session",
+                    "/h/.pi/agent/sessions/--h-src--/2026-11-19_a_b.jsonl",
+                ],
+                "a_b is still live on skiff, so it isn't reopened",
             ),
         ] {
             assert_eq!(
@@ -21460,25 +21613,40 @@ esac
 
     // Round council-20261125T155712513-000001: a start is held before
     // anything is read (followup 52), so one asked while another's start
-    // runs waits on it rather than judging what stood before it.
+    // runs is refused as that start's, and once that start lets go, is
+    // judged by what it left: its holder's record. That the hold comes
+    // before the read, which only a race inside `relayed` could show, is
+    // kept by their order there (followup 409).
     #[tokio::test]
-    async fn a_start_is_held_before_what_stands_is_read() {
+    async fn a_start_is_refused_while_another_holds_it_and_once_let_go_is_judged_by_the_holders() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let skiff = easing_skiff(&socket, &[]).await;
         let other = skiff
-            .hold_reopenings(&["s-harbour".to_owned()], None, &[])
+            .hold_reopenings(&["s-fresh".to_owned()], None, &[])
             .expect("another start holds it");
-        let Request::Relayed { start, .. } = reopening(&["pi", "--session", "s-harbour"], false)
-        else {
+        let words = ["pi", "--session", "s-fresh", "--thinking", "high"];
+        let Request::Relayed { start, .. } = reopening(&words, false) else {
             panic!("a relayed start");
         };
         assert_eq!(
-            skiff.relayed("tern", start).await.err(),
-            Some("s-harbour is being reopened on skiff already".to_owned()),
+            skiff.relayed("tern", start.clone()).await.err(),
+            Some("s-fresh is being reopened on skiff already".to_owned()),
             "held first, it waits on the start in flight, not on what stood before it"
         );
+        let holders = held_of(&socket);
+        fs::create_dir_all(&holders).expect("the holders' folder is made");
+        let holding = json!({"id": "h-fresh", "command": ["pi", "--session", "s-fresh"],
+                             "folder": "/", "holder": std::process::id(), "pid": 0,
+                             "parked": false, "since": "2026-11-19T06:00:00Z", "windows": []});
+        fs::write(holders.join("h-fresh.json"), holding.to_string()).expect("its record");
+        fs::write(hold::socket(&holders, "h-fresh"), b"").expect("its socket stands");
         skiff.let_reopenings_go(&other);
+        assert_eq!(
+            skiff.relayed("tern", start).await.err(),
+            Some("s-fresh is held on skiff already, so it isn't reopened".to_owned()),
+            "once it lets go, the holder it started holds the session"
+        );
     }
 
     // Rounds council-20261125T153223845-000003 and
@@ -21559,13 +21727,21 @@ esac
             let back = crate::carry::arriving("QEST-20261112-HARBOR", "tern", "skiff", &done, by);
             let words: Vec<&str> = back.command.iter().map(String::as_str).collect();
             let carried = ask(socket.clone(), reopening(&words, carries)).await;
-            // Every refusal judging a session says it isn't, or nothing
-            // is, reopened, or that it is being reopened.
+            // No refusal judging a session, of the carries' own words,
+            // the book's or the node's, stands in its way (followup 426).
+            let judged = [
+                NOT_REOPENED,
+                BEING_REOPENED,
+                " ended on ",
+                "coming back",
+                "carries can't be read",
+                "is parked",
+            ];
             assert!(
                 carried
                     .as_ref()
                     .err()
-                    .is_none_or(|why| !why.contains("reopened")),
+                    .is_none_or(|why| !judged.iter().any(|said| why.contains(said))),
                 "its carry back is no way back to refuse: {carried:?}"
             );
         }
@@ -21837,6 +22013,60 @@ esac
             "a session live in a pi of its own wakes no holder parked beside it"
         );
         assert!(!held.join("e0r3.wake").exists(), "nor opens a second pi");
+    }
+
+    // Our council's round 3 on the marks: an agent's start of a session
+    // that ended here, whose park only a marker of this boot and its
+    // holder's record tell, is left to that holder, as a reopening is,
+    // though judging reads the markers apart from the lock.
+    #[tokio::test]
+    async fn an_agents_start_of_a_session_a_marker_parks_is_left_to_its_holder() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        let held = held_of(&socket);
+        fs::create_dir_all(parks_of(&socket)).expect("the parks' folder is made");
+        let marker = json!({"session": "s-closed", "addresses": ["CLOSED"],
+                            "wake": held.join("e0r4.wake")});
+        fs::write(parks_of(&socket).join("s-closed.json"), marker.to_string()).expect("a marker");
+        let now = jiff::Timestamp::now().to_string();
+        store.start_here(
+            "s-closed",
+            json!({"session": "s-closed", "addresses": ["CLOSED"], "at": now}),
+            false,
+        );
+        let (holder, program) = holds_for_real(&held, "e0r4");
+        let _let_go = LetGo(vec![holder, program]);
+        asks_below(&socket, 7001);
+        let start = || {
+            Request::Start(Start {
+                work: work(vec![Need::Machine("skiff".to_owned())]),
+                folder: None,
+                command: ["pi", "--session", "s-closed"].map(str::to_owned).to_vec(),
+                may_cost: false,
+                carries: false,
+                once: None,
+                strict: false,
+            })
+        };
+        assert_eq!(
+            ask(socket.clone(), start()).await,
+            Err("skiff's node starts no sessions".to_owned()),
+            "a marker whose holder runs its program again holds nothing back"
+        );
+        let record = held.join("e0r4.json");
+        let mut parked: Value =
+            serde_json::from_slice(&fs::read(&record).expect("its record")).expect("a record");
+        parked["parked"] = json!(true);
+        fs::write(&record, parked.to_string()).expect("its program parks");
+        let refused = ask(socket.clone(), start()).await;
+        assert!(
+            matches!(&refused, Err(why) if why.contains(STEER_IT)),
+            "a park its holder keeps leaves the session to it: {refused:?}"
+        );
     }
 
     /// Reads asked for while one runs are one more read once it ends,
@@ -25856,6 +26086,142 @@ esac
             panic!("the name is still held for tern");
         };
         assert_eq!(machine, "tern");
+    }
+
+    // Followup 423: a start asked of this node holds each session it names
+    // while it starts here, as one relayed here does, so a relayed start
+    // of it meanwhile is refused; the hold goes once it answers.
+    #[tokio::test]
+    async fn a_start_asked_here_holds_its_sessions_while_it_starts_here() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        let (began_at, release) = (dir.path().join("began"), dir.path().join("release"));
+        // A holder that answers only once the test has looked.
+        crate::stand_in::program(
+            &dir.path().join("holder"),
+            &format!(
+                "#!/bin/sh\n: > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\necho held\n",
+                began_at.display(),
+                release.display()
+            ),
+        );
+        let asked = Start {
+            work: work(vec![Need::Machine("skiff".to_owned())]),
+            folder: Some(dir.path().to_owned()),
+            strict: false,
+            command: ["pi", "--session", "s-gone"].map(str::to_owned).to_vec(),
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let starting = link.start_on("skiff".to_owned(), asked, (None, START_ANSWERED_WITHIN));
+        let meanwhile = async {
+            let looked = tokio::time::timeout(PATIENCE, async {
+                while !began_at.exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await;
+            let relayed = link.hold_reopenings(&["s-gone".to_owned()], None, &[]);
+            fs::write(&release, "").expect("the holder is let answer");
+            (looked, relayed)
+        };
+        let (started, (looked, relayed)) = tokio::join!(starting, meanwhile);
+        looked.expect("the holder began");
+        assert_eq!(
+            relayed,
+            Err("s-gone is being reopened on skiff already".to_owned()),
+            "a relayed start waits on the one starting here"
+        );
+        started.expect("it starts here");
+        let after = link
+            .hold_reopenings(&["s-gone".to_owned()], None, &[])
+            .expect("its hold went once it answered");
+        link.let_reopenings_go(&after);
+    }
+
+    // Our council's round 4 on the marks: a start asked here and stopped
+    // part way keeps its holds, since its pi may still be starting.
+    #[tokio::test]
+    async fn a_start_asked_here_stopped_part_way_keeps_its_holds() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        let (began_at, release) = (dir.path().join("began"), dir.path().join("release"));
+        // A holder that answers once let, or once its folder is gone.
+        crate::stand_in::program(
+            &dir.path().join("holder"),
+            &format!(
+                "#!/bin/sh\n: > '{0}'\nwhile [ ! -e '{1}' ] && [ -e '{0}' ]; do sleep 0.01; done\n\
+                 echo held\n",
+                began_at.display(),
+                release.display()
+            ),
+        );
+        let asked = Start {
+            work: work(vec![Need::Machine("skiff".to_owned())]),
+            folder: Some(dir.path().to_owned()),
+            strict: false,
+            command: ["pi", "--session", "s-gone"].map(str::to_owned).to_vec(),
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let starting = link.start_on("skiff".to_owned(), asked, (None, START_ANSWERED_WITHIN));
+        let stopped = tokio::time::timeout(PATIENCE, async {
+            tokio::select! {
+                _ = starting => false,
+                () = async {
+                    while !began_at.exists() {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                } => true,
+            }
+        })
+        .await
+        .expect("the holder began");
+        assert!(stopped, "the start was stopped as its holder began");
+        assert_eq!(
+            link.hold_reopenings(&["s-gone".to_owned()], None, &[])
+                .err(),
+            Some("s-gone is being reopened on skiff already".to_owned()),
+            "a stopped start keeps its hold while its pi may still start"
+        );
+        fs::write(&release, "").expect("the holder is let answer");
+    }
+
+    // Our council's round 1 on the marks: a start asked here naming a
+    // word holds each longer id it begins that a relayed start holds, as
+    // a relayed one does, so pi opening the longer id is refused.
+    #[tokio::test]
+    async fn a_start_asked_here_is_refused_where_a_relay_holds_an_id_its_word_begins() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        let relayed = link
+            .hold_reopenings(&["s-gone-2".to_owned()], None, &[])
+            .expect("a relayed start holds the longer id");
+        let command = ["pi", "--session", "s-gone"].map(str::to_owned);
+        assert_eq!(
+            link.hold_while_starting(&command).err(),
+            Some("s-gone is being reopened on skiff already".to_owned())
+        );
+        link.let_reopenings_go(&relayed);
+        let held = link
+            .hold_while_starting(&command)
+            .expect("once the relay lets go, the start holds its word");
+        assert_eq!(
+            link.hold_reopenings(&["s-gone".to_owned()], None, &[])
+                .err(),
+            Some("s-gone is being reopened on skiff already".to_owned()),
+            "a relayed start of its word waits on it"
+        );
+        drop(held);
+        let after = link
+            .hold_reopenings(&["s-gone".to_owned()], None, &["s-gone".to_owned()])
+            .expect("the guard, dropped unkept, gave its holds back");
+        link.let_reopenings_go(&after);
     }
 
     // Our council's round 13 on the reopen rule (2026-11-20): a name a
