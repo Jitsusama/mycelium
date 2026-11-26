@@ -127,11 +127,7 @@ fn hubs_of(at: &[usize], hubbing: &mut [usize]) -> Vec<usize> {
         .take(wanted)
         .collect();
     if hubs.len() < wanted {
-        let mut busy: Vec<usize> = at
-            .iter()
-            .copied()
-            .filter(|one| hubbing[*one] > 0)
-            .collect();
+        let mut busy: Vec<usize> = at.iter().copied().filter(|one| hubbing[*one] > 0).collect();
         // Stable, so the least heard of those hubbing alike comes first.
         busy.sort_by_key(|one| hubbing[*one]);
         hubs.extend(busy.into_iter().take(wanted - hubs.len()));
