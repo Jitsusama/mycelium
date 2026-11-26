@@ -2551,7 +2551,8 @@ by them, wherever its folder is, and is never placed again here. With
 no `on` or `needs`, a sprout whose folder is in a repository's own checkout
 where the person keeps them, `~/src/<repo>` or
 `~/src/<host>/<owner>/<repo>`, or in the trunk's tree of a bare
-repository kept under home, either fetching from its origin, names no
+repository kept under home outside `~/src`, either fetching from its
+origin, names no
 machine, so placement chooses, as for any start, and new work goes
 where there is room. Every other names this one, since no other machine has its
 folder as it is here: one in another tree cut from a repository kept
@@ -2578,9 +2579,10 @@ within its room, takes it, counted there. No machine is made for it,
 since one made holds none of the person's checkouts and making one
 outlasts the asker's wait; one made by naming `cloud` serves those
 after it. Where none is chosen, or the one chosen began nothing (no
-link took the ask, it lacks the folder, or its node doesn't take it
-now), it goes where placement chose, as before; any other answer,
-a lost one among them, stands.
+link took the ask, or it refused it first: lacking its folder, not
+taking it now, its strict fence keeping it from home, or, where no
+person works, pacing or stopping agents), it goes where placement
+chose, as before; any other answer, a lost one among them, stands.
 Beside its first words the
 session is given `QUEST_WORKFLOW_SPROUT`, the same work as data, a
 JSON object such as

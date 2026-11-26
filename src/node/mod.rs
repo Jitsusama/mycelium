@@ -698,22 +698,44 @@ fn sprouted(
     }
 }
 
+/// `asked`, the person's start past room, as it is asked of the cloud:
+/// needing it, and strict where it names a folder, so a machine lacking
+/// that refuses it rather than beginning it at home; and the work as
+/// judged there, lasting at least [`PAST_ROOM_LASTS_LEAST`], so
+/// open-ended work isn't begun on a machine about to leave.
+fn asked_of_the_cloud(asked: &Start) -> (Start, Work) {
+    let mut cloud = asked.clone();
+    cloud.work.needs.push(Need::Cloud);
+    cloud.strict |= cloud.folder.is_some();
+    let mut judged = cloud.work.clone();
+    judged.lasts = Some(judged.lasts.map_or(PAST_ROOM_LASTS_LEAST, |lasts| {
+        lasts.max(PAST_ROOM_LASTS_LEAST)
+    }));
+    (cloud, judged)
+}
+
 /// Whether `answered`, `machine`'s answer to a start past room naming
 /// `folder`, says nothing began there, so it may go where placement chose
-/// with nothing begun twice: no link took the ask, the machine hasn't the
-/// folder ([`start::lacks_folder`]), or its node doesn't take the start
-/// now, alone or as the last words of a relay's refusal. Any other
-/// answer, a lost one among them, stands.
+/// with nothing begun twice: no link took the ask, or the machine refused
+/// it before beginning it, alone or as the last words of a relay's
+/// refusal: it hasn't the folder ([`start::lacks_folder`]), its node
+/// doesn't take it now or would place it elsewhere, its strict fence
+/// won't begin it at home, or, taken as an agent's where no person works,
+/// agents are paced or stopped there. Any other answer, a lost one among
+/// them, stands.
 fn began_nowhere(answered: &Result<Reply, Unsent>, machine: &str, folder: Option<&Path>) -> bool {
     let refused = |why: &str| {
         let declined = [
             format!("{machine} doesn't take it now: "),
-            "a start relayed here starts here or nowhere".to_owned(),
+            "a start relayed here starts here or nowhere, and it would go to ".to_owned(),
+            format!("{machine} would begin this start at home, which its strict fence won't"),
         ];
+        let paced = [starts::PACED_FOR_AN_AGENT, starts::STOPPED_FOR_AN_AGENT];
         folder.is_some_and(|folder| start::lacks_folder(why, machine, folder))
             || declined
                 .iter()
                 .any(|said| why.starts_with(said) || why.contains(&format!(": {said}")))
+            || paced.iter().any(|said| why.ends_with(said))
     };
     match answered {
         Err(Unsent { sent, .. }) => !sent,
@@ -7913,12 +7935,11 @@ impl<S: Store> Shared<S> {
     /// linked, heard lately within its room ([`placement::placed_with_room`])
     /// and not leaving within [`PAST_ROOM_LASTS_LEAST`], counted there as
     /// any start is. None where no such machine is linked, or where the one
-    /// chosen began nothing there ([`began_nowhere`]): no link reached it,
-    /// it hasn't the folder the start names, or it doesn't take the start
-    /// now, so it goes to the machine placement chose, as before; else its
-    /// answer, so a start whose answer was lost is never asked again. One
-    /// naming a folder is asked strictly, so a machine lacking it refuses
-    /// it rather than beginning it at home.
+    /// chosen began nothing there ([`began_nowhere`]), this machine's own
+    /// answer judged the same: no link reached it, or it refused the start
+    /// before beginning it, so it goes to the machine placement chose, as
+    /// before; else its answer, so a start whose answer was lost is never
+    /// asked again. It is asked as [`asked_of_the_cloud`] says.
     ///
     /// No machine is made for it: one made has none of the person's
     /// checkouts, and making one outlasts the asker's wait, so a machine
@@ -7928,15 +7949,7 @@ impl<S: Store> Shared<S> {
         asked: &Start,
         (at, fence, screen, admits): (i64, Option<crate::declared::Kind>, Screen, &Admits),
     ) -> Option<Reply> {
-        let mut cloud = asked.clone();
-        cloud.work.needs.push(Need::Cloud);
-        cloud.strict |= cloud.folder.is_some();
-        // Judged as lasting a while, so open-ended work isn't begun on a
-        // machine about to leave; sent as asked.
-        let mut judged = cloud.work.clone();
-        judged.lasts = Some(judged.lasts.map_or(PAST_ROOM_LASTS_LEAST, |lasts| {
-            lasts.max(PAST_ROOM_LASTS_LEAST)
-        }));
+        let (mut cloud, judged) = asked_of_the_cloud(asked);
         let (decision, weighed) = self.decided(&judged, Counts::Always, fence, screen, admits);
         let Placement::Placed { machine, .. } = &decision.placement else {
             return None;
@@ -7948,17 +7961,17 @@ impl<S: Store> Shared<S> {
         eprintln!("a start past every machine's room goes to {machine}, in the cloud");
         let within = relayed_within(at, jiff::Timestamp::now().as_millisecond());
         let fenced = starts_in(fence, screen);
-        if *machine == self.machine {
-            return Some(
-                self.start_on(machine.clone(), cloud, (fenced, within))
-                    .await,
-            );
-        }
-        // Asked of the link itself, so an ask that never left here is
-        // told from one whose answer was lost.
-        cloud.work.fence = declaring_at_least(cloud.work.fence, fenced);
         let there = cloud.once.clone();
-        let answered = self.asks.ask_within(machine, cloud, within).await;
+        let answered = if *machine == self.machine {
+            Ok(self
+                .start_on(machine.clone(), cloud, (fenced, within))
+                .await)
+        } else {
+            // Asked of the link itself, so an ask that never left here is
+            // told from one whose answer was lost.
+            cloud.work.fence = declaring_at_least(cloud.work.fence, fenced);
+            self.asks.ask_within(machine, cloud, within).await
+        };
         if began_nowhere(&answered, machine, asked.folder.as_deref()) {
             self.lock().starts.unplaced(machine, weighed);
             let why = match &answered {
@@ -24176,7 +24189,8 @@ esac
             let asked = skiff.placed((start, at), None, Screen::Ground, false).await;
             let case = format!("over {over}, wren {wren:?}, may cost {may_cost}");
             // No link reaches wren, which begins nothing there, so tern is
-            // asked as before, and isn't linked either.
+            // asked as before, and isn't linked either. What follows a
+            // linked cloud's own answer goes unpinned here.
             assert_eq!(
                 asked,
                 Err("no link reaches tern now".to_owned()),
@@ -24220,6 +24234,35 @@ esac
         };
         room.over = over.then(|| vec![room::Limit::Cpu]);
         one
+    }
+
+    #[test]
+    fn the_cloud_is_asked_strictly_for_a_folder_and_judged_for_an_hour() {
+        let mut asked = Start {
+            work: work(Vec::new()),
+            folder: None,
+            strict: false,
+            command: vec!["pi".to_owned()],
+            may_cost: true,
+            carries: false,
+            once: None,
+        };
+        let (cloud, judged) = asked_of_the_cloud(&asked);
+        assert_eq!(cloud.work.needs, [Need::Cloud], "needing the cloud");
+        assert!(!cloud.strict, "naming no folder, as asked");
+        assert_eq!(judged.lasts, Some(PAST_ROOM_LASTS_LEAST), "an hour");
+        asked.folder = Some(PathBuf::from("/home/kestrel/src/rows"));
+        asked.work.lasts = Some(jiff::SignedDuration::from_mins(10));
+        let (cloud, judged) = asked_of_the_cloud(&asked);
+        assert!(cloud.strict, "naming a folder, strictly");
+        assert_eq!(
+            cloud.work.lasts, asked.work.lasts,
+            "sent lasting as it said"
+        );
+        assert_eq!(judged.lasts, Some(PAST_ROOM_LASTS_LEAST), "judged an hour");
+        asked.work.lasts = Some(jiff::SignedDuration::from_hours(3));
+        let (_, judged) = asked_of_the_cloud(&asked);
+        assert_eq!(judged.lasts, asked.work.lasts, "or longer, as it said");
     }
 
     /// How many placements the log kept in `kept` placed on `name`.
@@ -24311,6 +24354,54 @@ esac
                 began_nowhere(&answered, "wren", folder),
                 falls_back,
                 "{case}"
+            );
+        }
+    }
+
+    // As a cloud machine no person works at says them, taking the
+    // person's relay as an agent's.
+    #[test]
+    fn a_cloud_machine_no_person_works_at_falls_back_where_it_refused_first() {
+        let unattended = |why: &str| -> Result<Reply, Unsent> {
+            Ok(Err(format!(
+                "no person works on wren, so it takes a relayed start as an agent's, and \
+                 refused it: {why}"
+            )))
+        };
+        let paced = format!("agents started 8 sessions. {}", starts::PACED_FOR_AN_AGENT);
+        let stopped = format!("agents were stopped; {}", starts::STOPPED_FOR_AN_AGENT);
+        let as_said_unattended = [
+            ("wren doesn't take it now: it's saturated", true, "declined"),
+            (
+                "tern doesn't take it now: it's saturated",
+                false,
+                "another declined",
+            ),
+            (
+                "a start relayed here starts here or nowhere, and it would go to x",
+                true,
+                "placed elsewhere",
+            ),
+            (
+                "a start relayed here starts here or nowhere, and it was asked of x under \
+                 that name, which hasn't answered",
+                false,
+                "asked of another, which may have begun it",
+            ),
+            (
+                "wren would begin this start at home, which its strict fence won't let it \
+                 write, so the start must name the folder of the work it's for",
+                true,
+                "not at home",
+            ),
+            (paced.as_str(), true, "agents paced"),
+            (stopped.as_str(), true, "agents stopped"),
+        ];
+        for (why, falls_back, case) in as_said_unattended {
+            assert_eq!(
+                began_nowhere(&unattended(why), "wren", None),
+                falls_back,
+                "unattended, {case}"
             );
         }
     }
