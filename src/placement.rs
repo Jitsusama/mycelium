@@ -1056,17 +1056,22 @@ const fn tier(one: &Judged) -> u8 {
 }
 
 /// Where `one` ranks, first first: by its [`tier`], but a machine kept
-/// lively within its ceiling, over a limit of its queue's or not, after
-/// every other heard machine with room or over and before those
-/// saturated, and past its ceiling or saturated after every other heard
-/// machine, so other machines take what they can before it. Unheard, it
-/// ranks with the unheard, since an unheard room shows no room for work.
+/// lively within its ceiling and its queue's limits after every other
+/// heard machine with room and before those over, whatever limit they
+/// are over: one within its ceiling is light by the ceiling's own
+/// measure, which keeps it short of every limit it holds to, while one
+/// over has already passed one of its own; within its ceiling but over a limit of its
+/// queue's, after those over too and before those saturated; and past
+/// its ceiling or saturated after every other heard machine, so other
+/// machines take what they can before it. Unheard, it ranks with the
+/// unheard, since an unheard room shows no room for work.
 const fn rank(one: &Judged) -> u8 {
     let tier = tier(one);
     match one.kept {
         Kept::Not => tier * 2,
         _ if tier == 3 => 6,
-        Kept::Within if tier < 2 => 3,
+        Kept::Within if tier == 0 => 1,
+        Kept::Within if tier == 1 => 3,
         _ => 5,
     }
 }
@@ -2509,12 +2514,34 @@ pub(crate) mod tests {
         );
         assert_eq!(
             placed(&decision.placement),
-            Some("osprey"),
-            "so does one over a limit of its queue's"
+            Some("kestrel"),
+            "but one kept lively within its ceiling goes before one over a limit, swamped"
+        );
+        let small = lively(pressed(machine("wren", "linux", 2, &[]), 27.0), 28, None);
+        let decision = judged_now(
+            &needing(Vec::new()),
+            &[small, over(osprey.clone(), &[Limit::Cpu])],
+        );
+        assert_eq!(
+            placed(&decision.placement),
+            Some("wren"),
+            "by its rank, not its room, and before one over only its queue's processor limit"
         );
         assert!(
             placed_past_room(&decision),
-            "and is past its room, so the person's start goes to the cloud before it"
+            "and counts as past room, so the person's start goes to the cloud before it"
+        );
+        let decision = judged_now(
+            &needing(Vec::new()),
+            &[
+                over(kestrel.clone(), &[Limit::Memory]),
+                over(osprey.clone(), &[Limit::Memory]),
+            ],
+        );
+        assert_eq!(
+            placed(&decision.placement),
+            Some("osprey"),
+            "both over a limit, the one not kept lively goes first"
         );
         let saturated = pressed(osprey.clone(), 90.0);
         let decision = judged_now(&needing(Vec::new()), &[kestrel.clone(), saturated]);
