@@ -22,9 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 use unicode_normalization::UnicodeNormalization;
 use unicode_security::mixed_script::AugmentedScriptSet;
-use unicode_security::{
-    GeneralSecurityProfile, RestrictionLevel, RestrictionLevelDetection, skeleton,
-};
+use unicode_security::{RestrictionLevel, RestrictionLevelDetection, skeleton};
 
 use super::{address, title, unmarked};
 use crate::forage::BRAILLE_BLANK;
@@ -134,13 +132,10 @@ fn typable(name: &str) -> bool {
         } else if joiner(now) {
             on_a_letter
         } else if now.is_alphanumeric() {
-            now.identifier_allowed()
-                && (!long_dash(now)
-                    || (before.is_some_and(cjk)
-                        && each.get(at + 1).is_none_or(|after| cjk(*after))))
+            !long_dash(now)
+                || (before.is_some_and(cjk) && each.get(at + 1).is_none_or(|after| cjk(*after)))
         } else {
-            now.identifier_allowed()
-                && on_what_is_before(now)
+            on_what_is_before(now)
                 && on_a_letter
                 && marks < MOST_MARKS
                 && !before.is_some_and(|before| before.is_ascii())
@@ -152,6 +147,9 @@ fn typable(name: &str) -> bool {
         };
         kept
     });
+    // Unicode's restriction level refuses any character its profile
+    // doesn't allow, so it judges both, past the joiners, which the
+    // profile allows only in context, and which are judged above.
     let unjoined: String = each.iter().filter(|now| !joiner(**now)).collect();
     kept && matches!(
         unjoined.as_str().detect_restriction_level(),
