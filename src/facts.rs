@@ -1395,7 +1395,12 @@ mod tests {
             procs: procs.clone(),
             ..Sources::nowhere()
         };
-        let room = measure("skiff", &sources).room.expect("its queue says its room");
+        let roomed = || {
+            measure("skiff", &sources)
+                .room
+                .expect("its queue says its room")
+        };
+        let room = roomed();
         assert!(
             (room.pressure.cpu - 44.0).abs() < f64::EPSILON,
             "ten seconds, as its queue says"
@@ -1406,9 +1411,9 @@ mod tests {
             "and the last minute, as its own kernel says"
         );
         std::fs::remove_file(procs.join("pressure").join("cpu")).expect("removed");
-        let room = measure("skiff", &sources).room.expect("its queue says its room");
         assert_eq!(
-            room.cpu_minute, None,
+            roomed().cpu_minute,
+            None,
             "a kernel saying no pressure, as a Mac's, says no minute"
         );
     }
