@@ -7618,14 +7618,15 @@ impl<S: Store> Shared<S> {
     /// has gone, has nothing to wake it and comes back by a start, as a
     /// restarted machine's wave does. A start bringing back one already
     /// coming back is refused by [`starts::Starts::admit`]. A park marker
-    /// of this boot whose wake file a running holder reads counts too,
-    /// whatever the presence says, since a message waking parked
-    /// sessions writes the marker's own wake file
-    /// ([`crate::wake::wake_for`]).
+    /// of this boot whose wake file a running holder reads counts too
+    /// where the presence says parked, as [`Self::steer_here`] wakes
+    /// through one, since a message waking parked sessions writes the
+    /// marker's own wake file ([`crate::wake::wake_for`]); a marker
+    /// outlasting its park counts for nothing.
     fn parked_here(&self, session: &Session) -> bool {
         session.machine == self.machine
             && (steer::wake_for(session, self.boot.id.as_deref(), &self.held).is_some()
-                || self.marked_wake(&session.id).is_some())
+                || (parked_presence(session) && self.marked_wake(&session.id).is_some()))
     }
 
     /// The wake file of a park marker this boot wrote for `session`,
@@ -7937,7 +7938,8 @@ impl<S: Store> Shared<S> {
         ended_here: bool,
     ) -> Result<Vec<(String, u64)>, String> {
         // Where the carries can't be read, which session is away can't be
-        // told, so none is reopened. Why is said on this node's stderr,
+        // told, so no start naming one is taken, a reopening or another
+        // (round council-20261126T004831741-000002). Why is said on this node's stderr,
         // since it names this machine's files and errors, which are
         // nothing to the asker (followup 109).
         let away = self.carried_away().map_err(|why| {
@@ -7945,7 +7947,7 @@ impl<S: Store> Shared<S> {
                 eprintln!("{why}");
             }
             format!(
-                "nothing is reopened on {}, as its carries can't be read",
+                "no start naming a session is taken on {}, as its carries can't be read",
                 self.machine
             )
         })?;
@@ -21239,8 +21241,9 @@ esac
     }
 
     // Followup 109: carries that can't be read refuse every reopening,
-    // saying so without this machine's path or error, which are nothing
-    // to the asker, and the refusal holds the session no longer either.
+    // and every other start naming a session, saying so without this
+    // machine's path or error, which are nothing to the asker, and the
+    // refusal holds the session no longer either.
     #[tokio::test]
     async fn unreadable_carries_refuse_a_reopening_without_naming_them() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -21258,10 +21261,20 @@ esac
         asks_below(&socket, 7001);
         let carries = socket.with_file_name("carries.jsonl");
         fs::create_dir(&carries).expect("a folder where the carries are read");
+        let unread = "no start naming a session is taken on skiff, as its carries can't be read";
         assert_eq!(
             ask(socket.clone(), relayed("s-ended")).await,
-            Err("nothing is reopened on skiff, as its carries can't be read".to_owned()),
+            Err(unread.to_owned()),
             "which session is away can't be told"
+        );
+        let fresh = reopening(
+            &["pi", "--session-id", "s-new", "--thinking", "high"],
+            false,
+        );
+        assert_eq!(
+            ask(socket.clone(), fresh).await,
+            Err(unread.to_owned()),
+            "nor whether a start naming one opens a session away"
         );
         fs::remove_dir(&carries).expect("the folder goes");
         assert_eq!(
@@ -21379,6 +21392,52 @@ esac
                 "a park nothing can wake is reopened"
             );
         }
+    }
+
+    // A session ended unparked, though a marker of this boot naming a
+    // running holder outlasted its park: a steer wakes nothing through
+    // it, so neither does it hold a reopening back (round
+    // council-20261126T004831741-000002).
+    #[tokio::test]
+    async fn a_marker_outlasting_its_park_holds_no_reopening_back() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        let held = held_of(&socket);
+        fs::create_dir_all(parks_of(&socket)).expect("the parks' folder is made");
+        let marker = json!({"session": "s-closed", "addresses": ["CLOSED"],
+                            "wake": held.join("e0r3.wake")});
+        fs::write(parks_of(&socket).join("s-closed.json"), marker.to_string()).expect("a marker");
+        let now = jiff::Timestamp::now().to_string();
+        store.start_here(
+            "s-closed",
+            json!({"session": "s-closed", "addresses": ["CLOSED"], "at": now}),
+            false,
+        );
+        let (holder, program) = holds_for_real(&held, "e0r3");
+        let _let_go = LetGo(vec![holder, program]);
+        asks_below(&socket, 7001);
+        assert_eq!(
+            ask(
+                socket.clone(),
+                reopening(&["pi", "--session", "s-closed"], false)
+            )
+            .await,
+            Err("skiff's node starts no sessions".to_owned()),
+            "a marker its session's presence doesn't back holds nothing back"
+        );
+        let mut client = Speaking::greeted(&socket).await;
+        let rouse = json!({"id": 1, "ask": "steer", "address": "CLOSED",
+                           "steer": {"act": "wake", "from": "WCJQSG"}});
+        client.ask(rouse).await;
+        assert_eq!(
+            client.next().await["error"]["message"],
+            json!("CLOSED isn't parked with a holder to wake it this boot"),
+            "as a steer wakes nothing through it"
+        );
     }
 
     /// Reads asked for while one runs are one more read once it ends,
