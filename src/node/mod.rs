@@ -5255,46 +5255,8 @@ impl<S: Store> Shared<S> {
         let folder = self.held.clone();
         if hold::held(&folder).iter().any(|one| one.id == held) {
             if let (hold::end::Asker::Session(address), Some(asking)) = (&asker, &asking) {
-                let target = sessions
-                    .iter()
-                    .find(|session| {
-                        session.machine == self.machine && session.held.as_deref() == Some(held)
-                    })
-                    .ok_or_else(|| {
-                        format!(
-                            "no session here runs in {held}, so {address} isn't proved to \
-                             orchestrate it: only the person ends it"
-                        )
-                    })?;
-                let session = target
-                    .presence
-                    .get("session")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or(&target.id);
-                let asking_known = ordered::Known {
-                    session: asking,
-                    address,
-                };
-                let carried = ordered::Known {
-                    session,
-                    address: &target.address,
-                };
-                let mut open = self.records_of("quest");
-                open.retain(ordered::open);
-                let proved = if ordered::holds(session, &open) {
-                    self.ordered_by(asking_known, carried, &sessions)
-                        .await
-                        .map(|_| ())
-                } else {
-                    self.orchestrated_ended(asking_known, carried, &open, &sessions)
-                        .await
-                };
-                proved.map_err(|why| {
-                    format!(
-                        "{address} isn't proved to orchestrate the session held as {held}, \
-                             so it can't end it: {why}"
-                    )
-                })?;
+                self.orchestrates_held(held, address, asking, &sessions)
+                    .await?;
             }
             let id = held.to_owned();
             let ending =
@@ -5309,6 +5271,64 @@ impl<S: Store> Shared<S> {
                 ending,
             });
         }
+        self.end_away(held, asker, &sessions).await
+    }
+
+    /// Proves `address`, asking from its session `asking`, orchestrates the
+    /// session held here as `held`, by its ordered carry or the quests it
+    /// ended, so an agent ends only a hold it orchestrates.
+    async fn orchestrates_held(
+        &self,
+        held: &str,
+        address: &str,
+        asking: &str,
+        sessions: &[Session],
+    ) -> Result<(), String> {
+        let target = sessions
+            .iter()
+            .find(|session| {
+                session.machine == self.machine && session.held.as_deref() == Some(held)
+            })
+            .ok_or_else(|| {
+                format!(
+                    "no session here runs in {held}, so {address} isn't proved to \
+                             orchestrate it: only the person ends it"
+                )
+            })?;
+        let session = target
+            .presence
+            .get("session")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(&target.id);
+        let asking_known = ordered::Known {
+            session: asking,
+            address,
+        };
+        let carried = ordered::Known {
+            session,
+            address: &target.address,
+        };
+        let mut open = self.records_of("quest");
+        open.retain(ordered::open);
+        let proved = if ordered::holds(session, &open) {
+            self.ordered_by(asking_known, carried, sessions)
+                .await
+                .map(|_| ())
+        } else {
+            self.orchestrated_ended(asking_known, carried, &open, sessions)
+                .await
+        };
+        proved.map_err(|why| {
+            format!(
+                "{address} isn't proved to orchestrate the session held as {held}, \
+                             so it can't end it: {why}"
+            )
+        })
+    }
+
+    /// Ends `held`, held on no machine here, where a presence shows it or
+    /// else where this node's book says it started it.
+    async fn end_away(&self, held: &str, asker: hold::end::Asker, sessions: &[Session]) -> Reply {
         let mut machines: Vec<&str> = sessions
             .iter()
             .filter(|session| {
@@ -5318,15 +5338,39 @@ impl<S: Store> Shared<S> {
             .collect();
         machines.sort_unstable();
         machines.dedup();
+        // A hold no session runs in, as one whose pi quit, is shown by no
+        // presence, so its end goes where this node's book says it
+        // started it, which judges it there.
+        let started = self.starts.landed_on(held);
+        let mut by_book = false;
+        if machines.is_empty()
+            && let Some(machine) = started.as_deref().filter(|on| *on != self.machine)
+        {
+            machines.push(machine);
+            by_book = true;
+        }
         match machines.as_slice() {
             [] => Err(format!(
                 "nothing is held as {held} here, nor on any machine in reach"
             )),
+            // The book keeps every start it made, ended or not, so what
+            // the machine answers is said as about where it started it,
+            // which may hold it no longer.
+            [machine] if by_book && matches!(asker, hold::end::Asker::Person) => {
+                self.asks.end(machine, held, asker).await.map_err(|why| {
+                    format!("{held} was started on {machine}, by this node's book: {why}")
+                })
+            }
             [machine] => match asker {
                 hold::end::Asker::Person => self.asks.end(machine, held, asker).await,
                 hold::end::Asker::Session(address) => Err(format!(
-                    "{held} is held on {machine}, and {address}'s end is proved only where \
-                     both run: only the person ends it from here"
+                    "{held} {} {machine}, and {address}'s end is proved only where both \
+                     run: only the person ends it from here",
+                    if by_book {
+                        "was started, by this node's book, on"
+                    } else {
+                        "is held on"
+                    }
                 )),
             },
             many => Err(format!(
@@ -17290,6 +17334,26 @@ esac
         assert!(
             given.lines().any(|word| word == started.held),
             "under the id its node answered: {given}"
+        );
+        // No session runs in it, so no presence shows it held there, and
+        // the person's end is sent where skiff started it, which judges
+        // it: this link's key proved nothing, so kestrel refuses it.
+        asks_as_person(&near_socket);
+        let ended = ask(
+            near_socket.clone(),
+            Request::End {
+                held: started.held.clone(),
+            },
+        )
+        .await;
+        let routed = format!(
+            "{} was started on kestrel, by this node's book: kestrel ends a held session \
+             only when",
+            started.held
+        );
+        assert!(
+            ended.as_ref().is_err_and(|why| why.starts_with(&routed)),
+            "a hold started on kestrel is sent there, under its id, to judge: {ended:?}"
         );
 
         for (stop, node) in [near, far] {

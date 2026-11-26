@@ -4197,7 +4197,15 @@ that quest's record, and the mesh must put the ended quest's sessions
 and the asker in that orchestrator's group. Only that orchestrator
 ends them so, never one above it. Anyone else is refused, saying
 why. An id held here is ended here; one held on more than one other
-machine is refused. A holder that no longer answers on its socket has
+machine is refused. Another machine's hold is known by the presence
+of the session running in it, or, where none does, by the node's
+book of starts, which keeps the machine each start it holds landed
+on, up to 2048 of them, on disk, so a node started again knows. The
+book forgets nothing a hold ending does, so an end it routes says so,
+and what that machine answers may be that it holds the id no longer.
+A machine sent an end is waited on for the hold's ten seconds and
+the thirty a steer is answered in; one silent past that may still
+end it. A holder that no longer answers on its socket has
 its stale record taken away, and nothing it names is signalled. The
 program's process group is told to end (`TERM`) and has ten seconds,
 then its holder is told; what still runs is killed, and the answer's
