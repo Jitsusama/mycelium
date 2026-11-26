@@ -525,12 +525,20 @@ mod tests {
                     .and_then(|line| line.find(word).map(|at| cells(&line[..at])))
             };
             assert!(
-                drawn.lines().all(|line| cells(line) <= width)
-                    && at("kestrel", "  ready") == Some(cells(&name))
-                    && at(&name, "  ready") == Some(cells(&name))
-                    && at("machine", "  state") == Some(cells(&name)),
-                "a wide name moved its columns or passed {width}:\n{drawn}"
+                drawn.lines().all(|line| cells(line) <= width),
+                "a line passed {width}:\n{drawn}"
             );
+            for (start, word) in [
+                ("machine", "  state"),
+                ("kestrel", "  ready"),
+                (name.as_str(), "  ready"),
+            ] {
+                assert_eq!(
+                    at(start, word),
+                    Some(cells(&name)),
+                    "at {width} {start:?}'s row left the wide name's column:\n{drawn}"
+                );
+            }
         }
     }
 

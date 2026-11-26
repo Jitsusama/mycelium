@@ -668,18 +668,20 @@ fn a_cell_s_own_folder_titled_wide_is_cut_to_its_room_in_cells() {
     )];
     let mycelium = Mycelium::of("home", &[], &sessions, &[]);
     let kelped = mycelium.cell("KELP01").expect("Kelp");
-    // Measured by Unicode's widths directly, not by the code under test,
-    // as nothing here is coloured. The title is far longer than its room,
-    // so it fills to the edge, or a cell short where a character would
-    // straddle it.
-    let cells = <str as unicode_width::UnicodeWidthStr>::width;
-    for width in [60, 80] {
+    // The key and its gap take 30 cells, so the title has 30 at 60 and
+    // 50 at 80, a cell of each for its mark. Each part of it takes 13
+    // cells, so at 60 the next character would straddle the edge and
+    // goes, leaving the line a cell short.
+    let unit = "港湾の見張り ";
+    for (width, kept) in [
+        (60, format!("{}港", unit.repeat(2))),
+        (80, format!("{}港湾の見張", unit.repeat(3))),
+    ] {
         let drawn = cell(&mycelium, kelped, &Look { width, ..look() });
-        let line = drawn.lines().last().expect("its folder's line");
-        assert!(
-            line.starts_with("  quest:qest-20261112-kelped  港湾")
-                && (width - 1..=width).contains(&cells(line)),
-            "{line:?} wasn't cut to its room at {width} cells:\n{drawn}"
+        assert_eq!(
+            drawn.lines().last(),
+            Some(format!("  quest:qest-20261112-kelped  {kept}\u{2026}").as_str()),
+            "at {width} the title wasn't cut to its room:\n{drawn}"
         );
     }
 }
@@ -2065,11 +2067,25 @@ fn a_wide_team_short_keeps_what_follows_in_line() {
         line.find(word).map(|at| cells(&line[..at]))
     };
     assert!(
-        shown.lines().all(|line| cells(line) <= 80)
-            && before("  harbor ", "Harbour Ships") == Some(2 + cells("港湾見張り") + 2)
-            && before("  dinghy ", "ready") == before("  harbor ", "Harbour Ships")
-            && Some(cells(line("    港湾見張り "))) == before("     ", "  stuck"),
-        "a wide short moved what follows it:\n{shown}"
+        shown.lines().all(|line| cells(line) <= 80),
+        "a line passed 80 cells:\n{shown}"
+    );
+    // The short takes ten cells, so what follows it starts at 14 in
+    // every row the column holds, the machines' among them.
+    assert_eq!(
+        before("  harbor ", "Harbour Ships"),
+        Some(2 + cells("港湾見張り") + 2),
+        "the short's column isn't as wide as it draws:\n{shown}"
+    );
+    assert_eq!(
+        before("  dinghy ", "ready"),
+        before("  harbor ", "Harbour Ships"),
+        "a machine's row left the column:\n{shown}"
+    );
+    assert_eq!(
+        Some(cells(line("    港湾見張り "))),
+        before("     ", "  stuck"),
+        "the wide row's count left its heading:\n{shown}"
     );
 }
 

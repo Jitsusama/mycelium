@@ -3026,14 +3026,26 @@ mod tests {
             purpose
         };
         // Among many, words of mixed lengths are cut to their two lines
-        // and the mark; named, every word is drawn.
+        // and the mark, each line as many words as its cells hold; named,
+        // every word is drawn.
         let spaced = "港湾の 見張りを 続けて 潮の 満ち引きを 記録する ".repeat(6);
         let spaced = spaced.trim();
-        for width in [40, 80] {
-            let purpose = drawn(spaced, None, width);
-            assert!(
-                purpose.len() == PURPOSE_LINES && purpose[1].ends_with(" \u{2026}"),
-                "{width}: a cut wide purpose took more lines or lost its mark: {purpose:?}"
+        for (width, first, second) in [
+            (
+                40,
+                "港湾の 見張りを 続けて 潮の 満ち引きを",
+                "記録する 港湾の 見張りを 続けて 潮の",
+            ),
+            (
+                80,
+                "港湾の 見張りを 続けて 潮の 満ち引きを 記録する 港湾の 見張りを 続けて 潮の",
+                "満ち引きを 記録する 港湾の 見張りを 続けて 潮の 満ち引きを 記録する 港湾の",
+            ),
+        ] {
+            assert_eq!(
+                drawn(spaced, None, width),
+                [format!("  {first}"), format!("  {second} \u{2026}")],
+                "{width}: a cut wide purpose wasn't laid in its cells"
             );
         }
         let whole = drawn(spaced, Some("KESTRL"), 40);
