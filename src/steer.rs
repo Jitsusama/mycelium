@@ -55,6 +55,13 @@ const ACTS: [&str; 10] = [
     ordered::ACT,
 ];
 
+/// Every act a node takes in a steer: those it delivers, the wake it
+/// keeps to itself, and the carry a session asks of itself, so what says
+/// them, such as `mycelium steer`'s help, can be held to them.
+pub fn acts() -> impl Iterator<Item = &'static str> {
+    ACTS.into_iter().chain([WAKE, ordered::ITSELF])
+}
+
 /// The act that parks a session, as the harness's parking steer reads it:
 /// `{"act": "park", "at": <when>, "from": <who>}`, and nothing more.
 const PARK: &str = "park";
