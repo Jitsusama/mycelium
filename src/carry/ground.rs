@@ -84,6 +84,12 @@ impl Lent {
     /// What `machine` is, as the realm last knew it.
     #[must_use]
     pub fn of(machine: &Machine) -> Self {
+        Self::at(machine, jiff::Timestamp::now())
+    }
+
+    /// What `machine` is at `now`, as the realm last knew it.
+    #[must_use]
+    pub fn at(machine: &Machine, _now: jiff::Timestamp) -> Self {
         let declared = machine.declared.as_ref();
         if !(machine.worker || declared.is_some_and(Declared::is_worker)) {
             Self::Not
@@ -746,6 +752,7 @@ mod tests {
             worker: false,
             declared: Some(Declared {
                 costs_money: true,
+                reach: vec!["aquifer".to_owned()],
                 ..declaring(None)
             }),
             ..tern(None, Readiness::Ready)
@@ -757,12 +764,85 @@ mod tests {
                  carried there"
                     .to_owned()
             ),
-            "a machine that says it is lent is a worker, whatever its link says"
+            "a machine that reaches what only a lent one does is a worker, whatever its link \
+             says"
         );
         assert_eq!(
             worker_takes(Some(Kind::Strict), "tern", &tern(None, Readiness::Ready)),
             Ok(()),
             "one of the person's own machines is no worker"
+        );
+    }
+
+    /// One of the person's own machines in the cloud: paid for, and saying
+    /// it lasts as long as time can, as a provider's machine made to stay
+    /// does, with the same fences as `here`.
+    fn in_the_cloud(fence: BTreeMap<Kind, Doors>) -> Machine {
+        Machine {
+            worker: false,
+            declared: Some(Declared {
+                costs_money: true,
+                leaves_at: Some("9999-01-01T00:00:00Z".parse().expect("a time")),
+                ..declaring(Some(fence))
+            }),
+            ..tern(None, Readiness::Ready)
+        }
+    }
+
+    #[test]
+    fn a_machine_of_the_persons_in_the_cloud_takes_any_carry_on_ground_as_firm() {
+        let fences = BTreeMap::from([
+            (Kind::Fence, doors(&[], &[], &[])),
+            (Kind::Strict, doors(&[], &[], &[])),
+        ]);
+        let here = declaring(Some(fences.clone()));
+        let cloud = in_the_cloud(fences.clone());
+        let now: jiff::Timestamp = "2026-11-26T15:00:00Z".parse().expect("a time");
+        assert_eq!(
+            Lent::at(&cloud, now),
+            Lent::Not,
+            "paid for, but no provider lent it"
+        );
+        for kind in [None, Some(Kind::None), Some(Kind::Fence), Some(Kind::Strict)] {
+            assert_eq!(
+                firm(kind, Some(&here), "tern", Some(&cloud)),
+                Ok(()),
+                "a {kind:?} session lands there under its own fence, as on any of the \
+                 person's machines"
+            );
+        }
+        let looser = in_the_cloud(BTreeMap::from([(Kind::Fence, doors(&[], &[], &[]))]));
+        assert!(
+            firm(Some(Kind::Strict), Some(&here), "tern", Some(&looser)).is_err(),
+            "but never onto looser ground"
+        );
+        let mut gone = cloud.clone();
+        gone.state = Readiness::Unreachable;
+        assert!(
+            firm(Some(Kind::Fence), Some(&here), "tern", Some(&gone)).is_err(),
+            "nor out of reach"
+        );
+        let mut lent = cloud.clone();
+        lent.worker = true;
+        assert_eq!(
+            Lent::at(&lent, now),
+            Lent::TakesNone,
+            "one a provider's link lent this machine is a worker still"
+        );
+        let mut leaving = cloud.clone();
+        leaving.declared.as_mut().expect("declared").leaves_at =
+            Some(now + jiff::SignedDuration::from_hours(24));
+        assert_eq!(
+            Lent::at(&leaving, now),
+            Lent::TakesNone,
+            "and one that leaves within the month, since a carried session lasts"
+        );
+        let mut staying = cloud;
+        staying.declared.as_mut().expect("declared").leaves_at = None;
+        assert_eq!(
+            Lent::at(&staying, now),
+            Lent::Not,
+            "one that names no time it leaves stays"
         );
     }
 
