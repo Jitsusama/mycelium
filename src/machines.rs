@@ -2,6 +2,9 @@
 //! to, drawn for a person: a row each, cut to the terminal's width, with
 //! a line beneath for what about one is worth a look. One machine or
 //! builder by its name is a few lines of what it is.
+//!
+//! Long because its tests sit beside it, drawing the tables at each width
+//! they keep to, until they move to a file of their own.
 
 use crate::builders::Builder;
 use crate::disk::Band;
@@ -503,6 +506,38 @@ mod tests {
             .filter(|line| drawn_width(line) > 40)
             .collect();
         assert!(long.is_empty(), "lines past 40 columns: {long:?}");
+    }
+
+    #[test]
+    fn a_machine_s_wide_words_pass_no_terminal_s_edge() {
+        // A machine says its own words, which may be wide or piled with
+        // marks: each takes the cells it is drawn in, not one a letter.
+        let mut wide = osprey();
+        wide.name = "heron".to_owned();
+        wide.os = Some("港湾OS 26.6".to_owned());
+        wide.model_name = Some("港湾のノードと、その隣のノード".to_owned());
+        wide.updated = Some(json!({"step": "failed", "at": "2026-11-12T16:29:02Z",
+            "why": format!("{} 失敗した", "構築".repeat(30))}));
+        let mut piled = kestrel();
+        piled.name = "egret".to_owned();
+        piled.model_name = Some(format!("Lap{}top", "\u{301}".repeat(40)));
+        for width in [20, 40, 80] {
+            let look = look(width);
+            let drawn = [
+                table(&[wide.clone(), piled.clone()], &[skiff()], &look),
+                one(&wide, &look),
+                one(&piled, &look),
+            ]
+            .concat();
+            let long: Vec<&str> = drawn
+                .lines()
+                .filter(|line| drawn_width(line) > width)
+                .collect();
+            assert!(
+                long.is_empty(),
+                "lines past {width} columns: {long:?}\n{drawn}"
+            );
+        }
     }
 
     #[test]
