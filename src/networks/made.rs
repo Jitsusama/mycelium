@@ -325,8 +325,12 @@ pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Mycelium
 }
 
 /// The most subjects a cell is held to declare, as the harness reads
-/// them.
-pub const MOST_SUBJECTS: usize = 12;
+/// them. Twelve cut off the areas a cell's merges led behind its title's
+/// words: in a replay of 450 of the mesh's needs, 80 of them labelled
+/// with the cell that owned them, 24 found the owner for 62 where 12
+/// found it for 52, and needs about the review tools went from 16 of 32
+/// to 26.
+pub const MOST_SUBJECTS: usize = 24;
 
 /// The most characters one subject holds.
 const SUBJECT_MOST: usize = 120;

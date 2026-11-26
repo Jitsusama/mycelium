@@ -2066,7 +2066,9 @@ fn a_cell_declares_plain_subjects_alone_each_bad_one_passed_over() {
         vec!["mycelium:hubs".to_owned(), "x".repeat(120)],
         "only plain words of at most 120 characters are kept, trimmed"
     );
-    let many: Vec<String> = (0..20).map(|n| format!("subject {n}")).collect();
+    let many: Vec<String> = (0..MOST_SUBJECTS + 6)
+        .map(|n| format!("subject {n}"))
+        .collect();
     let kept = subjects(&json!(many));
     assert_eq!(kept.len(), MOST_SUBJECTS);
     assert_eq!(kept[0], "subject 0", "the first declared are kept");
