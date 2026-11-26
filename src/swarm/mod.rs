@@ -337,7 +337,8 @@ fn single_spaced(lead: &str) -> String {
 
 /// The cells `text` takes in a terminal, as Unicode's East Asian Width
 /// and emoji presentation say: two for a wide character or an emoji,
-/// none for a joiner or a combining mark, one for the rest. A colour's
+/// none for a joiner or a combining mark, one for the rest, each letter
+/// its own however a script's ligature joins it ([`clusters`]). A colour's
 /// escape, which [`Look::paint`] writes and no peer's text keeps once
 /// [`unmarked`], takes none. So it measures only text cleaned or painted
 /// here: in a peer's raw text, an escape never closed would count all
@@ -346,7 +347,7 @@ pub(crate) fn drawn_width(text: &str) -> usize {
     let mut count = 0;
     let mut rest = text;
     while let Some(at) = rest.find("\u{1b}[") {
-        count += rest[..at].width();
+        count += clusters(&rest[..at]);
         let after = &rest[at + 2..];
         // An escape ends at its first letter or other final byte, each
         // one byte long.
@@ -355,7 +356,45 @@ pub(crate) fn drawn_width(text: &str) -> usize {
             .map_or(after.len(), |end| end + 1);
         rest = &after[end..];
     }
-    count + rest.width()
+    count + clusters(rest)
+}
+
+/// The cells `text` takes, measured a cluster at a time, each starting at
+/// a character that takes a cell unless an emoji rule joins it to what's
+/// before: a skin tone, a flag's second letter, an emoji after a joiner
+/// that follows one. Unicode's width rules also narrow a few scripts'
+/// ligatures, Arabic's lam-alef, Hebrew's alef-lamed, a Khmer subscript
+/// and Tifinagh's, Lisu's, Buginese's, Old Turkic's and Kirat Rai's, to
+/// fewer cells than their letters. Terminals draw each of those letters in a
+/// cell of its own, so measured whole they'd pass the edge; each
+/// narrowing letter starts a cluster of its own here and counts.
+fn clusters(text: &str) -> usize {
+    let (mut count, mut from) = (0, 0);
+    let (mut first, mut before): (Option<char>, Option<char>) = (None, None);
+    for (at, each) in text.char_indices() {
+        if first.is_some() && starts_a_cluster(first, before, each) {
+            count += text[from..at].width();
+            from = at;
+            first = None;
+        }
+        first = first.or(Some(each));
+        before = Some(each);
+    }
+    count + text[from..].width()
+}
+
+/// Whether `each` starts a cluster of its own, after `before` in one that
+/// `first` starts: it takes a cell, and no emoji rule joins it.
+fn starts_a_cluster(first: Option<char>, before: Option<char>, each: char) -> bool {
+    let flag = |each: char| matches!(each, '\u{1F1E6}'..='\u{1F1FF}');
+    let joins = match before {
+        // A carriage return and its line feed are one.
+        Some('\r') => true,
+        // Only emoji join through a joiner; a letter's ligature doesn't.
+        Some('\u{200D}') => first.is_some_and(|first| !first.is_alphabetic()),
+        _ => matches!(each, '\u{1F3FB}'..='\u{1F3FF}') || (flag(each) && before.is_some_and(flag)),
+    };
+    !joins && !draws_nothing(each)
 }
 
 /// The longest start of `text` that takes at most `room` cells, as
@@ -375,8 +414,8 @@ pub(crate) fn within(text: &str, room: usize) -> &str {
     // costs what it walks, even into a pipe, where the room is the whole
     // text, which may be a peer's message of 256 KiB. A character narrows
     // the start it ends by at most a cell, by those rules: a text
-    // selector after an emoji, or the letter that closes a Tifinagh,
-    // Lisu or Kirat Rai ligature. So a start two cells past the room
+    // selector after an emoji, as no letter's ligature narrows once
+    // [`drawn_width`] counts each letter. So a start two cells past the room
     // never comes back within it, and the walk stops once a start passes
     // the room by more than that.
     let mut kept = 0;
@@ -400,7 +439,8 @@ pub(crate) fn within(text: &str, room: usize) -> &str {
             break;
         }
     }
-    text[..kept].trim_end_matches('\u{200D}')
+    // A Khmer coeng left at the cut has no letter to subscript.
+    text[..kept].trim_end_matches(['\u{200D}', '\u{17D2}'])
 }
 
 /// Each step a cut takes through `text`: a colour's escape whole, else

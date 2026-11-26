@@ -907,9 +907,57 @@ fn width_is_counted_in_the_cells_a_terminal_draws() {
         ("👩\u{200D}💻", 2, "an emoji joined from two takes two"),
         ("❤\u{FE0F}", 2, "a heart made an emoji takes two"),
         ("\u{1b}[1m港\u{1b}[0m", 2, "a colour's escape takes none"),
+        ("👍\u{1F3FD}", 2, "a skin tone joins its hand"),
+        ("\u{1F1E8}\u{1F1E6}", 2, "a flag's two letters take two"),
+        ("1\u{FE0F}\u{20E3}", 2, "a keycap takes two"),
+        (
+            "👩\u{200D}❤\u{FE0F}\u{200D}👨",
+            2,
+            "a couple joined through a heart takes two",
+        ),
     ] {
         assert_eq!(drawn_width(text), wide, "{what}: {text:?}");
     }
+}
+
+#[test]
+fn a_letter_a_ligature_joins_still_takes_its_own_cell() {
+    // Unicode's width rules count each of these ligatures narrower than
+    // its letters, but a terminal draws each letter in a cell of its own.
+    for (text, wide, what) in [
+        ("\u{644}\u{627}", 2, "Arabic's lam-alef"),
+        (
+            "\u{644}\u{64E}\u{627}",
+            2,
+            "lam-alef with a vowel mark between",
+        ),
+        ("\u{5D0}\u{200D}\u{5DC}", 2, "Hebrew's alef-lamed"),
+        (
+            "\u{1780}\u{17D2}\u{1780}",
+            2,
+            "a Khmer letter and its subscript",
+        ),
+        ("\u{A4F9}\u{A4FC}", 2, "Lisu's tone letters"),
+        ("\u{10C32}\u{200D}\u{10C03}", 2, "Old Turkic's ligature"),
+        ("\u{1A15}\u{1A17}\u{200D}\u{1A10}", 2, "Buginese's ligature"),
+        ("\u{2D4F}\u{200D}\u{2D3E}", 2, "Tifinagh's ligature"),
+    ] {
+        assert_eq!(drawn_width(text), wide, "{what}: {text:?}");
+    }
+    // So a cut to the room keeps no more than the room, and a pad fills it.
+    let lam_alefs = "\u{644}\u{627}".repeat(10);
+    assert_eq!(
+        drawn_width(&fit(&lam_alefs, 10)),
+        10,
+        "{:?}",
+        fit(&lam_alefs, 10)
+    );
+    assert_eq!(drawn_width(&padded("\u{644}\u{627}", 4)), 4);
+    assert_eq!(
+        within("\u{1780}\u{17D2}\u{1780}", 1),
+        "\u{1780}",
+        "a coeng left at the cut goes with its letter"
+    );
 }
 
 #[test]
