@@ -3069,6 +3069,9 @@ enum Admits {
     /// those booked for the person or for nobody told, and only where its
     /// work names them.
     Granted,
+    /// Only rooms made for agents to share, for the person's run sent to
+    /// one as an agent's ([`Shared::as_a_room_takes`]).
+    Rooms,
 }
 
 impl Admits {
@@ -3085,6 +3088,7 @@ impl Admits {
             Self::All => true,
             Self::Asker(told) if told == made::PERSON => the_persons,
             _ if room => true,
+            Self::Rooms => false,
             Self::Granted => named && the_persons,
             Self::Asker(told) => told != made::UNKNOWN && booked == Some(told.as_str()),
         }
@@ -9588,6 +9592,7 @@ impl<S: Store> Shared<S> {
             By::Agent(kind) => By::Agent(kind.max(crate::declared::Kind::Fence)),
             By::Person => By::Person,
         };
+        let (by, admits) = self.as_a_room_takes(by, &asked.work, self.admits().await);
         asked.by = Some(by);
         let fence = match by {
             By::Agent(kind) => Some(kind),
@@ -9597,7 +9602,6 @@ impl<S: Store> Shared<S> {
         // start the machine's room has yet to show. An agent's is placed
         // only on ground as firm as here, where it stands in the fence its
         // launcher sets.
-        let admits = self.admits().await;
         let machine = match self.place(&asked.work, Counts::Never, fence, Screen::Run, &admits) {
             Placement::Placed { machine, .. } => machine,
             Placement::Pending { misses } => return Err(nowhere_now(&misses)),
@@ -9655,6 +9659,33 @@ impl<S: Store> Shared<S> {
         };
         run::journal(&self.runs.journal, &started);
         Ok((machine, run::journaled(self.runs.journal.clone(), id, said)))
+    }
+
+    /// Who a run asked `by` runs as, and the machines it may be placed
+    /// on, `admits` as its asker is told: the person's run naming one
+    /// machine, a room made for agents that an agent's make booked, runs
+    /// there as an agent's, in the agent fence, and on rooms alone. So it
+    /// still reaches the room, as the person's safe word asks of every
+    /// room, though no pi session asks it; yet the person's own login,
+    /// never fenced, never runs in the worker home that agent wrote. Any
+    /// other run is held to who asks it.
+    fn as_a_room_takes(&self, by: By, work: &Work, admits: Admits) -> (By, Admits) {
+        let mut named = work.needs.iter().filter_map(|need| match need {
+            Need::Machine(name) => Some(name),
+            _ => None,
+        });
+        let (Some(room), None) = (named.next(), named.next()) else {
+            return (by, admits);
+        };
+        let rooms = self.book.agent_rooms();
+        if by == By::Person
+            && rooms.contains(room)
+            && !self.admitted_among(room, &admits, &rooms, true)
+        {
+            (By::Agent(crate::declared::Kind::Fence), Admits::Rooms)
+        } else {
+            (by, admits)
+        }
     }
 
     /// Where a machine made is kept: this node's book and store, and its
@@ -24908,6 +24939,79 @@ esac
             ),
             (None, Some("osprey")),
             "so is one made at no asker's word"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_persons_run_naming_an_agents_room_runs_there_fenced_as_an_agents() {
+        use crate::declared::Kind;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[("wren", made::PERSON), ("reef", "P9R1KI")]);
+        fs::write(dir.path().join(made::AGENT_ROOMS), "reef\nwren\n").expect("named");
+        let person = || Admits::Asker(made::PERSON.to_owned());
+        let naming = |names: &[&str]| {
+            work(
+                names
+                    .iter()
+                    .map(|name| Need::Machine((*name).to_owned()))
+                    .collect(),
+            )
+        };
+        let placed = |work: &Work, admits: &Admits| match shared.place(
+            work,
+            Counts::Never,
+            None,
+            Screen::Ground,
+            admits,
+        ) {
+            Placement::Placed { machine, .. } => Some(machine),
+            _ => None,
+        };
+        let reef = naming(&["reef"]);
+        assert_eq!(
+            shared.as_a_room_takes(By::Person, &reef, person()),
+            (By::Agent(Kind::Fence), Admits::Rooms),
+            "the person's run naming a room an agent's make booked runs there as an agent's"
+        );
+        assert_eq!(
+            (
+                placed(&reef, &person()),
+                placed(&reef, &Admits::Rooms).as_deref()
+            ),
+            (None, Some("reef")),
+            "so it reaches the room the person's own login never runs in"
+        );
+        assert_eq!(
+            placed(&naming(&["wren"]), &Admits::Rooms),
+            None,
+            "nor anywhere else but where it names: wren is booked for the person, yet it \
+             takes only the one machine named"
+        );
+        for (by, work, why) in [
+            (
+                By::Person,
+                naming(&["wren"]),
+                "a room the person's make booked",
+            ),
+            (By::Person, naming(&["reef", "wren"]), "two machines named"),
+            (By::Person, work(Vec::new()), "none named"),
+            (
+                By::Agent(Kind::Strict),
+                reef.clone(),
+                "an agent's, already fenced",
+            ),
+        ] {
+            assert_eq!(
+                shared.as_a_room_takes(by, &work, person()),
+                (by, person()),
+                "{why} is held to who asks, as before"
+            );
+        }
+        fs::write(dir.path().join(made::AGENT_ROOMS), "wren\n").expect("named");
+        assert_eq!(
+            shared.as_a_room_takes(By::Person, &reef, person()),
+            (By::Person, person()),
+            "an agent's machine that is no room stays out of the person's reach"
         );
     }
 
