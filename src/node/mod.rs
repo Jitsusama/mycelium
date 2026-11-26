@@ -5238,6 +5238,7 @@ impl<S: Store> Shared<S> {
             .filter(|session| {
                 matches!(session.state, SessionState::Busy | SessionState::Idle)
                     || parked_presence(session)
+                    || (session.machine == self.machine && self.marked_wake(session).is_some())
             })
             .map(|session| session.machine.clone())
             .collect();
@@ -7625,9 +7626,11 @@ impl<S: Store> Shared<S> {
 
     /// The wake file of a park marker this boot wrote for `session`,
     /// where a running holder reads it and the park still stands, as the
-    /// presence says or, where the presence lags or pi's end said none,
-    /// the holder's own record of its program parked: a steer wakes
+    /// presence says or, where the session ended and pi's end said no
+    /// park, the holder's own record of its program parked: a steer wakes
     /// through it, and a message writes it ([`crate::wake::wake_for`]).
+    /// A session live in a pi of its own is no holder's to wake, so
+    /// waking one there would open a second pi on it.
     /// A marker outlasting its park, its holder running a program again,
     /// counts for nothing, so a session it named is reopened as any
     /// ended one. The boot is the one read when the node started, so no
@@ -7640,7 +7643,8 @@ impl<S: Store> Shared<S> {
                     && if parked_presence(session) {
                         steer::read_by_a_holder(&marked.wake, &self.held)
                     } else {
-                        steer::parked_by_its_holder(&marked.wake, &self.held)
+                        session.state == SessionState::Ended
+                            && steer::parked_by_its_holder(&marked.wake, &self.held)
                     }
             })
             .map(|marked| marked.wake)
@@ -20991,6 +20995,16 @@ esac
                 &["pi", "--session=s-liv"],
                 "s-liv is still live on skiff, so it isn't reopened",
             ),
+            // A holder naming its session by its log's path holds the id
+            // that path ends in, and each word beginning it.
+            (
+                &["pi", "--session", "s-path"],
+                "s-path is held on skiff already, so it isn't reopened",
+            ),
+            (
+                &["pi", "--session", "s-pa"],
+                "s-pa is held on skiff already, so it isn't reopened",
+            ),
         ] {
             assert_eq!(
                 ask(socket.clone(), reopening(command, false)).await,
@@ -21401,7 +21415,8 @@ esac
     // nothing through it. Once the holder's own record says its program
     // is parked, as where pi's end said no park or the presence lags,
     // the park stands: a reopening is refused, as a message would wake
-    // the holder, and a steer wakes it, as the refusal says.
+    // the holder, and a steer wakes it, as the refusal says, but only
+    // while the session is live in no pi of its own.
     #[tokio::test]
     async fn a_marker_holds_a_reopening_back_only_while_its_park_stands() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -21441,8 +21456,8 @@ esac
         client.ask(rouse(1)).await;
         assert_eq!(
             client.next().await["error"]["message"],
-            json!("CLOSED isn't parked with a holder to wake it this boot"),
-            "as a steer wakes nothing through it"
+            json!("no session goes by CLOSED now"),
+            "as a steer finds nothing through it to wake"
         );
         let record = held.join("e0r3.json");
         let mut parked: Value =
@@ -21468,6 +21483,19 @@ esac
             held.join("e0r3.wake").exists(),
             "a steer wakes it through its marker, as the refusal says"
         );
+        fs::remove_file(held.join("e0r3.wake")).expect("its wake is read");
+        store.start_here(
+            "s-closed",
+            json!({"session": "s-closed", "addresses": ["CLOSED"], "at": now}),
+            true,
+        );
+        client.ask(rouse(3)).await;
+        assert_eq!(
+            client.next().await["error"]["message"],
+            json!("CLOSED isn't parked with a holder to wake it this boot"),
+            "a session live in a pi of its own wakes no holder parked beside it"
+        );
+        assert!(!held.join("e0r3.wake").exists(), "nor opens a second pi");
     }
 
     /// Reads asked for while one runs are one more read once it ends,
