@@ -7740,7 +7740,12 @@ impl<S: Store> Shared<S> {
         let admits = self.admits().await;
         let within = relayed_within(at, jiff::Timestamp::now().as_millisecond());
         let decision = self.decided(&asked.work, Counts::Always, fence, screen, &admits);
-        let past_room = !reopens && asked.may_cost && placement::placed_past_room(&decision);
+        // A start naming its machine is pinned there, past room or not.
+        let names = |need: &Need| matches!(need, Need::Machine(_));
+        let past_room = !reopens
+            && asked.may_cost
+            && !asked.work.needs.iter().any(names)
+            && placement::placed_past_room(&decision);
         let (misses, nowhere) = match decision.placement {
             Placement::Placed { machine, .. } if reopens && machine != self.machine => {
                 return self.asked_there(&machine, asked, true, within).await;
@@ -7749,6 +7754,8 @@ impl<S: Store> Shared<S> {
                 let ground = (at, fence, screen, &admits);
                 if past_room && let Some(cloud) = self.in_the_cloud_past_room(&asked, ground).await
                 {
+                    // Asked of the cloud instead, so it weighs here no longer.
+                    self.lock().starts.unplaced(&machine);
                     return cloud;
                 }
                 return self.started_where_placed(machine, asked, ground).await;
@@ -7870,7 +7877,7 @@ impl<S: Store> Shared<S> {
     /// ([`placement::placed_past_room`]), so new work goes where there is
     /// room rather than onto a machine already past it: on a cloud
     /// machine linked that has room, else on one made for it. None where
-    /// neither would do, or where the cloud machine hasn't the folder the
+    /// neither would do, where no machine is made, or where the cloud machine hasn't the folder the
     /// start names, before anything started there, so it goes to the
     /// machine placement chose, as before; else its answer, so a start
     /// whose answer was lost is never asked again.
@@ -7888,16 +7895,25 @@ impl<S: Store> Shared<S> {
                 let fenced = (starts_in(fence, screen), within);
                 self.start_on(machine.clone(), cloud, fenced).await
             }
-            _ => match self.offer_to_make(&cloud.work, &[], fence).await {
-                Ok(offer) => {
-                    let who = self.asker_of_a_make().await;
-                    self.start_made_of(cloud, &offer, &who, fence).await
+            _ => {
+                let made = match self.offer_to_make(&cloud.work, &[], fence).await {
+                    Ok(offer) => {
+                        let who = self.asker_of_a_make().await;
+                        self.made_of(&cloud, &offer, &who).await
+                    }
+                    Err(why) => Err(why),
+                };
+                match made {
+                    Ok(made) => self.started_on_made(cloud, made, fence).await,
+                    // Nothing started anywhere, so placement's choice
+                    // stands rather than the person's start failing.
+                    Err(why) => {
+                        let said = why.escape_debug();
+                        eprintln!("no cloud machine takes a start past every room: {said}");
+                        return None;
+                    }
                 }
-                Err(why) => {
-                    eprintln!("no cloud machine takes a start past every machine's room: {why}");
-                    return None;
-                }
-            },
+            }
         };
         match (&reply, &asked.folder) {
             (Err(why), Some(folder)) if start::lacks_folder_on_any(why, folder) => {
@@ -7996,6 +8012,18 @@ impl<S: Store> Shared<S> {
         who: &Asker,
         fence: Option<crate::declared::Kind>,
     ) -> Reply {
+        let made = self.made_of(&asked, offer, who).await?;
+        self.started_on_made(asked, made, fence).await
+    }
+
+    /// A machine made of `offer` for `asked`, its provider told `who`
+    /// asks, and booked, before anything is asked of it.
+    ///
+    /// # Errors
+    ///
+    /// Where neither the work nor the offer says how long it lives, or its
+    /// provider makes nothing, so nothing has started anywhere.
+    async fn made_of(&self, asked: &Start, offer: &Offer, who: &Asker) -> Result<Made, String> {
         let lasting = lasting(&asked.work, offer)?;
         if let Some(why) = &who.unknown_because {
             eprintln!(
@@ -8020,6 +8048,17 @@ impl<S: Store> Shared<S> {
                 made.machine
             );
         }
+        Ok(made)
+    }
+
+    /// Starts `asked` on `made` once it links, held to the fence `fence`;
+    /// a machine made that nothing starts on is let go.
+    async fn started_on_made(
+        &self,
+        asked: Start,
+        made: Made,
+        fence: Option<crate::declared::Kind>,
+    ) -> Reply {
         let unwanted = Arc::new(Notify::new());
         // The loop runs for as long as the node answers anything.
         let _ = self.to_dial.send((made.clone(), unwanted.clone()));
@@ -24029,6 +24068,65 @@ esac
             "no link reaches tern: {refused:?}"
         );
         assert_eq!(logged(), "", "nothing for a start refused");
+    }
+
+    // The person, 2026-11-25: "I need to use this to complete work by
+    // Friday." Their start where every machine heard is past its
+    // room is asked of the cloud; where no machine is made there, it goes
+    // where placement chose, as before.
+    #[tokio::test]
+    async fn the_persons_start_past_every_machines_room_is_asked_of_the_cloud() {
+        use crate::placement::tests::{machine, pressed};
+        // Only tern reaches basin, so placement chooses tern, past its
+        // room or not as each case says.
+        let tern_at = |over: bool| {
+            let mut tern = pressed(machine("tern", "linux", 60, &["basin"]), 20.0);
+            let room = tern.room.as_mut().expect("a room");
+            room.said_at = jiff::Timestamp::now().to_string();
+            room.over = over.then(|| vec![room::Limit::Cpu]);
+            tern
+        };
+        for over in [true, false] {
+            let dir = tempfile::tempdir().expect("a temporary folder");
+            let processes = Processes::Folder("/nowhere/proc".into());
+            let store = Memory::default();
+            store
+                .put_machine(&tern_at(over))
+                .expect("what it said is kept");
+            let mut skiff = holding_skiff(dir.path(), store, None, processes);
+            let (provider, made) = (dir.path().join("provider"), dir.path().join("made"));
+            crate::stand_in::program(
+                &provider,
+                &r#"#!/bin/sh
+case "$1" in
+offers) echo '{"shape": "cell", "costs": {"hourly": "1", "currency": "USD"}, "lasts": 600, "facts": {"declared": {"reach": ["basin"], "outlives": [], "costs_money": true, "taints": []}}}' ;;
+make) : > 'MADE'; exit 1 ;;
+esac
+"#
+                .replace("MADE", &made.display().to_string()),
+            );
+            skiff.providers = Arc::from(vec![provider.display().to_string()]);
+            let start = Start {
+                work: work(vec![Need::Reach("basin".to_owned())]),
+                folder: None,
+                strict: false,
+                command: vec!["pi".to_owned()],
+                may_cost: true,
+                carries: false,
+                once: None,
+            };
+            let at = jiff::Timestamp::now().as_millisecond();
+            let asked = skiff.placed((start, at), None, Screen::Ground, false).await;
+            assert_eq!(
+                made.exists(),
+                over,
+                "a machine is made for it only where tern is past its room: {asked:?}"
+            );
+            assert!(
+                asked.as_ref().is_err_and(|why| why.contains("tern")),
+                "where none is made, it is asked of tern, which placement chose: {asked:?}"
+            );
+        }
     }
 
     // A start that falls back here is placed again, pinned here, so the
