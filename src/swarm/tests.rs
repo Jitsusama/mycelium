@@ -7,8 +7,8 @@
 use serde_json::{Value, json};
 
 use super::{
-    LONGEST_RUN, Look, Swarm, WHOLE, aligned, drawn_width, fit, overview, padded, team, typed,
-    unmarked, within, wrapped,
+    LONGEST_RUN, Look, Swarm, WHOLE, aligned, drawn_width, fit, most_steps, overview, padded, team,
+    typed, unmarked, within, wrapped,
 };
 
 /// A look 72 columns wide, without colour, at 17:00 on Thursday
@@ -749,7 +749,7 @@ fn drawn_whole_a_member_s_title_heavy_with_marks_is_never_cut() {
     // A member's line cuts a pile a terminal's row can't hold, as a
     // team's row does, yet a pipe keeps all of it.
     let mut swarm = swarm();
-    let heavy = format!("Busy{}", "\u{301}".repeat(400));
+    let heavy = format!("Busy{}", "\u{301}".repeat(4000));
     swarm.sessions[2]["title"] = json!(heavy);
     let shown = |look: &Look| team(&swarm, "harb", look).expect("Harbour is a team");
     let piped = shown(&whole());
@@ -758,9 +758,10 @@ fn drawn_whole_a_member_s_title_heavy_with_marks_is_never_cut() {
         "a member's title was cut into a pipe:\n{piped}"
     );
     let drawn = shown(&look());
+    let marks = drawn.matches('\u{301}').count();
     assert!(
-        drawn.contains("Busy") && !drawn.contains(&heavy),
-        "in a terminal a member's pile was drawn whole:\n{drawn}"
+        drawn.contains("Busy") && marks <= most_steps(72),
+        "in a terminal a member's pile kept {marks} marks:\n{drawn}"
     );
 }
 
@@ -1160,6 +1161,11 @@ fn a_cut_or_pad_keeps_to_cells_and_never_splits_a_wide_character() {
             within("\u{1b}[1mabc", 2),
             "\u{1b}[1mab",
             "an escape is never left half written",
+        ),
+        (
+            within("港\u{1b}[1m湾", 2),
+            "港\u{1b}[1m",
+            "the cells before an escape count toward the room",
         ),
         (
             within("\u{1b}[38;2;255;255;255mab", 1),
@@ -1657,6 +1663,9 @@ fn on_a_line_of_one_cell_a_heart_keeps_its_selector() {
         ("\u{2764}\u{FE0F}", "\u{2764}\u{FE0F}\n"),
         ("a\u{2764}\u{FE0F}", "a\n\u{2764}\u{FE0F}\n"),
         ("\u{2764}\u{FE0F}b", "\u{2764}\u{FE0F}\nb\n"),
+        ("1\u{FE0F}\u{20E3}", "1\u{FE0F}\u{20E3}\n"),
+        // A joiner between two letters joins nothing a line can't part.
+        ("\u{E9}\u{200D}\u{E9}", "\u{E9}\n\u{E9}\n"),
     ] {
         assert_eq!(
             wrapped(word, "", "", 1),

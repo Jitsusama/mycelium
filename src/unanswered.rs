@@ -897,10 +897,15 @@ mod tests {
     #[test]
     fn a_wide_opening_is_cut_at_two_lines_by_its_cells() {
         // A question in a wide script takes two cells a letter, and its
-        // cut tail is measured the same way.
-        let asked = "港湾のビルドをマージしていいですか ".repeat(20);
-        for width in [40, 60, 80] {
-            let drawn = drawn(&records(&asked), &look(), Some(width));
+        // cut tail is measured the same way, as it is where the script
+        // puts no space between its words, and one is broken across lines.
+        let spaced = "港湾のビルドをマージしていいですか ".repeat(20);
+        let unspaced = spaced.replace(' ', "");
+        for (asked, width) in [&spaced, &unspaced]
+            .into_iter()
+            .flat_map(|asked| [40, 60, 80].map(|width| (asked, width)))
+        {
+            let drawn = drawn(&records(asked), &look(), Some(width));
             let long: Vec<&str> = drawn
                 .lines()
                 .filter(|line| crate::swarm::drawn_width(line) > width)

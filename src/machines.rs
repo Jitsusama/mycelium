@@ -520,7 +520,7 @@ mod tests {
             "why": format!("{} 失敗した", "構築".repeat(30))}));
         let mut piled = kestrel();
         piled.name = "egret".to_owned();
-        piled.model_name = Some(format!("Lap{}top", "\u{301}".repeat(40)));
+        piled.model_name = Some(format!("Lap{}top", "\u{301}".repeat(4000)));
         for width in [20, 40, 80] {
             let look = look(width);
             let drawn = [
@@ -536,6 +536,17 @@ mod tests {
             assert!(
                 long.is_empty(),
                 "lines past {width} columns: {long:?}\n{drawn}"
+            );
+            // Marks take no cell, so a pile is held by the cut's eight
+            // steps a cell of its room instead.
+            let piles: Vec<usize> = drawn
+                .lines()
+                .map(|line| line.matches('\u{301}').count())
+                .filter(|marks| *marks > 8 * (width + 1))
+                .collect();
+            assert!(
+                piles.is_empty(),
+                "lines holding a pile past their cut at {width}: {piles:?}"
             );
         }
     }

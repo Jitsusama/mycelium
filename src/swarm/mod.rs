@@ -686,8 +686,9 @@ pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> Stri
                 // Walked back to the start with no pile cut, what's at the
                 // cut is a selector or a mark the first character needs,
                 // as an emoji's selector is, so it takes a line of its own
-                // whole, as a wide character does.
-                if back == 0 && !capped {
+                // whole, as a wide character does. A joiner there joins
+                // two letters a line of one cell can't hold, so they part.
+                if back == 0 && !capped && !left[taken.len()..].starts_with('\u{200D}') {
                     let whole = within(left, 2);
                     if whole.len() > taken.len() {
                         taken = whole;

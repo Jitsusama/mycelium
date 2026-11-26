@@ -2152,7 +2152,7 @@ fn drawn_whole_the_tree_is_as_wide_as_its_widest_row_and_its_counts_line_up() {
 fn drawn_whole_a_cell_s_title_heavy_with_marks_is_never_cut() {
     // A cell's line cuts a pile a terminal's row can't hold, yet a pipe
     // keeps all of it.
-    let heavy = format!("Kelp{}", "\u{301}".repeat(400));
+    let heavy = format!("Kelp{}", "\u{301}".repeat(4000));
     let drawn = |look: &Look| {
         let [teams, mut sessions, machines] = records();
         for session in &mut sessions {
@@ -2173,9 +2173,12 @@ fn drawn_whole_a_cell_s_title_heavy_with_marks_is_never_cut() {
         "a cell's title was cut into a pipe:\n{piped}"
     );
     let shown = drawn(&look());
+    // A cut keeps at most eight steps a cell of its room, and the row is
+    // 80 cells at most.
+    let marks = shown.matches('\u{301}').count();
     assert!(
-        shown.contains("Kelp") && !shown.contains(&heavy),
-        "in a terminal a cell's pile was drawn whole:\n{shown}"
+        shown.contains("Kelp") && marks <= 8 * 81,
+        "in a terminal a cell's pile kept {marks} marks:\n{shown}"
     );
 }
 
