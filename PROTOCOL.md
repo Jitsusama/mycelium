@@ -2105,10 +2105,12 @@ passed for it. A machine whose `declared` says `kept_lively`, as
 is one the person works at that the others take new work from first:
 within its ceiling (processor pressure machine-wide at or under `cpu`,
 as its `cpu_minute` says it, or over ten seconds where its room says
-none, and as much memory available as it keeps), over a limit of its
-queue's or not, it ranks after every other
-heard machine neither saturated nor unheard, and before those
-saturated; past it, it carries `kept-lively`, `prefer_not`, ranks over,
+none, and as much memory available as it keeps) and its queue's
+limits, it ranks after every other heard machine with room and before
+those over a limit, since a machine over is swamped while one within
+its ceiling is light by the ceiling's own measure; within its ceiling
+but over a limit of its queue's, after those over too and before those
+saturated; past its ceiling, it carries `kept-lively`, `prefer_not`, ranks over,
 and goes after every other heard machine. Unheard, it ranks with the
 unheard. It refuses no work, so where nothing else takes a start it
 still does, and a start placed on it heard is past room, as the cloud's
