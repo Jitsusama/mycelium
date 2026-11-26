@@ -264,11 +264,13 @@ fn a_column_is_kept_while_it_reaches_the_edge_and_no_further() {
 
 #[test]
 fn with_no_column_fitting_no_blank_header_is_drawn() {
+    // At 45 the name and how it stands fit, 43 cells, and no column
+    // does, as the first takes 6 more.
     let long = "a-machine-named-thirty-letters";
     let shown = said(
         &reading(vec![machine(long, 0.9, 28, 1.75)], None, vec![]),
         "work",
-        40,
+        45,
         false,
     );
     let lines: Vec<&str> = shown.lines().collect();
@@ -358,8 +360,7 @@ fn in_a_narrow_terminal_a_wide_spread_s_head_wraps_within_its_edge() {
     );
 }
 
-/// Names that fit: a name is drawn whole, so one past the width
-/// passes it.
+/// Names that fit, so none is cut.
 #[test]
 fn in_a_narrow_terminal_no_line_passes_its_edge() {
     let shown = said(&two(), "work", 40, false);
@@ -518,6 +519,46 @@ fn a_wide_name_in_a_flag_s_sentence_wraps_within_the_edge() {
             "lines past {width} cells, or the sentence lost its name: {long:?}\n{shown}"
         );
     }
+}
+
+#[test]
+fn a_long_name_is_cut_in_its_row_and_broken_in_its_sentence() {
+    // A machine names itself, as long as it likes, and is named in
+    // full wherever it is drawn whole.
+    let long = format!("kestrel-{}", "x".repeat(92));
+    let flagged = reading(
+        vec![
+            machine(&long, 0.9, 28, 1.75),
+            machine("osprey", 0.4, 13, 1.08),
+        ],
+        None,
+        vec![Flag::Stale {
+            machine: long.clone(),
+        }],
+    );
+    for width in [40, 80] {
+        let shown = said(&flagged, "work", width, false);
+        let long_lines: Vec<&str> = shown
+            .lines()
+            .filter(|line| drawn_width(line) > width)
+            .collect();
+        let row = shown
+            .lines()
+            .find(|line| line.starts_with("  kestrel-"))
+            .unwrap_or_default();
+        assert!(
+            long_lines.is_empty()
+                && row.contains("…  no room")
+                && shown.lines().filter(|line| line.contains("xxxx")).count() > 2,
+            "a long name passed {width} columns, hid how it stands, or went \
+             unsaid: {long_lines:?}\n{shown}"
+        );
+    }
+    let whole = said(&flagged, "work", crate::swarm::WHOLE, false);
+    assert!(
+        whole.lines().filter(|line| line.contains(&long)).count() == 2,
+        "drawn whole, the name was cut in its row or its sentence:\n{whole}"
+    );
 }
 
 #[test]

@@ -5,7 +5,7 @@
 use std::fmt::Write as _;
 
 use super::{Flag, IMBALANCE, Load, Reading};
-use crate::swarm::{BOLD, FAINT, RESET, drawn_width, padded, unmarked};
+use crate::swarm::{BOLD, FAINT, RESET, drawn_width, fit, padded, unmarked};
 
 /// The table's columns after the machine's name and how it stands, each
 /// as wide as its header or its widest figure.
@@ -60,11 +60,14 @@ pub fn said(reading: &Reading, realm: &str, width: usize, colour: bool) -> Strin
     let mut out = crate::swarm::wrapped(&head, "", "  ", width);
     out.push('\n');
     // A machine's name is its own to say, so it is held to one line and
-    // counted as it is drawn.
+    // counted as it is drawn, and cut to leave its row room to say how it
+    // stands, as the machines' table cuts its lines; drawn whole, nothing
+    // is cut.
+    let most = width.saturating_sub(2 + 2 + STANDS).max(1);
     let rows: Vec<(&Load, String, [String; 8])> = reading
         .machines
         .iter()
-        .map(|one| (one, unmarked(&one.machine), figures(one)))
+        .map(|one| (one, fit(&unmarked(&one.machine), most), figures(one)))
         .collect();
     let named = rows
         .iter()
@@ -308,26 +311,13 @@ fn short(flag: &Flag) -> String {
 }
 
 /// `word: rest` wrapped to `width`, each later line under the first word
-/// of `rest`; `drawn` is `word` as it is drawn, which may hold escapes.
+/// of `rest`; `drawn` is `word` as it is drawn, which may hold escapes. A
+/// word wider than a line, such as a long machine's name, is broken
+/// across lines, as [`crate::swarm::wrapped`] breaks one, rather than
+/// passing the edge.
 fn wrapped(drawn: &str, word: &str, rest: &str, width: usize) -> String {
-    let indent = drawn_width(word) + 2;
-    let mut out = format!("{drawn}:");
-    let mut column = indent - 1;
-    let mut first = true;
-    for each in rest.split_whitespace() {
-        let wide = drawn_width(each);
-        if !first && column + 1 + wide > width {
-            let _ = write!(out, "\n{:indent$}{each}", "");
-            column = indent + wide;
-        } else {
-            out.push(' ');
-            out.push_str(each);
-            column += 1 + wide;
-        }
-        first = false;
-    }
-    out.push('\n');
-    out
+    let hung = " ".repeat(drawn_width(word) + 2);
+    crate::swarm::wrapped(rest, &format!("{drawn}: "), &hung, width)
 }
 
 #[cfg(test)]
