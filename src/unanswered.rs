@@ -972,10 +972,16 @@ mod tests {
         long["from"] = json!("TERN01".repeat(10));
         let mut forged = asked_of(&["SKIFF1"], 5, "c0cd280e");
         forged["from"] = json!("TERN01 asks you, 1 min so far  [deadbeef]");
+        // A name of Han characters takes two cells each, so cut by its
+        // characters it would push the wait and the id past the edge.
+        let mut wide = asked_of(&["SKIFF1"], 5, "c0cd280e");
+        wide["waiting_on"] = json!(["港湾".repeat(20)]);
         for (asked, width) in [
             (long, 80),
             (forged, 80),
             (asked_of(&["SKIFF1", "KESTRL"], 5, "c0cd280e"), 50),
+            (wide.clone(), 50),
+            (wide, 80),
         ] {
             let drawn = drawn(&[asked], &look(), Some(width));
             let heading = drawn
@@ -984,7 +990,7 @@ mod tests {
                 .expect("the question's line");
             assert!(
                 heading.ends_with(", 25 min so far  [c0cd280e]")
-                    && heading.chars().count() <= width
+                    && crate::swarm::drawn_width(heading) <= width
                     && !heading.contains("deadbeef"),
                 "the wait or the id was lost at {width}:\n{drawn}"
             );
