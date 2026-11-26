@@ -2023,8 +2023,9 @@ its `needs` and `prefers`, each one of `{"machine": name}`,
 `{"accelerator": "gpu"}`, `{"tool": name}` or `"cloud"`, the earliest
 preference most wanted (a machine is a cloud one where it declares it
 `costs_money`, as an offer does; a machine reaches a network it
-declares in `reach`, or one it probes while its probe last answered, and lacks one whose probe
-didn't; it has a tool its `kit` lists, lacks one its kit doesn't, and
+declares in `reach`, or one it probes while its probe last answered,
+and lacks one whose probe didn't; it has a tool its `kit` lists, lacks
+one its kit doesn't, and
 hasn't said one where it says no kit, nor has a machine not yet made); the
 keys of the taints it `tolerates`; whether it `may_wait` for a machine
 out of reach; how long it `lasts`, as an ISO 8601 duration such as

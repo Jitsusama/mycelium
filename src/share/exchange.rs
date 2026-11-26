@@ -512,6 +512,9 @@ pub struct Exchange {
     /// Whether the other end is a worker, which is served only the quests
     /// it was given and has nothing it says of a quest taken.
     worker: bool,
+    /// Whether the other end is sent only the scratch of the quests given
+    /// to it ([`Self::scratch_where_given`]).
+    scratch_given_only: bool,
     /// How the quests shared only for those under them stand with the
     /// other end: withheld, as from a worker, lifted but not yet taken up,
     /// or carried ([`Self::withhold_above`]).
@@ -662,6 +665,7 @@ impl Exchange {
             sweep_again: BTreeMap::new(),
             above_again: true,
             worker: false,
+            scratch_given_only: false,
             above: Above::Carried,
             held_back: BTreeMap::new(),
             whole: BTreeSet::new(),
@@ -742,6 +746,11 @@ impl Exchange {
     /// of it ([`Self::whole`]).
     fn quest(&self, id: &str, ledger: &Ledger) -> Quest {
         let quest = self.places.quest(id, ledger);
+        let quest = if self.withholds_scratch(id) {
+            quest.without_scratch()
+        } else {
+            quest
+        };
         if self.whole(id, ledger) {
             quest
         } else {
@@ -767,6 +776,27 @@ impl Exchange {
             above: Above::Withheld,
             ..self
         }
+    }
+
+    /// This end's talk with a machine made for it, which is sent and
+    /// served the scratch of only the quests given to it
+    /// ([`Places::give`]), and the records of all. A made machine is
+    /// reached over a provider's link of a few kilobytes a second, shared
+    /// with the person's own work, and on 2026-11-25 a new one asked for
+    /// every shared quest's handovers, 1.8 GB, keeping its own sessions'
+    /// asks and the person's calls behind them for hours.
+    #[must_use]
+    pub fn scratch_where_given(self) -> Self {
+        Self {
+            scratch_given_only: true,
+            ..self
+        }
+    }
+
+    /// Whether quest `id`'s scratch is kept from the other end, as a
+    /// machine made for this one is kept from a quest not given to it.
+    fn withholds_scratch(&self, id: &str) -> bool {
+        self.scratch_given_only && !self.places.given(&self.other, id)
     }
 
     /// Whether quest `id` was given to the other end, a worker, so a gate
@@ -1205,8 +1235,9 @@ impl Exchange {
                     files,
                 });
             }
-            // Of a quest whose README alone crosses, no scratch is named.
-            let (folders, clones) = if carried.readme_alone {
+            // Of a quest whose README alone crosses, no scratch is named,
+            // nor of one whose scratch is kept from the other end.
+            let (folders, clones) = if carried.readme_alone || self.withholds_scratch(&id) {
                 (BTreeSet::new(), BTreeMap::new())
             } else {
                 (held.ledger.scratch.clone(), held.ledger.clones.clone())

@@ -305,8 +305,23 @@ pub enum Ending {
 /// declare nothing, so it is never sent a quest above, and this node logs
 /// so unless the link is a worker's, which is never sent one whatever its
 /// node.
-fn exchange_with(places: Places, here: &Hello, there: &Hello, worker: bool) -> Exchange {
+///
+/// A machine this end's way in `releases` was made for this machine, and
+/// is reached over a provider's link of a few kilobytes a second shared
+/// with the person's own work, so it is sent only the scratch of quests
+/// given to it ([`Exchange::scratch_where_given`]).
+fn exchange_with(
+    places: Places,
+    here: &Hello,
+    there: &Hello,
+    (worker, releases): (bool, bool),
+) -> Exchange {
     let exchange = Exchange::new(places, here.machine.clone(), there.machine.clone());
+    let exchange = if releases {
+        exchange.scratch_where_given()
+    } else {
+        exchange
+    };
     let mut exchange = if worker {
         exchange.for_worker()
     } else {
@@ -351,7 +366,7 @@ pub async fn run(
     let mut changes = store.changes()?;
     let arrived = Arc::new(AtomicI64::new(now()));
     let skipped_shares = Arc::new(AtomicBool::new(false));
-    let (mut frames, _reader) =
+    let (mut frames, mut share_frames, _reader) =
         read_frames(reading, Arc::clone(&arrived), Arc::clone(&skipped_shares));
 
     let other = greet(
@@ -375,6 +390,7 @@ pub async fn run(
     let (starters, mut learned) = started::Starters::new();
     let inboxes = starting.as_ref().map(|starting| starting.steers.clone());
     let gates = gates_of(starting.as_ref());
+    let places = shares.clone();
     let mut end = End {
         store,
         here: membership.hello().machine,
@@ -414,7 +430,8 @@ pub async fn run(
         runs,
         next_ask: 0,
         exchange: shares.map(|places| {
-            let exchange = exchange_with(places, &membership.hello(), &other, worker);
+            let exchange =
+                exchange_with(places, &membership.hello(), &other, (worker, releases));
             if worker {
                 exchange.gating(gates.clone())
             } else {
@@ -428,6 +445,11 @@ pub async fn run(
         has: HashSet::new(),
         sent: BTreeMap::new(),
         carried: HashSet::new(),
+        places,
+        acting: None,
+        outgoing: VecDeque::new(),
+        withheld: Vec::new(),
+        owed: Owed::default(),
         _claim: claim,
     };
 
@@ -462,6 +484,18 @@ pub async fn run(
                     Some(gathered) => end.changed_all(gathered, &mut writing).await,
                     None => break Ok(Ending::Left),
                 },
+                // The exchange's work takes a turn like any other, so an
+                // ask waits on one frame of it at most, never on all of
+                // a quest's files. One share is taken at a time, and none
+                // while what the last said is still being sent, so the
+                // other end's are read no faster than they are answered.
+                acted = acted(&mut end.acting) => end.acted(acted),
+                () = std::future::ready(()), if !end.outgoing.is_empty() => {
+                    end.send_shared(&mut writing).await
+                }
+                Some(frame) = share_frames.recv(), if end.acting.is_none() => {
+                    end.take(frame, &mut writing).await
+                }
             };
             if let Err(error) = step {
                 break Err(error);
@@ -488,6 +522,18 @@ pub async fn run(
 fn paces() -> (tokio::time::Interval, tokio::time::Interval) {
     let keeping = tokio::time::interval_at(tokio::time::Instant::now() + KEEP_EVERY, KEEP_EVERY);
     (keeping, tokio::time::interval(LOOK_EVERY))
+}
+
+/// What the exchange's act running in `acting` gave back, or never while
+/// none runs. It is cancel safe, as `select!` needs: the act runs on
+/// whether it is waited on or not.
+async fn acted(
+    acting: &mut Option<Acting>,
+) -> Result<(Exchange, io::Result<Vec<Say>>), tokio::task::JoinError> {
+    match acting {
+        Some(acting) => acting.await,
+        None => std::future::pending().await,
+    }
 }
 
 /// The next of what `asked` holds, or never when there is none.
@@ -578,12 +624,23 @@ impl Drop for Reader {
 /// skipped ([`unread`]), said once a link for each of the first
 /// [`SKIPS_SAID`] kinds, and a skipped share is kept in `skipped_shares`,
 /// since it may have named a file this end then never hears of.
+///
+/// After the first frame, shares and the word that a machine has handed
+/// over, which must follow its shares, come apart from the rest
+/// ([`shared_lane`]), so an ask, an answer or a message is taken ahead
+/// of the files a quest's first copy carries: on 25 November a start on
+/// a new cloud machine waited 79 seconds behind them.
 fn read_frames(
     reading: Box<dyn AsyncRead + Unpin + Send>,
     arrived: Arc<AtomicI64>,
     skipped_shares: Arc<AtomicBool>,
-) -> (mpsc::UnboundedReceiver<io::Result<Frame>>, Reader) {
+) -> (
+    mpsc::UnboundedReceiver<io::Result<Frame>>,
+    mpsc::UnboundedReceiver<Frame>,
+    Reader,
+) {
     let (sender, frames) = mpsc::unbounded_channel();
+    let (sharing, shared) = mpsc::unbounded_channel();
     let task = tokio::spawn(async move {
         let mut lines = BufReader::new(reading).lines();
         // The machine the first frame named, once one has been read: the
@@ -620,14 +677,32 @@ fn read_frames(
                     Ok(Frame::Hello(hello)) => hello.machine.clone(),
                     _ => "the other end".to_owned(),
                 });
+                let failed = frame.is_err();
+                if sender.send(frame).is_err() || failed {
+                    return;
+                }
+                continue;
             }
-            let failed = frame.is_err();
-            if sender.send(frame).is_err() || failed {
+            let sent = match frame {
+                Ok(frame) if shared_lane(&frame) => sharing.send(frame).is_ok(),
+                frame => {
+                    let failed = frame.is_err();
+                    sender.send(frame).is_ok() && !failed
+                }
+            };
+            if !sent {
                 return;
             }
         }
     });
-    (frames, Reader(task))
+    (frames, shared, Reader(task))
+}
+
+/// Whether `frame` is taken in the order shares are: a share, or the
+/// word that the other machine has handed over, which is judged on every
+/// file its shares named having been heard of ([`End::heard_handed_over`]).
+fn shared_lane(frame: &Frame) -> bool {
+    matches!(frame, Frame::Share(_) | Frame::HandedOver)
 }
 
 /// How many kinds of skipped frame a link says, each once: past them a
@@ -1262,7 +1337,35 @@ struct End<S> {
     /// What the other machine last declared, kept through a short silence
     /// about it.
     heard_declared: declared_heard::DeclaredHeard,
+    /// Where this machine keeps the quests it shares, if it shares any,
+    /// kept apart from the exchange, which an act may hold for minutes.
+    places: Option<Places>,
+    /// The exchange's act on the disk, while one runs away from the link's
+    /// loop ([`End::share`]).
+    acting: Option<Acting>,
+    /// What the exchange's acts said, waiting to be sent one at a time
+    /// between the link's other work ([`End::send_shared`]).
+    outgoing: VecDeque<Frame>,
+    /// Whether the exchange holds what the other machine says above its
+    /// quests, each as it was judged while an act held the exchange.
+    withheld: Vec<bool>,
+    /// What waits on the act running now.
+    owed: Owed,
     _claim: Claim,
+}
+
+/// An exchange's act on the disk, running away from the link's loop: the
+/// exchange it took, given back with what it says.
+type Acting = tokio::task::JoinHandle<(Exchange, io::Result<Vec<Say>>)>;
+
+/// What a link owes once the act running now gives the exchange back.
+#[derive(Default)]
+struct Owed {
+    /// A look, due while the act held the exchange.
+    look: bool,
+    /// The word that this machine has handed over, sent after what the
+    /// act's look says.
+    handed_over: bool,
 }
 
 /// This machine's own health as an end of a link says it.
@@ -1592,9 +1695,9 @@ impl<S: Store> End<S> {
                 self.carried.remove(&session);
                 self.store.remove_presence(&session, &self.other)?;
             }
+            // Taken only while no act runs, so it is never dropped as busy.
             Frame::Share(say) => {
-                self.share(move |exchange| exchange.hear(say), writing)
-                    .await?;
+                self.share(move |exchange| exchange.hear(say));
             }
             Frame::Machine(said) => self.keep_machine(*said),
             Frame::Carries { carries } => self.keep_carries(&carries),
@@ -2083,7 +2186,9 @@ impl<S: Store> End<S> {
     /// Looks for changes in the quests shared and the talks followed,
     /// away from the link's own work, and sends what it finds.
     async fn look(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
-        self.share(Exchange::look, writing).await?;
+        if !self.share(Exchange::look) && self.acting.is_some() {
+            self.owed.look = true;
+        }
         let Some(mut following) = self.following.take() else {
             return Ok(());
         };
@@ -2272,11 +2377,7 @@ impl<S: Store> End<S> {
         } else {
             self.node
                 .clone()
-                .zip(
-                    self.exchange
-                        .as_ref()
-                        .map(|exchange| exchange.places().clone()),
-                )
+                .zip(self.places.clone())
                 .ok_or_else(|| format!("{} carries no sessions over this link", self.here))
         };
         let (node, places) = match hands {
@@ -2392,11 +2493,14 @@ impl<S: Store> End<S> {
             (said.declared.take(), said_nothing),
             tokio::time::Instant::now(),
         );
-        if let Some(exchange) = self.exchange.as_mut() {
-            exchange.withhold_above(declared_heard::withheld_above(
-                said.declared.as_ref(),
-                self.heard_declared.standing_in(),
-            ));
+        let withheld = declared_heard::withheld_above(
+            said.declared.as_ref(),
+            self.heard_declared.standing_in(),
+        );
+        match self.exchange.as_mut() {
+            Some(exchange) => exchange.withhold_above(withheld),
+            None if self.acting.is_some() => self.withheld.push(withheld),
+            None => {}
         }
         self.kept(&said.name, self.store.put_machine(&said));
     }
@@ -2539,10 +2643,16 @@ impl<S: Store> End<S> {
         let running = handover::running(&held_as, &held);
         self.handover.ran |= running > 0;
         let Handover { leaves, ran, .. } = self.handover;
-        if !handover::handed_over(leaves, jiff::Timestamp::now(), ran, running) {
+        // While an act holds the exchange, the next keep tries again.
+        if !handover::handed_over(leaves, jiff::Timestamp::now(), ran, running)
+            || self.acting.is_some()
+        {
             return Ok(());
         }
-        self.share(Exchange::look, writing).await?;
+        if self.share(Exchange::look) {
+            self.owed.handed_over = true;
+            return Ok(());
+        }
         send(writing, &Frame::HandedOver).await
     }
 
@@ -2567,35 +2677,39 @@ impl<S: Store> End<S> {
         }
     }
 
-    /// Has the exchange act on the disk, away from the link's own work,
-    /// and sends what it says. A quest that fails to share is told of and
-    /// tried again at the next look, rather than ending the link, which
-    /// would only meet it again at every redial.
-    async fn share(
+    /// Has the exchange act on the disk, away from the link's loop, which
+    /// goes on taking asks, answers and messages, and keeping the link,
+    /// while it runs: acts over many large ledgers take minutes on a busy
+    /// machine. What it says is sent once it's done ([`Self::acted`]).
+    /// False, with nothing done, where the link shares nothing or another
+    /// act holds the exchange.
+    fn share(
         &mut self,
         act: impl FnOnce(&mut Exchange) -> io::Result<Vec<Say>> + Send + 'static,
-        writing: &mut (impl AsyncWrite + Unpin),
-    ) -> io::Result<()> {
+    ) -> bool {
         let Some(mut exchange) = self.exchange.take() else {
-            return Ok(());
+            return false;
         };
-        let mut acting = tokio::task::spawn_blocking(move || {
+        self.acting = Some(tokio::task::spawn_blocking(move || {
             let says = act(&mut exchange);
             (exchange, says)
-        });
-        // The link says its machine each minute the act takes, as it would
-        // at each keep, so the other end doesn't take it as gone. Acts
-        // over many large ledgers took minutes on a busy machine, and on
-        // 23 November its link to a Mac dropped twice for silence while
-        // its share went on.
-        let mut keeping =
-            tokio::time::interval_at(tokio::time::Instant::now() + KEEP_EVERY, KEEP_EVERY);
-        let (mut exchange, says) = loop {
-            tokio::select! {
-                acted = &mut acting => break acted.map_err(io::Error::other)?,
-                _ = keeping.tick() => self.send_machine(writing).await?,
-            }
-        };
+        }));
+        true
+    }
+
+    /// Takes back the exchange an act `acted` with, and queues what it
+    /// says, then what waited on it. A quest that fails to share is told
+    /// of and tried again at the next look, rather than ending the link,
+    /// which would only meet it again at every redial.
+    fn acted(
+        &mut self,
+        acted: Result<(Exchange, io::Result<Vec<Say>>), tokio::task::JoinError>,
+    ) -> io::Result<()> {
+        self.acting = None;
+        let (mut exchange, says) = acted.map_err(io::Error::other)?;
+        for withheld in self.withheld.drain(..) {
+            exchange.withhold_above(withheld);
+        }
         // Written here, a finding reaches this machine's sessions and, as
         // any message does, the other's.
         for draft in exchange.findings() {
@@ -2604,14 +2718,24 @@ impl<S: Store> End<S> {
         }
         self.exchange = Some(exchange);
         match says {
-            Ok(says) => {
-                for say in says {
-                    send(writing, &Frame::Share(say)).await?;
-                }
-            }
+            Ok(says) => self.outgoing.extend(says.into_iter().map(Frame::Share)),
             Err(error) => eprintln!("sharing quests with {}: {error}", self.other),
         }
+        if std::mem::take(&mut self.owed.handed_over) {
+            self.outgoing.push_back(Frame::HandedOver);
+        }
+        if std::mem::take(&mut self.owed.look) {
+            self.share(Exchange::look);
+        }
         Ok(())
+    }
+
+    /// Sends the first of what the exchange's acts said.
+    async fn send_shared(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
+        match self.outgoing.pop_front() {
+            Some(frame) => send(writing, &frame).await,
+            None => Ok(()),
+        }
     }
 
     /// Tells of a record the store refused. One bad record is the other
@@ -4833,10 +4957,15 @@ mod tests {
 
         let _second = linked(&skiff, &kestrel, 1 << 16);
         let ended = first.await.expect("the first link's end runs to its end");
+        // Kestrel's older end is taken over too, and closes its stream,
+        // so skiff's may hear it leave before it sees the newer claim.
         assert!(
-            ended.as_ref().is_err_and(|why| why
-                .to_string()
-                .contains("a newer link with kestrel took over")),
+            ended.as_ref().map_or_else(
+                |why| why
+                    .to_string()
+                    .contains("a newer link with kestrel took over"),
+                |()| true
+            ),
             "the older end lets its claim go, as one whose other end is gone: {ended:?}"
         );
         until(&skiff, |store| {
@@ -5306,7 +5435,7 @@ mod tests {
         let (far, near) = tokio::io::duplex(1024);
         let (_, mut writing) = tokio::io::split(far);
         let arrived = Arc::new(AtomicI64::new(0));
-        let (mut frames, _reader) =
+        let (mut frames, _shared, _reader) =
             read_frames(Box::new(near), Arc::clone(&arrived), Arc::default());
         let before = now();
         writing
@@ -5318,6 +5447,49 @@ mod tests {
         assert!(
             arrived.load(Ordering::Relaxed) >= before,
             "its arrival is kept"
+        );
+    }
+
+    /// After the first frame, shares and the word that the other machine
+    /// has handed over come on a lane of their own, in the order they were
+    /// said, so an ask behind a quest's files is taken without waiting on
+    /// them; a share said first is read as any first frame is.
+    #[tokio::test]
+    async fn the_reader_reads_shares_apart_from_what_asks_and_answers() {
+        let (far, near) = tokio::io::duplex(8192);
+        let (_, mut writing) = tokio::io::split(far);
+        let (mut frames, mut share_frames, _reader) =
+            read_frames(Box::new(near), Arc::default(), Arc::default());
+        let hello = Frame::Hello(realm("tern").hello());
+        let lines = [
+            want_readme("q0"),
+            hello,
+            want_readme("q1"),
+            ended("s1"),
+            want_readme("q2"),
+            Frame::HandedOver,
+            ended("s2"),
+        ]
+        .iter()
+        .map(|frame| serde_json::to_string(frame).expect("a frame") + "\n")
+        .collect::<String>();
+        writing.write_all(lines.as_bytes()).await.expect("written");
+        drop(writing);
+        let mut heard = Vec::new();
+        while let Some(frame) = frames.recv().await {
+            heard.push(frame.expect("a frame"));
+        }
+        assert!(matches!(heard[0], Frame::Share(_)), "{heard:?}");
+        assert!(matches!(heard[1], Frame::Hello(_)), "{heard:?}");
+        assert_eq!(heard[2..], [ended("s1"), ended("s2")]);
+        let mut shares = Vec::new();
+        while let Some(frame) = share_frames.recv().await {
+            shares.push(frame);
+        }
+        assert_eq!(
+            shares,
+            [want_readme("q1"), want_readme("q2"), Frame::HandedOver],
+            "shares keep their order, and the handover comes after them"
         );
     }
 
@@ -5333,7 +5505,7 @@ mod tests {
         let (far, near) = tokio::io::duplex(8192);
         let (_, mut writing) = tokio::io::split(far);
         let skipped_shares = Arc::new(AtomicBool::new(false));
-        let (mut frames, _reader) = read_frames(
+        let (mut frames, _shared, _reader) = read_frames(
             Box::new(near),
             Arc::new(AtomicI64::new(0)),
             Arc::clone(&skipped_shares),
