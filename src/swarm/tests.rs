@@ -548,12 +548,25 @@ fn a_short_name_that_cleans_to_an_act_is_never_drawn() {
 }
 
 #[test]
+fn a_team_held_back_by_its_title_s_act_is_reached_by_its_title_however_dashed() {
+    // Its short is held back, so its title is what's typed, with the
+    // keyboard's hyphen for the lookalike the title spells.
+    let mut titled = swarm();
+    titled.teams[1]["title"] = json!("Bootstrap reef\u{2011}pause tools");
+    let found = team(&titled, "reef-pause", &look()).unwrap_or_default();
+    assert!(
+        found.starts_with("Bootstrap"),
+        "a title's dash missed the keyboard's: {found}"
+    );
+}
+
+#[test]
 fn a_short_name_is_drawn_as_it_is_typed_and_reaches_only_its_team() {
     // Drawn with its space, `tide plan` typed would reach `tide-plan`'s
     // team; a braille blank or a control draws like a space but parts no
     // words, so each is folded as a space is. A dash drawn like a hyphen
-    // is typed as the keyboard's, from the first of Unicode's dashes to
-    // the last.
+    // is typed as the keyboard's, and asked for as the quest spelt it
+    // reaches the team too; names.rs's own case tries every dash.
     for (given, drawn) in [
         ("harbour  tides", "harbour-tides"),
         ("harbour\u{2800}tides", "harbour-tides"),
@@ -572,7 +585,11 @@ fn a_short_name_is_drawn_as_it_is_typed_and_reaches_only_its_team() {
             !shown.contains(given) && typed(&swarm).iter().any(|name| name == drawn),
             "{given} was not drawn as {drawn}:\n{shown}"
         );
-        for asked in [drawn.to_owned(), drawn.replace('-', " ")] {
+        let mut asking = vec![drawn.to_owned(), drawn.replace('-', " ")];
+        if super::hyphens(given) == drawn {
+            asking.push(given.to_owned());
+        }
+        for asked in asking {
             let found = team(&swarm, &asked, &look()).unwrap_or_default();
             assert!(
                 found.starts_with("Harbour"),
@@ -593,6 +610,15 @@ fn a_short_name_is_drawn_as_it_is_typed_and_reaches_only_its_team() {
         "reef\u{FE63}pause",
         "\u{2212}\u{2212}names",
         "\u{FF0D}names",
+        // Drawn like a hyphen by many fonts, and no dash: a hyphen
+        // bullet, a heavy minus, a box line and a modifier minus.
+        "reef\u{2043}pause",
+        "reef\u{2796}pause",
+        "reef\u{2500}pause",
+        "reef\u{2D7}pause",
+        "\u{2043}\u{2043}names",
+        // A mark on the act's own word.
+        "reef-pause\u{301}",
     ] {
         let mut acting = swarm();
         acting.teams[1]["swarm"] = json!(given);

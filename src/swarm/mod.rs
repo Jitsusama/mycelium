@@ -27,7 +27,7 @@ pub(crate) use asks::{ASKS_FIT, together};
 pub(crate) use asks::{asked, asking};
 pub use asks::{read, records};
 pub use names::short_names;
-pub(crate) use names::{says_again, shell_word};
+pub(crate) use names::{hyphens, says_again, shell_word};
 pub use shapes::Shapes;
 
 /// The swarm as the node holds it.
@@ -1081,8 +1081,11 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
     first: bool,
     naming: impl Fn(&'a T) -> Naming<'n>,
 ) -> Picked<'a, T> {
-    // A short name's words may be typed apart, as `part deux`.
-    let joined = unmarked(&asked.split_whitespace().collect::<Vec<_>>().join("-"));
+    // A short name's words may be typed apart, as `part deux`, and its
+    // dashes spelt as the keyboard's hyphen or as the quest wrote them.
+    let joined = hyphens(&unmarked(
+        &asked.split_whitespace().collect::<Vec<_>>().join("-"),
+    ));
     let exactly: Vec<&T> = things
         .iter()
         .filter(|thing| naming(thing).address == asked)
@@ -1098,7 +1101,7 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
     let by_short = |thing: &'a T| {
         naming(thing)
             .short
-            .is_some_and(|short| unmarked(short).eq_ignore_ascii_case(&joined))
+            .is_some_and(|short| hyphens(&unmarked(short)).eq_ignore_ascii_case(&joined))
     };
     let whole: Vec<&T> = if first && !by_address.is_empty() {
         by_address
@@ -1110,15 +1113,11 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
             })
             .collect()
     };
-    let lower = unmarked(asked).to_lowercase();
+    let lower = hyphens(&unmarked(asked).to_lowercase());
     let found = if whole.is_empty() {
         things
             .iter()
-            .filter(|thing| {
-                unmarked(naming(thing).title)
-                    .to_lowercase()
-                    .contains(&lower)
-            })
+            .filter(|thing| hyphens(&unmarked(naming(thing).title).to_lowercase()).contains(&lower))
             .collect()
     } else {
         whole

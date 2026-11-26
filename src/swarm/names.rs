@@ -57,15 +57,22 @@ pub(super) fn one_word(name: &str) -> bool {
 /// Whether `name`, cleaned as a page draws it, holds a word `swarm` reads
 /// as other than a team's name: an act, `team` or a flag. Typed as a page
 /// drew it, `reef pause` would pause Reef, and `pause` reach no team.
-/// A short's words may be typed apart, so each part between hyphens
-/// counts as a word too: `reef-pause`, typed as `reef pause`, would pause
-/// Reef.
+/// A short's words may be typed apart, so each part between what isn't a
+/// letter or a digit counts as a word too: `reef-pause`, typed as `reef
+/// pause`, would pause Reef, and so would one joined by a hyphen bullet,
+/// as U+2043 is, which no keyboard types and many fonts draw as a
+/// hyphen. A word led by such a character may be typed as a flag, as
+/// `--names` is.
 fn acts_for(name: &str) -> bool {
     let drawn = unmarked(name).to_lowercase();
-    let flagged = drawn.split(blank).any(|word| word.starts_with('-'));
+    let flagged = drawn.split(blank).any(|word| {
+        word.chars()
+            .next()
+            .is_some_and(|lead| !lead.is_alphanumeric())
+    });
     flagged
         || drawn
-            .split(|each: char| blank(each) || each == '-')
+            .split(|each: char| !each.is_alphanumeric())
             .any(|word| ACTS.contains(&word) || word == "team")
 }
 
@@ -74,9 +81,16 @@ fn blank(each: char) -> bool {
     each.is_whitespace() || each == BRAILLE_BLANK
 }
 
+/// `text` with each dash the keyboard's hyphen, as a short is held, so
+/// what a person asks for meets it however its dashes are spelt.
+pub(crate) fn hyphens(text: &str) -> String {
+    text.replace(dash, "-")
+}
+
 /// Whether `each` is a dash, as Unicode 16's Dash property says: a
 /// hyphen, an en or em dash, a minus sign, and their small, fullwidth and
-/// other scripts' forms, each read as a keyboard's hyphen.
+/// other scripts' forms, each read as a keyboard's hyphen. Taken from
+/// PropList-16.0.0.txt, so a later Unicode's dashes are drawn as written.
 fn dash(each: char) -> bool {
     matches!(
         each,
@@ -118,9 +132,7 @@ fn dash(each: char) -> bool {
 /// check on each part, and miss the keyboard's `reef-pause` it seems to
 /// be.
 fn typed_form(name: &str) -> String {
-    unmarked(name)
-        .to_lowercase()
-        .replace(dash, "-")
+    hyphens(&unmarked(name).to_lowercase())
         .split(blank)
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
@@ -209,7 +221,11 @@ pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
     let held: Vec<(&str, BTreeSet<String>)> = teams
         .iter()
         .map(|team| {
-            let typed = words(title(team)).into_iter().map(|word| word.typed);
+            // In typed form, so two titles whose words differ only by
+            // how a dash is spelt share that word.
+            let typed = words(title(team))
+                .into_iter()
+                .map(|word| typed_form(&word.typed));
             (address(team), typed.collect())
         })
         .collect();
@@ -218,8 +234,9 @@ pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
         .filter_map(|team| {
             let me = address(team);
             let shared = |word: &str| {
+                let word = typed_form(word);
                 held.iter()
-                    .any(|(other, typed)| *other != me && typed.contains(word))
+                    .any(|(other, typed)| *other != me && typed.contains(&word))
             };
             if let Some(name) = given(team) {
                 return Some((me, name));
@@ -262,18 +279,73 @@ pub fn shown<'a>(team: &Value, shorts: &'a BTreeMap<String, String>) -> Option<&
     (!says_again(title(team), short)).then_some(short.as_str())
 }
 
-/// Whether `short` only says `title` again, as `reef` says Reef, the
-/// title's words in the [`typed_form`] a short is held in.
+/// Whether `short` only says `title` again, as `reef` says Reef, both in
+/// the [`typed_form`] a swarm short is held in, as a network's short may
+/// not be.
 pub(crate) fn says_again(title: &str, short: &str) -> bool {
     let spelt: Vec<String> = words(title).into_iter().map(|word| word.typed).collect();
-    typed_form(&spelt.join("-")) == short
+    typed_form(&spelt.join("-")) == typed_form(short)
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::short_names;
+    use super::{says_again, short_names, typed_form};
+
+    #[test]
+    fn every_dash_is_typed_as_the_keyboard_s_hyphen_and_nothing_beside_one() {
+        // Unicode 16's Dash property, as PropList-16.0.0.txt lists it, its
+        // ranges written out, and the character either side of each entry.
+        let dashes = [
+            0x2D, 0x58A, 0x5BE, 0x1400, 0x1806, 0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015,
+            0x2053, 0x207B, 0x208B, 0x2212, 0x2E17, 0x2E1A, 0x2E3A, 0x2E3B, 0x2E40, 0x2E5D, 0x301C,
+            0x3030, 0x30A0, 0xFE31, 0xFE32, 0xFE58, 0xFE63, 0xFF0D, 0x10D6E, 0x10EAD,
+        ];
+        let beside = [
+            0x2C, 0x2E, 0x589, 0x58B, 0x5BD, 0x5BF, 0x13FF, 0x1401, 0x1805, 0x1807, 0x200F_u32,
+            0x2016, 0x2052, 0x2054, 0x207A, 0x207C, 0x208A, 0x208C, 0x2211, 0x2213, 0x2E16, 0x2E18,
+            0x2E19, 0x2E1B, 0x2E39, 0x2E3C, 0x2E3F, 0x2E41, 0x2E5C, 0x2E5E, 0x301B, 0x301D, 0x302F,
+            0x3031, 0x309F, 0x30A1, 0xFE30, 0xFE33, 0xFE57, 0xFE59, 0xFE62, 0xFE64, 0xFF0C, 0xFF0E,
+            0x10D6D, 0x10D6F, 0x10EAC, 0x10EAE,
+        ];
+        let typed = |code: u32| {
+            let each = char::from_u32(code).expect("a character");
+            typed_form(&format!("a{each}b"))
+        };
+        for code in dashes {
+            assert_eq!(typed(code), "a-b", "U+{code:04X} is a dash");
+        }
+        for code in beside {
+            assert_ne!(typed(code), "a-b", "U+{code:04X} is no dash");
+        }
+    }
+
+    #[test]
+    fn a_short_saying_its_title_again_is_judged_however_its_dashes_are_spelt() {
+        // A network's short isn't held in typed form, so both sides fold.
+        assert!(says_again("Kelp\u{2011}Beds", "kelp\u{2011}beds"));
+        assert!(says_again("Kelp\u{2011}Beds", "kelp-beds"));
+        assert!(!says_again("Kelp\u{2011}Beds", "kelp"));
+    }
+
+    #[test]
+    fn two_titles_spelling_one_word_s_dash_apart_share_it() {
+        let teams = [
+            json!({"key": "team:ONE", "title": "Kelp\u{2011}Beds: first"}),
+            json!({"key": "team:TWO", "title": "Kelp-Beds: second"}),
+        ];
+        let named = short_names(&teams);
+        let said: Vec<(&str, &str)> = named
+            .iter()
+            .map(|(team, name)| (team.as_str(), name.as_str()))
+            .collect();
+        assert_eq!(
+            said,
+            [("ONE", "first"), ("TWO", "second")],
+            "kelp-beds is in both titles, so neither takes it"
+        );
+    }
 
     #[test]
     fn each_team_goes_by_a_short_name_of_its_own() {

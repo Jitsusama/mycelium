@@ -16,7 +16,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::{
-    Standing, Swarm, address, asked, either, listed, names, shorts_of, title, told_apart, unmarked,
+    Standing, Swarm, address, asked, either, hyphens, listed, names, shorts_of, title, told_apart,
+    unmarked,
 };
 
 /// Who a steer is from: the person, as the harness's steers name them.
@@ -128,9 +129,13 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
     let shorts = shorts_of(swarm);
     // A short name's words may be typed apart, as `part deux`. Short
     // names and titles are matched as the swarm's pages draw them,
-    // cleaned on both sides, as `picked` matches them, so the name a page
-    // shows steers the team it names.
-    let joined = unmarked(&asked.split_whitespace().collect::<Vec<_>>().join("-"));
+    // cleaned on both sides, with each dash the keyboard's hyphen, as
+    // `picked` matches them, so the name a page shows steers the team it
+    // names, and the spelling its quest gave reaches it rather than a
+    // session whose title holds that spelling.
+    let joined = hyphens(&unmarked(
+        &asked.split_whitespace().collect::<Vec<_>>().join("-"),
+    ));
     if let Some(session) = session_by_address(swarm, asked) {
         return Ok(Named::Session(session));
     }
@@ -157,7 +162,7 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
             .filter(|team| {
                 shorts
                     .get(address(team))
-                    .is_some_and(|short| unmarked(short).eq_ignore_ascii_case(&joined))
+                    .is_some_and(|short| hyphens(&unmarked(short)).eq_ignore_ascii_case(&joined))
             })
             .map(Named::Team)
             .collect()
@@ -165,8 +170,9 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
         by_address
     };
     let mut found: Vec<Named<'_>> = if whole.is_empty() {
-        let lower = unmarked(asked).to_lowercase();
-        let matches = |record: &&Value| unmarked(title(record)).to_lowercase().contains(&lower);
+        let lower = hyphens(&unmarked(asked).to_lowercase());
+        let matches =
+            |record: &&Value| hyphens(&unmarked(title(record)).to_lowercase()).contains(&lower);
         let teams: Vec<&Value> = swarm.teams.iter().filter(matches).collect();
         if teams.is_empty() {
             living().filter(matches).map(Named::Session).collect()
@@ -564,6 +570,32 @@ mod tests {
         for (swarm, asked) in [(short, "dock"), (titled, "arbou")] {
             let aimed = aim(&swarm, Act::Pause, asked)
                 .unwrap_or_else(|why| panic!("{asked}, as the page shows it, missed: {why}"));
+            assert_eq!(
+                addresses(&aimed),
+                ["LEAD", "BUSY", "ASK"],
+                "{asked} steered another than Harbour"
+            );
+        }
+    }
+
+    #[test]
+    fn a_steer_finds_a_team_however_its_dashes_are_spelt() {
+        // The short is held with the keyboard's hyphen, so the quest's own
+        // spelling must meet it too, rather than miss it and fall through
+        // to the one session whose title holds that spelling.
+        let mut short = swarm();
+        short.teams[1]["swarm"] = json!("harbour\u{2011}tides");
+        short.sessions[4]["title"] = json!("harbour\u{2011}tides notes");
+        // And a title's dash spelt as a lookalike meets the keyboard's.
+        let mut titled = swarm();
+        titled.teams[1]["title"] = json!("Harbour\u{2011}Tides");
+        for (swarm, asked) in [
+            (&short, "harbour\u{2011}tides"),
+            (&short, "harbour-tides"),
+            (&titled, "bour-tid"),
+        ] {
+            let aimed = aim(swarm, Act::Pause, asked)
+                .unwrap_or_else(|why| panic!("{asked} missed Harbour: {why}"));
             assert_eq!(
                 addresses(&aimed),
                 ["LEAD", "BUSY", "ASK"],
