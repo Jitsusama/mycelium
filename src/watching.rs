@@ -8,15 +8,18 @@
 //! only what writes, renames or removes keeps those from waking it at all.
 //!
 //! macOS's watcher stops its file-events stream and starts it again for
-//! every path watched or given back alone, and each start registers anew
-//! with the system's file-events daemon. Watching a path at a time, nodes
-//! and test runs kept that daemon on a whole core (26 November). Batched
-//! by [`watch_all`], a watcher's stream starts once for every path a
-//! change names.
+//! each path it newly watches or gives back alone, and each start
+//! registers anew with the system's file-events daemon. Watching a path at
+//! a time, nodes and test runs kept that daemon on a whole core (26
+//! November). Batched by [`watch_all`], a watcher's stream starts once for
+//! every path a change names.
 
 use std::path::PathBuf;
 
-use notify::{Config, EventHandler, EventKindMask, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{
+    Config, EventHandler, EventKindMask, PathOp, RecommendedWatcher, RecursiveMode,
+    WatchPathConfig, Watcher,
+};
 
 /// What a watch hears: a file made, removed, written or renamed. Not its
 /// opens, closes or reads, nor new permissions or times, which change
@@ -38,79 +41,104 @@ pub fn watcher<F: EventHandler>(handler: F) -> notify::Result<RecommendedWatcher
 
 /// Gives back each path in `gone` and watches each in `new`, as one
 /// change to `watcher`, answering for each of `new` whether it is watched.
-/// A path given back that wasn't watched is no matter. If the change
-/// can't be applied, none of `new` is watched. A change naming nothing
+/// A path given back that wasn't watched is no matter. A change stops at
+/// the first path that fails, so the rest are applied again after it, at
+/// a start each; a caller leaves out what it knows isn't there. If the
+/// stream can't start, none of `new` is watched. A change naming nothing
 /// leaves the watcher be.
 pub fn watch_all(
     watcher: &mut dyn Watcher,
     gone: &[PathBuf],
     new: &[(PathBuf, RecursiveMode)],
 ) -> Vec<bool> {
-    if gone.is_empty() && new.is_empty() {
-        return Vec::new();
-    }
-    let mut paths = watcher.paths_mut();
-    for path in gone {
-        // A path not watched has nothing to give back.
-        let _ = paths.remove(path);
-    }
-    let watched: Vec<bool> = new
+    let mut watched = vec![true; new.len()];
+    let mut change: Vec<PathOp> = gone
         .iter()
-        .map(|(path, mode)| paths.add(path, *mode).is_ok())
+        .map(|path| PathOp::unwatch(path.clone()))
+        .chain(
+            new.iter()
+                .map(|(path, mode)| PathOp::Watch(path.clone(), WatchPathConfig::new(*mode))),
+        )
         .collect();
-    if paths.commit().is_err() {
-        return vec![false; new.len()];
+    while !change.is_empty() {
+        let Err(failed) = watcher.update_paths(change) else {
+            break;
+        };
+        match failed.origin {
+            Some(PathOp::Watch(path, _)) => {
+                for (watched, (at, _)) in watched.iter_mut().zip(new) {
+                    *watched &= *at != path;
+                }
+            }
+            // A path not watched has nothing to give back.
+            Some(PathOp::Unwatch(_)) => {}
+            // Every path was applied, but the stream didn't start.
+            None => return vec![false; new.len()],
+        }
+        change = failed.remaining;
     }
     watched
 }
 
-/// A watcher for tests that counts how often its stream would start: once
-/// for each batch committed, and once for each path watched or given back
-/// alone, as macOS's does.
+/// A watcher for tests that counts how often its stream would start, as
+/// macOS's does: once for each change that alters what it watches, a path
+/// at a time or a batch at once. Like notify's, it keeps one watch a path,
+/// a path watched again unchanged alters nothing, and a batch stops at
+/// the first path that fails: one not there, or one given back unwatched.
 #[cfg(test)]
 pub mod counting {
-    use std::path::Path;
+    use std::collections::BTreeMap;
+    use std::os::unix::fs::MetadataExt;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use notify::{Config, EventHandler, PathsMut, RecursiveMode, Watcher, WatcherKind};
+    use notify::{
+        Config, EventHandler, PathOp, RecursiveMode, UpdatePathsError, Watcher, WatcherKind,
+    };
 
     /// The watcher, sharing its count of starts with whoever made it.
-    pub struct Counting(Arc<AtomicUsize>);
+    pub struct Counting {
+        starts: Arc<AtomicUsize>,
+        /// Each path watched, by the file it was when watched.
+        watched: BTreeMap<PathBuf, (u64, u64)>,
+    }
 
     impl Counting {
         /// A counting watcher and its count.
         #[must_use]
         pub fn made() -> (Self, Arc<AtomicUsize>) {
             let starts = Arc::new(AtomicUsize::new(0));
-            (Self(Arc::clone(&starts)), starts)
-        }
-    }
-
-    /// Whether `path` is there to watch, as every watcher asks first.
-    fn there(path: &Path) -> notify::Result<()> {
-        if path.exists() {
-            Ok(())
-        } else {
-            Err(notify::Error::path_not_found().add_path(path.to_owned()))
-        }
-    }
-
-    /// A batch, starting the stream once when committed.
-    struct Batch<'a>(&'a AtomicUsize);
-
-    impl PathsMut for Batch<'_> {
-        fn add(&mut self, path: &Path, _mode: RecursiveMode) -> notify::Result<()> {
-            there(path)
+            let watcher = Self {
+                starts: Arc::clone(&starts),
+                watched: BTreeMap::new(),
+            };
+            (watcher, starts)
         }
 
-        fn remove(&mut self, _path: &Path) -> notify::Result<()> {
-            Ok(())
+        /// Applies `op`, answering whether it altered what's watched.
+        fn apply(&mut self, op: &PathOp) -> notify::Result<bool> {
+            match op {
+                PathOp::Watch(path, _) => {
+                    let file = path
+                        .metadata()
+                        .map_err(|_| notify::Error::path_not_found().add_path(path.clone()))?;
+                    let was = self.watched.insert(path.clone(), (file.dev(), file.ino()));
+                    Ok(was != Some((file.dev(), file.ino())))
+                }
+                PathOp::Unwatch(path) => self
+                    .watched
+                    .remove(path)
+                    .map(|_| true)
+                    .ok_or_else(notify::Error::watch_not_found),
+            }
         }
 
-        fn commit(self: Box<Self>) -> notify::Result<()> {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+        /// Starts the stream again if `altered`.
+        fn start(&self, altered: bool) {
+            if altered {
+                self.starts.fetch_add(1, Ordering::SeqCst);
+            }
         }
     }
 
@@ -119,18 +147,40 @@ pub mod counting {
             Ok(Self::made().0)
         }
 
-        fn watch(&mut self, path: &Path, _mode: RecursiveMode) -> notify::Result<()> {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            there(path)
-        }
-
-        fn unwatch(&mut self, _path: &Path) -> notify::Result<()> {
-            self.0.fetch_add(1, Ordering::SeqCst);
+        fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
+            let op = match mode {
+                RecursiveMode::Recursive => PathOp::watch_recursive(path),
+                RecursiveMode::NonRecursive => PathOp::watch_non_recursive(path),
+            };
+            let altered = self.apply(&op)?;
+            self.start(altered);
             Ok(())
         }
 
-        fn paths_mut<'me>(&'me mut self) -> Box<dyn PathsMut + 'me> {
-            Box::new(Batch(&self.0))
+        fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+            let altered = self.apply(&PathOp::unwatch(path))?;
+            self.start(altered);
+            Ok(())
+        }
+
+        fn update_paths(&mut self, ops: Vec<PathOp>) -> Result<(), UpdatePathsError> {
+            let mut altered = false;
+            let mut ops = ops.into_iter();
+            while let Some(op) = ops.next() {
+                match self.apply(&op) {
+                    Ok(this) => altered |= this,
+                    Err(source) => {
+                        self.start(altered);
+                        return Err(UpdatePathsError {
+                            source,
+                            origin: Some(op),
+                            remaining: ops.collect(),
+                        });
+                    }
+                }
+            }
+            self.start(altered);
+            Ok(())
         }
 
         fn kind() -> WatcherKind {

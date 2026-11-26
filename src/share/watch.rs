@@ -42,8 +42,7 @@ pub struct Watch {
     records_watched: BTreeSet<String>,
     /// The folders the watcher may hold though they aren't watched: one
     /// heard gone or made anew, or one a batch failed to start. Each is
-    /// given back before it's watched again, as macOS's watcher would
-    /// otherwise hold its path twice.
+    /// given back when its quest is forgotten, unless watched again first.
     stale: BTreeSet<Folder>,
     /// The records it may hold though they aren't watched, likewise.
     records_stale: BTreeSet<String>,
@@ -282,26 +281,18 @@ impl Watch {
             })
             .collect();
         let record = record.filter(|id| self.records.path.join(id).exists());
-        let mut gone: Vec<PathBuf> = folders
-            .iter()
-            .filter(|folder| self.stale.contains(**folder))
-            .map(|folder| self.folder_path(folder))
-            .collect();
+        // A path watched again replaces what the watcher held for it.
         let mut new: Vec<(PathBuf, RecursiveMode)> = folders
             .iter()
             .map(|folder| (self.folder_path(folder), RecursiveMode::Recursive))
             .collect();
         if let Some(id) = record {
-            let at = self.records.path.join(id);
-            if self.records_stale.contains(id) {
-                gone.push(at.clone());
-            }
-            new.push((at, RecursiveMode::Recursive));
+            new.push((self.records.path.join(id), RecursiveMode::Recursive));
         }
         let Some(watcher) = self.watcher.as_mut() else {
             return;
         };
-        let mut watched = crate::watching::watch_all(watcher.as_mut(), &gone, &new).into_iter();
+        let mut watched = crate::watching::watch_all(watcher.as_mut(), &[], &new).into_iter();
         for (folder, watched) in folders.into_iter().zip(watched.by_ref()) {
             if watched {
                 self.stale.remove(folder);
@@ -626,14 +617,17 @@ mod tests {
             "a folder not there yet is walked, never started again and again"
         );
 
-        // A folder made anew is watched again, its old path given back in
-        // the same batch.
-        watch
-            .early
-            .push(Heard::At(scratch.join(QUEST).join("notes")));
+        // A folder made anew, as another file while the old one lingers,
+        // is watched again.
+        let notes = scratch.join(QUEST).join("notes");
+        let old = dir.path().join("old-notes");
+        fs::rename(&notes, &old).expect("moved");
+        fs::create_dir(&notes).expect("made anew");
+        fs::remove_dir(&old).expect("removed");
+        watch.early.push(Heard::At(notes));
         let (walk, _) = watch.to_look_at(QUEST, &all);
         assert_eq!(walk, BTreeSet::from([named("not-yet"), named("notes")]));
-        assert_eq!(starts.load(Ordering::SeqCst), 2);
+        assert_eq!(starts.load(Ordering::SeqCst), 2, "once, for the new notes");
         assert!(watch.stale.is_empty(), "{:?}", watch.stale);
 
         watch.forget(QUEST);
