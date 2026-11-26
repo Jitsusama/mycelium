@@ -506,6 +506,34 @@ mod tests {
     }
 
     #[test]
+    fn a_wide_name_keeps_the_columns_in_line_and_within_the_edge() {
+        // Four Han characters, two cells each, so counted by characters
+        // the name's column would be four cells short.
+        let mut wide = osprey();
+        wide.name = "港湾港湾".to_owned();
+        // Measured by Unicode's widths directly, not by the code under
+        // test, as nothing here is coloured.
+        let cells = <str as unicode_width::UnicodeWidthStr>::width;
+        for width in [40, 120] {
+            let drawn = table(&[kestrel(), wide.clone()], &[], &look(width));
+            let state = |name: &str| {
+                drawn
+                    .lines()
+                    .find(|line| line.starts_with(name))
+                    .and_then(|line| line.find("  ready").map(|at| cells(&line[..at])))
+            };
+            assert!(
+                drawn.lines().all(|line| cells(line) <= width)
+                    && state("kestrel").is_some()
+                    && state("kestrel") == state("港湾港湾")
+                    && drawn.lines().next().and_then(|line| line.find("  state"))
+                        == state("kestrel"),
+                "a wide name moved its columns or passed {width}:\n{drawn}"
+            );
+        }
+    }
+
+    #[test]
     fn drawn_whole_every_column_is_there_and_nothing_wraps() {
         // Into a pipe, a time says its day, date and zone, as a copy is
         // read later or elsewhere.

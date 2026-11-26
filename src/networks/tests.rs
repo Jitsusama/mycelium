@@ -2038,6 +2038,38 @@ fn a_wide_machine_name_keeps_what_follows_in_line() {
     );
 }
 
+#[test]
+fn a_wide_team_short_keeps_what_follows_in_line() {
+    let [mut teams, sessions, machines] = records();
+    // A team's short name is its quest's, so it may be Han, two cells
+    // a character; the column it sets is as wide as it draws.
+    teams[1]["title"] = json!("港湾見張り: 潮");
+    let mycelium = Mycelium::of("work", &teams, &sessions, &machines);
+    let shown = overview(&mycelium, &look(), false, true);
+    // Measured by Unicode's widths directly, not by the code under test,
+    // as nothing here is coloured.
+    let cells = <str as unicode_width::UnicodeWidthStr>::width;
+    let line = |start: &str| {
+        shown
+            .lines()
+            .find(|line| line.starts_with(start))
+            .unwrap_or_default()
+    };
+    let before = |start: &str, word: &str| {
+        let line = line(start);
+        line.find(word).map(|at| cells(&line[..at]))
+    };
+    let header = line("     ");
+    assert!(
+        shown.lines().all(|line| cells(line) <= 80)
+            && before("  harbor ", "Harbour Ships") == Some(2 + cells("港湾見張り") + 2)
+            && before("  dinghy ", "ready") == before("  harbor ", "Harbour Ships")
+            && cells(line("    港湾見張り "))
+                == cells(&header[..header.find("  stuck").unwrap_or(0)]),
+        "a wide short moved what follows it:\n{shown}"
+    );
+}
+
 /// The look a pipe is drawn with: whole, never in colour.
 fn whole() -> Look {
     Look {
