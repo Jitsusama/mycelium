@@ -1403,7 +1403,11 @@ pub(crate) fn one_line(text: &str) -> String {
     // since the last character that took one: unicode-width counts a
     // letter after a coeng as none even past a selector or a joiner
     // between them, and no character of another script, which a coeng
-    // never follows, can start a run.
+    // never follows, can start a run. A coeng follows only a Khmer
+    // character given a cell of its own, so never a coeng or a sign
+    // drawn on the letter before, as Khmer spells a subscript straight
+    // after its letter; one after a joiner is always dropped, and
+    // vouches for no joiner before it.
     let mut joined = 0;
     let mut subscripts = 0;
     let mut subscripting = false;
@@ -1412,17 +1416,21 @@ pub(crate) fn one_line(text: &str) -> String {
         let keep = match each {
             '\u{200C}' | '\u{200D}' => {
                 before.is_some_and(|before| spells(before) || selects(before))
-                    && plain.get(at + 1).is_some_and(|after| spells(*after))
+                    && plain
+                        .get(at + 1)
+                        .is_some_and(|after| spells(*after) && *after != COENG)
                     && (each == '\u{200C}' || joined < MOST_JOINED)
             }
             each if selects(each) => before.is_some_and(spells),
-            COENG => before.is_some_and(khmer) && subscripts < MOST_SUBSCRIPTS,
+            COENG => {
+                before.is_some_and(|before| khmer(before) && takes_a_cell(before))
+                    && subscripts < MOST_SUBSCRIPTS
+            }
             each => !unseen(each),
         };
         if keep {
             kept.push(each);
-            let takes_a_cell =
-                unicode_width::UnicodeWidthChar::width(each).is_some_and(|cells| cells > 0);
+            let takes_a_cell = takes_a_cell(each);
             if each == '\u{200D}' {
                 joined += 1;
             } else if before != Some('\u{200D}')
@@ -1468,8 +1476,14 @@ const COENG: char = '\u{17D2}';
 /// what it counts.
 const MOST_SUBSCRIPTS: usize = 2;
 
-/// Whether `each` is of the Khmer script, in its own block or among its
-/// symbols, as the only letter a coeng sets a subscript under is.
+/// Whether unicode-width gives `each` a cell of its own.
+fn takes_a_cell(each: char) -> bool {
+    unicode_width::UnicodeWidthChar::width(each).is_some_and(|cells| cells > 0)
+}
+
+/// Whether `each` is any character of the Khmer blocks, its letters,
+/// signs, digits and symbols alike, which a coeng may follow where it
+/// takes a cell.
 const fn khmer(each: char) -> bool {
     matches!(each, '\u{1780}'..='\u{17FF}' | '\u{19E0}'..='\u{19FF}')
 }
@@ -3819,6 +3833,15 @@ mod tests {
         use unicode_width::UnicodeWidthStr;
         let ka = "\u{1780}";
         let coeng = "\u{17D2}";
+        // What the rows below rest on: past a selector or a joiner after a
+        // coeng, unicode-width still counts the letter as none.
+        for between in ["\u{FE00}", "\u{200D}"] {
+            assert_eq!(
+                format!("{ka}{coeng}{between}{ka}").width(),
+                1,
+                "unicode-width counts a letter past a coeng and {between:?}"
+            );
+        }
         for (given, kept) in [
             // A mark takes no cell, so the third coeng is still the run's.
             (
@@ -3835,8 +3858,9 @@ mod tests {
                 format!("{ka}{coeng}\u{200D}").repeat(3) + ka,
                 format!("{ka}{coeng}\u{200D}{ka}{coeng}\u{200D}{ka}\u{200D}{ka}"),
             ),
-            // A character of another script, a joined emoji here, ends no
-            // run, though a Khmer sign after it lets a coeng follow.
+            // A character of another script, an emoji here, ends no run,
+            // nor does a sign after it drawn on what's before, which no
+            // coeng follows.
             (
                 format!("{ka}{coeng}{ka}{coeng}{ka}\u{1F469}\u{17B7}{coeng}{ka}"),
                 format!("{ka}{coeng}{ka}{coeng}{ka}\u{1F469}\u{17B7}{ka}"),
@@ -3858,6 +3882,28 @@ mod tests {
                 format!("\u{2D30}\u{2D7F}\u{2D31}{coeng}{ka}"),
                 format!("\u{2D30}\u{2D7F}\u{2D31}{ka}"),
             ),
+            // Nor a coeng, or a sign drawn on the letter before, so a
+            // doubled one keeps only its first, and none follows a sign,
+            // whether it starts the text or not.
+            (
+                format!("{ka}{coeng}{coeng}{ka}"),
+                format!("{ka}{coeng}{ka}"),
+            ),
+            (format!("\u{17B7}{coeng}{ka}"), format!("\u{17B7}{ka}")),
+            (
+                format!("{ka}\u{17B7}{coeng}{ka}"),
+                format!("{ka}\u{17B7}{ka}"),
+            ),
+            // Nor a joiner, so a joiner before a coeng joins nothing and
+            // is dropped, and the coeng follows what's before it, kept
+            // after Khmer and dropped after any other script.
+            (format!("{ka}\u{200D}{coeng}a"), format!("{ka}{coeng}a")),
+            (
+                format!("{ka}\u{200C}{coeng}tern"),
+                format!("{ka}{coeng}tern"),
+            ),
+            (format!("{ka}\u{200D}{coeng}"), format!("{ka}{coeng}")),
+            (format!("\u{E9}\u{200D}{coeng}a"), "\u{E9}a".to_owned()),
         ] {
             let cleaned = one_line(&given);
             assert_eq!(cleaned, kept, "{given:?} kept the wrong coengs");
@@ -3866,15 +3912,65 @@ mod tests {
                 cleaned,
                 "cleaned again, {given:?} changed"
             );
-            // However it's spelt, a run draws at most three letters for
-            // the cell it counts.
-            let letters = cleaned.matches(ka).count();
-            assert!(
-                letters <= 3 * cleaned.width(),
-                "{cleaned:?} counts {} cells for {letters} letters",
-                cleaned.width()
-            );
         }
+    }
+
+    #[test]
+    fn every_short_text_of_khmer_and_emoji_cleans_once_for_all_within_its_bound() {
+        use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+        // Every text of up to six characters from each alphabet: a second
+        // clean changes nothing, and a terminal drawing each character's
+        // own cells draws at most three times the cells unicode-width
+        // counts for Khmer, as MOST_SUBSCRIPTS bounds a run, and four
+        // with emoji, as MOST_JOINED bounds a chain.
+        let drawn =
+            |text: &str| -> usize { text.chars().filter_map(UnicodeWidthChar::width).sum() };
+        let sweep = |alphabet: &[char], bound: usize| {
+            for length in 1..=6 {
+                for number in 0..alphabet.len().pow(length) {
+                    let mut left = number;
+                    let given: String = (0..length)
+                        .map(|_| {
+                            let each = alphabet[left % alphabet.len()];
+                            left /= alphabet.len();
+                            each
+                        })
+                        .collect();
+                    let cleaned = one_line(&given);
+                    assert_eq!(
+                        one_line(&cleaned),
+                        cleaned,
+                        "cleaned again, {given:?} changed"
+                    );
+                    assert!(
+                        drawn(&cleaned) <= bound * cleaned.width(),
+                        "{given:?} cleans to {cleaned:?}, drawn as {} cells for {} counted",
+                        drawn(&cleaned),
+                        cleaned.width()
+                    );
+                }
+            }
+        };
+        let (ka, coeng) = ('\u{1780}', '\u{17D2}');
+        sweep(
+            &[
+                ka, coeng, '\u{200D}', '\u{200C}', '\u{FE00}', '\u{17B6}', '\u{17B7}', 'x', ' ',
+            ],
+            3,
+        );
+        sweep(
+            &[
+                ka,
+                coeng,
+                '\u{200D}',
+                '\u{FE00}',
+                '\u{17B7}',
+                '\u{1F469}',
+                '\u{1F3FB}',
+                'x',
+            ],
+            4,
+        );
     }
 
     #[test]

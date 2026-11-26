@@ -3658,13 +3658,15 @@ grapheme, such as U+09BE; no nonspacing mark, conjoining jamo vowel or
 final, or selector is) and following no zero-width joiner kept, to the
 next, the rest dropped, a non-joiner (U+200C) never counted; a Khmer
 coeng (U+17D2) only after a Khmer character (U+1780 to U+17FF or
-U+19E0 to U+19FF), and at most two from the start or from one Khmer
-character given a cell with no coeng kept since the last character
-given one, whatever script, skin tone or flag comes between, the rest
-dropped; each judged against what is kept so far; and then is trimmed of such
-spaces and braille blanks (U+2800), and cut to its first 120 characters,
-then cleaned again, so it ends in no space and no joiner left joining
-nothing; `folder` is 1 to 1024 bytes. A
+U+19E0 to U+19FF) given a cell by that per-character width, so never
+after a coeng or a sign drawn on the letter before, and at most two
+from the start or from one Khmer character given a cell with no coeng
+kept since the last character of any script given one, whatever skin
+tone or flag comes between, the rest dropped; each judged against
+what is kept so far; and then is trimmed of such spaces and braille
+blanks (U+2800), and cut to its first 120 characters, then cleaned
+again, so it ends in no space and no joiner left joining nothing;
+`folder` is 1 to 1024 bytes. A
 `for` said as null or as anything but text is unsaid, and one unsaid,
 empty or cleaned to nothing is left out of the cell record. A cell's
 first 16 shares are read, those past these bounds are passed over,
