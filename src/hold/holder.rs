@@ -1370,8 +1370,10 @@ impl Shown {
                 .unwrap_or_else(PoisonError::into_inner)
                 .take()
                 .map_or(Duration::ZERO, |at| at.elapsed());
-            let typed =
-                std::mem::take(&mut *self.typed.lock().unwrap_or_else(PoisonError::into_inner));
+            self.typed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clear();
             *self.literal.lock().unwrap_or_else(PoisonError::into_inner) = false;
             let echo =
                 std::mem::take(&mut *self.echo.lock().unwrap_or_else(PoisonError::into_inner));
