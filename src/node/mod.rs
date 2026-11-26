@@ -5072,11 +5072,37 @@ impl<S: Store> Shared<S> {
     /// session lasts. Only carries read them so: a make lives as long as
     /// the work it was made for, so placement reading its end as a
     /// leaving would refuse that very work once the machine links.
+    ///
+    /// Each end is the book's as well as this run's, so a make that stood
+    /// across a restart, which only one whose provider is still asked is
+    /// booked again for, still ends. One whose end has passed is gone, as
+    /// one past its own leaving is. Where the book can't be read, no
+    /// machine that costs money is carried to, since none can be told
+    /// apart from one made to live an hour.
     fn as_carried(&self, machines: Vec<facts::Machine>) -> Vec<facts::Machine> {
-        let ends = self.lock().ends.clone();
+        let mut ends = self.lock().ends.clone();
+        let readable = match self.book.standing() {
+            Ok(standing) => {
+                for made in standing.made.iter().chain(&standing.unnamed) {
+                    ends.entry(made.machine.clone())
+                        .and_modify(|end| *end = (*end).min(made.until))
+                        .or_insert(made.until);
+                }
+                true
+            }
+            Err(error) => {
+                eprintln!(
+                    "the book of machines made can't be read, so no paid machine is carried to: {error}"
+                );
+                false
+            }
+        };
+        let now = jiff::Timestamp::now();
         machines
             .into_iter()
+            .filter(|one| readable || !one.declared.as_ref().is_some_and(|said| said.costs_money))
             .map(|one| leaving_as_made(one, &ends))
+            .filter(|one| !one.declared.as_ref().is_some_and(|said| said.has_left(now)))
             .collect()
     }
 
