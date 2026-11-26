@@ -1458,16 +1458,21 @@ fn worker_refuses() -> Because {
 /// a worker and the work names no worker of `machines`, it stays on
 /// `here`, so an agent on a machine lent for its work runs that work
 /// where it was lent, never on the person's own machines, which it was
-/// never given. One of the person's own cloud machines is no worker here,
-/// so work asked on it spreads as work asked on any of theirs. Needing a
-/// cloud machine names no worker here, since the person's own are cloud
-/// machines too, so it keeps such work where it was lent as well.
+/// never given. `here` is judged by what it declares alone: its own node
+/// never hears a link mark it a worker, so a machine lent for agents
+/// that says it stays reads as one of the person's own cloud machines,
+/// and only pinning every paid machine's work keeps a lent one's there;
+/// work asked on one of the person's own stays there too, which is the
+/// first place it would go. Another machine is a worker unless it is
+/// one of the person's own cloud machines, and needing a cloud machine
+/// names no worker, since the person's own are cloud machines too.
 #[must_use]
 pub fn asked_on(work: &Work, here: &Machine, machines: &[Machine], now: jiff::Timestamp) -> Work {
     let mut work = work.clone();
     let is_worker = |one: &Machine| {
         one.declared.as_ref().is_some_and(Declared::is_worker) && !is_the_persons_cloud(one, now)
     };
+    let pins_here = here.declared.as_ref().is_some_and(Declared::is_worker);
     let lasting = lasting_reach(machines, now);
     let names_one = work.needs.iter().any(|need| match need {
         Need::Reach(network) => !lasting.contains(network.as_str()),
@@ -1476,7 +1481,7 @@ pub fn asked_on(work: &Work, here: &Machine, machines: &[Machine], now: jiff::Ti
             .any(|one| is_worker(one) && one.name == *name),
         _ => false,
     });
-    if is_worker(here) && !names_one {
+    if pins_here && !names_one {
         work.needs.push(Need::Machine(here.name.clone()));
     }
     work
@@ -3641,10 +3646,13 @@ pub(crate) mod tests {
         let declared = theirs.declared.as_mut().expect("declared");
         declared.costs_money = true;
         declared.leaves_at = Some("9999-01-01T00:00:00Z".parse().expect("a time"));
-        assert_eq!(
-            asked_on(&at_home, &theirs, &realm, now()),
-            at_home,
-            "and so is work asked on one of the person's own cloud machines"
+        let mut kept_room = theirs.clone();
+        kept_room.name = "harbour".to_owned();
+        assert!(
+            asked_on(&at_home, &kept_room, &realm, now())
+                .needs
+                .contains(&Need::Machine("harbour".to_owned())),
+            "a paid machine that says it stays, as a lent room may, keeps the work asked on it"
         );
         // What the person's own cloud machine reaches, and its being a
         // cloud machine, name no worker, so neither takes lent work there.

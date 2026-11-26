@@ -102,12 +102,19 @@ impl DeclaredHeard {
 }
 
 /// Whether a machine taken to declare `declared` is withheld the quests
-/// above those shared with it: a worker is, and so is one declaring
-/// nothing, and one whose last declaration is `standing_in` for nothing,
-/// since what it declares now is unknown, though what it stands on for a
-/// carry is kept.
-pub(super) fn withheld_above(declared: Option<&Declared>, standing_in: bool) -> bool {
-    standing_in || declared.is_none_or(Declared::is_worker)
+/// above those shared with it: a worker is, unless it is `the_persons`
+/// own cloud machine, as placement judges it
+/// ([`crate::placement::is_the_persons_cloud`]), where sessions go as to
+/// any of theirs and so need the quests above their own; and so is one
+/// declaring nothing, and one whose last declaration is `standing_in`
+/// for nothing, since what it declares now is unknown, though what it
+/// stands on for a carry is kept.
+pub(super) fn withheld_above(
+    declared: Option<&Declared>,
+    standing_in: bool,
+    the_persons: bool,
+) -> bool {
+    standing_in || declared.is_none_or(|said| said.is_worker() && !the_persons)
 }
 
 #[cfg(test)]
@@ -208,14 +215,14 @@ mod tests {
         let began = Instant::now();
         let declared = declaring.heard("tern", (Some(fenced()), false), began);
         assert!(
-            !withheld_above(declared.as_ref(), declaring.standing_in()),
+            !withheld_above(declared.as_ref(), declaring.standing_in(), false),
             "a peer declaring itself is shared quests above"
         );
 
         let kept = declaring.heard("tern", SILENT, began + Duration::from_secs(30));
 
         assert!(
-            kept.is_some() && withheld_above(kept.as_ref(), declaring.standing_in()),
+            kept.is_some() && withheld_above(kept.as_ref(), declaring.standing_in(), true),
             "kept for a carry, it is withheld them while it says nothing"
         );
     }
@@ -234,7 +241,8 @@ mod tests {
         );
 
         assert!(
-            !declaring.standing_in() && !withheld_above(again.as_ref(), declaring.standing_in()),
+            !declaring.standing_in()
+                && !withheld_above(again.as_ref(), declaring.standing_in(), false),
             "a peer that declares itself again is no longer withheld quests above"
         );
     }
@@ -254,8 +262,27 @@ mod tests {
             "what stood in for a silence goes once the node answers declaring nothing"
         );
         assert!(
-            withheld_above(None, declaring.standing_in()),
+            withheld_above(None, declaring.standing_in(), true),
             "declaring nothing, it is still withheld quests above"
+        );
+    }
+
+    // One of the person's own cloud machines costs money, as a lent worker
+    // does, but takes sessions as any of theirs, so it is given the
+    // quests above the one a session there works on.
+    #[test]
+    fn the_persons_own_cloud_machine_is_given_the_quests_above() {
+        let paid = Declared {
+            costs_money: true,
+            ..fenced()
+        };
+        assert!(
+            withheld_above(Some(&paid), false, false),
+            "a worker is withheld them"
+        );
+        assert!(
+            !withheld_above(Some(&paid), false, true),
+            "one of the person's own cloud machines isn't"
         );
     }
 }

@@ -564,8 +564,10 @@ orchestrates it. One shared only so carries its `README.md` alone, none
 of its attachments, journey, other documents or scratch, and no
 `Shares` names its scratch or clones; it carries its whole record once
 either end shares it on its own. Nothing above is carried to a worker,
-and an end is taken for one until its `Machine` frame declares it is
-not, so an end that takes no facts, saying no `Machine` frame, is sent
+though it is to one of the person's own cloud machines, as placement
+judges one, since sessions go there as to any of theirs, and an end is
+taken for a worker until its `Machine` frame declares it is not, so an
+end that takes no facts, saying no `Machine` frame, is sent
 none, and the node withholding logs so unless it links that end as a
 worker. A hold lifted takes up what the other end said of its scratch
 while withheld. One shared only so stops being shared, at both ends,

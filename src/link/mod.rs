@@ -2419,7 +2419,8 @@ impl<S: Store> End<S> {
     /// Keeps what the other end says its machine is, which only it can
     /// say: a machine named otherwise is refused, and it is ready while
     /// this link carries it, whatever it claims. A worker is withheld the
-    /// quests above those shared with it, and so is a machine that declares
+    /// quests above those shared with it, though not one of the person's
+    /// own cloud machines, and so is a machine that declares
     /// nothing of itself, as a node does for a while as it restarts, even
     /// while what it last declared stands in for nothing.
     fn keep_machine(&mut self, mut said: Machine) {
@@ -2451,6 +2452,7 @@ impl<S: Store> End<S> {
             exchange.withhold_above(declared_heard::withheld_above(
                 said.declared.as_ref(),
                 self.heard_declared.standing_in(),
+                crate::placement::is_the_persons_cloud(&said, jiff::Timestamp::now()),
             ));
         }
         self.kept(&said.name, self.store.put_machine(&said));
