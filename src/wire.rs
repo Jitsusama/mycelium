@@ -275,8 +275,11 @@ pub struct Taking {
 /// where placement chooses, where its folder is a repository's own
 /// checkout under `~/src` fetching from a remote, beginning here instead
 /// where the machine chosen hasn't it; here otherwise; and never on one
-/// that costs money unless it names one or needs the cloud.
+/// that costs money unless it names one or needs the cloud. A field it
+/// doesn't know is refused, so work needing what this node can't read,
+/// as `needs` was to nodes before it, never starts here unsaid.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Sprout {
     /// The work: a link alone, or words.
     pub words: Vec<String>,
@@ -562,6 +565,11 @@ pub struct Offers {
     /// Why a program couldn't say what it offers, by the program, so
     /// none of them is taken as offering nothing.
     pub unanswered: BTreeMap<String, String>,
+    /// The needs without a value a sprout may name that this node places
+    /// by, such as [`Need::Cloud`], so a client offers work needing one
+    /// only where it is placed by it. A node from before says none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<Need>,
 }
 
 /// A change, as a watch sends it.
@@ -675,5 +683,35 @@ mod tests {
             serde_json::from_str::<Start>(later).is_ok(),
             "a start saying more than this end knows still reads"
         );
+    }
+
+    #[test]
+    fn a_sprout_saying_more_than_this_node_knows_is_refused() {
+        let cloud = r#"{"Sprout":{"words":["fix it"],"needs":["cloud"]}}"#;
+        let Request::Sprout(read) = serde_json::from_str::<Request>(cloud).expect("it reads")
+        else {
+            panic!("a sprout reads as a sprout");
+        };
+        assert_eq!(read.needs, vec![Need::Cloud]);
+        let later = r#"{"Sprout":{"words":["fix it"],"needs_later":["cloud"]}}"#;
+        assert!(
+            serde_json::from_str::<Request>(later).is_err(),
+            "a field it can't read may say where the work must go, so it never starts unsaid"
+        );
+    }
+
+    #[test]
+    fn the_needs_a_node_places_by_are_said_with_its_offers_and_an_older_node_says_none() {
+        let placed = Offers {
+            needs: vec![Need::Cloud],
+            ..Offers::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&placed).expect("offers write"),
+            r#"{"offers":[],"unanswered":{},"needs":["cloud"]}"#
+        );
+        let older: Offers = serde_json::from_str(r#"{"offers":[],"unanswered":{}}"#)
+            .expect("an older answer reads");
+        assert!(older.needs.is_empty(), "an older node places by none");
     }
 }

@@ -4785,7 +4785,10 @@ impl<S: Store> Shared<S> {
         }
         let mut asked = asking.join_all().await;
         asked.sort_by_key(|(order, _, _)| *order);
-        let mut offers = Offers::default();
+        let mut offers = Offers {
+            needs: vec![Need::Cloud],
+            ..Offers::default()
+        };
         for (_, program, said) in asked {
             match said {
                 Ok(each) => offers.offers.extend(each),

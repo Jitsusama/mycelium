@@ -2007,7 +2007,12 @@ hourly cost is a decimal written out, such as `"0.12"`, in a
 three-letter currency; `lasts` is the longest one lives, in seconds,
 where its provider fixes it. Each offer comes back with the `provider`
 that offered it, and a program that couldn't say is in `unanswered`
-with why, rather than taken as offering nothing. An offer is the
+with why, rather than taken as offering nothing. Beside them, `needs`
+lists the needs without a value this node places a `"Sprout"` by,
+`["cloud"]`, so a client offers cloud work only where a node says it;
+a node from before says none, and drops a sprout's `needs` unsaid,
+where a node that says them refuses a sprout field it doesn't know.
+An offer is the
 provider's promise, never a fact about a machine: it only decides
 whether one is worth making, and once made, the machine's own node says
 what it is.
