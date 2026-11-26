@@ -11,13 +11,13 @@
 //! won't take it, it is a line on the holder's standard error, which a
 //! node's holder shares with the node, so it lands on the node's log.
 
-use std::io::{self, Write};
+use std::io;
 use std::os::unix::net::UnixDatagram;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
-use super::holder::{PARKED, RELEASED};
+use super::holder::{PARKED, RELEASED, logs_to};
 
 /// Where the journal takes entries in its own form.
 const JOURNAL_SOCKET: &str = "/run/systemd/journal/socket";
@@ -69,8 +69,9 @@ pub struct Ended {
 }
 
 impl Ended {
-    /// What it says, in a line, each name kept to it, so none can end
-    /// its entry's `MESSAGE` and start a field of its own.
+    /// What it says, in a line, each name [`named`], so none can end its
+    /// entry's `MESSAGE` and start a field of its own, or reach whoever
+    /// reads it with a control.
     #[must_use]
     pub fn line(&self) -> String {
         let how = match self.how {
@@ -84,9 +85,9 @@ impl Ended {
         };
         format!(
             "held {} in {}: {} (pid {}) {how}",
-            one_line(&self.id),
-            one_line(&self.realm),
-            one_line(&self.program),
+            named(&self.id),
+            named(&self.realm),
+            named(&self.program),
             self.pid
         )
     }
@@ -111,9 +112,9 @@ impl Ended {
             ("MESSAGE", self.line()),
             ("PRIORITY", priority.to_string()),
             ("SYSLOG_IDENTIFIER", "mycelium".to_owned()),
-            ("MYCELIUM_HELD", one_line(&self.id)),
-            ("MYCELIUM_REALM", one_line(&self.realm)),
-            ("MYCELIUM_PROGRAM", one_line(&self.program)),
+            ("MYCELIUM_HELD", named(&self.id)),
+            ("MYCELIUM_REALM", named(&self.realm)),
+            ("MYCELIUM_PROGRAM", named(&self.program)),
             ("MYCELIUM_PROGRAM_PID", self.pid.to_string()),
             ("EXIT_CODE", code.to_owned()),
             ("EXIT_STATUS", status),
@@ -124,10 +125,23 @@ impl Ended {
     }
 }
 
-/// `text` with no line breaks, which the journal's simple form can't
-/// hold in a value.
-fn one_line(text: &str) -> String {
-    text.replace(['\n', '\r'], " ")
+/// A name a hold was given, as the node's log and the journal both
+/// write it: each control, backslash and character that doesn't show
+/// escaped as Rust writes it, so none breaks a line, starts a field of
+/// the journal's simple form or turns the text around it, and every
+/// other letter, quotes included, as itself. The holder's quotes of a
+/// program's output are escaped as bytes instead, as those needn't be
+/// text.
+pub(super) fn named(text: &str) -> String {
+    text.chars()
+        .fold(String::with_capacity(text.len()), |mut kept, letter| {
+            if matches!(letter, '\'' | '"') {
+                kept.push(letter);
+            } else {
+                kept.extend(letter.escape_debug());
+            }
+            kept
+        })
 }
 
 /// A signal's name as `kill -l` says it, for those a program is likeliest
@@ -189,22 +203,17 @@ impl Journal for SystemJournal {
     fn ended(&self, ended: &Ended) {
         if self.send(&ended.entry()).is_err() {
             // Nothing is left to say it to when even standard error is
-            // gone. Said in one write, as the holder's own lines are
-            // (holder.rs's logs), so another holder's can't split it.
-            let _ = io::stderr()
-                .lock()
-                .write_all(said_instead(ended).as_bytes());
+            // gone. Said as the holder's own lines are, in one write, so
+            // another holder's can't split it.
+            logs_to(&mut io::stderr().lock(), &said_instead(ended));
         }
     }
 }
 
 /// What standard error is told of `ended` when the journal can't be:
-/// its line, with its line end, escaped so no control in the program's
-/// words reaches whoever reads the log. Escaped as text, not as bytes as
-/// the holder's quotes of a program's output are, as a line is text
-/// whose printable letters read as themselves.
+/// its line, each name in it written as the node's log writes it.
 fn said_instead(ended: &Ended) -> String {
-    format!("mycelium: {}\n", ended.line().escape_debug())
+    format!("mycelium: {}", ended.line())
 }
 
 #[cfg(test)]
@@ -271,7 +280,7 @@ mod tests {
             ..ended(How::Exited(0))
         };
         assert!(
-            odd.entry().contains("MYCELIUM_PROGRAM=pi rm\n"),
+            odd.entry().contains("MYCELIUM_PROGRAM=pi\\nrm\n"),
             "a value keeps to its line: {}",
             odd.entry()
         );
@@ -283,7 +292,7 @@ mod tests {
         assert!(
             named
                 .entry()
-                .starts_with("MESSAGE=held trial1 PRIORITY=0 in harbour X: pi (pid 42)"),
+                .starts_with("MESSAGE=held trial1\\nPRIORITY=0 in harbour\\rX: pi (pid 42)"),
             "a name keeps to the message's line: {}",
             named.entry()
         );
@@ -292,13 +301,38 @@ mod tests {
     #[test]
     fn standard_error_is_told_an_end_escaped_in_one_line() {
         let odd = Ended {
+            id: "ana's".to_owned(),
             program: "pi\x1b]0;caught\x07 \u{e9}".to_owned(),
             ..ended(How::Exited(1))
         };
+        let mut told = Vec::new();
+        logs_to(&mut told, &said_instead(&odd));
         assert_eq!(
-            said_instead(&odd),
-            "mycelium: held trial1 in harbour: pi\\u{1b}]0;caught\\u{7} \u{e9} (pid 42) exited 1\n",
-            "its controls escaped, its letters as they are, its line end with it"
+            String::from_utf8(told).expect("text"),
+            "mycelium: held ana's in harbour: pi\\u{1b}]0;caught\\u{7} \u{e9} (pid 42) exited 1\n",
+            "its controls escaped, its letters and quotes as they are, its line end with it"
+        );
+        assert_eq!(
+            odd.entry().lines().next(),
+            Some(
+                "MESSAGE=held ana's in harbour: pi\\u{1b}]0;caught\\u{7} \u{e9} (pid 42) exited 1"
+            ),
+            "the journal is given the same line, no control reaching it raw"
+        );
+    }
+
+    #[test]
+    fn a_name_is_written_one_way_with_nothing_in_it_turning_the_text() {
+        assert_eq!(named("trial1"), "trial1", "a plain name is as it was given");
+        assert_eq!(
+            named("ana's \"pi\" \u{e9}"),
+            "ana's \"pi\" \u{e9}",
+            "quotes and letters as themselves"
+        );
+        assert_eq!(
+            named("a\\b\nc\rd\x1b\u{202e}e"),
+            "a\\\\b\\nc\\rd\\u{1b}\\u{202e}e",
+            "a backslash, line breaks, a control and a right-to-left override escaped"
         );
     }
 

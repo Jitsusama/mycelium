@@ -24,7 +24,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinSet;
 
 use super::environment::{Environment, keeping_path};
-use super::journal::{Ended, How, Journal};
+use super::journal::{Ended, How, Journal, named};
 use super::modes::Modes;
 use super::steering::{Heard, Steers, Watching};
 use super::title::Title;
@@ -625,14 +625,8 @@ pub async fn hold(
             {
                 // Said on the node's log, since the window ends as on any
                 // exit: a wrapper that runs attach without exec passes its
-                // 69 on with another pid's file. What the file held is
-                // quoted with its escapes, since a program wrote it, and
-                // the id escaped as every holder line names it.
-                logs(&format!(
-                    "mycelium: {} exited {GONE}, but its gone file ({said:?}) doesn't say \
-                     {pid} saw its pi host go, so its window ends",
-                    holding.id.as_bytes().escape_ascii(),
-                ));
+                // 69 on with another pid's file.
+                logs(&gone_unheard(&holding.id, said, pid));
             }
             let gone = how.is_some();
             // A quit to park that hung is ended by a signal, which says no
@@ -930,9 +924,11 @@ fn echoes_as_itself(echo: &mut Vec<u8>, byte: u8) {
     }
 }
 
-/// How much of `output` begins as the terminal's echo of `typed`, kept as
+/// What of `typed` is still to come back as the terminal's echo after
+/// `output`, and how much of `output` begins as that echo, kept as
 /// [`as_echoed`] makes it, with erasures only where an erasing key was
-/// typed, and what is left of `typed` after it. What follows, from the
+/// typed. An erasure a read's end cut comes first in what is still to
+/// come back, as what's left of it is. What follows the echo, from the
 /// first byte that isn't an echo of what is still to come back, is the
 /// program drawing: erasures nothing typed asked for are its own.
 fn echoed(typed: &[u8], output: &[u8]) -> (Vec<u8>, usize) {
@@ -1231,13 +1227,25 @@ struct Shown {
 /// The most of what took [`STARTING_LINE`] away that the log quotes.
 const SHOWN_LOGGED: usize = 48;
 
+/// What took [`STARTING_LINE`] away, for the log to quote.
+#[derive(Debug, Clone, Copy)]
+enum Took<'a> {
+    /// Its program's output, which holds a key the person pressed where
+    /// the echo is read wrong or the program draws a key again, so it is
+    /// quoted only when no key was typed while the line stood.
+    Drawn(&'a [u8]),
+    /// The holder's own line, or nothing as its program ended, which
+    /// holds no key, so it is quoted whatever was typed.
+    Own(&'static [u8]),
+}
+
 /// What the node's log says of `id`'s [`STARTING_LINE`] going after it
 /// `stood`, as `why`, quoting the start of what was `shown` with its
-/// escapes, since a program wrote it, or saying it quotes none where
-/// nothing is, as once keys were typed. The id is escaped too, as
+/// escapes as bytes, since a program wrote it, or saying it quotes none
+/// where nothing is, as once keys were typed. The id is [`named`], as
 /// `holder --id` takes any words.
 fn starting_line_went(id: &str, stood: Duration, why: &str, shown: Option<&[u8]>) -> String {
-    let id = id.as_bytes().escape_ascii();
+    let id = named(id);
     match shown {
         Some(shown) => format!(
             "mycelium: {id}'s starting line went after {stood:?}, as {why}: \"{}\"",
@@ -1257,9 +1265,32 @@ fn logs(line: &str) {
     logs_to(&mut io::stderr().lock(), line);
 }
 
+/// What the node's log says when `id`'s program exited [`GONE`] but the
+/// gone file, which `said` held, doesn't say `pid` saw its pi host go.
+/// What the file held is quoted with its escapes, since a program wrote
+/// it, and the id [`named`] as every holder line names it.
+fn gone_unheard(id: &str, said: &str, pid: u32) -> String {
+    format!(
+        "mycelium: {} exited {GONE}, but its gone file ({said:?}) doesn't say {pid} saw \
+         its pi host go, so its window ends",
+        named(id)
+    )
+}
+
+/// What the node's log says when a window of `id` fell `missed` pieces
+/// of output behind, a stall worth finding, its id [`named`].
+fn fell_behind(id: &str, missed: u64) -> String {
+    format!(
+        "mycelium: a window of {} fell {missed} pieces of output behind, so its program \
+         draws it whole again",
+        named(id)
+    )
+}
+
 /// Says `line` to `out` as [`logs`] says it to the node's log: with its
-/// line end, in one write, and a failed write let go.
-fn logs_to(out: &mut impl io::Write, line: &str) {
+/// line end, in one write, and a failed write let go. The journal's
+/// stderr fallback says its line so too.
+pub(super) fn logs_to(out: &mut impl io::Write, line: &str) {
     let mut whole = String::with_capacity(line.len() + 1);
     whole.push_str(line);
     whole.push('\n');
@@ -1271,7 +1302,7 @@ impl Shown {
     /// given what's left of it and let go.
     fn ends(&self) {
         // One ending before it drew leaves nothing saying it starts.
-        self.unsays_start("it ended", Some(b""));
+        self.unsays_start("it ended", Took::Own(b""));
         self.over.send_replace(true);
     }
 
@@ -1291,7 +1322,7 @@ impl Shown {
         };
         // A read that is only echo leaves the line standing.
         if echo == 0 || echo < bytes.len() {
-            self.unsays_start(why, Some(&bytes[echo..]));
+            self.unsays_start(why, Took::Drawn(&bytes[echo..]));
             self.passes(&bytes[echo..], None);
         }
         let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1351,14 +1382,13 @@ impl Shown {
     /// claim and the sending are one step under the lock a window joins
     /// under, so it is taken away once however many ask, and no window
     /// joins between them to be told it. Said on the node's log, with
-    /// `why` and the start of what was `shown`, as a line gone too soon,
+    /// `why` and the start of what `took` it, as a line gone too soon,
     /// say as a login shell's dotfiles set a title, is otherwise silent.
-    /// Once a key was typed while the line stood, nothing `shown` is
-    /// quoted: where the echo is read wrong, or its program draws a key
-    /// again, what came holds a key the person pressed, and the log keeps
-    /// none of them. The log is written once the locks are let go, so no
-    /// lock is held across a write that may wait.
-    fn unsays_start(&self, why: &str, shown: Option<&[u8]>) {
+    /// Once a key was typed while the line stood, nothing its program
+    /// drew is quoted ([`Took::Drawn`]), and the log keeps no key. The
+    /// log is written once the locks are let go, so no lock is held
+    /// across a write that may wait.
+    fn unsays_start(&self, why: &str, took: Took<'_>) {
         let mut modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         let mut said = self.said.lock().unwrap_or_else(PoisonError::into_inner);
         let mut went = None;
@@ -1379,7 +1409,10 @@ impl Shown {
                 std::mem::take(&mut *self.echo.lock().unwrap_or_else(PoisonError::into_inner));
             let keyed =
                 std::mem::take(&mut *self.keyed.lock().unwrap_or_else(PoisonError::into_inner));
-            let quoted = shown.filter(|_| !keyed);
+            let quoted = match took {
+                Took::Drawn(shown) => Some(shown).filter(|_| !keyed),
+                Took::Own(line) => Some(line),
+            };
             went = Some(starting_line_went(&self.id, stood, why, quoted));
             // Neither a mode nor a title, so it needn't be read as `passes` does.
             let _ = self.output.send(Arc::from(STARTING_CLEARED));
@@ -1414,14 +1447,14 @@ impl Shown {
     /// Passes the holder's own `line` to every joined terminal, and to
     /// each joining until anything else is shown.
     fn says(&self, line: &'static [u8]) {
-        self.unsays_start("the holder said another line", Some(line));
+        self.unsays_start("the holder said another line", Took::Own(line));
         self.passes(line, Some(line));
     }
 
     /// Passes the holder's own `line` to every joined terminal, and to
     /// each joining until the program starts again.
     fn stands(&self, line: &'static [u8]) {
-        self.unsays_start("the holder said a line that stands", Some(line));
+        self.unsays_start("the holder said a line that stands", Took::Own(line));
         let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         *self.standing.lock().unwrap_or_else(PoisonError::into_inner) = Some(line);
         drop(modes);
@@ -1549,11 +1582,7 @@ async fn serve(
                     // is copied out first, so the record isn't held while
                     // the log is written.
                     let id = record.kept().held.id.clone();
-                    logs(&format!(
-                        "mycelium: a window of {} fell {missed} pieces of output behind, \
-                         so its program draws it whole again",
-                        id.as_bytes().escape_ascii()
-                    ));
+                    logs(&fell_behind(&id, missed));
                     // What is still waiting is older than the redraw to
                     // come, so it is let go with what was missed.
                     let (modes, caught) = shown.join();
@@ -3232,9 +3261,104 @@ mod tests {
             "all controls, it's cut at its bound, each escaped"
         );
         assert!(
-            starting_line_went("H\x1b\n", stood, "its program drew", None)
-                .starts_with("mycelium: H\\x1b\\n's starting line went"),
-            "an id given with controls is escaped too"
+            starting_line_went("H\x1b\n's", stood, "its program drew", None)
+                .starts_with("mycelium: H\\u{1b}\\n's's starting line went"),
+            "an id given with controls is named as the journal names it"
+        );
+    }
+
+    #[test]
+    fn the_holders_own_line_is_quoted_even_once_a_key_was_typed() {
+        let said = self::shown();
+        said.says_start();
+        said.keeps_typed(b"secret");
+        said.says(PARKED_LINE);
+        let mut logged = said_on_the_log();
+        let stood = self::shown();
+        stood.says_start();
+        stood.keeps_typed(b"secret");
+        stood.stands(PARKED_LINE);
+        logged.extend(said_on_the_log());
+        let ended = self::shown();
+        ended.says_start();
+        ended.keeps_typed(b"secret");
+        ended.ends();
+        logged.extend(said_on_the_log());
+        let parked = PARKED_LINE[..SHOWN_LOGGED].escape_ascii();
+        let endings = [
+            format!(", as the holder said another line: \"{parked}\""),
+            format!(", as the holder said a line that stands: \"{parked}\""),
+            ", as it ended: \"\"".to_owned(),
+        ];
+        assert_eq!(logged.len(), 3, "each said once: {logged:?}");
+        for (said, ending) in logged.iter().zip(endings) {
+            assert!(
+                said.ends_with(&ending) && !said.contains("secret"),
+                "its own line or nothing is quoted, no key in it: {said}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_older_lines_name_their_hold_as_every_holder_line_does() {
+        assert_eq!(
+            gone_unheard("ana's\x1b", "pi 7\n", 42),
+            "mycelium: ana's\\u{1b} exited 69, but its gone file (\"pi 7\\n\") doesn't say 42 \
+             saw its pi host go, so its window ends",
+            "the id named, what the file held quoted with its escapes"
+        );
+        assert_eq!(
+            fell_behind("ana's\n", 3),
+            "mycelium: a window of ana's\\n fell 3 pieces of output behind, so its program \
+             draws it whole again",
+            "the id named"
+        );
+    }
+
+    std::thread_local! {
+        /// The holder whose locks a test's log finds let go.
+        static WATCHED: RefCell<Option<Arc<Shown>>> = const { RefCell::new(None) };
+    }
+
+    /// Keeps `line` as [`logged`] does, once it finds none of the watched
+    /// holder's locks held, as a write that may wait is made under none.
+    fn logged_unlocked(line: &str) {
+        WATCHED.with(|watched| {
+            let watched = watched.borrow();
+            let shown = watched.as_ref().expect("a holder watched");
+            let free = shown.modes.try_lock().is_ok()
+                && shown.said.try_lock().is_ok()
+                && shown.standing.try_lock().is_ok()
+                && shown.saying.try_lock().is_ok()
+                && shown.typed.try_lock().is_ok()
+                && shown.keyed.try_lock().is_ok()
+                && shown.echo.try_lock().is_ok()
+                && shown.title.try_lock().is_ok();
+            assert!(free, "written with a lock held: {line}");
+        });
+        logged(line);
+    }
+
+    #[test]
+    fn the_starting_lines_log_is_written_once_every_lock_is_let_go() {
+        let shown = Arc::new(Shown {
+            log: logged_unlocked,
+            ..self::shown()
+        });
+        WATCHED.with(|watched| *watched.borrow_mut() = Some(Arc::clone(&shown)));
+        shown.says_start();
+        shown.show(b"drew");
+        shown.says_start();
+        shown.says(PARKED_LINE);
+        shown.says_start();
+        shown.stands(PARKED_LINE);
+        shown.says_start();
+        shown.ends();
+        WATCHED.with(|watched| watched.borrow_mut().take());
+        assert_eq!(
+            said_on_the_log().len(),
+            4,
+            "each way the line goes is said, none under a lock"
         );
     }
 
