@@ -166,6 +166,20 @@ const NOT_REOPENED: &str = ", so it isn't reopened";
 const NOTHING_REOPENED: &str = ", so nothing is reopened here";
 const STEER_IT: &str = ": steer it rather than starting it again";
 
+/// How `machine` refuses a start of `asked`, a session a holder there
+/// holds already.
+fn held_already(asked: &str, machine: &str) -> String {
+    let shown = asked.escape_debug();
+    format!("{shown} is held on {machine} already{NOT_REOPENED}")
+}
+
+/// How `machine` refuses a start of `asked`, a session carried there or
+/// waiting there for its turn.
+fn coming_back_here(asked: &str, machine: &str) -> String {
+    let shown = asked.escape_debug();
+    format!("{shown} is coming back on {machine}, carried or waiting for its turn{NOT_REOPENED}")
+}
+
 /// How a relayed start taken as an agent's is told it was refused
 /// ([`relay_refused`]): after the machine where no person works, or after
 /// it and up to how it was judged where one does, the refusal following.
@@ -5624,30 +5638,41 @@ impl<S: Store> Shared<S> {
     /// here, carried away or waiting for its turn is coming back by
     /// itself, and a second pi on it would write over the first, so each
     /// is refused too, with why. A park whose holder has gone is not: it
-    /// has nothing left to wake it, whatever its marker says. Those are
-    /// judged first, as one held or carried here before its pi writes its
-    /// presence never ended here yet is coming back, so that only a
-    /// session nothing here brings back is said never to have ended here,
-    /// which an asker past room reads as nothing begun and no log here
-    /// ([`began_nothing_here`]).
+    /// has nothing left to wake it, whatever its marker says. One that
+    /// never ended here is held or coming back by that very id where a
+    /// holder resumes it or it is carried here before its pi writes its
+    /// presence, and refused so; any other is said never to have ended
+    /// here, which an asker past room reads as nothing begun and no log
+    /// here ([`began_nothing_here`]). Ids it begins, and holders' words
+    /// beginning it, are judged only of one that ended here, as pi opens
+    /// that one by its id, and the never-ended refusal keeps pi from the
+    /// rest.
     fn reopened_here(
         &self,
         session: &str,
         sessions: &[Session],
         seen: &Seen<'_>,
     ) -> Result<(), String> {
-        self.unclaimed_here(session, sessions, seen)?;
-        if !sessions
+        let machine = &self.machine;
+        if sessions
             .iter()
-            .any(|one| one.id == session && one.machine == self.machine)
+            .any(|one| one.id == session && one.machine == *machine)
         {
-            return Err(format!(
-                "no session {} ended on {}{NOTHING_REOPENED}",
-                session.escape_debug(),
-                self.machine
-            ));
+            self.unclaimed_here(session, sessions, seen)
+        } else if seen
+            .held
+            .iter()
+            .any(|held| hold::turn::resumes(&held.command, session))
+        {
+            Err(held_already(session, machine))
+        } else if seen.coming_back.contains(session) {
+            Err(coming_back_here(session, machine))
+        } else {
+            Err(format!(
+                "no session {} ended on {machine}{NOTHING_REOPENED}",
+                session.escape_debug()
+            ))
         }
-        Ok(())
     }
 
     /// Refuses a start of `session` here where something brings it back
@@ -5745,14 +5770,9 @@ impl<S: Store> Shared<S> {
                 "{shown} is parked on {machine}, and its holder wakes it{NOT_REOPENED}"
             ))
         } else if held {
-            Err(format!(
-                "{shown} is held on {machine} already{NOT_REOPENED}"
-            ))
+            Err(held_already(asked, machine))
         } else if seen.coming_back.contains(session) {
-            Err(format!(
-                "{shown} is coming back on {machine}, carried or waiting for its \
-                 turn{NOT_REOPENED}"
-            ))
+            Err(coming_back_here(asked, machine))
         } else {
             Ok(())
         }
@@ -20995,6 +21015,20 @@ esac
             Err("s-new is held on skiff already, so it isn't reopened".to_owned()),
             "held here with no presence yet"
         );
+        // Round council-20261126T083519809-000005: only that very id is
+        // judged so. One beginning a live session here, or one a fresh
+        // holder's shorter word begins, never ended here and has no log
+        // here, so is refused as never ended, which an asker past room
+        // places elsewhere.
+        for session in ["s-liv", "s-newer"] {
+            assert_eq!(
+                ask(socket.clone(), relayed(session)).await,
+                Err(format!(
+                    "no session {session} ended on skiff, so nothing is reopened here"
+                )),
+                "{session} is no session here"
+            );
+        }
         fs::remove_file(holders.join("h-new.json")).expect("its holder ends");
         // Round council-20261125T155712513-000001: a holder naming a word
         // that begins it, which no session here has as its id, may have

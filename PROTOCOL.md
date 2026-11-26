@@ -2299,9 +2299,10 @@ boot names one, the marker where the presence says parked or the
 holder's own record says its program is (a park with none has nothing
 to wake it, and a marker outlasting its park counts for nothing, so
 either is reopened as any ended session), held by a holder there,
-carried away or waiting for its turn, each refused with why, and
-judged first, so one held or carried there that never ended there is
-refused as held or coming back, never as one that didn't end there; nor
+carried away or waiting for its turn, each refused with why. One that
+never ended there is refused as held or coming back where a holder
+resumes that very id or it is carried there, and otherwise as never
+ended there, whatever ids it begins; nor
 while the carries can't be read. Once taken, the session is
 held as being reopened while its start runs, and another reopening of
 it meanwhile is refused as `<id> is being reopened on <machine>
