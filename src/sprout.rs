@@ -713,8 +713,9 @@ pub fn starting(
         .map(origin_cell)
         .transpose()
         .map_err(|why| Refusal::new(Code::NotACell, why))?;
-    // Naming this machine is asking here, so its folder is judged here.
-    let on_here = asked.on.as_deref().is_none_or(|on| on == here);
+    // Naming this machine is asking here, so its folder is judged here;
+    // one placed by its needs may go elsewhere, so it's judged as there.
+    let on_here = asked.on.as_deref().is_none_or(|on| on == here) && asked.needs.is_empty();
     let Begins {
         folder: found,
         note,
@@ -733,18 +734,29 @@ pub fn starting(
     } else {
         found
     };
+    // Work that needs what this machine may not be, such as the cloud, is
+    // placed by its needs, wherever its folder is.
     let machine = match asked.on.as_deref() {
         Some(on) => Some(on),
+        None if !asked.needs.is_empty() => None,
         None if stays(&found, &disk.resolved(home), disk) => Some(here),
         None => None,
     };
-    Ok(start(
+    let mut sprouted = start(
         machine,
         Some(within_home(found, home)),
         &seed,
         (from, note.as_deref()),
         &sprout_id(),
-    ))
+    );
+    placed_by_needs(&mut sprouted.start.work, asked);
+    Ok(sprouted)
+}
+
+/// `work` needing what `asked` needs as well, on the machine it names or
+/// whichever meets them.
+fn placed_by_needs(work: &mut Work, asked: &Sprout) {
+    work.needs.extend(asked.needs.iter().cloned());
 }
 
 /// `folder` as a path within `home` where it's there, so the machine it
@@ -1372,6 +1384,7 @@ pub(crate) mod tests {
             folder: folder.map(PathBuf::from),
             from: None,
             on: on.map(str::to_owned),
+            needs: Vec::new(),
             cwd: None,
         }
     }
@@ -1557,6 +1570,43 @@ pub(crate) mod tests {
             needs("src/rows", Some("osprey")),
             here,
             "naming this machine keeps it here"
+        );
+    }
+
+    #[test]
+    fn a_sprout_needing_the_cloud_goes_where_placement_finds_one() {
+        let mut cloud = sprouting("tidy the rows", Some("src/rows"), None);
+        cloud.needs = vec![Need::Cloud];
+        let start = starting(
+            &cloud,
+            Path::new("/home/kestrel"),
+            Path::new("/home/kestrel"),
+            "osprey",
+            &Held::of(&[], &[]),
+        )
+        .expect("it starts, its folder left to the machine it goes to")
+        .start;
+        assert_eq!(start.folder, Some(PathBuf::from("src/rows")));
+        assert_eq!(
+            start.work.needs,
+            [Need::Cloud],
+            "not pinned to this machine"
+        );
+
+        cloud.on = Some("tern".to_owned());
+        let start = starting(
+            &cloud,
+            Path::new("/home/kestrel"),
+            Path::new("/home/kestrel"),
+            "osprey",
+            &Held::of(&[], &[]),
+        )
+        .expect("it starts")
+        .start;
+        assert_eq!(
+            start.work.needs,
+            [Need::Machine("tern".to_owned()), Need::Cloud],
+            "on the machine named, which must meet them too"
         );
     }
 

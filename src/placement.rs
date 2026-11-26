@@ -193,6 +193,10 @@ pub enum Need {
     /// A tool its realm's kit holds, by name, such as `gcloud`: a machine
     /// whose node names no kit hasn't said, as with any unsaid fact.
     Tool(String),
+    /// A machine in the cloud: one linked that costs money, or one a
+    /// provider makes for it. It names a worker, so a worker's refusal of
+    /// work that names none doesn't refuse it.
+    Cloud,
 }
 
 /// Where work goes.
@@ -264,6 +268,7 @@ impl fmt::Display for Need {
             Need::Accelerator(AcceleratorKind::Gpu) => write!(f, "a gpu"),
             Need::Accelerator(AcceleratorKind::Npu) => write!(f, "an npu"),
             Need::Tool(tool) => write!(f, "tool {tool}"),
+            Need::Cloud => write!(f, "a cloud machine"),
         }
     }
 }
@@ -272,6 +277,7 @@ impl fmt::Display for Because {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Because::Lacks(Need::Machine(name)) => write!(f, "isn't {name}"),
+            Because::Lacks(Need::Cloud) => write!(f, "isn't a cloud machine"),
             Because::Lacks(need) => write!(f, "lacks {need}"),
             Because::Unknown(need) => write!(f, "hasn't said {need}"),
             Because::Refuses(taint) => write!(f, "refuses: {}", taint.why),
@@ -901,7 +907,7 @@ fn decide_at(
             let load = loads.get(&one.name).copied().unwrap_or_default();
             let mut judged = judge(work, one, load, now, weights);
             if one.declared.as_ref().is_some_and(Declared::is_worker)
-                && !names_network(work, &lasting)
+                && !names_worker(work, &lasting)
                 && !work.needs.contains(&Need::Machine(one.name.clone()))
             {
                 judged.hard.push(worker_refuses());
@@ -1046,7 +1052,7 @@ pub fn to_make<'a>(
     offers: &'a [Offer],
     machines: &[Machine],
 ) -> Result<&'a Offer, Vec<Miss>> {
-    let named = names_network(work, &lasting_reach(machines));
+    let named = names_worker(work, &lasting_reach(machines));
     let judged: Vec<(Judged, &Offer)> = offers
         .iter()
         .map(|offer| {
@@ -1086,7 +1092,7 @@ fn judge_offer(work: &Work, offer: &Offer) -> Judged {
         .lasts
         .and_then(|lasts| i64::try_from(lasts).ok())
         .map(jiff::SignedDuration::from_secs)
-        && work.lasts.is_some_and(|lasts| lives <= lasts)
+        && work.lasts.is_some_and(|lasts| lives < lasts)
     {
         hard.push(Because::LivesOnly(lives));
     }
@@ -1099,6 +1105,8 @@ fn judge_offer(work: &Work, offer: &Offer) -> Judged {
         Need::Reach(network) => reaches(shape.declared.as_ref(), &BTreeMap::new(), network),
         // What a machine not yet made would carry isn't offered yet.
         Need::Accelerator(_) | Need::Tool(_) => None,
+        // Whatever a provider makes is in the cloud.
+        Need::Cloud => Some(true),
     };
     for need in &work.needs {
         match promised(need) {
@@ -1258,15 +1266,18 @@ fn lasting_reach(machines: &[Machine]) -> BTreeSet<&str> {
 }
 
 /// Whether `work` needs a network none of the person's `lasting` machines
-/// reach, as `aquifer` is, which names the workers that do. Work names a
-/// worker otherwise only by needing it by name: tolerating its refusal
+/// reach, as `aquifer` is, which names the workers that do, or needs a
+/// cloud machine ([`Need::Cloud`]). Work names a worker otherwise only by
+/// needing it by name: tolerating its refusal
 /// isn't naming it, nor is needing a system, an architecture or an
 /// accelerator, so work that says nothing of where it goes never goes to
 /// a machine that costs money, leaves, or holds what only it was lent.
-fn names_network(work: &Work, lasting: &BTreeSet<&str>) -> bool {
-    work.needs
-        .iter()
-        .any(|need| matches!(need, Need::Reach(network) if !lasting.contains(network.as_str())))
+fn names_worker(work: &Work, lasting: &BTreeSet<&str>) -> bool {
+    work.needs.iter().any(|need| match need {
+        Need::Reach(network) => !lasting.contains(network.as_str()),
+        Need::Cloud => true,
+        _ => false,
+    })
 }
 
 /// A worker's refusal of work that doesn't name it, saying how to.
@@ -1288,7 +1299,7 @@ fn worker_refuses() -> Because {
 pub fn asked_on(work: &Work, here: &Machine, machines: &[Machine]) -> Work {
     let mut work = work.clone();
     let is_worker = |one: &Machine| one.declared.as_ref().is_some_and(Declared::is_worker);
-    let names_one = names_network(&work, &lasting_reach(machines))
+    let names_one = names_worker(&work, &lasting_reach(machines))
         || work.needs.iter().any(|need| {
             machines
                 .iter()
@@ -1386,6 +1397,10 @@ fn is(machine: &Machine, need: &Need) -> Option<bool> {
             .as_ref()
             .map(|all| all.iter().any(|one| one.kind == *kind)),
         Need::Tool(tool) => machine.kit.as_ref().map(|kit| kit.holds(tool)),
+        Need::Cloud => machine
+            .declared
+            .as_ref()
+            .map(|declared| declared.costs_money),
     }
 }
 
@@ -3065,11 +3080,11 @@ pub(crate) mod tests {
             "of the two that reach what it needs, the cheaper, by amount and not by how it is written"
         );
 
-        work.lasts = Some(jiff::SignedDuration::from_hours(1));
+        work.lasts = Some(jiff::SignedDuration::from_hours(2));
         assert_eq!(
             to_make(&work, &offers, &[]).map(|chosen| chosen.shape.as_str()),
             Ok("large"),
-            "not one that would end before the work does"
+            "not one that would end before the work does, and one living exactly as long will do"
         );
 
         work.needs.push(Need::Accelerator(AcceleratorKind::Gpu));
@@ -3082,6 +3097,50 @@ pub(crate) mod tests {
             "large from lender hasn't said a gpu, isn't skiff; small from lender \
              would live only 1h, ending before the work, hasn't said a gpu, isn't skiff",
             "each offer says why not, a fact it doesn't promise meeting no need"
+        );
+    }
+
+    #[test]
+    fn work_needing_the_cloud_goes_only_to_a_machine_that_costs_money() {
+        let mut made = machine("wren", "linux", 4, &["work"]);
+        made.declared.as_mut().expect("declared").costs_money = true;
+        let realm = [machine("skiff", "linux", 30, &["work"]), made];
+        let cloud = needing(vec![Need::Cloud]);
+        let Placement::Placed { machine, passed } = place(&cloud, &realm) else {
+            panic!("a machine that costs money is in the cloud")
+        };
+        assert_eq!(
+            machine, "wren",
+            "to the one that costs money, though skiff has more room"
+        );
+        assert_eq!(
+            said(&passed),
+            "skiff isn't a cloud machine",
+            "the person's own machine isn't the cloud"
+        );
+
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &realm)),
+            Some("skiff"),
+            "work that says nothing still never goes to one that costs money"
+        );
+    }
+
+    #[test]
+    fn work_needing_the_cloud_is_made_a_machine_naming_no_network() {
+        let offers = [offer("large", "1.16", Some(43_200), &["work"])];
+        let mut work = needing(vec![Need::Cloud]);
+        assert_eq!(
+            to_make(&work, &offers, &[]).map(|chosen| chosen.shape.as_str()),
+            Ok("large"),
+            "whatever a provider makes is in the cloud, and the need names it"
+        );
+
+        work.lasts = Some(jiff::SignedDuration::from_hours(12));
+        assert_eq!(
+            to_make(&work, &offers, &[]).map(|chosen| chosen.shape.as_str()),
+            Ok("large"),
+            "one that lives exactly as long as the work will do"
         );
     }
 
