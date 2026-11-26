@@ -118,6 +118,17 @@ impl Through {
             .and_then(|mut client| client.ask(request))
             .map_err(|error| format!("the node didn't answer: {error}"))?
     }
+
+    /// Machine `to` as the node, carrying, knows it, or none where it
+    /// knows of none so named.
+    fn linked(&self, to: &str) -> Result<Option<crate::facts::Machine>, String> {
+        match self.ask(&Request::Machines)? {
+            Response::Machines(machines) => {
+                Ok(machines.into_iter().skip(1).find(|one| one.name == to))
+            }
+            other => Err(format!("the node answered {other:?} for its machines")),
+        }
+    }
 }
 
 impl Hands for Through {
@@ -132,14 +143,7 @@ impl Hands for Through {
     }
 
     fn lent(&mut self, to: &str) -> Result<Lent, String> {
-        match self.ask(&Request::Machines)? {
-            Response::Machines(machines) => Ok(machines
-                .iter()
-                .skip(1)
-                .find(|one| one.name == to)
-                .map_or(Lent::Not, Lent::of)),
-            other => Err(format!("the node answered {other:?} for its machines")),
-        }
+        Ok(self.linked(to)?.map_or(Lent::Not, |one| Lent::of(&one)))
     }
 
     fn sessions(&mut self) -> Result<Vec<Session>, String> {
@@ -238,12 +242,17 @@ impl Hands for Through {
     fn share(&mut self, quest: &str, to: &str) -> Result<(), String> {
         debug_assert_eq!(quest, self.quest, "a carry shares its own quest");
         let scratch = ["handover".to_owned()];
-        let shared = match self.lent(to)? {
-            Lent::Not => self.shares.offer(quest, &scratch),
+        let linked = self.linked(to)?;
+        let shared = match linked.as_ref().map_or(Lent::Not, Lent::of) {
+            // A room is one of the person's own to a carry, but its link is
+            // a worker's, which serves only what it was given.
+            Lent::Not if !linked.as_ref().is_some_and(|one| one.worker) => {
+                self.shares.offer(quest, &scratch)
+            }
             Lent::TakesNone => return Err(ground::takes_none(to)),
-            Lent::TakesCarries => {
-                // The whole handover, every machine's, since a worker is
-                // served all of it.
+            Lent::Not | Lent::TakesCarries => {
+                // The whole handover, every machine's, since a worker's
+                // link serves all of it.
                 let handover = self.shares.scratch.join(quest).join("handover");
                 let found = secrets::first_in(&handover).map_err(|error| {
                     format!("{quest}'s handover can't be told free of secrets: {error}")
