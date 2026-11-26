@@ -5,11 +5,11 @@
 //! them to, each cell holding two trees, and three in ten saying
 //! subjects, from one to as many as a cell may: more than four times a
 //! live realm's on the whole, each a little longer than a live cell's.
-//! Its cells, a record each held as the bytes it is sent as, are held within 30 MB
-//! too. The time is the processor's own for this thread, not the clock's, so a builder busy
-//! with other work, which only makes this thread wait its turn, can't
-//! fail it. The time itself, 100 ms
-//! on the machine the bar is set for, is no builder's to hold, since
+//! Its cells, a record each held as the bytes it is sent as, are held
+//! within 30 MB too. The time is the processor's own for this thread,
+//! not the clock's, so a builder busy with other work, which only makes
+//! this thread wait its turn, can't fail it. The time itself, 100 ms on
+//! the machine the bar is set for, is no builder's to hold, since
 //! builders run it several times slower, so each test says it, and holds
 //! it only to a ceiling a builder meets, where the test names one:
 //!
@@ -269,9 +269,9 @@ fn machines(cells: usize) -> BTreeMap<String, Value> {
 /// The subjects the `n`th cell says, of 27 and 34 characters, where a
 /// live cell's are 28 on the whole: a third of them areas of a
 /// repository a third of the cells share, the rest areas of its own.
-/// Three cells in ten say any, from one to as many as a cell may, 12.5
-/// on the whole, so a cell says 3.75 where a live one says 0.84: on 26
-/// Nov, 28 of 191 sessions said 161, from 1 to 12 each.
+/// Three cells in ten say any, from one to as many as a cell may, about
+/// 12.3 on the whole, so a cell says about 3.7 where a live one says
+/// 0.84: on 26 Nov, 28 of 191 sessions said 161, from 1 to 12 each.
 fn subjects(n: usize, repositories: usize) -> Value {
     let shared = n % 3;
     let own = n % repositories;
