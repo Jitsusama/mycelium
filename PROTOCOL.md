@@ -2444,9 +2444,36 @@ made for it is not held to it. The booking is the making node's, kept
 while it runs and made again as it redials its book. Like the judging
 of a run, this fences habit, not an agent set on passing as another,
 which runs as the same account; an agent's process left with no agent
-above it is judged the person's. A start relayed from another machine's
-node makes nothing, since it is pinned to this machine by name, which no
-offer meets. The program writes one JSON line,
+above it is judged the person's. A machine named in `agent-rooms`,
+beside the node's book of makes, a name a line, past blank lines and
+what follows a `#` on any line, is a room made for agents to share:
+already up and
+paid for by being so. Every agent's start or run may be placed there,
+a granted session's and one from no one known included, whoever it is
+booked for, since its booking says who pays for it and may let it go,
+not who may use it; the person's own go there only where it is booked
+for the person or for no asker, never into a worker home an agent's
+make wrote. Work that names none of the workers may go to it though it
+costs money, ranked by its room as any machine is, so before a machine
+kept lively. The node marks each one `"held_for": "agents"` as it
+places, from its own file, and every other as booked, never from what
+the machine says, and a link keeps nothing a machine says of it. A
+session the person granted is booked as the person but isn't one: its
+starts go to a machine booked for the person or for no asker, and not
+named in the file, only where they name it, never to one an agent's
+make booked, and even then that machine is full one session short of
+the most it holds, kept for the person, where it says or was promised
+a most. A start of its that no machine takes goes on to a make. A
+carry takes no account of rooms, since it asks as its session, which
+never says whether it is the person's. The file is written by whatever
+keeps the rooms, and any session on the node can write it, so it
+fences habit as the booking does; a writer puts a new file beside it
+and renames it into place, so a placement never reads one half
+written. A file that isn't there names none, and so does one that
+can't be read or isn't a plain file, said in the node's journal once
+each time that changes; only its first 64 KiB is read. A start relayed
+from another machine's node makes nothing, since it is pinned to this
+machine by name, which no offer meets. The program writes one JSON line,
 `{"place", "machine", "until"}`:
 where it is, as `--via` names it, the name its node will say for
 itself, and when its provider ends it whatever else happens. The node

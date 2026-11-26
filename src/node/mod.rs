@@ -1927,6 +1927,9 @@ fn let_go_ended(book: &Book, store: &impl Store, now: jiff::Timestamp) -> Vec<Ma
 struct Asker {
     told: String,
     unknown_because: Option<String>,
+    /// Whether it is told [`made::PERSON`] by the person's grant to it
+    /// ([`made::Grant`]) rather than being the person.
+    granted: bool,
 }
 
 /// `said` as a provider is told a mesh address, in capitals as the node
@@ -2985,17 +2988,28 @@ enum Admits {
     /// never one an agent's make booked, whose worker home that agent
     /// wrote; and none for [`made::UNKNOWN`].
     Asker(String),
+    /// A session the person granted ([`made::Grant`]), whose makes are
+    /// booked for the person: of those booked, only the person's own,
+    /// those booked for the person or for nobody told, and only where its
+    /// work names them.
+    Granted,
 }
 
 impl Admits {
     /// Whether a machine booked for `booked` is one this placement may
-    /// choose.
-    fn takes(&self, booked: Option<&str>) -> bool {
+    /// choose, for work that names it or not (`named`). A room made for
+    /// agents to share (`room`, [`made::Book::agent_rooms`]) is every
+    /// agent's, granted or not, since its booking says who pays for it and
+    /// may let it go, not who may use it; the person's own starts are held
+    /// to the person's machines all the same, never where an agent's make
+    /// booked, whose worker home that agent wrote.
+    fn takes(&self, booked: Option<&str>, room: bool, named: bool) -> bool {
+        let the_persons = booked.is_none() || booked == Some(made::PERSON);
         match self {
             Self::All => true,
-            Self::Asker(told) if told == made::PERSON => {
-                booked.is_none() || booked == Some(made::PERSON)
-            }
+            Self::Asker(told) if told == made::PERSON => the_persons,
+            _ if room => true,
+            Self::Granted => named && the_persons,
             Self::Asker(told) => told != made::UNKNOWN && booked == Some(told.as_str()),
         }
     }
@@ -5061,10 +5075,23 @@ impl<S: Store> Shared<S> {
         // Measured before the lock is taken, since measuring reads this
         // machine and the store. This machine, first, is never booked.
         let mut machines = self.machines();
+        // Rooms made for agents to share take agents' work naming none of
+        // their workers; a granted session's starts go to one of the
+        // person's own machines only where they name it.
+        let rooms = self.book.agent_rooms();
+        // Set both ways, so nothing a machine says of itself counts.
+        for one in &mut machines {
+            one.held_for = if rooms.contains(&one.name) {
+                facts::HeldFor::Agents
+            } else {
+                facts::HeldFor::AsBooked
+            };
+        }
         let mut at = 0;
         machines.retain(|one| {
             at += 1;
-            at == 1 || self.admitted_on(&one.name, admits)
+            let named = work.needs.contains(&Need::Machine(one.name.clone()));
+            at == 1 || self.admitted_among(&one.name, admits, &rooms, named)
         });
         let mut refused = fence
             .map(|kind| {
@@ -5107,11 +5134,29 @@ impl<S: Store> Shared<S> {
             let loads = inner.starts.loads(&machines, running(&sessions), now);
             // Judged under the same lock as the starts it counts, so two
             // asks at once never both take a machine's last room.
-            refused.extend(placement::full(
+            // A granted session's starts leave the person's own machines
+            // their last session, so the person always has one to start.
+            let keeping = if *admits == Admits::Granted {
+                inner
+                    .booked
+                    .iter()
+                    .filter(|(name, (_, booked))| {
+                        booked
+                            .as_deref()
+                            .is_none_or(|booked| booked == made::PERSON)
+                            && !rooms.contains(*name)
+                    })
+                    .map(|(name, _)| name.clone())
+                    .collect()
+            } else {
+                std::collections::BTreeSet::new()
+            };
+            refused.extend(placement::full_keeping(
                 &machines,
                 &holding(&sessions),
                 &loads,
                 &inner.promised,
+                &keeping,
             ));
             let decision = placement::decide_refusing(work, &machines, &loads, &refused);
             let counted = counts
@@ -9414,24 +9459,46 @@ impl<S: Store> Shared<S> {
         })
     }
 
-    /// Whether `machine` takes work `admits` lets through: any machine not
-    /// booked, and a booked one only as [`Admits::takes`] says.
+    /// Whether a carry may take a session to `machine` for `admits`: any
+    /// machine not booked, and a booked one only as [`Admits::takes`]
+    /// says. Rooms made for agents count for nothing here, since a carry
+    /// asks as its session's address, which never says whether it is the
+    /// person's, so a session carried never lands in a worker home another
+    /// asker's make wrote.
     fn admitted_on(&self, machine: &str, admits: &Admits) -> bool {
-        self.lock()
-            .booked
-            .get(machine)
-            .is_none_or(|(_, booked)| admits.takes(booked.as_deref()))
+        self.admitted_among(machine, admits, &std::collections::BTreeSet::new(), false)
+    }
+
+    /// Whether `machine` takes work `admits` lets through, of `rooms`
+    /// made for agents to share, for work that names it or not (`named`),
+    /// as [`Admits::takes`] says.
+    fn admitted_among(
+        &self,
+        machine: &str,
+        admits: &Admits,
+        rooms: &std::collections::BTreeSet<String>,
+        named: bool,
+    ) -> bool {
+        self.lock().booked.get(machine).is_none_or(|(_, booked)| {
+            admits.takes(booked.as_deref(), rooms.contains(machine), named)
+        })
     }
 
     /// Which booked machines a start or run asked now may be placed on:
     /// every one where none is booked, so who asks is read only once a
     /// machine is booked; else those booked for its asker, as a make
-    /// would tell it ([`Self::asker_of_a_make`]).
+    /// would tell it ([`Self::asker_of_a_make`]), a session the person
+    /// granted held apart from the person.
     async fn admits(&self) -> Admits {
         if self.lock().booked.is_empty() {
             return Admits::All;
         }
-        Admits::Asker(self.asker_of_a_make().await.told)
+        let asker = self.asker_of_a_make().await;
+        if asker.granted {
+            Admits::Granted
+        } else {
+            Admits::Asker(asker.told)
+        }
     }
 
     /// Who asks for a machine to be made, as its provider is told it
@@ -9453,10 +9520,12 @@ impl<S: Store> Shared<S> {
         let unknown = |why: String| Asker {
             told: made::UNKNOWN.to_owned(),
             unknown_because: Some(why),
+            granted: false,
         };
         let told = |told: &str| Asker {
             told: told.to_owned(),
             unknown_because: None,
+            granted: false,
         };
         let standing = self.standing();
         match self.asking_session_among(&standing).await {
@@ -9476,7 +9545,10 @@ impl<S: Store> Shared<S> {
                             .is_some() =>
                     {
                         eprintln!("{address} asks for the person, by the person's grant to it");
-                        told(made::PERSON)
+                        Asker {
+                            granted: true,
+                            ..told(made::PERSON)
+                        }
                     }
                     Some(address) => told(&address),
                     None => unknown(format!("{session} says no address")),
@@ -24208,33 +24280,212 @@ esac
     fn a_machine_booked_for_one_asker_takes_only_its_starts() {
         let asker = |told: &str| Admits::Asker(told.to_owned());
         assert!(
-            !asker(made::PERSON).takes(Some("P9R1KI")),
+            !asker(made::PERSON).takes(Some("P9R1KI"), false, false)
+                && !asker(made::PERSON).takes(Some("P9R1KI"), true, true),
             "the person's starts never go where an agent's make booked, since that agent \
-             wrote its worker home"
+             wrote its worker home, though it is a room or named"
         );
         assert!(
-            asker(made::PERSON).takes(Some(made::PERSON)),
+            asker(made::PERSON).takes(Some(made::PERSON), false, false),
             "they go where the person's make booked"
         );
         assert!(
-            asker("P9R1KI").takes(Some("P9R1KI")),
+            asker("P9R1KI").takes(Some("P9R1KI"), false, false),
             "its own asker's starts go there"
         );
         assert!(
-            !asker("QK4T7Z").takes(Some("P9R1KI")),
-            "another agent's starts go elsewhere"
+            !asker("QK4T7Z").takes(Some("P9R1KI"), false, true),
+            "another agent's starts go elsewhere, though they name it"
         );
         assert!(
-            !asker(made::UNKNOWN).takes(Some(made::UNKNOWN)),
+            !asker(made::UNKNOWN).takes(Some(made::UNKNOWN), false, false),
             "a start from no one known takes no booked machine"
         );
         assert!(
-            asker(made::PERSON).takes(None) && !asker("P9R1KI").takes(None),
+            asker(made::PERSON).takes(None, false, false)
+                && !asker("P9R1KI").takes(None, false, false),
             "a machine whose make told no asker takes only the person's starts"
         );
         assert!(
-            Admits::All.takes(Some("P9R1KI")),
+            Admits::All.takes(Some("P9R1KI"), false, false),
             "a pinned start goes there"
+        );
+        assert!(
+            [asker("QK4T7Z"), asker(made::UNKNOWN), Admits::Granted]
+                .iter()
+                .all(|admits| admits.takes(Some("P9R1KI"), true, false)
+                    && admits.takes(Some(made::PERSON), true, false)),
+            "a room made for agents to share takes every agent's starts, whoever it is booked for"
+        );
+        assert!(
+            !Admits::Granted.takes(Some(made::PERSON), false, false)
+                && !Admits::Granted.takes(None, false, false)
+                && !Admits::Granted.takes(Some("P9R1KI"), false, true)
+                && !Admits::Granted.takes(Some(made::UNKNOWN), false, true),
+            "a granted session's starts take no other booked machine, an agent's though named"
+        );
+        assert!(
+            Admits::Granted.takes(Some(made::PERSON), false, true)
+                && Admits::Granted.takes(None, false, true),
+            "and the person's own only where they name it"
+        );
+    }
+
+    /// A node on skiff keeping its book in `dir`, which made each of
+    /// `made` for its asker: machines that cost money and reach basin.
+    fn made_for(dir: &Path, made: &[(&str, &str)]) -> Shared<Memory> {
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let mut given = bare("/nowhere/steer".into(), None);
+        given.book = Book::at(dir.join("made.jsonl"));
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            given,
+            to_dial,
+        );
+        for (name, asker) in made {
+            let mut cloud = placement::tests::machine(name, "linux", 32, &["basin"]);
+            cloud.declared.as_mut().expect("declared").costs_money = true;
+            shared
+                .store
+                .put_machine(&cloud)
+                .expect("the made machine is kept");
+            let mut made = made_by("/usr/bin/lend", name, jiff::Timestamp::now());
+            made.asker = Some((*asker).to_owned());
+            shared.book_for(&made);
+        }
+        shared
+    }
+
+    #[tokio::test]
+    async fn a_room_made_for_agents_takes_every_agent_and_the_persons_own_only_what_names_them() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        // Both made for the person, as a granted session's makes are.
+        let shared = made_for(
+            dir.path(),
+            &[("osprey", made::PERSON), ("wren", made::PERSON)],
+        );
+        let placed = |needs: Vec<Need>, admits: &Admits| match shared.place(
+            &work(needs),
+            Counts::Never,
+            None,
+            Screen::Ground,
+            admits,
+        ) {
+            Placement::Placed { machine, .. } => Some(machine),
+            _ => None,
+        };
+        let basin = || vec![Need::Reach("basin".to_owned())];
+        let agent = Admits::Asker("QK4T7Z".to_owned());
+        assert_eq!(
+            (placed(basin(), &agent), placed(basin(), &Admits::Granted)),
+            (None, None),
+            "with no room named, neither an agent's nor a granted start goes to the person's"
+        );
+        fs::write(dir.path().join(made::AGENT_ROOMS), "wren\n").expect("named");
+        assert_eq!(
+            (
+                placed(basin(), &agent).as_deref(),
+                placed(basin(), &Admits::Granted).as_deref(),
+            ),
+            (Some("wren"), Some("wren")),
+            "the room named takes both"
+        );
+        let mut naming = basin();
+        naming.push(Need::Machine("osprey".to_owned()));
+        assert_eq!(
+            (
+                placed(naming.clone(), &Admits::Granted).as_deref(),
+                placed(naming, &agent),
+            ),
+            (Some("osprey"), None),
+            "the person's own takes a granted start that names it, and no other agent's"
+        );
+        shared.lock().promised.insert("osprey".to_owned(), 1);
+        let mut naming = basin();
+        naming.push(Need::Machine("osprey".to_owned()));
+        assert_eq!(
+            (
+                placed(naming.clone(), &Admits::Granted),
+                placed(naming, &Admits::Asker(made::PERSON.to_owned())).as_deref(),
+            ),
+            (None, Some("osprey")),
+            "its last session is kept for the person"
+        );
+        let mut unasked = made_by("/usr/bin/lend", "osprey", jiff::Timestamp::now());
+        unasked.asker = None;
+        shared.book_for(&unasked);
+        shared.lock().promised.insert("osprey".to_owned(), 1);
+        let mut naming = basin();
+        naming.push(Need::Machine("osprey".to_owned()));
+        assert_eq!(
+            (
+                placed(naming.clone(), &Admits::Granted),
+                placed(naming, &Admits::Asker(made::PERSON.to_owned())).as_deref(),
+            ),
+            (None, Some("osprey")),
+            "so is one made at no asker's word"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_room_made_for_agents_is_its_nodes_to_name_and_never_the_machines() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[("wren", made::PERSON), ("reef", "P9R1KI")]);
+        // Lent, booked for no one here, and saying it is a room itself.
+        let mut tern = placement::tests::machine("tern", "linux", 32, &[]);
+        tern.declared.as_mut().expect("declared").costs_money = true;
+        tern.held_for = facts::HeldFor::Agents;
+        shared.store.put_machine(&tern).expect("tern is kept");
+        let agent = Admits::Asker("QK4T7Z".to_owned());
+        // Each machine weighed for `needs`: the one chosen, and whether
+        // each passed over was refused as lent or paid for.
+        let weighed = |needs: Vec<Need>, admits: &Admits| {
+            let decision = shared.place(&work(needs), Counts::Never, None, Screen::Ground, admits);
+            let (chosen, misses) = match decision {
+                Placement::Placed { machine, passed } => (Some(machine), passed),
+                Placement::Pending { misses } | Placement::Refused { misses } => (None, misses),
+            };
+            let refused = misses
+                .into_iter()
+                .map(|miss| {
+                    let lent = miss.because.iter().any(|why| {
+                        matches!(why, placement::Because::Refuses(taint)
+                            if taint.key == placement::WORKER)
+                    });
+                    (miss.machine, lent)
+                })
+                .collect::<BTreeMap<_, _>>();
+            (chosen, refused)
+        };
+        let (chosen, refused) = weighed(Vec::new(), &agent);
+        assert!(
+            chosen.as_deref() != Some("tern") && refused.get("tern") == Some(&true),
+            "a machine saying it is a room is lent all the same"
+        );
+        fs::write(dir.path().join(made::AGENT_ROOMS), "wren\n").expect("named");
+        let (chosen, refused) = weighed(Vec::new(), &agent);
+        assert!(
+            (chosen.as_deref() == Some("wren") || refused.get("wren") == Some(&false))
+                && refused.get("tern") == Some(&true),
+            "the room its node names takes an agent's work naming no need, though lent"
+        );
+        let mut naming = vec![Need::Machine("reef".to_owned())];
+        assert_eq!(
+            weighed(naming.clone(), &Admits::Granted).0,
+            None,
+            "a granted start never reaches another agent's machine, though it names it"
+        );
+        shared.lock().promised.insert("wren".to_owned(), 1);
+        naming = vec![Need::Reach("basin".to_owned())];
+        assert_eq!(
+            weighed(naming, &Admits::Granted).0.as_deref(),
+            Some("wren"),
+            "a room keeps no last session for the person"
         );
     }
 

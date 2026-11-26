@@ -2421,6 +2421,8 @@ impl<S: Store> End<S> {
         // Whether it is a worker is this end's to say: a worker saying it
         // isn't one, or a peer saying it is, changes nothing.
         said.worker = self.worker;
+        // So is whom it is held for, by the node placing work.
+        said.held_for = facts::HeldFor::AsBooked;
         // A node restarting, or too slow to answer its end, has it say its
         // machine with nothing declared; what the machine last declared
         // stands for a while, so a carry isn't refused for ground the
@@ -6300,6 +6302,7 @@ mod tests {
             );
             let mut tern = tern_undeclared();
             tern.worker = says_it_is;
+            tern.held_for = facts::HeldFor::Agents;
             says(
                 &mut far_writing,
                 &[
@@ -6324,9 +6327,9 @@ mod tests {
                 .into_iter()
                 .find(|machine| machine.name == "tern");
             assert_eq!(
-                kept.map(|machine| machine.worker),
-                Some(worker),
-                "tern said it was a worker: {says_it_is}, but the link's word is kept"
+                kept.map(|machine| (machine.worker, machine.held_for)),
+                Some((worker, facts::HeldFor::AsBooked)),
+                "tern said it was a worker: {says_it_is}, and a room, but the link's word is kept"
             );
         }
     }

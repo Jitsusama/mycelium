@@ -18,6 +18,31 @@ use crate::room::{self, Room};
 use crate::update;
 use crate::within;
 
+/// Whom a machine is held for, as the node deciding where work goes holds
+/// it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeldFor {
+    /// As it is booked, or for anyone where it isn't.
+    #[default]
+    AsBooked,
+    /// Agents to share, as a room made for them
+    /// ([`crate::made::Book::agent_rooms`]): already up and paid for by
+    /// being so, so work naming none of its workers may go to it though
+    /// it costs money, an agent's whoever it is booked for, the person's
+    /// only where it is booked for the person.
+    Agents,
+}
+
+impl HeldFor {
+    /// Whether it is held as it is booked, as a machine is unless its
+    /// node says otherwise.
+    #[must_use]
+    pub fn is_as_booked(&self) -> bool {
+        *self == Self::AsBooked
+    }
+}
+
 /// This machine, as measured when asked.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Machine {
@@ -117,6 +142,11 @@ pub struct Machine {
     /// measuring leaves it unset.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub worker: bool,
+    /// Whom the node deciding where work goes holds it for. Set by that
+    /// node alone as it places, never taken from what the machine says;
+    /// measuring leaves it [`HeldFor::AsBooked`].
+    #[serde(default, skip_serializing_if = "HeldFor::is_as_booked")]
+    pub held_for: HeldFor,
     /// Whether its node starts an agent's held session through the launcher
     /// the session's fence declares there, as a Mac's node now does, so a
     /// Mac saying it may take an agent's held start. A node too old to say
@@ -410,6 +440,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         health: None,
         kit: None,
         worker: false,
+        held_for: HeldFor::AsBooked,
         fences_held: FENCES_HELD,
         holds: None,
     }
