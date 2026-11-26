@@ -2586,8 +2586,11 @@ link took the ask, or it refused it before anything began, as the
 limits above, the person's stop or a relay refused there do), it goes
 where placement chose, as before; any other answer, a lost one among
 them, stands, and that machine is passed over past room for ten
-minutes. The cloud is asked within what leaves the start 30 seconds
-for the machine placement chose, and not at all where no more is left.
+minutes, for starts asked as that one was, by the person or by an
+agent, so no agent's passes it over for the person's, and for no
+longer once it takes one. The cloud is asked within what leaves the
+start 30 seconds for the machine placement chose, and not at all
+where no more is left.
 Beside its first words the
 session is given `QUEST_WORKFLOW_SPROUT`, the same work as data, a
 JSON object such as

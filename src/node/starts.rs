@@ -778,7 +778,8 @@ impl Starts {
     pub fn keep_unbegun(&self, admitted: Admitted, why: &str, joined: u32) {
         let Admitted { id, mut asked } = admitted;
         asked.joined = joined;
-        asked.refused = Some(why.to_owned());
+        // Cut as a failure is, since it may name the asker's folder.
+        asked.refused = Some(failure(why));
         let mut book = self.lock();
         book.going.retain(|(going, _)| *going != id);
         self.keep_line(&mut book, asked);
