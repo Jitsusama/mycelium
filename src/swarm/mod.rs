@@ -361,8 +361,8 @@ pub(crate) fn drawn_width(text: &str) -> usize {
 
 /// The cells `text` takes, measured a cluster at a time, each starting at
 /// a character that takes a cell unless an emoji rule joins it to what's
-/// before: a skin tone, a flag's second letter, an emoji after a joiner
-/// that follows one. Unicode's width rules also narrow a few scripts'
+/// before: a skin tone, a flag's second letter, anything but a letter
+/// after a joiner. Unicode's width rules also narrow a few scripts'
 /// ligatures, Arabic's lam-alef, Hebrew's alef-lamed, a Khmer subscript
 /// and Tifinagh's, Lisu's, Buginese's, Old Turkic's and Kirat Rai's, to
 /// fewer cells than their letters. Terminals draw each of those letters in a
@@ -370,33 +370,28 @@ pub(crate) fn drawn_width(text: &str) -> usize {
 /// narrowing letter starts a cluster of its own here and counts.
 fn clusters(text: &str) -> usize {
     let (mut count, mut from) = (0, 0);
-    let (mut drawn, mut before): (Option<char>, Option<char>) = (None, None);
+    let mut before = None;
     for (at, each) in text.char_indices() {
-        if at > 0 && starts_a_cluster(drawn, before, each) {
+        if at > 0 && starts_a_cluster(before, each) {
             count += text[from..at].width();
             from = at;
-        }
-        if !draws_nothing(each) {
-            drawn = Some(each);
         }
         before = Some(each);
     }
     count + text[from..].width()
 }
 
-/// Whether `each` starts a cluster of its own, after `before`, where
-/// `drawn` is the last character before it that takes a cell: it takes a
+/// Whether `each` starts a cluster of its own, after `before`: it takes a
 /// cell, and no emoji rule joins it.
-fn starts_a_cluster(drawn: Option<char>, before: Option<char>, each: char) -> bool {
+fn starts_a_cluster(before: Option<char>, each: char) -> bool {
     let flag = |each: char| matches!(each, '\u{1F1E6}'..='\u{1F1FF}');
     let joins = match before {
         // A carriage return and its line feed are one.
         Some('\r') => true,
-        // Only emoji join through a joiner; a letter's ligature doesn't,
-        // on either side of it, whatever the cluster began with.
-        Some('\u{200D}') => {
-            drawn.is_some_and(|drawn| !drawn.is_alphabetic()) && !each.is_alphabetic()
-        }
+        // Only emoji join through a joiner, so a letter after one starts
+        // afresh and a ligature counts each of its letters. Unicode's
+        // widths count an emoji after a letter's joiner in full anyway.
+        Some('\u{200D}') => !each.is_alphabetic(),
         _ => matches!(each, '\u{1F3FB}'..='\u{1F3FF}') || (flag(each) && before.is_some_and(flag)),
     };
     !joins && !draws_nothing(each)

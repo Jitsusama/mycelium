@@ -952,6 +952,10 @@ fn a_letter_a_ligature_joins_still_takes_its_own_cell() {
             2,
             "or after a joiner alone",
         ),
+        // An emoji after a letter's joiner counts in full, as Unicode's
+        // widths count it.
+        ("\u{5D0}\u{200D}👩", 3, "an emoji after a letter's joiner"),
+        ("a\u{200D}👩", 3, "or after a Latin letter's"),
     ] {
         assert_eq!(drawn_width(text), wide, "{what}: {text:?}");
     }
