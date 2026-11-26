@@ -168,13 +168,10 @@ fn given(team: &Value) -> Option<String> {
 /// theirs alone.
 #[must_use]
 pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
-    // As drawn, so a worked-out name that only cleans like a given one
-    // gives way to it, rather than both going as two drawn alike.
-    let chosen: Vec<String> = teams
-        .iter()
-        .filter_map(given)
-        .map(|name| unmarked(&name))
-        .collect();
+    // Given and worked-out names alike are held in their typed form,
+    // which is cleaned as drawn, so one that only cleans like a given one
+    // is already the same text and gives way to it.
+    let chosen: Vec<String> = teams.iter().filter_map(given).collect();
     let held: Vec<(&str, BTreeSet<String>)> = teams
         .iter()
         .map(|team| {
@@ -196,7 +193,7 @@ pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
             // A worked-out name is held in its typed form too, as a
             // title's word may hold a braille blank or a control.
             Some((me, typed_form(&short(title(team), &shared)?)))
-                .filter(|(_, name)| !chosen.contains(&unmarked(name)))
+                .filter(|(_, name)| !chosen.contains(name))
         })
         // One that cleans to nothing would be drawn blank, and offered to
         // a shell as an empty word.
