@@ -3088,7 +3088,9 @@ pub(crate) mod tests {
         assert!(past(&[over.clone(), saturated]), "both past it");
         assert!(!past(&[over.clone(), roomy.clone()]), "one has room");
         assert!(room(&[over.clone(), roomy]), "and takes it");
-        let mut unheard = over.clone();
+        // Silent, under another name, and not over, so only its silence
+        // keeps it from reading as room.
+        let mut unheard = pressed(machine("wren", "linux", 60, &[]), 20.0);
         unheard.room.as_mut().expect("a room").said_at = "2026-10-28T06:00:00Z".to_owned();
         assert!(
             !past(std::slice::from_ref(&unheard)),
@@ -3099,8 +3101,12 @@ pub(crate) mod tests {
             "nor that it has room"
         );
         assert!(
-            past(&[over.clone(), unheard]),
+            past(&[over.clone(), unheard.clone()]),
             "one heard past its room goes before one silent"
+        );
+        assert!(
+            !room(&[over.clone(), unheard]),
+            "and silence never reads as room"
         );
         assert!(!room(&[over]), "over its room");
         assert!(!past(&[]) && !room(&[]), "placed nowhere");

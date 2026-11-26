@@ -2572,13 +2572,15 @@ ends it, so a realm placing sprouts runs nodes that judge `strict`.
 The person's sprout may cost, an agent's never. A start that may cost
 and names no machine, placed on a machine heard lately but over its
 room or saturated, so that every machine heard is past its room, is
-asked again needing `cloud`, judged to last at least an hour: a cloud
-machine linked, heard lately within its room, takes it, counted there.
-No machine is made for it, since one made holds none of the person's
-checkouts and making one outlasts the asker's wait; one made by naming
-`cloud` serves those after it. Where none takes it, or the one chosen
-refuses it for its folder alone, it goes where placement chose, as
-before; any other answer stands.
+asked again needing `cloud`, judged to last at least an hour, and
+strict where it names a folder: a cloud machine linked, heard lately
+within its room, takes it, counted there. No machine is made for it,
+since one made holds none of the person's checkouts and making one
+outlasts the asker's wait; one made by naming `cloud` serves those
+after it. Where none is chosen, or the one chosen began nothing (no
+link took the ask, it lacks the folder, or its node doesn't take it
+now), it goes where placement chose, as before; any other answer,
+a lost one among them, stands.
 Beside its first words the
 session is given `QUEST_WORKFLOW_SPROUT`, the same work as data, a
 JSON object such as

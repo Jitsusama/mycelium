@@ -1490,14 +1490,11 @@ pub(crate) mod tests {
         );
     }
 
-    // New work goes where there is room, so a sprout naming no machine
-    // leaves it to placement, unless its work is in a tree only this
-    // machine has.
-    #[test]
-    fn a_sprout_naming_no_machine_is_placed_unless_its_work_is_only_here() {
+    /// A home holding checkouts and trees of each kind a sprout may begin
+    /// in, home itself a checkout, as a person's dotfiles may make it.
+    fn a_home_of_every_kind() -> Held {
         let origin = "https://example.com/rows";
-        // Home itself a checkout, as a person's dotfiles may make it.
-        let disk = Held::of(
+        Held::of(
             &[
                 "/home/kestrel/src/rows/docs",
                 "/home/kestrel/src/rows/.worktrees/tidy",
@@ -1517,6 +1514,8 @@ pub(crate) mod tests {
                 "/home/kestrel/reef/trees/tidy/areas",
                 "/home/kestrel/wild",
                 "/home/kestrel/wild/trees/trunk/areas",
+                "/home/kestrel/far",
+                "/srv/far/trunk/areas",
             ],
             &[
                 "/home/kestrel",
@@ -1525,8 +1524,11 @@ pub(crate) mod tests {
                 "/home/kestrel/reef/trees/trunk",
                 "/home/kestrel/reef/trees/tidy",
                 "/home/kestrel/wild/trees/trunk",
+                "/srv/far/trunk",
             ],
         )
+        .bare("/home/kestrel/far/git", "/srv/far/trunk")
+        .fetching("/srv/far/trunk", origin)
         .bare("/home/kestrel/reef/git", "/home/kestrel/reef/trees/trunk")
         .bare("/home/kestrel/wild/git", "/home/kestrel/wild/trees/trunk")
         .fetching("/home/kestrel/reef/trees/trunk", origin)
@@ -1542,7 +1544,15 @@ pub(crate) mod tests {
         .fetching("/home/kestrel/src/rows/sea", origin)
         .cutting("/home/kestrel/src/tidy")
         .cutting("/home/kestrel/trees/tidy")
-        .cutting("/home/kestrel/src/rows/.worktrees/tidy");
+        .cutting("/home/kestrel/src/rows/.worktrees/tidy")
+    }
+
+    // New work goes where there is room, so a sprout naming no machine
+    // leaves it to placement, unless its work is in a tree only this
+    // machine has.
+    #[test]
+    fn a_sprout_naming_no_machine_is_placed_unless_its_work_is_only_here() {
+        let disk = a_home_of_every_kind();
         let needs = |folder: &str, on: Option<&str>| {
             starting(
                 &sprouting("tidy the rows", Some(folder), on),
@@ -1583,6 +1593,10 @@ pub(crate) mod tests {
             (
                 "wild/trees/trunk/areas",
                 "a bare repository's trunk fetching from nowhere",
+            ),
+            (
+                "/srv/far/trunk/areas",
+                "a bare repository's trunk kept outside home",
             ),
             ("scratch/rows", "a clone each machine keeps its own"),
             ("/srv/rows", "a checkout outside home"),

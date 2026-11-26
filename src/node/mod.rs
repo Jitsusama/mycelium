@@ -698,6 +698,30 @@ fn sprouted(
     }
 }
 
+/// Whether `answered`, `machine`'s answer to a start past room naming
+/// `folder`, says nothing began there, so it may go where placement chose
+/// with nothing begun twice: no link took the ask, the machine hasn't the
+/// folder ([`start::lacks_folder`]), or its node doesn't take the start
+/// now, alone or as the last words of a relay's refusal. Any other
+/// answer, a lost one among them, stands.
+fn began_nowhere(answered: &Result<Reply, Unsent>, machine: &str, folder: Option<&Path>) -> bool {
+    let refused = |why: &str| {
+        let declined = [
+            format!("{machine} doesn't take it now: "),
+            "a start relayed here starts here or nowhere".to_owned(),
+        ];
+        folder.is_some_and(|folder| start::lacks_folder(why, machine, folder))
+            || declined
+                .iter()
+                .any(|said| why.starts_with(said) || why.contains(&format!(": {said}")))
+    };
+    match answered {
+        Err(Unsent { sent, .. }) => !sent,
+        Ok(Err(why)) => refused(why),
+        Ok(Ok(_)) => false,
+    }
+}
+
 /// What follows `reply`, the answer of `chosen`, the machine placement
 /// chose, to `asked`: `asked` pinned to `here`, this machine, with
 /// `chosen`'s refusal, where `chosen` refused it for lacking the folder it
@@ -7889,9 +7913,12 @@ impl<S: Store> Shared<S> {
     /// linked, heard lately within its room ([`placement::placed_with_room`])
     /// and not leaving within [`PAST_ROOM_LASTS_LEAST`], counted there as
     /// any start is. None where no such machine is linked, or where the one
-    /// chosen hasn't the folder the start names, before anything started
-    /// there, so it goes to the machine placement chose, as before; else
-    /// its answer, so a start whose answer was lost is never asked again.
+    /// chosen began nothing there ([`began_nowhere`]): no link reached it,
+    /// it hasn't the folder the start names, or it doesn't take the start
+    /// now, so it goes to the machine placement chose, as before; else its
+    /// answer, so a start whose answer was lost is never asked again. One
+    /// naming a folder is asked strictly, so a machine lacking it refuses
+    /// it rather than beginning it at home.
     ///
     /// No machine is made for it: one made has none of the person's
     /// checkouts, and making one outlasts the asker's wait, so a machine
@@ -7903,10 +7930,13 @@ impl<S: Store> Shared<S> {
     ) -> Option<Reply> {
         let mut cloud = asked.clone();
         cloud.work.needs.push(Need::Cloud);
+        cloud.strict |= cloud.folder.is_some();
         // Judged as lasting a while, so open-ended work isn't begun on a
         // machine about to leave; sent as asked.
         let mut judged = cloud.work.clone();
-        judged.lasts.get_or_insert(PAST_ROOM_LASTS_LEAST);
+        judged.lasts = Some(judged.lasts.map_or(PAST_ROOM_LASTS_LEAST, |lasts| {
+            lasts.max(PAST_ROOM_LASTS_LEAST)
+        }));
         let (decision, weighed) = self.decided(&judged, Counts::Always, fence, screen, admits);
         let Placement::Placed { machine, .. } = &decision.placement else {
             return None;
@@ -7917,18 +7947,34 @@ impl<S: Store> Shared<S> {
         }
         eprintln!("a start past every machine's room goes to {machine}, in the cloud");
         let within = relayed_within(at, jiff::Timestamp::now().as_millisecond());
-        let reply = self
-            .start_on(machine.clone(), cloud, (starts_in(fence, screen), within))
-            .await;
-        match (&reply, &asked.folder) {
-            (Err(why), Some(folder)) if start::lacks_folder(why, machine, folder) => {
-                self.lock().starts.unplaced(machine, weighed);
-                let said = why.escape_debug();
-                eprintln!("a start past every machine's room is placed as before, as {said}");
-                None
-            }
-            _ => Some(reply),
+        let fenced = starts_in(fence, screen);
+        if *machine == self.machine {
+            return Some(
+                self.start_on(machine.clone(), cloud, (fenced, within))
+                    .await,
+            );
         }
+        // Asked of the link itself, so an ask that never left here is
+        // told from one whose answer was lost.
+        cloud.work.fence = declaring_at_least(cloud.work.fence, fenced);
+        let there = cloud.once.clone();
+        let answered = self.asks.ask_within(machine, cloud, within).await;
+        if began_nowhere(&answered, machine, asked.folder.as_deref()) {
+            self.lock().starts.unplaced(machine, weighed);
+            let why = match &answered {
+                Ok(Err(why)) | Err(Unsent { why, .. }) => why.as_str(),
+                Ok(Ok(_)) => "",
+            };
+            let said = why.escape_debug();
+            eprintln!("a start past every machine's room is placed as before, as {said}");
+            return None;
+        }
+        Some(answered.unwrap_or_else(|unsent| {
+            if let Some(there) = there {
+                self.onces.unanswered(&there, machine, unsent.sent, false);
+            }
+            Err(unsent.why)
+        }))
     }
 
     /// The `offers` a machine may be made of for a start asked in the
@@ -24056,53 +24102,50 @@ esac
 
     // The person, 2026-11-25: "I need to use this to complete work by
     // Friday." Their start where every machine heard is past its room is
-    // asked of a cloud machine linked with room; with none, it goes where
-    // placement chose, as before, and no machine is made for it.
+    // asked of a cloud machine linked with room; where that begins nothing,
+    // it goes where placement chose, as before, and no machine is made.
     #[tokio::test]
     async fn the_persons_start_past_every_machines_room_is_asked_of_the_cloud() {
-        use crate::placement::tests::{machine, pressed};
         // Tern, the person's, and wren, the cloud's, reach basin, which
         // skiff doesn't; wren takes only work naming the cloud.
-        let heard = |name: &str, over: bool, now: bool| {
-            let mut one = pressed(machine(name, "linux", 60, &["basin"]), 20.0);
-            let room = one.room.as_mut().expect("a room");
-            room.said_at = if now {
-                jiff::Timestamp::now().to_string()
-            } else {
-                "2026-10-28T06:00:00Z".to_owned()
-            };
-            room.over = over.then(|| vec![room::Limit::Cpu]);
-            one
-        };
-        // Tern over, whether wren is linked and heard lately, whether the
-        // start may cost, what it needs beyond basin, and who is asked.
+        let heard = reaching_basin;
+        // Tern over; whether wren is known, heard lately, and leaving
+        // within the hour; whether the start may cost; what it needs
+        // beyond basin; and whether placement chooses wren for it, which a
+        // silent wren, the only cloud machine, still is, to be let go.
         let cases = [
-            (true, Some(true), true, None, "wren"),
-            (false, Some(true), true, None, "tern"),
-            (true, Some(false), true, None, "tern"),
-            (true, None, true, None, "tern"),
-            (true, Some(true), false, None, "tern"),
+            (true, Some((true, false)), true, None, true),
+            (false, Some((true, false)), true, None, false),
+            (true, Some((false, false)), true, None, true),
+            (true, Some((true, true)), true, None, false),
+            (true, None, true, None, false),
+            (true, Some((true, false)), false, None, false),
             (
                 true,
-                Some(true),
+                Some((true, false)),
                 true,
                 Some(Need::Machine("tern".to_owned())),
-                "tern",
+                false,
             ),
         ];
-        for (over, wren, may_cost, also, asks) in cases {
+        for (over, wren, may_cost, also, chosen) in cases {
             let dir = tempfile::tempdir().expect("a temporary folder");
             let processes = Processes::Folder("/nowhere/proc".into());
             let store = Memory::default();
             store
                 .put_machine(&heard("tern", over, true))
                 .expect("what it said is kept");
-            if let Some(lately) = wren {
+            if let Some((lately, leaves)) = wren {
                 let mut wren = heard("wren", false, lately);
-                wren.declared.as_mut().expect("declared").costs_money = true;
+                let declared = wren.declared.as_mut().expect("declared");
+                declared.costs_money = true;
+                declared.leaves_at =
+                    leaves.then(|| jiff::Timestamp::now() + jiff::SignedDuration::from_mins(30));
                 store.put_machine(&wren).expect("what it said is kept");
             }
             let mut skiff = holding_skiff(dir.path(), store, None, processes);
+            let kept = dir.path().join("placements");
+            skiff.placements = Some(Arc::new(placements::Log::at(kept.clone())));
             let (provider, made) = (dir.path().join("provider"), dir.path().join("made"));
             crate::stand_in::program(
                 &provider,
@@ -24131,15 +24174,144 @@ esac
             };
             let at = jiff::Timestamp::now().as_millisecond();
             let asked = skiff.placed((start, at), None, Screen::Ground, false).await;
-            // Neither is linked, so the answer names the one asked alone.
-            let other = if asks == "tern" { "wren" } else { "tern" };
-            assert!(
-                asked
-                    .as_ref()
-                    .is_err_and(|why| why.contains(asks) && !why.contains(other)),
-                "over {over}, wren {wren:?}, may cost {may_cost}: asks {asks}, not {asked:?}"
+            let case = format!("over {over}, wren {wren:?}, may cost {may_cost}");
+            // No link reaches wren, which begins nothing there, so tern is
+            // asked as before, and isn't linked either.
+            assert_eq!(
+                asked,
+                Err("no link reaches tern now".to_owned()),
+                "{case}: tern is asked"
             );
             assert!(!made.exists(), "no machine is made past room");
+            assert_eq!(
+                logged_on(&kept, "wren"),
+                usize::from(chosen),
+                "{case}: wren chosen"
+            );
+            let machines = skiff.machines();
+            let mut inner = skiff.lock();
+            let loads = inner
+                .starts
+                .loads(&machines, std::iter::empty(), jiff::Timestamp::now());
+            let placed = |name: &str| loads.get(name).map_or(0, |load| load.placed);
+            assert_eq!(
+                placed("wren"),
+                0,
+                "{case}: nothing begun on wren weighs there"
+            );
+            assert_eq!(
+                placed("tern"),
+                1,
+                "{case}: the start asked of tern weighs there"
+            );
+        }
+    }
+
+    /// `name`, reaching basin, over its room where `over` says, its room
+    /// said just now, or long ago where `now` doesn't say.
+    fn reaching_basin(name: &str, over: bool, now: bool) -> facts::Machine {
+        use crate::placement::tests::{machine, pressed};
+        let mut one = pressed(machine(name, "linux", 60, &["basin"]), 20.0);
+        let room = one.room.as_mut().expect("a room");
+        room.said_at = if now {
+            jiff::Timestamp::now().to_string()
+        } else {
+            "2026-10-28T06:00:00Z".to_owned()
+        };
+        room.over = over.then(|| vec![room::Limit::Cpu]);
+        one
+    }
+
+    /// How many placements the log kept in `kept` placed on `name`.
+    fn logged_on(kept: &Path, name: &str) -> usize {
+        let mut placed = 0;
+        for day in fs::read_dir(kept).expect("the log's folder") {
+            let day = day.expect("an entry").path();
+            for line in fs::read_to_string(day).expect("the day's file").lines() {
+                let record: placements::Record = serde_json::from_str(line).expect("a record");
+                if matches!(&record.decision.placement,
+                    Placement::Placed { machine, .. } if machine == name)
+                {
+                    placed += 1;
+                }
+            }
+        }
+        placed
+    }
+
+    #[test]
+    fn a_start_past_room_falls_back_only_where_it_began_nowhere() {
+        let folder = Path::new("/home/kestrel/src/rows");
+        let unsent = |sent| {
+            Err(Unsent {
+                why: "no link reaches wren now".to_owned(),
+                sent,
+            })
+        };
+        let said = |why: String| Ok(Err(why));
+        let lacks = start::no_folder("wren", folder);
+        let cases = [
+            (unsent(false), Some(folder), true, "no link took it"),
+            (unsent(true), Some(folder), false, "a lost answer stands"),
+            (
+                said(lacks.clone()),
+                Some(folder),
+                true,
+                "wren hasn't the folder",
+            ),
+            (
+                said(lacks.clone()),
+                None,
+                false,
+                "a folder never named isn't lacked",
+            ),
+            (
+                said(start::no_folder("tern", folder)),
+                Some(folder),
+                false,
+                "another lacks it",
+            ),
+            (
+                said(format!(
+                    "wren takes a relayed start as an agent's, and refused it: {lacks}"
+                )),
+                Some(folder),
+                true,
+                "a relay's refusal ending in it",
+            ),
+            (
+                said("wren doesn't take it now: it's saturated".to_owned()),
+                None,
+                true,
+                "wren doesn't take it now",
+            ),
+            (
+                said("tern doesn't take it now: it's saturated".to_owned()),
+                None,
+                false,
+                "another doesn't",
+            ),
+            (
+                said(
+                    "a start relayed here starts here or nowhere, and it would go to x".to_owned(),
+                ),
+                None,
+                true,
+                "wren's node would place it elsewhere",
+            ),
+            (
+                said("its program failed".to_owned()),
+                Some(folder),
+                false,
+                "any other refusal",
+            ),
+        ];
+        for (answered, folder, falls_back, case) in cases {
+            assert_eq!(
+                began_nowhere(&answered, "wren", folder),
+                falls_back,
+                "{case}"
+            );
         }
     }
 
