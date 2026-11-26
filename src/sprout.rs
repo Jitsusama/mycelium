@@ -83,6 +83,10 @@ pub trait Disk {
     fn is_folder(&self, folder: &Path) -> bool;
     /// Whether `folder` is the top of a repository's checkout here.
     fn is_checkout(&self, folder: &Path) -> bool;
+    /// Whether the checkout at `folder` is a tree cut from a repository
+    /// kept elsewhere, its `.git` a file naming that one, as a quest's
+    /// tree is, or a bare repository's.
+    fn is_cut_tree(&self, folder: &Path) -> bool;
     /// `folder` as it is on disk, through every link, or as written with
     /// its `.` and `..` worked out where it isn't here.
     fn resolved(&self, folder: &Path) -> PathBuf;
@@ -111,6 +115,10 @@ impl Disk for ThisDisk {
 
     fn is_checkout(&self, folder: &Path) -> bool {
         folder.join(".git").exists()
+    }
+
+    fn is_cut_tree(&self, folder: &Path) -> bool {
+        folder.join(".git").is_file()
     }
 
     fn resolved(&self, folder: &Path) -> PathBuf {
@@ -670,10 +678,14 @@ pub fn command(first_words: &str, seed: Option<&str>) -> Vec<String> {
 }
 
 /// What the sprout `asked` starts, asked from `cwd` by someone whose home
-/// is `home`, its folders found on `disk`: on the machine it names, or
-/// `here`, in the folder found, as `disk` resolves it where it's this
-/// machine's, so what starts is what was judged rather than what its
-/// words would point at by then, and named within home, where only the
+/// is `home`, its folders found on `disk`: on the machine it names, else
+/// where placement chooses, as a start naming no machine is placed, so
+/// new work goes where there is room for it. Work in a folder only this
+/// machine has as it is, anywhere but a repository's own checkout under
+/// `~/src`, starts `here` all the same. It starts
+/// in the folder found, as `disk` resolves it where it's this machine's,
+/// so what starts is what was judged rather than what its words would
+/// point at by then, and named within home, where only the
 /// machine it starts on knows where home is; with what its seed leaves
 /// out.
 ///
@@ -721,7 +733,11 @@ pub fn starting(
     } else {
         found
     };
-    let machine = asked.on.as_deref().unwrap_or(here);
+    let machine = match asked.on.as_deref() {
+        Some(on) => Some(on),
+        None if stays(&found, &disk.resolved(home), disk) => Some(here),
+        None => None,
+    };
     Ok(start(
         machine,
         Some(within_home(found, home)),
@@ -741,14 +757,52 @@ pub fn within_home(folder: PathBuf, home: &Path) -> PathBuf {
     }
 }
 
+/// Whether work begun in `folder` stays on this machine rather than going
+/// where placement chooses. Only work in a repository's own checkout
+/// where the person keeps them, `~/src/<repo>` or
+/// `~/src/<host>/<owner>/<repo>` under `home`, fetching from a remote,
+/// may go, since a person's machines keep those at the same places, from
+/// the same remotes; a machine that hasn't it refuses the strict start,
+/// which then begins here. Everything else stays, since no other machine
+/// has it as it is here: the checkout nearest `folder` a tree cut from a
+/// repository kept elsewhere (a quest's tree, a zone's, a bare
+/// repository's trunk with its sparse checkout, a submodule), a clone
+/// kept anywhere else (a quest's scratch clone, each machine's own), one
+/// with no remote, and a folder in no checkout. What a checkout holds
+/// uncommitted isn't looked at: work on that is asked `--on` this one.
+fn stays(folder: &Path, home: &Path, disk: &impl Disk) -> bool {
+    let src = home.join("src");
+    let shared = |top: &Path| {
+        let Ok(within) = top.strip_prefix(&src) else {
+            return false;
+        };
+        // A host's folder holds its owners', so is no checkout itself.
+        let kept = match within.components().count() {
+            1 => true,
+            3 => within
+                .components()
+                .next()
+                .is_some_and(|host| !disk.is_checkout(&src.join(host))),
+            _ => false,
+        };
+        kept && !disk.is_cut_tree(top) && disk.origin(top).is_some()
+    };
+    folder
+        .ancestors()
+        .take_while(|at| *at != home)
+        .find(|at| disk.is_checkout(at))
+        .is_none_or(|top| !shared(top))
+}
+
 /// What a sprout asks the node to start: its session on `machine` and
-/// nowhere else, in `folder` and never at home where that machine hasn't
+/// nowhere else, or where placement chooses where it names none, in
+/// `folder` and never at home where that machine hasn't
 /// it (`strict`), never on a machine that costs money, its seed carrying
 /// the sprout's own `id`, told the cell it came `from` and any `note` on
 /// where it begins; and what that seed leaves out.
 #[must_use]
 pub fn start(
-    machine: &str,
+    machine: Option<&str>,
     folder: Option<PathBuf>,
     seed: &Seed,
     (from, note): (Option<&str>, Option<&str>),
@@ -762,7 +816,10 @@ pub fn start(
     }
     let start = Start {
         work: Work {
-            needs: vec![Need::Machine(machine.to_owned())],
+            needs: machine
+                .map(|machine| Need::Machine(machine.to_owned()))
+                .into_iter()
+                .collect(),
             prefers: Vec::new(),
             tolerates: Vec::new(),
             may_wait: false,
@@ -799,14 +856,17 @@ pub(crate) mod tests {
         links: BTreeMap<PathBuf, PathBuf>,
         bare: BTreeMap<PathBuf, PathBuf>,
         files: BTreeMap<PathBuf, String>,
+        cut: BTreeSet<PathBuf>,
     }
 
     impl Held {
-        /// A bare repository at `repository`, its trunk's tree at `trunk`.
+        /// A bare repository at `repository`, its trunk's tree at `trunk`,
+        /// a tree cut from it, as on a disk.
         pub(crate) fn bare(mut self, repository: &str, trunk: &str) -> Self {
             self.folders.insert(PathBuf::from(repository));
             self.bare
                 .insert(PathBuf::from(repository), PathBuf::from(trunk));
+            self.cut.insert(PathBuf::from(trunk));
             self
         }
 
@@ -835,6 +895,12 @@ pub(crate) mod tests {
             self.links.insert(PathBuf::from(link), PathBuf::from(to));
             self
         }
+
+        /// The checkout at `tree` a tree cut from a repository elsewhere.
+        fn cutting(mut self, tree: &str) -> Self {
+            self.cut.insert(PathBuf::from(tree));
+            self
+        }
     }
 
     impl Disk for Held {
@@ -843,6 +909,9 @@ pub(crate) mod tests {
         }
         fn is_checkout(&self, folder: &Path) -> bool {
             self.checkouts.contains_key(folder)
+        }
+        fn is_cut_tree(&self, folder: &Path) -> bool {
+            self.cut.contains(folder)
         }
         fn resolved(&self, folder: &Path) -> PathBuf {
             let folder = lexical(folder);
@@ -1240,7 +1309,7 @@ pub(crate) mod tests {
     #[test]
     fn a_start_is_pi_on_the_one_machine_named_that_never_costs() {
         let asked = start(
-            "kestrel",
+            Some("kestrel"),
             Some(PathBuf::from("src/skiff")),
             &words("make tea"),
             (None, None),
@@ -1338,6 +1407,157 @@ pub(crate) mod tests {
         .start;
         assert_eq!(start.folder, Some(PathBuf::from("src/rows")));
         assert_eq!(start.work.needs, [Need::Machine("tern".to_owned())]);
+    }
+
+    // The person's new work, asked of a machine over its room, goes to
+    // one with room: what a sprout naming no machine asks is placed.
+    #[test]
+    fn a_sprout_asked_of_a_machine_over_its_room_goes_to_one_with_room() {
+        use crate::placement::tests::{machine, pressed};
+        use crate::placement::{Loads, Placement, Weights, decide_as};
+        let disk = Held::default().fetching("/home/kestrel/src/rows", "https://example.com/rows");
+        let home = Path::new("/home/kestrel");
+        let start = starting(
+            &sprouting("tidy the rows", Some("src/rows"), None),
+            home,
+            home,
+            "kestrel",
+            &disk,
+        )
+        .expect("it starts")
+        .start;
+        // Alike but for kestrel's queue saying it's past its processors.
+        let mut over = pressed(machine("kestrel", "linux", 60, &[]), 20.0);
+        over.room.as_mut().expect("a room").over = Some(vec![crate::room::Limit::Cpu]);
+        let roomy = pressed(machine("osprey", "linux", 60, &[]), 20.0);
+        // As each machine said its room, so both are heard and nothing is
+        // left to a draw.
+        let now = "2026-10-29T06:00:00Z".parse().expect("a time");
+        let placed = |machines: &[crate::facts::Machine]| {
+            decide_as(
+                &start.work,
+                machines,
+                &Loads::new(),
+                &[],
+                now,
+                &Weights::STARTING,
+            )
+            .placement
+        };
+        let Placement::Placed {
+            machine: chosen, ..
+        } = placed(&[over.clone(), roomy])
+        else {
+            panic!("one takes it");
+        };
+        assert_eq!(chosen, "osprey", "not the machine over its room");
+        let Placement::Placed { machine: alone, .. } = placed(&[over]) else {
+            panic!("the machine over its room still takes it alone");
+        };
+        assert_eq!(
+            alone, "kestrel",
+            "placement ranks, never refuses, an over machine"
+        );
+    }
+
+    // A tree cut from a repository kept elsewhere has a `.git` file naming
+    // it, where the repository's own checkout has a folder.
+    #[test]
+    fn this_disk_tells_a_cut_tree_from_its_repositorys_own_checkout() {
+        let place = tempfile::tempdir().expect("a place");
+        let rows = place.path().join("src/rows");
+        std::fs::create_dir_all(rows.join(".git")).expect("the checkout is made");
+        let tidy = place.path().join("trees/tidy");
+        std::fs::create_dir_all(&tidy).expect("the tree is made");
+        let named = "gitdir: ../../src/rows/.git/worktrees/tidy\n";
+        std::fs::write(tidy.join(".git"), named).expect("it names its repository");
+
+        assert!(ThisDisk.is_checkout(&tidy) && ThisDisk.is_cut_tree(&tidy));
+        assert!(ThisDisk.is_checkout(&rows) && !ThisDisk.is_cut_tree(&rows));
+        assert!(
+            !ThisDisk.is_cut_tree(place.path()),
+            "no checkout is no tree"
+        );
+    }
+
+    // New work goes where there is room, so a sprout naming no machine
+    // leaves it to placement, unless its work is in a tree only this
+    // machine has.
+    #[test]
+    fn a_sprout_naming_no_machine_is_placed_unless_its_work_is_only_here() {
+        let origin = "https://example.com/rows";
+        // Home itself a checkout, as a person's dotfiles may make it.
+        let disk = Held::of(
+            &[
+                "/home/kestrel/src/rows/docs",
+                "/home/kestrel/src/rows/.worktrees/tidy",
+                "/home/kestrel/src/example.com/kestrel/reef",
+                "/home/kestrel/src/loose",
+                "/home/kestrel/src/rows/vendor/sea",
+                "/home/kestrel/trees/tidy/docs",
+                "/home/kestrel/src/tidy",
+                "/home/kestrel/src/rows/sea",
+                "/home/kestrel/scratch/rows",
+                "/home/kestrel/notes",
+                "/srv/rows",
+            ],
+            &[
+                "/home/kestrel",
+                "/home/kestrel/trees/tidy",
+                "/home/kestrel/src/loose",
+            ],
+        )
+        .fetching("/home/kestrel/src/rows", origin)
+        .fetching("/home/kestrel/src/example.com/kestrel/reef", origin)
+        .fetching("/home/kestrel/src/rows/.worktrees/tidy", origin)
+        .fetching("/home/kestrel/src/rows/vendor/sea", origin)
+        .fetching("/home/kestrel/scratch/rows", origin)
+        .fetching("/srv/rows", origin)
+        .fetching("/home/kestrel/src/tidy", origin)
+        .fetching("/home/kestrel/src/rows/sea", origin)
+        .cutting("/home/kestrel/src/tidy")
+        .cutting("/home/kestrel/trees/tidy")
+        .cutting("/home/kestrel/src/rows/.worktrees/tidy");
+        let needs = |folder: &str, on: Option<&str>| {
+            starting(
+                &sprouting("tidy the rows", Some(folder), on),
+                Path::new("/home/kestrel"),
+                Path::new("/home/kestrel"),
+                "osprey",
+                &disk,
+            )
+            .expect("it starts")
+            .start
+            .work
+            .needs
+        };
+        let here = [Need::Machine("osprey".to_owned())];
+        assert!(
+            needs("src/rows/docs", None).is_empty(),
+            "work in a repository's own checkout goes where placement chooses"
+        );
+        assert!(
+            needs("src/example.com/kestrel/reef", None).is_empty(),
+            "one kept under its host and owner too"
+        );
+        for (folder, why) in [
+            ("trees/tidy/docs", "a tree cut from a repository elsewhere"),
+            ("src/rows/.worktrees/tidy", "one cut inside the checkout"),
+            ("src/rows/vendor/sea", "a clone inside a checkout"),
+            ("src/rows/sea", "a clone just inside a checkout"),
+            ("src/tidy", "a tree cut where checkouts are kept"),
+            ("src/loose", "a checkout fetching from nowhere"),
+            ("scratch/rows", "a clone each machine keeps its own"),
+            ("/srv/rows", "a checkout outside home"),
+            ("notes", "no checkout below home, home one or not"),
+        ] {
+            assert_eq!(needs(folder, None), here, "{folder}: {why}");
+        }
+        assert_eq!(
+            needs("src/rows", Some("osprey")),
+            here,
+            "naming this machine keeps it here"
+        );
     }
 
     #[test]
@@ -1579,7 +1799,7 @@ pub(crate) mod tests {
     #[test]
     fn a_start_names_its_sprout_machine_and_session_in_what_it_leaves_out() {
         let asked = start(
-            "tern",
+            Some("tern"),
             None,
             &words("make tea"),
             (Some("QEST-20261116-42P0R4"), None),
@@ -1604,7 +1824,7 @@ pub(crate) mod tests {
     #[test]
     fn a_seed_too_long_is_said_of_the_session_holding_it() {
         let asked = start(
-            "tern",
+            Some("tern"),
             None,
             &words(&"a".repeat(SEED_MOST + 1)),
             (None, None),
@@ -1621,7 +1841,13 @@ pub(crate) mod tests {
 
     #[test]
     fn what_a_seed_left_out_is_said_only_once_its_session_started() {
-        let asked = start("tern", None, &words("make tea"), (Some("QEST-1"), None), ID);
+        let asked = start(
+            Some("tern"),
+            None,
+            &words("make tea"),
+            (Some("QEST-1"), None),
+            ID,
+        );
         assert_eq!(asked.left_out.told(&Ok(started_as("tern", "h"))).len(), 1);
         let refused: Reply = Err("the cell's start limit is reached".to_owned());
         assert!(
@@ -1640,7 +1866,13 @@ pub(crate) mod tests {
     // What is written to a log given the start's answer.
     #[test]
     fn the_log_is_written_what_was_left_out_once_a_session_started() {
-        let asked = start("tern", None, &words("make tea"), (Some("QEST-1"), None), ID);
+        let asked = start(
+            Some("tern"),
+            None,
+            &words("make tea"),
+            (Some("QEST-1"), None),
+            ID,
+        );
         let mut log = Vec::new();
         asked
             .left_out
@@ -1675,7 +1907,7 @@ pub(crate) mod tests {
     #[test]
     fn a_start_carries_its_seed_beside_its_first_words() {
         let asked = start(
-            "kestrel",
+            Some("kestrel"),
             None,
             &words("make tea"),
             (Some("HARBOR"), None),
@@ -1691,7 +1923,14 @@ pub(crate) mod tests {
     #[test]
     fn a_start_whose_words_run_past_the_most_a_session_reads_carries_no_seed() {
         let said = "a".repeat(SEED_MOST + 1);
-        let asked = start("kestrel", None, &words(&said), (Some("HARBOR"), None), ID).start;
+        let asked = start(
+            Some("kestrel"),
+            None,
+            &words(&said),
+            (Some("HARBOR"), None),
+            ID,
+        )
+        .start;
         assert_eq!(seed_given(&asked), None);
         assert!(asked.command[5].starts_with("QUEST_WORKFLOW_FIRST_TEXT="));
         assert_eq!(asked.command[6], "pi", "the first words alone stand");
@@ -1703,7 +1942,14 @@ pub(crate) mod tests {
         let work = home.path().join("src");
         std::fs::create_dir(&work).expect("a folder");
         let said = "make \"tea\" 'now'\nthen $(id); `id` & rm -rf ~ \\ $HOME";
-        let asked = start("kestrel", None, &words(said), (Some("HARBOR"), None), ID).start;
+        let asked = start(
+            Some("kestrel"),
+            None,
+            &words(said),
+            (Some("HARBOR"), None),
+            ID,
+        )
+        .start;
         let mut command = asked.command.clone();
         // pi's place takes one that says what it was given, and the guard
         // waits for nothing.

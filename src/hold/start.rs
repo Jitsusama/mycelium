@@ -321,13 +321,29 @@ pub fn begins_strictly(
     match (found(folder, home), folder) {
         (Some(wanted), _) if needs == Needs::AwayFromHome && is_home(&wanted, home) => at_home(),
         (Some(wanted), _) => Ok(wanted),
-        (None, Some(named)) if needs != Needs::Nothing => Err(format!(
-            "{machine} has no folder {}, which the start names",
-            named.display()
-        )),
+        (None, Some(named)) if needs != Needs::Nothing => Err(no_folder(machine, named)),
         (None, None) if needs == Needs::AwayFromHome => at_home(),
         _ => Ok(home.to_owned()),
     }
+}
+
+/// What `machine` answers a start needing the `folder` it names, which it
+/// hasn't, as [`begins_strictly`] refuses it, before anything starts.
+#[must_use]
+pub fn no_folder(machine: &str, folder: &Path) -> String {
+    format!(
+        "{machine} has no folder {}, which the start names",
+        folder.display()
+    )
+}
+
+/// Whether `said`, the answer to a start naming `folder` asked of
+/// `machine`, is that machine's [`no_folder`], alone or as the last words
+/// of a refusal wrapping it, as a relay taken as an agent's says it.
+#[must_use]
+pub fn lacks_folder(said: &str, machine: &str, folder: &Path) -> bool {
+    let lacking = no_folder(machine, folder);
+    said == lacking || said.ends_with(&format!(": {lacking}"))
 }
 
 /// Whether `folder` is `home` itself, however it's named.
@@ -878,5 +894,27 @@ mod tests {
             Err("tern has no folder src/elsewhere, which the start names".to_owned()),
             "and one it hasn't is refused naming it"
         );
+    }
+
+    #[test]
+    fn a_machine_refusing_a_start_for_its_folder_alone_is_told_however_wrapped() {
+        let home = tempfile::tempdir().expect("a home");
+        let folder = Path::new("src/rows");
+        let refused = begins_strictly(Some(folder), Needs::ItsFolder, home.path(), "tern")
+            .expect_err("tern hasn't it");
+        assert!(lacks_folder(&refused, "tern", folder));
+        let relayed =
+            format!("tern takes a relayed start as an agent's, and refused it: {refused}");
+        assert!(lacks_folder(&relayed, "tern", folder), "wrapped: {relayed}");
+        assert!(
+            !lacks_folder(&refused, "ern", folder),
+            "another machine's refusal is no answer about this one"
+        );
+        assert!(
+            !lacks_folder(&refused, "tern", Path::new("src/other")),
+            "nor another folder's"
+        );
+        let silent = "tern didn't answer within 90s";
+        assert!(!lacks_folder(silent, "tern", folder), "nor no answer");
     }
 }

@@ -1236,7 +1236,11 @@ struct Starting {
 
 #[derive(clap::Args)]
 struct Sprouting {
-    /// The machine it starts on, by name; this one if none.
+    /// The machine it starts on, by name; if none, where placement
+    /// chooses, where its folder is a repository's own checkout under
+    /// `~/src` fetching from a remote (this one where the machine chosen
+    /// hasn't it), else this one. Name this one for work on what a
+    /// checkout holds uncommitted.
     #[arg(long)]
     on: Option<String>,
     /// The folder it works in, or a place by name, such as
@@ -3038,10 +3042,16 @@ fn sprout(socket: &Path, asked: Sprouting) -> io::Result<()> {
     // A node from before sprouts were its own to judge is asked for the
     // Start judged here, as it was then. It knows nothing of what the
     // seed left out, so that is said here, once the session started, as
-    // a node of now would log it.
+    // a node of now would log it. It names this machine where the sprout
+    // names none, as sprouts did then, since that node can't begin it
+    // here where the machine it places it on hasn't its folder.
     let unknown = |why: &str| why.starts_with("not a request") && why.contains("Sprout");
     if matches!(&answer, Answer::Err(why) if unknown(why)) {
-        let reply = Client::connect(socket)?.ask(&Request::Start(start.clone()))?;
+        let mut then = start.clone();
+        if then.work.needs.is_empty() {
+            then.work.needs = vec![Need::Machine(here.clone())];
+        }
+        let reply = Client::connect(socket)?.ask(&Request::Start(then))?;
         for said in left_out.told(&reply) {
             tell!("mycelium sprout: {said}");
         }

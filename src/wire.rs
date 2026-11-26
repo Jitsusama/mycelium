@@ -271,7 +271,10 @@ pub struct Taking {
 /// `words`, a link or what the work is, and its folder is the one named,
 /// the checkout a link's repository has under home, or where the asker
 /// is, judged as the asker could reach it and never home itself. It
-/// starts on `on`, or this machine, and never on one that costs money.
+/// starts on `on`; else where placement chooses, where its folder is a
+/// repository's own checkout under `~/src` fetching from a remote,
+/// beginning here instead where the machine chosen hasn't it; here
+/// otherwise; and never on one that costs money.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sprout {
     /// The work: a link alone, or words.
