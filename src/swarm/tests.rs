@@ -1619,6 +1619,21 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
             wrap.lines().count()
         );
     }
+    // Letters after the pile in its word start the next line, as the line
+    // the cut ends holds every step a cut of it keeps; none is lost.
+    assert_eq!(
+        wrapped(
+            &format!("Reef{}xyz b", "\u{301}".repeat(10_000)),
+            "",
+            "",
+            80
+        )
+        .lines()
+        .skip(1)
+        .collect::<Vec<_>>(),
+        ["xyz b"],
+        "the letters after a pile were lost, or spread over lines"
+    );
     // A selector that doesn't fit still moves with its emoji to the next.
     assert_eq!(
         wrapped("abc\u{2764}\u{FE0F}", "", "", 4),

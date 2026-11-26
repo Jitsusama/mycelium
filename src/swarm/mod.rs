@@ -605,7 +605,8 @@ pub(crate) fn fit(text: &str, width: usize) -> String {
 /// `rest`. A word wider than a whole line's room, such as a path, is
 /// broken across lines rather than passing it, never before a character
 /// that draws nothing, and a pile of marks past a cut's cap on steps goes,
-/// as [`fit`] drops it.
+/// as [`fit`] drops it. What follows the pile in its word starts the next
+/// line, since the line the cut ends holds every step a cut keeps.
 pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> String {
     let room = |at: usize| {
         let indent = if at == 0 { first } else { rest };
