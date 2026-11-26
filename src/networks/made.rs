@@ -14,7 +14,7 @@ use serde::Deserialize as _;
 
 use super::{
     ASKED_MOST, Builds, Cell, EventLine, Is, MACHINES, Mycelium, Network, Places, Shape, Share,
-    Tree, Usage, kept,
+    Subjects, Tree, Usage, kept,
 };
 use crate::receptor::{self, Counts, Source};
 use crate::swarm::{self, Standing};
@@ -230,7 +230,7 @@ fn bare(name: String, is: Is) -> Cell {
         asks: None,
         asked: None,
         repo: None,
-        subjects: Vec::new(),
+        subjects: Subjects::default(),
         usage: Usage::default(),
         leads: Vec::new(),
         machine: None,
@@ -378,7 +378,7 @@ fn asked_whole(asked: &str) -> Option<String> {
 /// subjects a cell holds, not the times it says them.
 #[must_use]
 pub fn subjects(declared: &Value) -> Vec<String> {
-    let mut subjects: Vec<String> = declared
+    declared
         .as_array()
         .into_iter()
         .flatten()
@@ -400,11 +400,7 @@ pub fn subjects(declared: &Value) -> Vec<String> {
         })
         .take(MOST_SUBJECTS)
         .map(str::to_owned)
-        .collect();
-    // Held for each of ten thousand cells, and collected a filtered count
-    // at a time, so up to 24 would sit in room for 32 without this.
-    subjects.shrink_to_fit();
-    subjects
+        .collect()
 }
 
 /// Whether `each` draws as nothing: a soft hyphen, a zero-width space or
@@ -626,7 +622,7 @@ fn session_cell(session: &Value) -> Option<Cell> {
         asks: session["wants"]["said"].as_str().map(str::to_owned),
         asked: session["wants"]["asked"].as_str().and_then(asked_whole),
         repo: session["presence"]["repo"].as_str().map(str::to_owned),
-        subjects: subjects(&session["presence"]["subjects"]),
+        subjects: Subjects::from(subjects(&session["presence"]["subjects"])),
         usage: Usage::of(session),
         leads: Vec::new(),
         machine: text("machine"),
