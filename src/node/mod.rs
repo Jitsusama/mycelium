@@ -129,7 +129,8 @@ const PAST_ROOM_LASTS_LEAST: jiff::SignedDuration = jiff::SignedDuration::from_h
 /// How long, in milliseconds, a cloud machine that answered a start past
 /// every machine's room with a refusal that stands is passed over for
 /// the next, so one refusing every start fails one in that while, not
-/// each.
+/// each. A refusal of one session's start alone passes none over
+/// ([`refused_for_one_session`]).
 const PAST_ROOM_PASSED_OVER: i64 = 10 * 60_000;
 
 /// What a node answers a start relayed to it that it would place on
@@ -142,6 +143,20 @@ const DECLINED_NOW: &str = " doesn't take it now: ";
 const LAUNCHER_REFUSED: &str = " can't start this held session ";
 const STARTS_NO_SESSIONS: &str = "'s node starts no sessions";
 const NO_HOME_TO_START: &str = " has no home to start it in";
+
+/// The words a machine, named between them, answers a start naming a
+/// session where its carries can't be read, before anything began.
+const NAMING_UNTAKEN: &str = "no start naming a session is taken on ";
+const CARRIES_UNREAD: &str = ", as its carries can't be read";
+
+/// The words a machine, named after the first, answers a start of a
+/// session another start holds, and how each of its other refusals of
+/// one session coming back, or never there, ends: each said once, so an
+/// asker can tell a refusal of one session from one of every start
+/// ([`refused_for_one_session`]).
+const BEING_REOPENED: &str = " is being reopened on ";
+const NOT_REOPENED: &str = ", so it isn't reopened";
+const NOTHING_REOPENED: &str = ", so nothing is reopened here";
 
 /// How a relayed start taken as an agent's is told it was refused
 /// ([`relay_refused`]): after the machine where no person works, or after
@@ -815,7 +830,8 @@ fn past_quoted(quoted: &str) -> Option<&str> {
 /// `folder`, was raised before anything began: placed elsewhere or not
 /// taken now ([`Shared::here`]), or unable to begin it, lacking a
 /// launcher for its fence, a starter, a home, its folder or leave to
-/// begin at home ([`start::begins_strictly`]). Each is matched whole
+/// begin at home ([`start::begins_strictly`]), or unable to read its
+/// carries to judge a start naming a session. Each is matched whole
 /// from its start, so words a refusal only quotes never match.
 fn began_nothing_here(why: &str, machine: &str, folder: Option<&Path>) -> bool {
     let opens = [
@@ -827,6 +843,7 @@ fn began_nothing_here(why: &str, machine: &str, folder: Option<&Path>) -> bool {
         format!("{machine}{STARTS_NO_SESSIONS}"),
         format!("{machine}{NO_HOME_TO_START}"),
         format!("{machine}{}", start::AT_HOME_STRICTLY),
+        format!("{NAMING_UNTAKEN}{machine}{CARRIES_UNREAD}"),
     ];
     opens.iter().any(|said| why.starts_with(said.as_str()))
         || whole.iter().any(|said| why == said)
@@ -874,6 +891,23 @@ fn passed_over_for(answered: &Result<Reply, Unsent>, within: Duration) -> Option
         Err(Unsent { why, .. }) => (within >= RELAYED_ANSWERED_LEAST).then_some(why.as_str()),
         Ok(Ok(_)) => None,
     }
+}
+
+/// Whether `answered`, `machine`'s answer to a start past room, refused
+/// it for one session it names alone, alone or wrapped as a relay taken
+/// as an agent's ([`relayed_why`]): held by another start, or live,
+/// parked, held, coming back or never ended there. It stands, since the
+/// start may go nowhere else without a second log of that session, but
+/// says nothing of the machine's other starts, so passes it over for
+/// none. Matched by its end, as the session it names leads it.
+fn refused_for_one_session(answered: &Result<Reply, Unsent>, machine: &str) -> bool {
+    let Ok(Err(said)) = answered else {
+        return false;
+    };
+    let why = relayed_why(said, machine).unwrap_or(said);
+    why.ends_with(&format!("{BEING_REOPENED}{machine} already"))
+        || why.ends_with(NOT_REOPENED)
+        || why.ends_with(NOTHING_REOPENED)
 }
 
 /// Whether a cloud machine whose refusal past room stood when `refused`
@@ -5572,7 +5606,7 @@ impl<S: Store> Shared<S> {
             .any(|one| one.id == session && one.machine == self.machine)
         {
             return Err(format!(
-                "no session {} ended on {}, so nothing is reopened here",
+                "no session {} ended on {}{NOTHING_REOPENED}",
                 session.escape_debug(),
                 self.machine
             ));
@@ -5669,21 +5703,19 @@ impl<S: Store> Shared<S> {
                 })
         });
         if one.is_some_and(|one| one.state != SessionState::Ended) {
-            Err(format!(
-                "{shown} is still live on {machine}, so it isn't reopened"
-            ))
+            Err(format!("{shown} is still live on {machine}{NOT_REOPENED}"))
         } else if one.is_some_and(|one| self.parked_here(one)) {
             Err(format!(
-                "{shown} is parked on {machine}, and its holder wakes it, so it isn't reopened"
+                "{shown} is parked on {machine}, and its holder wakes it{NOT_REOPENED}"
             ))
         } else if held {
             Err(format!(
-                "{shown} is held on {machine} already, so it isn't reopened"
+                "{shown} is held on {machine} already{NOT_REOPENED}"
             ))
         } else if seen.coming_back.contains(session) {
             Err(format!(
-                "{shown} is coming back on {machine}, carried or waiting for its turn, so it \
-                 isn't reopened"
+                "{shown} is coming back on {machine}, carried or waiting for its \
+                 turn{NOT_REOPENED}"
             ))
         } else {
             Ok(())
@@ -7862,7 +7894,7 @@ impl<S: Store> Shared<S> {
             .find(|session| inner.reopening.begun_word(session, now, sessions))
         {
             Some(session) => Err(format!(
-                "{} is being reopened on {} already",
+                "{}{BEING_REOPENED}{} already",
                 session.escape_debug(),
                 self.machine
             )),
@@ -7912,7 +7944,7 @@ impl<S: Store> Shared<S> {
                     inner.reopening.let_go(&held, number);
                 }
                 return Err(format!(
-                    "{} is being reopened on {} already",
+                    "{}{BEING_REOPENED}{} already",
                     asked.unwrap_or(session).escape_debug(),
                     self.machine
                 ));
@@ -7961,10 +7993,7 @@ impl<S: Store> Shared<S> {
             if self.unreadable.first(&why) {
                 eprintln!("{why}");
             }
-            format!(
-                "no start naming a session is taken on {}, as its carries can't be read",
-                self.machine
-            )
+            format!("{NAMING_UNTAKEN}{}{CARRIES_UNREAD}", self.machine)
         })?;
         // Each session an asked id begins is held as a named one is, and
         // only then is each judged, from what stands once all are held,
@@ -8030,7 +8059,7 @@ impl<S: Store> Shared<S> {
             for word in begins {
                 if inner.reopening.begun_word(word, now, sessions) {
                     return Err(format!(
-                        "{} is being reopened on {} already",
+                        "{}{BEING_REOPENED}{} already",
                         word.escape_debug(),
                         self.machine
                     ));
@@ -8630,6 +8659,14 @@ impl<S: Store> Shared<S> {
         }
         let answered_at = jiff::Timestamp::now().as_millisecond();
         match passed_over_for(&answered, within) {
+            // Up, and judging, though this start stands refused, so a
+            // pass-over another start set meanwhile is left as it is.
+            Some(why) if refused_for_one_session(&answered, machine) => {
+                let said = why.escape_debug();
+                eprintln!(
+                    "{machine} isn't passed over past room, as it refused one session: {said}"
+                );
+            }
             Some(why) => {
                 let said = why.escape_debug();
                 eprintln!("{machine} is passed over past room a while, as it answered {said}");
@@ -25698,6 +25735,30 @@ esac
                 "wren's node would place it elsewhere",
             ),
             (
+                said(
+                    "no start naming a session is taken on wren, as its carries can't be read"
+                        .to_owned(),
+                ),
+                None,
+                true,
+                "wren can't read its carries",
+            ),
+            (
+                said(
+                    "no start naming a session is taken on tern, as its carries can't be read"
+                        .to_owned(),
+                ),
+                None,
+                false,
+                "another can't",
+            ),
+            (
+                said("s-1 is held on wren already, so it isn't reopened".to_owned()),
+                None,
+                false,
+                "one session held there",
+            ),
+            (
                 said("its program failed".to_owned()),
                 Some(folder),
                 false,
@@ -25834,6 +25895,72 @@ esac
             "a folder saying a claim"
         );
         assert_eq!(past_quoted("y\" claims it"), None, "no opening quote");
+    }
+
+    // Each stands, as `began_nowhere` says, but passes wren over for no
+    // other start.
+    #[test]
+    fn a_cloud_machine_refusing_one_session_is_passed_over_for_none() {
+        let said = |why: &str| -> Result<Reply, Unsent> { Ok(Err(why.to_owned())) };
+        let cases = [
+            (
+                "s-1 is being reopened on wren already",
+                true,
+                "held by another",
+            ),
+            (
+                "s-1 is being reopened on tern already",
+                false,
+                "another machine's",
+            ),
+            (
+                "s-1 is still live on wren, so it isn't reopened",
+                true,
+                "live",
+            ),
+            (
+                "s-1 is parked on wren, and its holder wakes it, so it isn't reopened",
+                true,
+                "parked",
+            ),
+            (
+                "s-1 is held on wren already, so it isn't reopened",
+                true,
+                "held",
+            ),
+            (
+                "s-1 is coming back on wren, carried or waiting for its turn, so it isn't \
+                 reopened",
+                true,
+                "coming back",
+            ),
+            (
+                "no session s-1 ended on wren, so nothing is reopened here",
+                true,
+                "never ended there",
+            ),
+            ("its program failed", false, "any other refusal"),
+            (
+                "s-1 is held on wren already, so it isn't reopened: then it failed",
+                false,
+                "words only quoting one",
+            ),
+        ];
+        for (why, for_one, case) in cases {
+            assert_eq!(
+                refused_for_one_session(&said(why), "wren"),
+                for_one,
+                "{case}"
+            );
+        }
+        let held = "s-1 is held on wren already, so it isn't reopened";
+        let relayed = Ok(Err(relay_refused("wren", true, "", held)));
+        assert!(refused_for_one_session(&relayed, "wren"), "a relay's");
+        let lost = Err(Unsent {
+            why: held.to_owned(),
+            sent: true,
+        });
+        assert!(!refused_for_one_session(&lost, "wren"), "a lost answer");
     }
 
     #[test]
