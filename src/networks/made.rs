@@ -248,6 +248,7 @@ fn bare(name: String, is: Is) -> Cell {
         trees: Vec::new(),
         shares: Vec::new(),
         networks: Vec::new(),
+        living: false,
     }
 }
 
@@ -628,6 +629,7 @@ fn session_cell(session: &Value) -> Option<Cell> {
         trees,
         shares: super::shares_of(&session["presence"]),
         networks,
+        living: Standing::of(session).is_some(),
     })
 }
 
@@ -898,7 +900,7 @@ fn titled_by_teams(
     let living = || {
         sessions
             .iter()
-            .filter(|cell| matches!(cell.is, Is::Session))
+            .filter(|cell| matches!(cell.is, Is::Session) && cell.living)
             .map(|cell| (cell.name.as_str(), cell.id.as_deref()))
     };
     let leaderless: Vec<Value> = networks

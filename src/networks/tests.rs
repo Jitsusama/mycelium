@@ -1891,6 +1891,30 @@ fn a_teams_short_name_that_is_a_sessions_address_is_never_shown() {
 }
 
 #[test]
+fn a_teams_short_name_is_kept_beside_a_session_only_a_cell_still_holds() {
+    // A parked session whose process has ended stays a dormant cell, but
+    // the swarm's pages and steers count it gone, so swarm busy reaches
+    // Kelp, and networks shows the name that does, as the swarm does.
+    let teams = [json!({"key": "team:KELP01", "title": "Kelp Beds", "swarm": "busy"})];
+    let mut parked = session("BUSY", 1, "Busy one", "ended", &["orchestration.kelp01"]);
+    parked["standing"] = json!("parked");
+    let mycelium = Mycelium::of("work", &teams, &[parked], &[]);
+    assert!(
+        mycelium.cell("BUSY").is_some(),
+        "a parked session is no longer a cell"
+    );
+    let kelp = mycelium
+        .networks
+        .iter()
+        .find(|each| each.name == "orchestration.kelp01")
+        .expect("Kelp's network");
+    assert_eq!(
+        kelp.short, "busy",
+        "networks hid the name the swarm shows Kelp by and steers by"
+    );
+}
+
+#[test]
 fn a_name_matching_none_or_several_networks_is_said_plainly() {
     let mycelium = mycelium();
     assert_eq!(

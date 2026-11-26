@@ -16,6 +16,11 @@
 //! `machine` and `receptor` records, as the swarm reads them, and says nothing back: the
 //! one model every view renders, the terminal's in `shown` and a page's or
 //! an agent's from the JSON lines of [`Mycelium::lines`].
+//!
+//! Long because it holds the model whole, each record a view draws with
+//! the fields it says, beside the finders that reach a network or a cell
+//! by what its pages draw, which must agree with those types to agree
+//! with each other.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -418,6 +423,11 @@ pub struct Cell {
     pub shares: Vec<Share>,
     /// The networks it joined, by name.
     pub networks: Vec<String>,
+    /// Whether the swarm counts it a living session, as its pages and
+    /// steers do, which a parked session whose process has ended isn't,
+    /// though its cell stands as dormant.
+    #[serde(skip)]
+    pub(crate) living: bool,
 }
 
 /// A work tree a session holds now, as its presence says: a worktree
