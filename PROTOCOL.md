@@ -2526,7 +2526,8 @@ asker names in `PI_SESSION_ID`, if it is among them, and otherwise
 toward the agents of no known cell, who share one cell's number, as
 on a Mac, whose `ps` won't say it. An agent sets its own environment,
 so one on a host may name another of its sessions and charge that cell
-instead. In any hour a cell starts at most 8
+instead. In any hour a cell starts at most 8, those that landed on a
+room made for agents aside (`room` below),
 and every agent together at most 32, and one past either is refused,
 saying which. A claim proves nothing, so the 8 are a cell's fair
 share, and the 32, with the ended sessions below, the bound no agent
@@ -2596,9 +2597,14 @@ an agent asking either, or the list, is refused. The stop is
 write there could lift it, as it could stop the node. Every start,
 refused ones too, is kept in `starts.jsonl` beside `runs.jsonl` as a
 JSON line, `{"at", "by", "started_by", "folder", "program",
-"resumes", "reopens", "carried", "machine", "held",
+"resumes", "reopens", "carried", "machine", "held", "room",
 "failed", "refused"}`: `at` in milliseconds, `started_by` null for the
-person's, `resumes` the id of the session it brings back uncounted,
+person's, `room` true where it landed on a room made for agents to
+share, as the node's `agent-rooms` named it then, which counts toward
+the node's 32 but not its cell's 8, since a room is up, paid for and
+off the person's machines already, so a cell moves its work there as
+fast as the node lets it, `resumes` the id of the session it brings
+back uncounted,
 `reopens` the id of the session it brings back, counted or not,
 `carried` the id of the session a carry takes uncounted, as below,
 `program` the command's first word alone, so no argument is kept,
