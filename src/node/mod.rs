@@ -23800,6 +23800,7 @@ esac
         store
             .put_machine(&facts::Machine {
                 declared: Some(crate::declared::Declared {
+                    kept_lively: None,
                     pi_fences_itself: false,
                     takes_carries: false,
                     reach: Vec::new(),
@@ -25485,6 +25486,7 @@ esac
         store
             .put_machine(&facts::Machine {
                 declared: Some(crate::declared::Declared {
+                    kept_lively: None,
                     pi_fences_itself: false,
                     takes_carries: false,
                     reach: Vec::new(),

@@ -1004,7 +1004,7 @@ fn decide_at(
             over: one.over,
             unheard: one.unheard,
             saturated: one.saturated,
-            kept_lively: one.lively,
+            kept_lively: one.lively.is_some(),
             preferred: one.preferred.iter().filter(|&&met| met).count(),
             headroom: one.headroom,
             chance: if near.contains(&at) { chance } else { 0.0 },
@@ -1042,7 +1042,7 @@ const fn tier(one: &Judged) -> u8 {
 /// ranks with the unheard, since an unheard room shows no room for work.
 const fn rank(one: &Judged) -> u8 {
     let tier = tier(one);
-    if !one.lively {
+    if one.lively.is_none() {
         return tier * 2;
     }
     match tier {
@@ -1198,7 +1198,7 @@ fn judge_offer(work: &Work, offer: &Offer) -> Judged {
         over: false,
         unheard: false,
         saturated: false,
-        lively: false,
+        lively: None,
     }
 }
 
@@ -1317,8 +1317,9 @@ struct Judged {
     unheard: bool,
     /// Whether its processors are saturated, as its room said lately.
     saturated: bool,
-    /// Whether it is kept lively, so ranked after machines that aren't.
-    lively: bool,
+    /// The ceiling it is kept lively to, so ranked after machines that
+    /// aren't, or None where it isn't.
+    lively: Option<Lively>,
 }
 
 /// Why a machine kept lively to `lively` is past its ceiling, as `room`
@@ -1442,9 +1443,8 @@ fn judge(
             Effect::PreferNot => rather_not.push(taint),
         }
     }
-    let is_over = |taint: &&Taint| {
-        [MEMORY_PRESSURE, CPU_PRESSURE, KEPT_LIVELY].contains(&taint.key.as_str())
-    };
+    let is_over =
+        |taint: &&Taint| [MEMORY_PRESSURE, CPU_PRESSURE, KEPT_LIVELY].contains(&taint.key.as_str());
     // Over is read from the room even where it is unheard, and harmlessly:
     // a machine unheard ranks with those over either way.
     let over = rather_not.iter().any(|taint| is_over(&taint));
@@ -1477,10 +1477,7 @@ fn judge(
         over,
         unheard: !lately,
         saturated,
-        lively: machine
-            .declared
-            .as_ref()
-            .is_some_and(|said| said.kept_lively.is_some()),
+        lively: machine.declared.as_ref().and_then(|said| said.kept_lively),
     }
 }
 
@@ -2472,7 +2469,11 @@ pub(crate) mod tests {
 
     #[test]
     fn a_machine_kept_lively_past_its_ceiling_goes_after_every_heard_but_never_refuses() {
-        let kestrel = lively(pressed(machine("kestrel", "linux", 60, &[]), 30.0), 28, None);
+        let kestrel = lively(
+            pressed(machine("kestrel", "linux", 60, &[]), 30.0),
+            28,
+            None,
+        );
         let osprey = pressed(machine("osprey", "macos", 8, &[]), 90.0);
         let decision = decide_as(
             &needing(Vec::new()),
@@ -2482,10 +2483,17 @@ pub(crate) mod tests {
             now(),
             &Weights::STARTING,
         );
-        let Placement::Placed { machine, passed } = &decision.placement else {
+        let Placement::Placed {
+            machine: chosen,
+            passed,
+        } = &decision.placement
+        else {
             panic!("one takes it");
         };
-        assert_eq!(machine, "osprey", "past its ceiling, it goes after one saturated");
+        assert_eq!(
+            chosen, "osprey",
+            "past its ceiling, it goes after one saturated"
+        );
         assert_eq!(
             said(passed),
             "kestrel would rather not: it is kept lively, at processor pressure 28 at most, \
@@ -2509,7 +2517,11 @@ pub(crate) mod tests {
             placed_past_room(&alone),
             "and is past its room, so the person's start may go to the cloud"
         );
-        let short = lively(pressed(machine("kestrel", "linux", 12, &[]), 5.0), 28, Some(16 << 30));
+        let short = lively(
+            pressed(machine("kestrel", "linux", 12, &[]), 5.0),
+            28,
+            Some(16 << 30),
+        );
         let decision = decide_as(
             &needing(Vec::new()),
             &[short],

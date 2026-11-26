@@ -1103,6 +1103,7 @@ mod tests {
                 fence: None,
                 basin: None,
                 sessions_at_most: None,
+                kept_lively: None,
             }),
             "it reads as declared"
         );
@@ -1126,6 +1127,7 @@ mod tests {
             fence: None,
             basin: None,
             sessions_at_most: None,
+            kept_lively: None,
         };
         assert!(
             !lasting.is_worker(),
