@@ -151,6 +151,21 @@ fn a_team_says_its_lead_landing_teams_within_sessions_and_meetings() {
 }
 
 #[test]
+fn into_a_pipe_a_team_says_when_it_landed_with_its_day_and_zone() {
+    // A copy is read later or elsewhere, where 15:54 alone says nothing.
+    let whole = Look {
+        width: WHOLE,
+        ..look()
+    };
+    let shown = team(&swarm(), "harb", &whole).expect("Harbour is found by its name");
+    assert_eq!(
+        shown.lines().nth(1),
+        Some("landed Hear the Tide · skiff#12 · Thu 12 Nov 2026 15:54 UTC (+00:00)"),
+        "a landing drawn into a pipe said only its hour:\n{shown}"
+    );
+}
+
+#[test]
 fn a_lead_titled_as_its_team_is_named_by_its_address() {
     let mut swarm = swarm();
     if let Some(lead) = swarm

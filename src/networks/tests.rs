@@ -1923,6 +1923,18 @@ fn every_cell_lists_worst_first_and_one_says_its_networks() {
         expected,
         "one cell:\n{shown}"
     );
+    // Into a pipe, since when says its day, date and zone, as a copy is
+    // read later or elsewhere.
+    let whole = Look {
+        width: WHOLE,
+        ..look()
+    };
+    let shown = cell(&mycelium, one, &whole);
+    assert_eq!(
+        shown.lines().nth(2),
+        Some("on skiff · since Thu 12 Nov 2026 15:00 UTC (+00:00) · QEST-20261112-HARBOR"),
+        "a cell's start drawn into a pipe said only its hour:\n{shown}"
+    );
 }
 
 #[test]
