@@ -3332,10 +3332,11 @@ mod tests {
             Frame::Machine(Box::new(tern)),
         ] {
             let mut queued = VecDeque::from([Ok(share.clone()), Ok(waits.clone())]);
-            let next = next_waiting(&mut queued)
-                .expect("a frame")
-                .expect("read");
-            assert_eq!(next, share, "{waits:?} waits behind the share said before it");
+            let next = next_waiting(&mut queued).expect("a frame").expect("read");
+            assert_eq!(
+                next, share,
+                "{waits:?} waits behind the share said before it"
+            );
         }
     }
 
@@ -3347,16 +3348,11 @@ mod tests {
             machine.cpu.cores = Some(cores);
             Frame::Machine(Box::new(machine))
         };
-        let mut queued: VecDeque<io::Result<Frame>> = [
-            facts(1),
-            facts(2),
-            Frame::HandedOver,
-            facts(3),
-            facts(4),
-        ]
-        .into_iter()
-        .map(Ok)
-        .collect();
+        let mut queued: VecDeque<io::Result<Frame>> =
+            [facts(1), facts(2), Frame::HandedOver, facts(3), facts(4)]
+                .into_iter()
+                .map(Ok)
+                .collect();
         let mut heard = Vec::new();
         while let Some(next) = next_waiting(&mut queued) {
             heard.push(next.expect("read"));
