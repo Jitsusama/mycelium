@@ -2346,10 +2346,10 @@ to wake it, and a marker outlasting its park counts for nothing, so
 either is reopened as any ended session), held by a holder there,
 carried away or waiting for its turn, each refused with why. One that
 never ended there is refused as held or coming back where a holder
-resumes that very id, in whatever words or script it names it, or it
-was carried away from there or waits its turn there, and otherwise as
-never
-ended there, whatever ids it begins; nor
+resumes it, as it names it in the words and scripts read below (an
+id or log path ending in `_` and it counting too), or it was carried
+away from there or waits its turn there, and otherwise as never ended
+there, whatever ids it begins; nor
 while the carries can't be read. Once taken, the session is
 held as being reopened while its start runs, and another reopening of
 it meanwhile is refused as `<id> is being reopened on <machine>

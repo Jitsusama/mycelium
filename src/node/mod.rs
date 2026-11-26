@@ -173,8 +173,8 @@ fn held_already(asked: &str, machine: &str) -> String {
     format!("{shown} is held on {machine} already{NOT_REOPENED}")
 }
 
-/// How `machine` refuses a start of `asked`, a session carried there or
-/// waiting there for its turn.
+/// How `machine` refuses a start of `asked`, a session carried away from
+/// there lately, or waiting there for its turn.
 fn coming_back_here(asked: &str, machine: &str) -> String {
     let shown = asked.escape_debug();
     format!("{shown} is coming back on {machine}, carried or waiting for its turn{NOT_REOPENED}")
