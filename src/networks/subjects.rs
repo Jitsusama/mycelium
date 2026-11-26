@@ -6,9 +6,9 @@
 
 use serde::{Serialize, Serializer};
 
-/// A cell's subjects, in the order it said them. None holds a line,
-/// since a subject holding anything a terminal acts on is passed over
-/// (`made::subjects`), so a line between each never reads as a subject.
+/// A cell's subjects, in the order it said them. None is empty or holds
+/// a line: `made::subjects` passes those over, and [`Subjects::kept`]
+/// does too, so a line between each never splits or hides a subject.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Subjects(Box<str>);
 
@@ -16,19 +16,22 @@ impl Subjects {
     /// Whether it holds none.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.each().next().is_none()
+    }
+
+    /// The subjects `said`, in order, passing over any that is empty or
+    /// holds a line, which the text between them couldn't keep apart.
+    pub(super) fn kept(said: Vec<String>) -> Self {
+        let kept: Vec<String> = said
+            .into_iter()
+            .filter(|subject| !subject.is_empty() && !subject.contains('\n'))
+            .collect();
+        Self(kept.join("\n").into_boxed_str())
     }
 
     /// Each subject, in the order said.
     pub fn each(&self) -> impl Iterator<Item = &str> {
         self.0.split('\n').filter(|subject| !subject.is_empty())
-    }
-}
-
-impl From<Vec<String>> for Subjects {
-    /// The subjects `said`, each already plain text holding no line.
-    fn from(said: Vec<String>) -> Self {
-        Self(said.join("\n").into_boxed_str())
     }
 }
 
@@ -44,7 +47,7 @@ mod tests {
 
     #[test]
     fn subjects_are_said_as_the_list_they_were_given() {
-        let said = Subjects::from(vec!["mycelium src/node".to_owned(), "hubs".to_owned()]);
+        let said = Subjects::kept(vec!["mycelium src/node".to_owned(), "hubs".to_owned()]);
         assert_eq!(
             serde_json::to_value(&said).expect("subjects serialize"),
             serde_json::json!(["mycelium src/node", "hubs"]),
@@ -59,13 +62,35 @@ mod tests {
 
     #[test]
     fn no_subjects_are_said_as_none() {
-        let none = Subjects::from(Vec::new());
+        let none = Subjects::kept(Vec::new());
         assert!(none.is_empty(), "no subjects hold nothing");
         assert_eq!(none.each().count(), 0, "and say none");
         assert_eq!(
             serde_json::to_value(&none).expect("subjects serialize"),
             serde_json::json!([]),
             "an empty list, where a reader asks for it"
+        );
+    }
+
+    #[test]
+    fn a_subject_empty_or_holding_a_line_is_passed_over() {
+        let said = Subjects::kept(vec![
+            String::new(),
+            "one\ntwo".to_owned(),
+            "hubs".to_owned(),
+            String::new(),
+        ]);
+        assert_eq!(
+            said.each().collect::<Vec<_>>(),
+            ["hubs"],
+            "a line would split one into two, and an empty one vanish"
+        );
+        let blank = Subjects::kept(vec![String::new(), String::new()]);
+        assert!(blank.is_empty(), "only empty ones say none");
+        assert_eq!(
+            serde_json::to_value(&blank).expect("subjects serialize"),
+            serde_json::json!([]),
+            "and nothing reads back"
         );
     }
 }

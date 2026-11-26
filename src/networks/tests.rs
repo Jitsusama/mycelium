@@ -2086,4 +2086,12 @@ fn a_cell_declares_plain_subjects_alone_each_bad_one_passed_over() {
         "the first 24 good subjects are kept, in the order declared"
     );
     assert!(subjects(&json!("one")).is_empty(), "subjects are a list");
+    // The hub keys a subject by its full lower case, so a repeat past
+    // ASCII's letters must fold the same way, or it takes a place of the
+    // cap while sharing the first one's hub.
+    assert_eq!(
+        subjects(&json!(["école", "ÉCOLE", "Straße", "STRASSE"])),
+        vec!["école".to_owned(), "Straße".to_owned(), "STRASSE".to_owned()],
+        "a repeat is one whose lower case matches, as the hub reads it"
+    );
 }

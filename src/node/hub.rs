@@ -263,7 +263,30 @@ mod tests {
         some[19].subjects = vec!["busy".to_owned()];
         assert_eq!(
             hubs(&records(&some), "busy"),
-            ["K00019", "K00020", "K00000"]
+            ["K00019", "K00020", "K00000"],
+            "the free come first, then the least heard of those hubbing already"
+        );
+    }
+
+    #[test]
+    fn a_holder_hubbing_more_is_passed_over_for_one_hubbing_fewer() {
+        // Each of 21 holders hubs a subject of its own first, and K00001
+        // hubs a second, so when the shared one's turn comes it hubs two
+        // while every other holder hubs one.
+        let many: Vec<Holder> = (0..21)
+            .map(|n| {
+                let own = format!("own {n}");
+                let mut says = vec!["busy", own.as_str()];
+                if n == 1 {
+                    says.push("own more");
+                }
+                holder(&format!("K{n:05}"), &says, f64::from(n))
+            })
+            .collect();
+        assert_eq!(
+            hubs(&records(&many), "busy"),
+            ["K00000", "K00002", "K00003"],
+            "K00001 is heard less than K00002, but hubs two to their one"
         );
     }
 
