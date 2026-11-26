@@ -1,4 +1,8 @@
 //! The swarm drawn from the teams and sessions a node holds.
+//!
+//! Long because its cases draw one realm of teams and sessions,
+//! built by the helpers at its top, at the widths a terminal or a pipe
+//! gives, and a case split from them would build that realm again.
 
 use serde_json::{Value, json};
 
