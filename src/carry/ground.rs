@@ -108,7 +108,7 @@ impl Lent {
 
 /// How long a machine in the cloud must yet stay for a carry to take it
 /// as one of the person's own, since a carried session lasts.
-const STAYS_FOR: jiff::SignedDuration = jiff::SignedDuration::from_hours(24 * 30);
+pub(crate) const STAYS_FOR: jiff::SignedDuration = jiff::SignedDuration::from_hours(24 * 30);
 
 /// Whether `machine`, as it `said` itself, is one of the person's own in
 /// the cloud at `now`: paid for, perhaps, but linked as one of theirs

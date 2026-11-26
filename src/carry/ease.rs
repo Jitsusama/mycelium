@@ -833,6 +833,12 @@ fn placed(work: &Work, peers: &[Machine], loads: &Loads, now: Timestamp) -> Resu
     for worker in &workers {
         let mut named = work.clone();
         named.needs.push(Need::Machine(worker.name.clone()));
+        // One of the person's own stays past the bar a carry holds it to,
+        // so it is placed for a session that long rather than refused for
+        // leaving at all, as the Mac would never be.
+        if ground::Lent::of(worker) == ground::Lent::Not {
+            named.lasts = Some(ground::STAYS_FOR);
+        }
         let alone = std::slice::from_ref(worker);
         let decision = placement::decide_as(&named, alone, loads, &[], now, weights);
         match decision.placement {
