@@ -2832,7 +2832,7 @@ mod tests {
         let body = b"skiff's notes\n";
         let theirs = State {
             hash: Some(content(body).hash),
-            version: super::super::version::Version::default(),
+            version: Version::default(),
         };
         far.take_file(QUEST, "scratch/notes/plan.md", &theirs, Some(body), None)
             .expect("the note is taken");
@@ -2890,7 +2890,7 @@ mod tests {
         let body = b"# Shared\n";
         let theirs = State {
             hash: Some(content(body).hash),
-            version: super::super::version::Version::default(),
+            version: Version::default(),
         };
         far.take_file(QUEST, "record/README.md", &theirs, Some(body), None)
             .expect("the README is taken");
@@ -4733,16 +4733,18 @@ mod tests {
         // The person's other machines heard the person's own write, so
         // what this machine now holds must read to them as newer, never
         // as written apart once more.
-        let ledger = osprey.places.ledgers().read(QUEST).expect("the ledger is read");
+        let ledger = osprey
+            .places
+            .ledgers()
+            .read(QUEST)
+            .expect("the ledger is read");
         let (_, entry) = ledger
             .files
             .iter()
             .find(|(key, _)| key.ends_with("x.jsonl"))
             .expect("the file is held");
         assert_eq!(
-            entry
-                .version
-                .against(&super::super::version::Version::default().changed_on(person)),
+            entry.version.against(&Version::default().changed_on(person)),
             super::super::version::Standing::Newer,
             "the person's own count is kept beside the made machine's: {:?}",
             entry.version
@@ -5843,7 +5845,7 @@ mod tests {
     fn holding(body: &[u8]) -> State {
         State {
             hash: Some(content(body).hash),
-            version: super::super::version::Version::default(),
+            version: Version::default(),
         }
     }
 
