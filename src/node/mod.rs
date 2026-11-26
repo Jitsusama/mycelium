@@ -189,8 +189,18 @@ const FENCES_SEEN_EVERY: Duration = Duration::from_secs(2);
 /// The longest a session is held as being reopened by a relayed start
 /// whose answer was never waited for, as when its asker hung up mid-start.
 /// One answered is let go at once, since its holder's record then says it
-/// is held, or it failed and may be asked again.
-const REOPENING_HELD: Duration = Duration::from_secs(2 * 60);
+/// is held, or it failed and may be asked again. A minute past the longest
+/// any start is waited on, a first one on a machine just made, since a
+/// hold lapsing while its start is still waited on lets a second ask, as
+/// the harness's after its own two minutes, start a second pi beside it;
+/// letting go when its asker hangs up instead would do the same, as the
+/// start it dropped may still run.
+const REOPENING_HELD: Duration = Duration::from_secs(MADE_ANSWERED_WITHIN.as_secs() + 60);
+const _: () = assert!(
+    REOPENING_HELD.as_secs() > MADE_ANSWERED_WITHIN.as_secs()
+        && REOPENING_HELD.as_secs() > START_ANSWERED_ALL.as_secs(),
+    "a start's hold outlasts the longest its answer is waited on"
+);
 
 /// How long a carry the node carries on itself waits, all told, for its
 /// session to carry and then to end. Longer than a command's, since no

@@ -2303,7 +2303,9 @@ carried away or waiting for its turn, each refused with why, nor
 while the carries can't be read. Once taken, the session is
 held as being reopened while its start runs, and another reopening of
 it meanwhile is refused as `<id> is being reopened on <machine>
-already`; a start whose asker hung up holds it at most two minutes.
+already`; a start whose asker hung up holds it at most eleven
+minutes, a minute past the longest a start is waited on, since the
+start it dropped may still run.
 A carry's arrival from the machine relaying it, word for word as a
 carry writes it, which starts pi only once `pi-carry arrive` has taken
 the carry, is judged by the carry, but its session is still held
