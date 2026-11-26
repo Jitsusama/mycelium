@@ -2368,11 +2368,7 @@ program or in the script given right after the `-c`, alone or among
 other letters, of `sh`, `bash`, `zsh`, `dash`, `ksh` or `mksh`, where
 every word between the shell and the `-c` is a flag, reading only
 `$N` and `${N}` as its positional parameters, and to each id a log's
-path may end in, what follows each `_` of its name. A start asked of
-the node itself and placed on its own machine is held to the same
-sessions and words while it starts there, never as it waits for room
-or a machine, so neither it nor one relayed meanwhile starts a second
-pi on a session the other is starting.
+path may end in, what follows each `_` of its name.
 Each word it names as written is held, too, to each session here that
 word begins, and to each another start holds that it begins, since pi
 opens one so; it is refused where another start holds, as written, a
@@ -2387,7 +2383,11 @@ carry is held so too. A refusal of a session a word begins names the
 word as asked, and a log path's tail begins nothing. An id a script
 works out as it runs, a script in any other shape or shell, as after
 `-o pipefail` or `--` or reading `$@`, or a resume naming none, as
-`pi --continue`, is not judged. A reopening
+`pi --continue`, is not judged. A start asked of the node itself and
+placed on its own machine takes the same holds while it starts there,
+never as it waits for room or a machine, and is not judged by them: it
+and a start relayed meanwhile refuse each other only while both start.
+A reopening
 let through without its asker's fence is asked only of a node whose
 link says `reopens`, since one older
 would take it as any relayed start, so one asked of an older node is
@@ -2870,9 +2870,8 @@ counts too where a park marker of this boot names a running holder
 whose own record says its program is parked, and is woken through it.
 So is one whose presence said parked but names no such file, where a
 park marker of this boot names a running holder, whatever its record
-says. One live in a pi of its own is never woken through a marker. A
-talk's
-file, `<ADDRESS>/replies/<id>.jsonl`, is opened on the asking machine
+says. One live in a pi of its own is never woken through a marker.
+A talk's file, `<ADDRESS>/replies/<id>.jsonl`, is opened on the asking machine
 first, and the lines its session writes are carried back to it, so a
 talk reads the same wherever its session runs.
 An `act` of `wake`, alone, as the launcher's Wake asks, puts nothing in

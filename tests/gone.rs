@@ -137,11 +137,15 @@ impl Window {
             .enable_time()
             .build()
             .expect("the window has a clock to wait by");
+        // This very window on this holder, so another listed never stands
+        // in for it.
         while !mycelium::hold::held(held)
             .iter()
-            .any(|one| !one.windows.is_empty())
+            .any(|one| one.id == "window1" && one.windows.iter().any(|window| window.id == "1"))
         {
-            let told = waiting.block_on(tokio::time::timeout(PATIENCE, changed.recv()));
+            // Its timer is made within the clock's runtime, which it needs.
+            let told =
+                waiting.block_on(async { tokio::time::timeout(PATIENCE, changed.recv()).await });
             assert!(
                 matches!(told, Ok(Some(()))),
                 "the holder never listed the window as joined"

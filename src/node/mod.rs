@@ -2856,7 +2856,8 @@ struct Marked {
     /// The file that wakes it.
     wake: PathBuf,
     /// Whether a running holder reads it, and if so whether that holder's
-    /// own record says its program is parked ([`steer::its_holder`]).
+    /// own record says its program is parked ([`steer::holder_of`],
+    /// [`steer::its_holder_among`]).
     holder: Option<bool>,
 }
 
@@ -7786,9 +7787,11 @@ impl<S: Store> Shared<S> {
         drop(inner);
         // The markers are read after the sessions, so a marker is never
         // older than the state it is judged with, outside the lock, and
-        // only where a park could refuse the start.
+        // only where a park could refuse the start: an agent's, of a
+        // session that ran on this machine.
         let parked = brought
-            .filter(|session| by != By::Person && self.parked_here(session, &self.marked()))
+            .filter(|session| by != By::Person && session.machine == self.machine)
+            .filter(|session| self.parked_here(session, &self.marked()))
             .map(|session| session.id.clone());
         Judged {
             started_by,
@@ -21604,7 +21607,7 @@ esac
     // before the read, which only a race inside `relayed` could show, is
     // kept by their order there (followup 409).
     #[tokio::test]
-    async fn a_start_is_refused_while_another_holds_it_then_reads_what_that_left() {
+    async fn a_start_is_refused_while_another_holds_it_and_once_let_go_is_judged_by_the_holders() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let skiff = easing_skiff(&socket, &[]).await;
