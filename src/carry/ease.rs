@@ -1341,7 +1341,7 @@ pub(super) mod tests {
             "nor one with room in a reading the watch doesn't hold yet"
         );
         let mut worker = realm();
-        worker[1].declared.as_mut().expect("declared").costs_money = true;
+        worker[1].worker = true;
         assert!(
             why_not(&choosing(&worker, &worker)).starts_with("no machine with room is a peer"),
             "where the only room is a worker's, nothing is put to sleep nor carried"
@@ -2103,11 +2103,14 @@ pub(super) mod tests {
     fn a_worker_with_room_takes_a_session_only_where_it_says_it_takes_carries() {
         let history = hot_for(&realm(), 11);
         let mut paid = realm();
-        paid[1].declared.as_mut().expect("declared").costs_money = true;
+        let lent = paid[1].declared.as_mut().expect("declared");
+        lent.costs_money = true;
+        lent.reach.push("aquifer".to_owned());
         assert!(
             why_not(&chose(&paid, &[cell("s1")], &history))
                 .starts_with("no machine with room is a peer"),
-            "a machine that costs money is a worker, which takes none unsaid"
+            "a machine that reaches what only a lent one does is a worker, which takes none \
+             unsaid"
         );
         paid[1].declared.as_mut().expect("declared").takes_carries = true;
         assert_eq!(
@@ -2151,9 +2154,8 @@ pub(super) mod tests {
     fn the_best_worker_takes_a_session_none_of_the_persons_own_takes() {
         use crate::declared::{Effect, Taint};
         let taking = |mut machine: Machine| {
-            let declared = machine.declared.as_mut().expect("declared");
-            declared.costs_money = true;
-            declared.takes_carries = true;
+            machine.worker = true;
+            machine.declared.as_mut().expect("declared").takes_carries = true;
             machine
         };
         let mut serviced = machine("wren", 20.0);
@@ -2218,9 +2220,8 @@ pub(super) mod tests {
             one.declared = Some(declaring(&kinds));
             one.system = Some("linux".to_owned());
         }
-        let worker = realm[1].declared.as_mut().expect("declared");
-        worker.costs_money = true;
-        worker.takes_carries = true;
+        realm[1].worker = true;
+        realm[1].declared.as_mut().expect("declared").takes_carries = true;
         let mut strict = cell("s1");
         strict.fence = Some(Kind::Strict);
         let declared = declaring(&kinds);

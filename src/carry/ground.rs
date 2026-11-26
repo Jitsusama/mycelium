@@ -69,10 +69,12 @@ pub fn firm(
 
 /// What a machine a carry would go to is: one of the person's own, or a
 /// worker, which its link marks it or its own word says it is, that
-/// declares it takes carries or takes none.
+/// declares it takes carries or takes none. One of the person's own in
+/// the cloud is paid for, but a carry takes it as it takes any of theirs
+/// ([`Lent::at`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lent {
-    /// One of the person's own machines.
+    /// One of the person's own machines, in the cloud or not.
     Not,
     /// A worker that declares it takes carried sessions.
     TakesCarries,
@@ -89,9 +91,11 @@ impl Lent {
 
     /// What `machine` is at `now`, as the realm last knew it.
     #[must_use]
-    pub fn at(machine: &Machine, _now: jiff::Timestamp) -> Self {
+    pub fn at(machine: &Machine, now: jiff::Timestamp) -> Self {
         let declared = machine.declared.as_ref();
-        if !(machine.worker || declared.is_some_and(Declared::is_worker)) {
+        if !(machine.worker || declared.is_some_and(Declared::is_worker))
+            || declared.is_some_and(|said| in_the_cloud(machine, said, now))
+        {
             Self::Not
         } else if declared.is_some_and(|said| said.takes_carries) {
             Self::TakesCarries
@@ -99,6 +103,25 @@ impl Lent {
             Self::TakesNone
         }
     }
+}
+
+/// How long a machine in the cloud must yet stay for a carry to take it
+/// as one of the person's own, since a carried session lasts.
+const STAYS_FOR: jiff::SignedDuration = jiff::SignedDuration::from_hours(24 * 30);
+
+/// Whether `machine`, as it `said` itself, is one of the person's own in
+/// the cloud at `now`: paid for, perhaps, but linked as one of theirs
+/// rather than lent by a provider's link, reaching no network only a
+/// lent machine reaches, and staying a month at least. The person ruled
+/// on 26 November that such a machine is a full place for sessions, as
+/// the Mac is, with no word of its own needed; it is held to the same
+/// realm, reach and fences as any of theirs.
+fn in_the_cloud(machine: &Machine, said: &Declared, now: jiff::Timestamp) -> bool {
+    !machine.worker
+        && !said.reach.iter().any(|network| network == "aquifer")
+        && said
+            .leaves_at
+            .is_none_or(|leaves| now.checked_add(STAYS_FOR).is_ok_and(|month| leaves > month))
 }
 
 /// Why nothing is carried to `to`, a worker that takes no carries.
@@ -803,7 +826,12 @@ mod tests {
             Lent::Not,
             "paid for, but no provider lent it"
         );
-        for kind in [None, Some(Kind::None), Some(Kind::Fence), Some(Kind::Strict)] {
+        for kind in [
+            None,
+            Some(Kind::None),
+            Some(Kind::Fence),
+            Some(Kind::Strict),
+        ] {
             assert_eq!(
                 firm(kind, Some(&here), "tern", Some(&cloud)),
                 Ok(()),
