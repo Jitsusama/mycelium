@@ -580,14 +580,12 @@ fn next_waiting(queued: &mut VecDeque<io::Result<Frame>>) -> Option<io::Result<F
 /// Whether `frame` may go ahead of the shares and facts it came behind:
 /// what the other end says of its sessions, and its answers to what this
 /// end asked, none of which a share or the facts said before can be
-/// waiting for. A
-/// message may land before a quest file said ahead of it, which a
-/// reader takes as written apart in time, as it is. A new ask keeps its
-/// place, since a carried session's start must find the handover said
-/// before it, and so does a handover, said once its shares are. So do
-/// the machine's facts, since what it declares decides which shares are
-/// heard, and a frame that couldn't be read, so a link ends where it
-/// broke.
+/// waiting for. A message may land before a quest file said ahead of
+/// it, which a reader takes as written apart in time, as it is. A new
+/// ask keeps its place, since a carried session's start must find the
+/// shares said before it written, and so does a handover, said once its
+/// shares are, and a frame that couldn't be read, so a link ends where
+/// it broke.
 const fn jumps_shares(frame: &Frame) -> bool {
     matches!(
         frame,
@@ -3169,10 +3167,9 @@ mod tests {
     }
 
     // KP0L6A (2026-11-21): a node fell 49 minutes behind the facts a
-    // Mac sent it, so a link takes only the newest of those
-    // waiting, first, and every other frame in the order it came.
-    // Our council on #359: none is judged on facts older than it came
-    // behind.
+    // Mac sent it, so a link takes only the newest of those waiting.
+    // Our council on #482: what is said of sessions needs no facts, so
+    // it goes ahead of them.
     #[tokio::test]
     async fn a_link_behind_takes_only_the_newest_facts() {
         let (sender, mut frames) = mpsc::unbounded_channel();
@@ -3399,7 +3396,10 @@ mod tests {
                     .map(Ok)
                     .collect();
             let next = next_waiting(&mut queued).expect("a frame").expect("read");
-            assert_eq!(next, answer, "{answer:?} goes ahead of the shares and facts");
+            assert_eq!(
+                next, answer,
+                "{answer:?} goes ahead of the shares and facts"
+            );
         }
     }
 
