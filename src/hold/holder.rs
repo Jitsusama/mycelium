@@ -567,6 +567,7 @@ pub async fn hold(
         echo: Mutex::new(Vec::new()),
         id: holding.id.to_owned(),
         saying: Mutex::new(None),
+        log: logs,
     });
     // Said before the program's output is read, so it comes first.
     if first.is_some() {
@@ -887,9 +888,11 @@ const LITERAL_NEXT: u8 = 0x16;
 /// end as one `\n`, which [`echoed`] matches with or without its `\r`,
 /// another control key as `^` and its letter, an erasing key as
 /// [`ERASING`], one of [`UNECHOED`] as nothing, and one after
-/// [`LITERAL_NEXT`] as itself, `literal` saying one ended the last of
-/// what was given, and ends what this does, since a window gives each
-/// key a person presses on its own. Only near what Linux's line
+/// [`LITERAL_NEXT`] as itself. A window gives each key a person presses
+/// on its own, so a literal-next key can end one `given` and its key
+/// begin the next: `literal` says, as this begins, whether the last key
+/// before `given` was one, and is left saying whether its own last is.
+/// Only near what Linux's line
 /// discipline does: a tab erased echoes plain backspaces, macOS says a
 /// status line for ^T, and may echo ^D. Where it's wrong, the echo reads
 /// as drawing and the line goes early, with nothing lost.
@@ -955,6 +958,11 @@ fn echoed(typed: &[u8], output: &[u8]) -> (Vec<u8>, usize) {
         }
         if next == b'\n' && output[at..].starts_with(b"\r\n") {
             at += 2;
+        } else if next == b'\n' && &output[at..] == b"\r" {
+            // A line end the read's end cut: its `\n` comes first in the
+            // next, and is still to come back.
+            at += 1;
+            continue;
         } else if next == byte {
             at += 1;
         } else {
@@ -1208,6 +1216,9 @@ struct Shown {
     /// When [`STARTING_LINE`] was said, so the log says how long it stood.
     /// Only ever taken while `modes` is held.
     saying: Mutex<Option<Instant>>,
+    /// Where what the holder says of the starting line goes: [`logs`], the
+    /// node's log, but for a test, which reads what was said.
+    log: fn(&str),
 }
 
 /// The most of what took [`STARTING_LINE`] away that the log quotes.
@@ -1215,12 +1226,19 @@ const SHOWN_LOGGED: usize = 48;
 
 /// What the node's log says of `id`'s [`STARTING_LINE`] going after it
 /// `stood`, as `why`, quoting the start of what was `shown` with its
-/// escapes, since a program wrote it.
-fn starting_line_went(id: &str, stood: Duration, why: &str, shown: &[u8]) -> String {
-    format!(
-        "mycelium: {id}'s starting line went after {stood:?}, as {why}: \"{}\"",
-        shown[..shown.len().min(SHOWN_LOGGED)].escape_ascii()
-    )
+/// escapes, since a program wrote it, or saying it quotes none where
+/// nothing is, as once keys were typed.
+fn starting_line_went(id: &str, stood: Duration, why: &str, shown: Option<&[u8]>) -> String {
+    match shown {
+        Some(shown) => format!(
+            "mycelium: {id}'s starting line went after {stood:?}, as {why}: \"{}\"",
+            shown[..shown.len().min(SHOWN_LOGGED)].escape_ascii()
+        ),
+        None => format!(
+            "mycelium: {id}'s starting line went after {stood:?}, as {why}, \
+             unquoted as keys were typed"
+        ),
+    }
 }
 
 /// Says `line` on the node's log, the holder's stderr, as `main`'s
@@ -1238,7 +1256,7 @@ impl Shown {
     /// given what's left of it and let go.
     fn ends(&self) {
         // One ending before it drew leaves nothing saying it starts.
-        self.unsays_start("it ended", b"");
+        self.unsays_start("it ended", Some(b""));
         self.over.send_replace(true);
     }
 
@@ -1252,8 +1270,8 @@ impl Shown {
         // Past the bound, what came is the echo of what was typed, which
         // the log never quotes.
         let (echo, why, quoted) = match self.holds_echo(bytes) {
-            Some(echo) => (echo, "its program drew", &bytes[echo..]),
-            None => (0, "more echo came than it holds", &b""[..]),
+            Some(echo) => (echo, "its program drew", Some(&bytes[echo..])),
+            None => (0, "more echo came than it holds", None),
         };
         // A read that is only echo leaves the line standing.
         if echo == 0 || echo < bytes.len() {
@@ -1316,7 +1334,11 @@ impl Shown {
     /// joins between them to be told it. Said on the node's log, with
     /// `why` and the start of what was `shown`, as a line gone too soon,
     /// say as a login shell's dotfiles set a title, is otherwise silent.
-    fn unsays_start(&self, why: &str, shown: &[u8]) {
+    /// Once a key was typed while the line stood, nothing `shown` is
+    /// quoted: where the echo is read wrong, or its program draws a key
+    /// again, what came holds a key the person pressed, and the log keeps
+    /// none of them.
+    fn unsays_start(&self, why: &str, shown: Option<&[u8]>) {
         let mut modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         let mut said = self.said.lock().unwrap_or_else(PoisonError::into_inner);
         if *said == Some(STARTING_LINE) {
@@ -1327,14 +1349,16 @@ impl Shown {
                 .unwrap_or_else(PoisonError::into_inner)
                 .take()
                 .map_or(Duration::ZERO, |at| at.elapsed());
-            logs(&starting_line_went(&self.id, stood, why, shown));
-            self.typed
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clear();
+            let typed =
+                std::mem::take(&mut *self.typed.lock().unwrap_or_else(PoisonError::into_inner));
             *self.literal.lock().unwrap_or_else(PoisonError::into_inner) = false;
             let echo =
                 std::mem::take(&mut *self.echo.lock().unwrap_or_else(PoisonError::into_inner));
+            // What's still to come back, or came back, is every key typed
+            // that a terminal echoes.
+            let keyed = !(typed.is_empty() && echo.is_empty());
+            let quoted = shown.filter(|_| !keyed);
+            (self.log)(&starting_line_went(&self.id, stood, why, quoted));
             // Neither a mode nor a title, so it needn't be read as `passes` does.
             let _ = self.output.send(Arc::from(STARTING_CLEARED));
             if !echo.is_empty() {
@@ -1365,14 +1389,14 @@ impl Shown {
     /// Passes the holder's own `line` to every joined terminal, and to
     /// each joining until anything else is shown.
     fn says(&self, line: &'static [u8]) {
-        self.unsays_start("the holder said another line", line);
+        self.unsays_start("the holder said another line", Some(line));
         self.passes(line, Some(line));
     }
 
     /// Passes the holder's own `line` to every joined terminal, and to
     /// each joining until the program starts again.
     fn stands(&self, line: &'static [u8]) {
-        self.unsays_start("the holder said a line that stands", line);
+        self.unsays_start("the holder said a line that stands", Some(line));
         let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         *self.standing.lock().unwrap_or_else(PoisonError::into_inner) = Some(line);
         drop(modes);
@@ -1954,6 +1978,7 @@ impl Drop for Joined<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::path::PathBuf;
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
@@ -2766,7 +2791,23 @@ mod tests {
             echo: Mutex::new(Vec::new()),
             id: "HELD".to_owned(),
             saying: Mutex::new(None),
+            log: logged,
         }
+    }
+
+    std::thread_local! {
+        /// What a test's holder has said on its log, on the test's thread.
+        static LOGGED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Keeps `line` as said on the log, for [`said_on_the_log`].
+    fn logged(line: &str) {
+        LOGGED.with(|said| said.borrow_mut().push(line.to_owned()));
+    }
+
+    /// What this test's holder has said on its log so far, taken away.
+    fn said_on_the_log() -> Vec<String> {
+        LOGGED.with(|said| std::mem::take(&mut *said.borrow_mut()))
     }
 
     /// Whether `bytes` hold `line` anywhere.
@@ -3125,7 +3166,13 @@ mod tests {
     fn the_log_says_why_the_starting_line_went_quoting_the_start_of_what_came() {
         let drawn = [b"\x1b]0;title\x07\n".as_slice(), &[b'x'; SHOWN_LOGGED]].concat();
         let stood = Duration::from_millis(5);
-        let said = starting_line_went("HELD", stood, "its program drew", &drawn);
+        let said = starting_line_went("HELD", stood, "its program drew", Some(&drawn));
+        assert_eq!(
+            starting_line_went("HELD", stood, "its program drew", None),
+            "mycelium: HELD's starting line went after 5ms, as its program drew, \
+             unquoted as keys were typed",
+            "one quoting nothing says why, never as though nothing came"
+        );
         assert_eq!(
             said,
             format!(
@@ -3138,6 +3185,83 @@ mod tests {
     }
 
     #[test]
+    fn the_log_quotes_no_key_typed_while_the_starting_line_stood() {
+        let shown = shown();
+        shown.says_start();
+        shown.show(b"\x1b]0;title\x07");
+        let said = said_on_the_log();
+        let quoted = |one: &String| {
+            one.starts_with("mycelium: HELD's starting line went after ")
+                && one.ends_with(", as its program drew: \"\\x1b]0;title\\x07\"")
+        };
+        assert!(
+            matches!(said.as_slice(), [one] if quoted(one)),
+            "what came with nothing typed is quoted: {said:?}"
+        );
+        // An echo read wrong: a terminal that drew before echoing.
+        let shown = self::shown();
+        shown.says_start();
+        shown.keeps_typed(b"secret");
+        shown.show(b"\x1b[Hsecret");
+        // Its program drawing a key again once its echo came back.
+        let again = self::shown();
+        again.says_start();
+        again.keeps_typed(b"secret");
+        again.show(b"secret");
+        again.show(b"\x1b[Hsecret");
+        // Even a key that left only a literal-next key to come back.
+        let literal = self::shown();
+        literal.says_start();
+        literal.keeps_typed(b"\x16");
+        literal.show(b"drew");
+        let said = said_on_the_log();
+        assert_eq!(said.len(), 3, "each said once: {said:?}");
+        let cases = ["echo read wrong", "a key drawn again", "a literal-next key"];
+        for (said, case) in said.iter().zip(cases) {
+            assert!(
+                !said.contains("secret") && !said.contains("drew"),
+                "{case}: no key quoted: {said}"
+            );
+            assert!(
+                said.ends_with("as its program drew, unquoted as keys were typed"),
+                "{case}: says why it quotes nothing: {said}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_line_end_or_an_erasure_a_read_cuts_leaves_the_starting_line_standing() {
+        let cleared = std::str::from_utf8(STARTING_CLEARED).expect("plain bytes");
+        let cases: [(&[u8], &[u8]); 3] = [
+            (b"hi\r", b"hi\r\n"),
+            (b"ab\x15", b"ab\x08 \x08\x08 \x08"),
+            (b"ab\x15c", b"ab\x08 \x08\x08 \x08c"),
+        ];
+        for (typed, echo) in cases {
+            for cut in 1..echo.len() {
+                let shown = shown();
+                shown.says_start();
+                let (_, mut joined) = shown.join();
+                shown.keeps_typed(typed);
+                shown.show(&echo[..cut]);
+                shown.show(&echo[cut..]);
+                let typed = typed.escape_ascii();
+                assert_eq!(
+                    sent(&mut joined),
+                    "",
+                    "{typed} echoed, cut at {cut}: held, the line standing"
+                );
+                shown.show(b"drawn");
+                assert_eq!(
+                    sent(&mut joined),
+                    format!("{cleared}{}drawn", String::from_utf8_lossy(echo)),
+                    "{typed} echoed, cut at {cut}: the line goes as its program draws"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn an_echo_is_told_apart_from_drawing() {
         assert_eq!(
             echoed(b"now\n", b"now\r\n"),
@@ -3145,6 +3269,11 @@ mod tests {
             "a line, echoed"
         );
         assert_eq!(echoed(b"now", b"no"), (b"w".to_vec(), 2), "echoed in part");
+        assert_eq!(
+            echoed(b"now\n", b"now\r"),
+            (b"\n".to_vec(), 4),
+            "a line end the read cut is kept to be finished"
+        );
         assert_eq!(
             echoed(&echo_of(b"a\x7fb"), b"a\x08 \x08b"),
             (Vec::new(), 5),
@@ -3293,7 +3422,8 @@ mod tests {
         assert_eq!(
             sent(&mut joined),
             format!("{cleared}^\x08^D^D"),
-            "a key after it is taken as it always is, never echoed, so what came was drawn"
+            "a ^D on its own is never echoed, and the literal-next key after it waits on \
+             its own echo, so a ^D that came was drawn"
         );
         assert!(
             !*shown.literal.lock().unwrap_or_else(PoisonError::into_inner),
@@ -3332,6 +3462,13 @@ mod tests {
             sent(&mut joined),
             format!("{cleared}{held}a"),
             "past it, the line goes, and what it held follows"
+        );
+        let said = said_on_the_log();
+        assert!(
+            matches!(said.as_slice(), [one] if one.ends_with(
+                ", as more echo came than it holds, unquoted as keys were typed"
+            )),
+            "and the log quotes none of it: {said:?}"
         );
     }
 
