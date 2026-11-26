@@ -24782,6 +24782,23 @@ esac
             ground::Lent::Not,
             "kept for good, it is one of the person's own"
         );
+        // A make lives as long as its work, so the start it was made for,
+        // placed again once it links, must find it there still.
+        let mut pinned = work(vec![Need::Machine("tern".to_owned())]);
+        pinned.lasts = Some(jiff::SignedDuration::from_hours(1));
+        assert!(
+            matches!(
+                shared.place(
+                    &pinned,
+                    Counts::Always,
+                    None,
+                    Screen::Ground,
+                    &Admits::Asker(made::PERSON.to_owned()),
+                ),
+                Placement::Placed { .. }
+            ),
+            "placement reads the machine as it says, so the start it was made for lands"
+        );
         shared.unbook(&made_by("/usr/bin/lend", "tern", soon));
         assert_eq!(
             shared
