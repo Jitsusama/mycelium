@@ -1398,16 +1398,15 @@ pub(crate) fn one_line(text: &str) -> String {
     // one extending a grapheme), nor can any regional indicator, paired
     // as a flag or not, a flag's second half following its first rather
     // than a joiner. A non-joiner is never counted, as it joins no emoji.
-    // Khmer's coengs are counted alike in a run of their own, which only a
-    // Khmer character taking a cell ends, and only with no coeng kept
-    // since the last character that took one: unicode-width counts a
-    // letter after a coeng as none even past a selector or a joiner
-    // between them, and no character of another script, which a coeng
-    // never follows, can start a run. A coeng follows only a Khmer
+    // Khmer's coengs are counted alike in a run of their own, which any
+    // character taking a cell ends, skin tones and flags too, but only
+    // with no coeng kept since the last character that took one:
+    // unicode-width counts a letter after a coeng as none even past a
+    // selector or a joiner between them. A coeng follows only a Khmer
     // character given a cell of its own, so never a coeng or a sign
     // drawn on the letter before, as Khmer spells a subscript straight
-    // after its letter; one after a joiner is always dropped, and
-    // vouches for no joiner before it.
+    // after its letter; a joiner just before one is always dropped, as
+    // it joins no letter, and the coeng is judged by what's before it.
     let mut joined = 0;
     let mut subscripts = 0;
     let mut subscripting = false;
@@ -1445,7 +1444,7 @@ pub(crate) fn one_line(text: &str) -> String {
                 subscripts += 1;
                 subscripting = true;
             } else if takes_a_cell {
-                if khmer(each) && !subscripting {
+                if !subscripting {
                     subscripts = 0;
                 }
                 subscripting = false;
@@ -1459,8 +1458,9 @@ pub(crate) fn one_line(text: &str) -> String {
 /// four, or a kiss between two with their skin tones. A terminal draws
 /// only a sequence it knows as one glyph, yet Unicode's widths count a
 /// joined run of any length as two cells. This bounds that, not closes
-/// it: four emoji joined as no sequence is still count two cells and draw
-/// eight, so a chain of them draws at most four times what it counts.
+/// it: four emoji joined as no sequence still count two cells and draw
+/// eight, so a chain of them draws at most four times what it counts, or
+/// eight where a terminal draws each one's skin tone apart beside it.
 const MOST_JOINED: usize = 3;
 
 /// Khmer's coeng, U+17D2, which sets the letter after it as a subscript
@@ -3842,11 +3842,31 @@ mod tests {
                 "unicode-width counts a letter past a coeng and {between:?}"
             );
         }
+        // Nor does a joiner join two letters, so a letter after one is
+        // counted afresh, and a chain of joiners and coengs keeps each.
+        assert_eq!(
+            format!("{ka}\u{200D}{ka}").width(),
+            2,
+            "unicode-width joins a letter to the one before a joiner"
+        );
         for (given, kept) in [
-            // A mark takes no cell, so the third coeng is still the run's.
+            // A mark takes no cell, so a letter past a coeng and a mark is
+            // still the run's, though unicode-width counts it afresh: one
+            // coeng more than need be is dropped, which only draws less.
             (
-                format!("{ka}{coeng}{ka}{coeng}{ka}\u{17B7}{coeng}{ka}"),
-                format!("{ka}{coeng}{ka}{coeng}{ka}\u{17B7}{ka}"),
+                format!("{ka}{coeng}\u{17B7}{ka}{coeng}{ka}{coeng}{ka}"),
+                format!("{ka}{coeng}\u{17B7}{ka}{coeng}{ka}{ka}"),
+            ),
+            // A skin tone takes its cells even past a coeng, so the letter
+            // after it starts a run afresh, as unicode-width counts it.
+            (
+                format!("{ka}{coeng}\u{1F3FB}{ka}{coeng}{ka}{coeng}{ka}"),
+                format!("{ka}{coeng}\u{1F3FB}{ka}{coeng}{ka}{coeng}{ka}"),
+            ),
+            // As does a letter after a joiner, which joins no letters.
+            (
+                format!("{ka}\u{200D}{ka}{coeng}").repeat(3) + ka,
+                format!("{ka}\u{200D}{ka}{coeng}").repeat(3) + ka,
             ),
             // Nor do a selector or a joiner between a coeng and its letter,
             // past which unicode-width still counts the letter as none.
@@ -3858,12 +3878,15 @@ mod tests {
                 format!("{ka}{coeng}\u{200D}").repeat(3) + ka,
                 format!("{ka}{coeng}\u{200D}{ka}{coeng}\u{200D}{ka}\u{200D}{ka}"),
             ),
-            // A character of another script, an emoji here, ends no run,
-            // nor does a sign after it drawn on what's before, which no
-            // coeng follows.
+            // A character of another script, an emoji here, ends the run
+            // before it, so the letters after it are capped at two afresh.
             (
-                format!("{ka}{coeng}{ka}{coeng}{ka}\u{1F469}\u{17B7}{coeng}{ka}"),
-                format!("{ka}{coeng}{ka}{coeng}{ka}\u{1F469}\u{17B7}{ka}"),
+                format!("{ka}{coeng}{ka}{coeng}{ka}\u{1F469}").repeat(2) + ka,
+                format!("{ka}{coeng}{ka}{coeng}{ka}\u{1F469}").repeat(2) + ka,
+            ),
+            (
+                format!("{ka}{coeng}{ka}{coeng}{ka}\u{1F469}{ka}{coeng}{ka}{coeng}{ka}{coeng}{ka}"),
+                format!("{ka}{coeng}{ka}{coeng}{ka}\u{1F469}{ka}{coeng}{ka}{coeng}{ka}{ka}"),
             ),
             // A coeng follows only Khmer, never what starts the text, ASCII,
             // an emoji, a skin tone, an Arabic lam and alef or Tifinagh.
@@ -3918,15 +3941,19 @@ mod tests {
     #[test]
     fn every_short_text_of_khmer_and_emoji_cleans_once_for_all_within_its_bound() {
         use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-        // Every text of up to six characters from each alphabet: a second
-        // clean changes nothing, and a terminal drawing each character's
-        // own cells draws at most three times the cells unicode-width
-        // counts for Khmer, as MOST_SUBSCRIPTS bounds a run, and four
-        // with emoji, as MOST_JOINED bounds a chain.
+        // Every text of up to six characters from each alphabet, and of up
+        // to eight, nine and eleven from narrower ones, past the seven of
+        // four letters chained and the nine of five emoji joined that
+        // would break each bound with its cap lifted: a second clean
+        // changes nothing, and a terminal drawing each character's own
+        // cells draws at most three times the cells unicode-width counts
+        // for Khmer, as MOST_SUBSCRIPTS bounds a run, and four with
+        // emoji, as MOST_JOINED bounds a chain, or eight where each
+        // carries a skin tone, which past six characters can pass four.
         let drawn =
             |text: &str| -> usize { text.chars().filter_map(UnicodeWidthChar::width).sum() };
-        let sweep = |alphabet: &[char], bound: usize| {
-            for length in 1..=6 {
+        let sweep = |alphabet: &[char], bound: usize, longest: u32| {
+            for length in 1..=longest {
                 for number in 0..alphabet.len().pow(length) {
                     let mut left = number;
                     let given: String = (0..length)
@@ -3957,7 +3984,9 @@ mod tests {
                 ka, coeng, '\u{200D}', '\u{200C}', '\u{FE00}', '\u{17B6}', '\u{17B7}', 'x', ' ',
             ],
             3,
+            6,
         );
+        sweep(&[ka, coeng, '\u{200D}', '\u{FE00}', '\u{17B7}'], 3, 8);
         sweep(
             &[
                 ka,
@@ -3970,7 +3999,10 @@ mod tests {
                 'x',
             ],
             4,
+            6,
         );
+        sweep(&['\u{1F469}', '\u{200D}'], 4, 9);
+        sweep(&['\u{1F469}', '\u{200D}', '\u{1F3FB}'], 8, 11);
     }
 
     #[test]

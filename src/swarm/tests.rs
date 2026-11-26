@@ -1240,7 +1240,14 @@ fn a_cut_keeps_the_longest_start_that_fits_as_measured_whole() {
     // Past a run of steps with no fresh start the cut settles anyway,
     // which may count more than is drawn but never less.
     let joined = "👩\u{200D}".repeat(40);
+    // So does a cut before a Khmer letter past a coeng and a selector,
+    // which measured whole counts no cell and measured apart counts one.
+    let subscripted = "\u{1780}\u{17D2}\u{FE00}\u{1780}".repeat(20);
     for room in 0..16 {
+        let cut = within(&subscripted, room);
+        if <str as unicode_width::UnicodeWidthStr>::width(cut) > room {
+            wrong.push(format!("a subscripted run to {room} passed it"));
+        }
         let cut = within(&joined, room);
         if <str as unicode_width::UnicodeWidthStr>::width(cut) > room {
             wrong.push(format!("a long joined run to {room} passed it"));

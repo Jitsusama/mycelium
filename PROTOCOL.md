@@ -3648,8 +3648,9 @@ a space, here any character Unicode gives White_Space, such as U+00A0
 or U+3000, nor a braille blank), so what this pass drops between them
 parts nothing, and a joiner (U+200C or U+200D) only between two such,
 the first perhaps followed by its selector and the second the very
-next character left, so one dropped in this pass after a joiner parts
-it, though a direction mark or noncharacter, gone before, doesn't; and at most
+next character left and no coeng (U+17D2), so one dropped in this pass
+after a joiner parts it, though a direction mark or noncharacter, gone
+before, doesn't; and at most
 three zero-width joiners (U+200D) from the start or from one
 character, other than a skin tone or any regional indicator (U+1F1E6
 to U+1F1FF, paired as a flag or not), given a cell by unicode-width 0.2.3's
@@ -3660,9 +3661,9 @@ next, the rest dropped, a non-joiner (U+200C) never counted; a Khmer
 coeng (U+17D2) only after a Khmer character (U+1780 to U+17FF or
 U+19E0 to U+19FF) given a cell by that per-character width, so never
 after a coeng or a sign drawn on the letter before, and at most two
-from the start or from one Khmer character given a cell with no coeng
-kept since the last character of any script given one, whatever skin
-tone or flag comes between, the rest dropped; each judged against
+from the start or from one character given a cell by that width, a
+skin tone or regional indicator included, with no coeng kept since the
+last character given one, the rest dropped; each judged against
 what is kept so far; and then is trimmed of such spaces and braille
 blanks (U+2800), and cut to its first 120 characters, then cleaned
 again, so it ends in no space and no joiner left joining nothing;
