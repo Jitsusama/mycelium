@@ -2161,6 +2161,14 @@ pub(super) mod tests {
             "one of the person's cloud machines takes a session, saying nothing of carries, \
              though placement keeps unnamed work off it"
         );
+        let mut kept = cloud.clone();
+        kept[1].declared.as_mut().expect("declared").leaves_at =
+            Some("9999-01-01T00:00:00Z".parse().expect("a time"));
+        assert_eq!(
+            carries(&chose(&kept, &[cell("s1")], &history)),
+            Some(("s1", "tern")),
+            "and so does one that says it leaves, long after a carry's bar"
+        );
         let mut both = cloud;
         both.push(machine("wren", 20.0));
         assert_eq!(
