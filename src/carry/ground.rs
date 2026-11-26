@@ -815,6 +815,7 @@ mod tests {
     #[test]
     fn a_machine_of_the_persons_in_the_cloud_takes_any_carry_on_ground_as_firm() {
         let fences = BTreeMap::from([
+            (Kind::None, doors(&[], &[], &[])),
             (Kind::Fence, doors(&[], &[], &[])),
             (Kind::Strict, doors(&[], &[], &[])),
         ]);
@@ -854,7 +855,7 @@ mod tests {
         assert_eq!(
             Lent::at(&lent, now),
             Lent::TakesNone,
-            "one a provider's link lent this machine is a worker still"
+            "one a provider's link lent is a worker still"
         );
         let mut leaving = cloud.clone();
         leaving.declared.as_mut().expect("declared").leaves_at =
