@@ -24734,9 +24734,7 @@ esac
                 .store
                 .put_machine(&cloud)
                 .expect("the made machine is kept");
-            // Made to live a day, as a make is: one past its end has left.
-            let until = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(24);
-            let mut made = made_by("/usr/bin/lend", name, until);
+            let mut made = made_by("/usr/bin/lend", name, a_day_out());
             made.asker = Some((*asker).to_owned());
             shared.book_for(&made);
         }
@@ -24852,7 +24850,7 @@ esac
             (None, Some("osprey")),
             "its last session is kept for the person"
         );
-        let mut unasked = made_by("/usr/bin/lend", "osprey", jiff::Timestamp::now());
+        let mut unasked = made_by("/usr/bin/lend", "osprey", a_day_out());
         unasked.asker = None;
         shared.book_for(&unasked);
         shared.lock().promised.insert("osprey".to_owned(), 1);
@@ -24947,7 +24945,7 @@ esac
                 &["basin"],
             ))
             .expect("the made machine is kept");
-        let mut made = made_by("/usr/bin/lend", "osprey", jiff::Timestamp::now());
+        let mut made = made_by("/usr/bin/lend", "osprey", a_day_out());
         made.asker = Some("P9R1KI".to_owned());
         shared.book_for(&made);
         let basin = work(vec![Need::Reach("basin".to_owned())]);
@@ -25715,6 +25713,12 @@ esac
             Admits::All,
             "no asker is read while no machine is booked"
         );
+    }
+
+    /// A day from now: when a make placed on ends, since one past its end
+    /// has left.
+    fn a_day_out() -> jiff::Timestamp {
+        jiff::Timestamp::now() + jiff::SignedDuration::from_hours(24)
     }
 
     fn made_by(provider: &str, machine: &str, until: jiff::Timestamp) -> Made {
