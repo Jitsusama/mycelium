@@ -678,7 +678,8 @@ fn a_short_a_keyboard_types_is_kept_and_one_it_cannot_is_not() {
         "q\u{301}",
         "v2\u{20E3}",
         "g\u{259}\u{301}\u{302}\u{303}\u{304}",
-        "-\u{200C}tide",
+        // A non-joiner after a digit joins nothing a word spells.
+        "\u{663}\u{200C}\u{628}",
         // Drawn like a hyphen by many fonts, and no dash: a hyphen
         // bullet, a heavy minus, a box line and a modifier minus.
         "reef\u{2043}pause",
