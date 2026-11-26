@@ -26311,6 +26311,8 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let processes = Processes::Folder("/nowhere/proc".into());
         let mut link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        // Its fence runs a command, so the agent's start reaches the hold.
+        runs_commands(&mut link, dir.path());
         link.client = Some(1);
         let quest = "QEST-20261118-KESTRL";
         link.lock()
