@@ -558,6 +558,13 @@ fn a_team_held_back_by_its_title_s_act_is_reached_by_its_title_however_dashed() 
         found.starts_with("Bootstrap"),
         "a title's dash missed the keyboard's: {found}"
     );
+    // Where two titles spell it apart, each spelling finds its own, as
+    // the very spelling asked is matched before dashes are folded.
+    titled.teams[0]["title"] = json!("Coral reef-pause notes");
+    for (asked, own) in [("reef\u{2011}pause", "Bootstrap"), ("reef-pause", "Coral")] {
+        let found = team(&titled, asked, &look()).unwrap_or_default();
+        assert!(found.starts_with(own), "{asked} missed {own}: {found}");
+    }
 }
 
 #[test]
