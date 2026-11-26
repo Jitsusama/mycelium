@@ -1374,8 +1374,9 @@ pub fn chosen(records: Vec<Value>, named: Option<&str>) -> Vec<Value> {
 /// are gone, in one pass, so no mark beside it can vouch for it. A run of
 /// emoji keeps at most [`MOST_JOINED`] joiners, so a name chained from
 /// dozens can't count as the two cells one emoji takes, and a run of
-/// Khmer at most [`MOST_SUBSCRIPTS`] coengs, as one chained from dozens
-/// can't count as one letter's cell.
+/// Khmer at most [`MOST_SUBSCRIPTS`] coengs, each after a Khmer
+/// character, as one chained from dozens can't count as one letter's
+/// cell.
 pub(crate) fn one_line(text: &str) -> String {
     let plain: Vec<char> = text
         .chars()
@@ -1397,10 +1398,15 @@ pub(crate) fn one_line(text: &str) -> String {
     // one extending a grapheme), nor can any regional indicator, paired
     // as a flag or not, a flag's second half following its first rather
     // than a joiner. A non-joiner is never counted, as it joins no emoji.
-    // Khmer's coengs are counted alike in a run of their own, which a
-    // character taking a cell and following no coeng ends.
+    // Khmer's coengs are counted alike in a run of their own, which only a
+    // Khmer character taking a cell ends, and only with no coeng kept
+    // since the last character that took one: unicode-width counts a
+    // letter after a coeng as none even past a selector or a joiner
+    // between them, and no character of another script, which a coeng
+    // never follows, can start a run.
     let mut joined = 0;
     let mut subscripts = 0;
+    let mut subscripting = false;
     for (at, &each) in plain.iter().enumerate() {
         let before = kept.last().copied();
         let keep = match each {
@@ -1410,7 +1416,7 @@ pub(crate) fn one_line(text: &str) -> String {
                     && (each == '\u{200C}' || joined < MOST_JOINED)
             }
             each if selects(each) => before.is_some_and(spells),
-            COENG => subscripts < MOST_SUBSCRIPTS,
+            COENG => before.is_some_and(khmer) && subscripts < MOST_SUBSCRIPTS,
             each => !unseen(each),
         };
         if keep {
@@ -1429,8 +1435,12 @@ pub(crate) fn one_line(text: &str) -> String {
             }
             if each == COENG {
                 subscripts += 1;
-            } else if before != Some(COENG) && takes_a_cell {
-                subscripts = 0;
+                subscripting = true;
+            } else if takes_a_cell {
+                if khmer(each) && !subscripting {
+                    subscripts = 0;
+                }
+                subscripting = false;
             }
         }
     }
@@ -1450,12 +1460,19 @@ const MOST_JOINED: usize = 3;
 const COENG: char = '\u{17D2}';
 
 /// The most coengs in one run of Khmer, as a syllable stacks at most two
-/// subscripts, as ស្ត្រី (woman) stacks t and r under s. Unicode's widths count a chain of any
-/// length as its first letter's one cell, though a terminal drawing per
-/// code point draws each letter. This bounds that, not closes it: a run
-/// of three letters still counts one cell and may draw three, so a chain
-/// draws at most three times what it counts.
+/// subscripts, as ស្ត្រី (woman) stacks t and r under s.
+/// Unicode's widths count a chain of any length as its first letter's
+/// one cell, though a terminal drawing per code point draws each letter.
+/// This bounds that, not closes it: a run of three letters still counts
+/// one cell and may draw three, so a chain draws at most three times
+/// what it counts.
 const MOST_SUBSCRIPTS: usize = 2;
+
+/// Whether `each` is of the Khmer script, in its own block or among its
+/// symbols, as the only letter a coeng sets a subscript under is.
+const fn khmer(each: char) -> bool {
+    matches!(each, '\u{1780}'..='\u{17FF}' | '\u{19E0}'..='\u{19FF}')
+}
 
 /// Whether `each` is an emoji modifier, a skin tone, which is drawn as
 /// part of the emoji before it.
@@ -3791,6 +3808,73 @@ mod tests {
             ladder,
             "a subscript after a vowel was dropped"
         );
+        assert_eq!(ladder.width(), 3, "a vowel sign no longer takes a cell");
+        for kept in [&kept, &ladder] {
+            assert_eq!(&one_line(kept), kept, "cleaned again, a run changed");
+        }
+    }
+
+    #[test]
+    fn a_khmer_run_ends_only_where_a_letter_is_counted_afresh() {
+        use unicode_width::UnicodeWidthStr;
+        let ka = "\u{1780}";
+        let coeng = "\u{17D2}";
+        for (given, kept) in [
+            // A mark takes no cell, so the third coeng is still the run's.
+            (
+                format!("{ka}{coeng}{ka}{coeng}{ka}\u{17B7}{coeng}{ka}"),
+                format!("{ka}{coeng}{ka}{coeng}{ka}\u{17B7}{ka}"),
+            ),
+            // Nor do a selector or a joiner between a coeng and its letter,
+            // past which unicode-width still counts the letter as none.
+            (
+                format!("{ka}{coeng}\u{FE00}").repeat(3) + ka,
+                format!("{ka}{coeng}\u{FE00}{ka}{coeng}\u{FE00}{ka}\u{FE00}{ka}"),
+            ),
+            (
+                format!("{ka}{coeng}\u{200D}").repeat(3) + ka,
+                format!("{ka}{coeng}\u{200D}{ka}{coeng}\u{200D}{ka}\u{200D}{ka}"),
+            ),
+            // A character of another script, a joined emoji here, ends no
+            // run, though a Khmer sign after it lets a coeng follow.
+            (
+                format!("{ka}{coeng}{ka}{coeng}{ka}\u{1F469}\u{17B7}{coeng}{ka}"),
+                format!("{ka}{coeng}{ka}{coeng}{ka}\u{1F469}\u{17B7}{ka}"),
+            ),
+            // A coeng follows only Khmer, never what starts the text, ASCII,
+            // an emoji, a skin tone, an Arabic lam and alef or Tifinagh.
+            (format!("{coeng}{coeng}{ka}"), ka.to_owned()),
+            (format!("kes{coeng}trel"), "kestrel".to_owned()),
+            (format!("\u{1F469}{coeng}{ka}"), format!("\u{1F469}{ka}")),
+            (
+                format!("{ka}{coeng}{ka}{coeng}{ka}\u{1F3FB}{coeng}{ka}"),
+                format!("{ka}{coeng}{ka}{coeng}{ka}\u{1F3FB}{ka}"),
+            ),
+            (
+                format!("\u{644}\u{627}{coeng}{ka}"),
+                format!("\u{644}\u{627}{ka}"),
+            ),
+            (
+                format!("\u{2D30}\u{2D7F}\u{2D31}{coeng}{ka}"),
+                format!("\u{2D30}\u{2D7F}\u{2D31}{ka}"),
+            ),
+        ] {
+            let cleaned = one_line(&given);
+            assert_eq!(cleaned, kept, "{given:?} kept the wrong coengs");
+            assert_eq!(
+                one_line(&cleaned),
+                cleaned,
+                "cleaned again, {given:?} changed"
+            );
+            // However it's spelt, a run draws at most three letters for
+            // the cell it counts.
+            let letters = cleaned.matches(ka).count();
+            assert!(
+                letters <= 3 * cleaned.width(),
+                "{cleaned:?} counts {} cells for {letters} letters",
+                cleaned.width()
+            );
+        }
     }
 
     #[test]

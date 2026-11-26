@@ -56,12 +56,13 @@ tokio = { version = "1", features = [
 # How many of a terminal's cells a name or line takes, as Unicode's East
 # Asian Width and emoji presentation say: two for a wide character or an
 # emoji, none for a joiner or combining mark, so a table lines up in any
-# script on a terminal that draws by them. Pinned exactly, since three
+# script on a terminal that draws by them. Pinned exactly, since four
 # places hold this release's widths: the swarm's `starts_afresh` copies
 # its rules for joining a character to the one before it, and the joiner
-# cap in `forage::one_line`, which PROTOCOL's cleaning of `for` names,
-# restarts where it gives a cell. Check all three whenever this moves, as
-# nodes on either side of a bump would keep different joiners.
+# and coeng caps in `forage::one_line`, which PROTOCOL's cleaning of
+# `for` names, restart where it gives a cell, the coeng cap because it
+# counts a Khmer chain as one. Check all four whenever this moves, as
+# nodes on either side of a bump would keep different joiners or coengs.
 unicode-width = "=0.2.3"
 
 # When a process started on macOS, which only libproc's proc_pidinfo says:
