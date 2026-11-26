@@ -69,7 +69,8 @@ pub struct Ended {
 }
 
 impl Ended {
-    /// What it says, in a line.
+    /// What it says, in a line, each name kept to it, so none can end
+    /// its entry's `MESSAGE` and start a field of its own.
     #[must_use]
     pub fn line(&self) -> String {
         let how = match self.how {
@@ -83,8 +84,8 @@ impl Ended {
         };
         format!(
             "held {} in {}: {} (pid {}) {how}",
-            self.id,
-            self.realm,
+            one_line(&self.id),
+            one_line(&self.realm),
             one_line(&self.program),
             self.pid
         )
@@ -189,13 +190,21 @@ impl Journal for SystemJournal {
         if self.send(&ended.entry()).is_err() {
             // Nothing is left to say it to when even standard error is
             // gone. Said in one write, as the holder's own lines are
-            // (holder.rs's logs), so another holder's can't split it, and
-            // escaped, so no control in the program's words reaches
-            // whoever reads the log.
-            let line = format!("mycelium: {}\n", ended.line().escape_debug());
-            let _ = io::stderr().lock().write_all(line.as_bytes());
+            // (holder.rs's logs), so another holder's can't split it.
+            let _ = io::stderr()
+                .lock()
+                .write_all(said_instead(ended).as_bytes());
         }
     }
+}
+
+/// What standard error is told of `ended` when the journal can't be:
+/// its line, with its line end, escaped so no control in the program's
+/// words reaches whoever reads the log. Escaped as text, not as bytes as
+/// the holder's quotes of a program's output are, as a line is text
+/// whose printable letters read as themselves.
+fn said_instead(ended: &Ended) -> String {
+    format!("mycelium: {}\n", ended.line().escape_debug())
 }
 
 #[cfg(test)]
@@ -265,6 +274,31 @@ mod tests {
             odd.entry().contains("MYCELIUM_PROGRAM=pi rm\n"),
             "a value keeps to its line: {}",
             odd.entry()
+        );
+        let named = Ended {
+            id: "trial1\nPRIORITY=0".to_owned(),
+            realm: "harbour\rX".to_owned(),
+            ..ended(How::Exited(0))
+        };
+        assert!(
+            named
+                .entry()
+                .starts_with("MESSAGE=held trial1 PRIORITY=0 in harbour X: pi (pid 42)"),
+            "a name keeps to the message's line: {}",
+            named.entry()
+        );
+    }
+
+    #[test]
+    fn standard_error_is_told_an_end_escaped_in_one_line() {
+        let odd = Ended {
+            program: "pi\x1b]0;caught\x07 \u{e9}".to_owned(),
+            ..ended(How::Exited(1))
+        };
+        assert_eq!(
+            said_instead(&odd),
+            "mycelium: held trial1 in harbour: pi\\u{1b}]0;caught\\u{7} \u{e9} (pid 42) exited 1\n",
+            "its controls escaped, its letters as they are, its line end with it"
         );
     }
 

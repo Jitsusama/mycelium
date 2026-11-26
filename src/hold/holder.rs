@@ -564,6 +564,7 @@ pub async fn hold(
         standing: Mutex::new(None),
         typed: Mutex::new(Vec::new()),
         literal: Mutex::new(false),
+        keyed: Mutex::new(false),
         echo: Mutex::new(Vec::new()),
         id: holding.id.to_owned(),
         saying: Mutex::new(None),
@@ -625,11 +626,12 @@ pub async fn hold(
                 // Said on the node's log, since the window ends as on any
                 // exit: a wrapper that runs attach without exec passes its
                 // 69 on with another pid's file. What the file held is
-                // quoted with its escapes, since a program wrote it.
+                // quoted with its escapes, since a program wrote it, and
+                // the id escaped as every holder line names it.
                 logs(&format!(
                     "mycelium: {} exited {GONE}, but its gone file ({said:?}) doesn't say \
                      {pid} saw its pi host go, so its window ends",
-                    holding.id,
+                    holding.id.as_bytes().escape_ascii(),
                 ));
             }
             let gone = how.is_some();
@@ -1205,6 +1207,11 @@ struct Shown {
     /// the key given after it is kept as itself. Only ever taken while
     /// `modes` is held.
     literal: Mutex<bool>,
+    /// Whether a window gave the program any key while [`STARTING_LINE`]
+    /// stood, one a terminal echoes as nothing too, so the log quotes
+    /// none of what came: a program reading keys itself may draw any of
+    /// them. Only ever taken while `modes` is held.
+    keyed: Mutex<bool>,
     /// The echo of what was typed, held back while [`STARTING_LINE`]
     /// stands and passed on just after [`STARTING_CLEARED`], so no echoed
     /// line end scrolls the line from where the cursor goes back to, and
@@ -1332,6 +1339,9 @@ impl Shown {
             let mut literal = self.literal.lock().unwrap_or_else(PoisonError::into_inner);
             let room = TYPED_KEPT.saturating_sub(typed.len());
             typed.extend(as_echoed(given, &mut literal).into_iter().take(room));
+            if !given.is_empty() {
+                *self.keyed.lock().unwrap_or_else(PoisonError::into_inner) = true;
+            }
         }
         drop(modes);
     }
@@ -1346,8 +1356,8 @@ impl Shown {
     /// Once a key was typed while the line stood, nothing `shown` is
     /// quoted: where the echo is read wrong, or its program draws a key
     /// again, what came holds a key the person pressed, and the log keeps
-    /// none of them. The log is written once the locks are let go, so a
-    /// log nobody reads stalls no window.
+    /// none of them. The log is written once the locks are let go, so no
+    /// lock is held across a write that may wait.
     fn unsays_start(&self, why: &str, shown: Option<&[u8]>) {
         let mut modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         let mut said = self.said.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1365,9 +1375,8 @@ impl Shown {
             *self.literal.lock().unwrap_or_else(PoisonError::into_inner) = false;
             let echo =
                 std::mem::take(&mut *self.echo.lock().unwrap_or_else(PoisonError::into_inner));
-            // What's still to come back, or came back, is every key typed
-            // that a terminal echoes.
-            let keyed = !(typed.is_empty() && echo.is_empty());
+            let keyed =
+                std::mem::take(&mut *self.keyed.lock().unwrap_or_else(PoisonError::into_inner));
             let quoted = shown.filter(|_| !keyed);
             went = Some(starting_line_went(&self.id, stood, why, quoted));
             // Neither a mode nor a title, so it needn't be read as `passes` does.
@@ -2807,6 +2816,7 @@ mod tests {
             standing: Mutex::new(None),
             typed: Mutex::new(Vec::new()),
             literal: Mutex::new(false),
+            keyed: Mutex::new(false),
             echo: Mutex::new(Vec::new()),
             id: "HELD".to_owned(),
             saying: Mutex::new(None),
@@ -3306,8 +3316,20 @@ mod tests {
         literal.keeps_typed(b"\x16");
         literal.show(b"drew");
         said.extend(said_on_the_log());
-        assert_eq!(said.len(), 3, "each said once: {said:?}");
-        let cases = ["echo read wrong", "a key drawn again", "a literal-next key"];
+        // A key a terminal echoes as nothing, drawn by a program that
+        // reads its keys itself.
+        let unechoed = self::shown();
+        unechoed.says_start();
+        unechoed.keeps_typed(b"\x04");
+        unechoed.show(b"^Dsecret");
+        said.extend(said_on_the_log());
+        assert_eq!(said.len(), 4, "each said once: {said:?}");
+        let cases = [
+            "echo read wrong",
+            "a key drawn again",
+            "a literal-next key",
+            "a key echoed as nothing",
+        ];
         for (said, case) in said.iter().zip(cases) {
             // "drew" is the log's own word, so what it quotes is found by
             // its quotes.
@@ -3352,6 +3374,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_held_line_end_drawn_after_goes_once_in_order() {
+        let cleared = std::str::from_utf8(STARTING_CLEARED).expect("plain bytes");
+        let shown = shown();
+        shown.says_start();
+        let (_, mut joined) = shown.join();
+        shown.keeps_typed(b"hi\r");
+        // Its `\r` held for the `\n` to come, the program draws instead.
+        shown.show(b"hi\r");
+        assert_eq!(sent(&mut joined), "", "held, the line standing");
+        shown.show(b"drawn");
+        assert_eq!(
+            sent(&mut joined),
+            format!("{cleared}hi\rdrawn"),
+            "the held echo goes once, after the line and before the drawing"
+        );
     }
 
     #[test]
