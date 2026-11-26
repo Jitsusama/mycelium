@@ -1856,7 +1856,9 @@ started with.
 Its `room` is the room it has for more work, as the harness's machine
 queue says it, since that queue is what starts work there: `said_at`,
 `memory_available` in bytes, `pressure` (`cpu`, `memory` and `io`, the
-share of the last ten seconds some work waited on each, in percent),
+share of the last ten seconds some work waited on each, in percent,
+and `memory_full`, the share of the last minute all work waited on
+memory, where its own node felt it),
 `takes` (how many more `builds` and `vm_tests` it would start now, which
 says nothing of a session) and `over`, the queue's limits the machine is
 at or past now, as the queue judges them: `memory`, when it starts no

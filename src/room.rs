@@ -90,6 +90,11 @@ pub struct Pressure {
     pub memory: f64,
     /// Waiting on disks.
     pub io: f64,
+    /// The share of the last minute in which all work waited on memory,
+    /// where a node felt it from a kernel that says it, so a machine over
+    /// by that line alone reads why. A queue's record says none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_full: Option<f64>,
 }
 
 /// How many more of each kind of heavy work a queue would start now. None
@@ -241,14 +246,22 @@ pub fn felt(procs: &Path, at: &str) -> Option<Room> {
 /// The room the kernel's `cpu`, `memory` and `io` pressure and its
 /// `meminfo` say, `at`, or none where any can't be read.
 fn felt_from(cpu: &str, memory: &str, io: &str, meminfo: &str, at: &str) -> Option<Room> {
+    // A file with no `full` line, as a kernel may write, is judged by its
+    // `some` line alone; one there that can't be read leaves it unfelt.
+    let memory_full = if memory.lines().any(|line| line.starts_with("full ")) {
+        Some(stall(memory, "full ", "avg60=")?)
+    } else {
+        None
+    };
     let pressure = Pressure {
         cpu: stalled(cpu)?,
         memory: stalled(memory)?,
         io: stalled(io)?,
+        memory_full,
     };
-    let memory_available = kept(meminfo, "MemAvailable:")?;
+    let memory_available = meminfo_bytes(meminfo, "MemAvailable:")?;
     let mut over = Vec::new();
-    if memory_over(memory)? {
+    if memory_over(&pressure) {
         over.push(Limit::Memory);
     }
     if pressure.cpu >= crate::balance::OVER_CPU_PRESSURE {
@@ -268,35 +281,29 @@ fn felt_from(cpu: &str, memory: &str, io: &str, meminfo: &str, at: &str) -> Opti
 }
 
 /// The bytes `meminfo`'s line `name` says, as the kernel writes it in kB.
-fn kept(meminfo: &str, name: &str) -> Option<u64> {
+fn meminfo_bytes(meminfo: &str, name: &str) -> Option<u64> {
     meminfo.lines().find_map(|line| {
         let kib = line.strip_prefix(name)?.trim().strip_suffix("kB")?;
         kib.trim().parse::<u64>().ok()?.checked_mul(1024)
     })
 }
 
-/// Whether a machine is past its memory limit by the kernel's memory
+/// Whether a machine is past its memory limit by the kernel's
 /// `pressure`, by either of two lines: the queue's, some work stalled
 /// [`OVER_MEMORY_PRESSURE`] of the last ten seconds; or all of it
 /// stalled [`OVER_MEMORY_FULL`] of the last minute. The minute's stall
 /// moves slowly, where the ten seconds' flaps: on 26 November a machine
 /// whose memory was full for an hour read cool every few minutes by the
 /// ten seconds alone, and each pair of cool readings started its spell
-/// again, so it put no session to sleep. None where either line is
-/// there and can't be read, or the `some` line isn't; a file with no
-/// `full` line, as a kernel may write, is judged by its `some` line
-/// alone.
+/// again, so it put no session to sleep.
 ///
 /// [`OVER_MEMORY_PRESSURE`]: crate::balance::OVER_MEMORY_PRESSURE
 /// [`OVER_MEMORY_FULL`]: crate::balance::OVER_MEMORY_FULL
-fn memory_over(pressure: &str) -> Option<bool> {
-    let some = stalled(pressure)?;
-    let full = if pressure.lines().any(|line| line.starts_with("full ")) {
-        stall(pressure, "full ", "avg60=")?
-    } else {
-        0.0
-    };
-    Some(some >= crate::balance::OVER_MEMORY_PRESSURE || full >= crate::balance::OVER_MEMORY_FULL)
+fn memory_over(pressure: &Pressure) -> bool {
+    pressure.memory >= crate::balance::OVER_MEMORY_PRESSURE
+        || pressure
+            .memory_full
+            .is_some_and(|full| full >= crate::balance::OVER_MEMORY_FULL)
 }
 
 /// The share of the last ten seconds in which some task stalled, in
@@ -394,6 +401,7 @@ mod tests {
                     cpu: 44.37,
                     memory: 3.92,
                     io: 51.53,
+                    memory_full: None,
                 },
                 takes: Takes {
                     builds: 8,
@@ -452,7 +460,8 @@ mod tests {
             Pressure {
                 cpu: 86.0,
                 memory: 1.5,
-                io: 40.0
+                io: 40.0,
+                memory_full: Some(0.0),
             }
         );
         assert_eq!(room.memory_available, 41_943_040 * 1024);
@@ -509,6 +518,12 @@ mod tests {
         };
         assert_eq!(over(5.0), vec![Limit::Memory], "at the line");
         assert_eq!(over(4.99), Vec::new(), "just under it");
+        let room = felt_from(&psi(0.0), &full(6.5), &psi(0.0), MEMINFO, FELT_AT);
+        assert_eq!(
+            room.map(|room| room.pressure.memory_full),
+            Some(Some(6.5)),
+            "saying the stall it is over by"
+        );
     }
 
     // Our council on #488: a machine short of free memory for reasons no

@@ -984,6 +984,7 @@ pub(super) mod tests {
                 cpu,
                 memory: 0.0,
                 io: 0.0,
+                memory_full: None,
             },
             takes: Takes {
                 builds: 1,
