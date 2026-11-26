@@ -662,6 +662,14 @@ mod tests {
             Err("dock could be Dock (no address to type) or Dock (HARBOR)".to_owned()),
             "an address that would steer a session instead is not given"
         );
+        // A peer's key that holds an escape is no address a person can
+        // type, so none is given to type.
+        swarm.teams[0]["key"] = json!("team:RE\u{1b}]52;c;eA==\u{7}EF");
+        assert_eq!(
+            aim(&swarm, Act::Pause, "dock"),
+            Err("dock could be Dock (no address to type) or Dock (HARBOR)".to_owned()),
+            "a key holding an escape was given as an address to type"
+        );
     }
 
     #[test]
