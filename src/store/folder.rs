@@ -48,19 +48,28 @@ pub struct Folder(OwnedFd);
 
 /// What moves whenever a plain file is written or its standing changes:
 /// written whole by rename, a file is a new inode; written in place, its
-/// length or time moves; its mode or its names changed, its change time
-/// moves. A file of the same stamp is taken to hold what it held, so it
-/// needn't be opened to be known. That holds but for two writes of the
-/// same length within one tick of the file system's clock, the second on
-/// the inode the first had or in place, whose stamps match; the next write
-/// mends it. It also takes the folder to be on a local disk: on a network
-/// file system a stat may answer from a cache an open would have checked.
+/// length or time moves; its mode or its count of names changed, those
+/// move, as its change time does. A file of the same stamp is taken to
+/// hold what it held, so it needn't be opened to be known. That holds but
+/// for two writes within one tick of the file system's clock, the second
+/// leaving the inode, length, mode and names as the first left them, whose
+/// stamps match; the next change mends it. It also takes the folder to be
+/// on a local disk: on a network file system a stat may answer from a
+/// cache an open would have checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stamp {
     inode: u64,
     len: i64,
+    mode: u64,
+    names: u64,
     modified: i128,
     changed: i128,
+}
+
+/// A count or mode a file's stat says, whose type is each platform's own,
+/// taken as whatever widens without loss.
+fn wide(value: impl Into<u64>) -> u64 {
+    value.into()
 }
 
 /// A time a file's stat says, in nanoseconds since the epoch. The
@@ -237,6 +246,8 @@ impl Folder {
         Ok(Some(Stamp {
             inode: stat.st_ino,
             len: stat.st_size,
+            mode: wide(stat.st_mode),
+            names: wide(stat.st_nlink),
             modified: moment(stat.st_mtime, stat.st_mtime_nsec),
             changed: moment(stat.st_ctime, stat.st_ctime_nsec),
         }))

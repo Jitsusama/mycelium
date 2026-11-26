@@ -208,13 +208,12 @@ impl Folders {
                         stamp,
                         body: serde_json::from_slice(&bytes).ok().map(Arc::new),
                     },
-                    // A file that can't be read for what it is, or as it is
-                    // kept, stays unread until its stamp moves, as a fix
-                    // to it moves it.
+                    // A file refused for what it is stays unread until its
+                    // stamp moves, as a fix to it moves it.
                     Err(error) if fails_for_the_file(&error) => Kept { stamp, body: None },
-                    // Gone since its stat, or not read for the node's own
-                    // want, such as of descriptors: kept as nothing, so the
-                    // next pass tries it again.
+                    // Gone since its stat, or not read for a cause that may
+                    // pass, such as a want of descriptors or a refusal to
+                    // open: not kept, so the next pass tries it again.
                     Ok(None) | Err(_) => continue,
                 },
             };
@@ -965,19 +964,19 @@ fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
 
+/// Whether a read was refused for what the file is, as the store judges
+/// it from the file's own stat (not plain, of two names, or too large),
+/// which its stamp holds, so that only a change to the file can mend it.
+/// Every other failure, a refusal to open included, may pass with nothing
+/// about the file changed: an access policy may be lifted, or descriptors
+/// may run short for a while.
+fn fails_for_the_file(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::InvalidData
+}
+
 /// Reads the plain file `name` in the mesh's `folder` as `T`, or nothing
 /// when it is gone, half-written, not of this kind, or not a plain file,
 /// as a link put in its place isn't.
-/// Whether a read failed for what the file is or how it is kept (not plain,
-/// of two names, too large, or not readable by this account), so that only
-/// a change to the file can mend it.
-fn fails_for_the_file(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::InvalidData | io::ErrorKind::PermissionDenied
-    )
-}
-
 fn read_in<T: for<'de> Deserialize<'de>>(folder: &Folder, name: &str) -> Option<T> {
     serde_json::from_slice(&folder.read(name).ok()??).ok()
 }
@@ -1390,6 +1389,9 @@ mod tests {
         assert_eq!(folders.presence_bodies().len(), 2, "both read once more");
         let third = opened_until(&heard, &presence.join("third-mark"));
         assert_eq!(third, [one], "only the changed file is opened");
+        // Nothing counts opens past here, and the probe writes below would
+        // otherwise pile their events up unread.
+        drop(watch);
 
         // Rewritten in place at its length, its time put back as a mark's
         // rewrite puts it, only the file's change time moves; it is read
@@ -1427,12 +1429,51 @@ mod tests {
         past_change_of(&two, &probe);
         let mut mode = fs::metadata(&two).expect("its mode").permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o000);
-        fs::set_permissions(&two, mode).expect("made unreadable");
+        fs::set_permissions(&two, mode.clone()).expect("made unreadable");
         assert_eq!(
             folders.presence_bodies().len(),
             1,
-            "a file made unreadable is tried again"
+            "a file made unreadable drops out"
         );
+        std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o644);
+        fs::set_permissions(&two, mode).expect("made readable again");
+        let titles: Vec<Value> = folders
+            .presence_bodies()
+            .iter()
+            .filter(|body| body["session"] == "s-two")
+            .map(|body| body["title"].clone())
+            .collect();
+        assert_eq!(titles, [json!("again")], "a file made readable is read");
+    }
+
+    #[test]
+    fn only_a_refusal_for_what_the_file_is_waits_for_it_to_change() {
+        let (dir, folders) = store();
+        let presence = dir.path().join("mesh/presence");
+        let folder = folders.folder("presence").expect("the folder");
+        fs::write(presence.join("named.json"), "{}").expect("written");
+        fs::hard_link(presence.join("named.json"), presence.join("again.json"))
+            .expect("a second name");
+        // Past the largest file the mesh reads, 8 MiB.
+        fs::write(presence.join("large.json"), vec![b' '; 9 << 20]).expect("written");
+        for name in ["named.json", "large.json"] {
+            let error = folder.read(name).expect_err("refused");
+            assert!(fails_for_the_file(&error), "{name}: {error}");
+        }
+        // As the read path's own failures arrive, through rustix.
+        for passing in [
+            rustix::io::Errno::ACCESS,
+            rustix::io::Errno::PERM,
+            rustix::io::Errno::MFILE,
+            rustix::io::Errno::NFILE,
+            rustix::io::Errno::NOMEM,
+            rustix::io::Errno::INTR,
+            rustix::io::Errno::IO,
+            rustix::io::Errno::STALE,
+        ] {
+            let error = io::Error::from(passing);
+            assert!(!fails_for_the_file(&error), "{error} may pass");
+        }
     }
 
     /// Returns once the file system's clock has ticked past `file`'s last
