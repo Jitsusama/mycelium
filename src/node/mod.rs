@@ -24734,7 +24734,9 @@ esac
                 .store
                 .put_machine(&cloud)
                 .expect("the made machine is kept");
-            let mut made = made_by("/usr/bin/lend", name, jiff::Timestamp::now());
+            // Made to live a day, as a make is: one past its end has left.
+            let until = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(24);
+            let mut made = made_by("/usr/bin/lend", name, until);
             made.asker = Some((*asker).to_owned());
             shared.book_for(&made);
         }
@@ -24773,13 +24775,13 @@ esac
             "its make's end stands for the leaving it doesn't declare"
         );
         assert_ne!(
-            crate::carry::ground::Lent::of(&tern),
-            crate::carry::ground::Lent::Not,
+            ground::Lent::of(&tern),
+            ground::Lent::Not,
             "made to live an hour, it is no full place for a carried session"
         );
         assert_eq!(
-            crate::carry::ground::Lent::of(&seen("wren")),
-            crate::carry::ground::Lent::Not,
+            ground::Lent::of(&seen("wren")),
+            ground::Lent::Not,
             "kept for good, it is one of the person's own"
         );
         shared.unbook(&made_by("/usr/bin/lend", "tern", soon));
