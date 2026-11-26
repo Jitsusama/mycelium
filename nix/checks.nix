@@ -77,13 +77,17 @@ let
     # outside Nix's sandbox, which refuses FSEvents and listeners there, so
     # a Mac whose sandbox is on refuses it by name rather than failing 80
     # tests; the lent Mac builds with no sandbox. The assertions keep the
-    # split: a Mac's package runs no tests, and this runs them all.
+    # split: a Mac's package runs no tests, and this runs them all. Its
+    # tests run in a release build, the one tests/cells.rs and
+    # tests/ties.rs hold to their absolute time bars; a debug build is held
+    # by growth alone, so a check built for debug would hold no bar.
     mycelium =
       let
         tested = package.override { macTests = true; };
         mac = pkgs.stdenv.hostPlatform.isDarwin;
       in
       assert tested.doCheck;
+      assert tested.cargoCheckType == "release";
       assert mac -> !package.doCheck;
       if mac then tested.overrideAttrs { __noChroot = true; } else tested;
 
