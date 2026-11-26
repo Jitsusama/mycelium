@@ -7949,6 +7949,13 @@ impl<S: Store> Shared<S> {
                 ),
                 None => refused,
             })?;
+        // A provider may give a name again, so quests given to a machine
+        // once called this are taken back before it links; where they
+        // can't be, it is let go rather than served them.
+        let ungiven = self
+            .shares
+            .as_ref()
+            .map_or(Ok(()), |shares| shares.ungive_all(&made.machine));
         if let Err(error) = self.book.made(&made) {
             eprintln!(
                 "{} was made, but the book doesn't say so: {error}",
@@ -7958,6 +7965,14 @@ impl<S: Store> Shared<S> {
         let unwanted = Arc::new(Notify::new());
         // The loop runs for as long as the node answers anything.
         let _ = self.to_dial.send((made.clone(), unwanted.clone()));
+        if let Err(error) = ungiven {
+            unwanted.notify_one();
+            return Err(format!(
+                "{} was made and let go: quests given to a machine of its name \
+                 before couldn't be taken back: {error}",
+                made.machine
+            ));
+        }
         let started = self.start_once_linked(asked, &made, fence).await;
         let used = || {
             let inner = self.lock();
