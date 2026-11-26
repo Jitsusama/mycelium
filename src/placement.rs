@@ -2691,6 +2691,11 @@ pub(crate) mod tests {
              and is at 30 over a minute",
             "and says which it read"
         );
+        assert_eq!(
+            placed(&over_a_minute(60.0, 28.0).placement),
+            Some("kestrel"),
+            "a minute at the ceiling itself is within it"
+        );
     }
 
     /// How `work` is decided among `machines`, as the tests' clock says now.

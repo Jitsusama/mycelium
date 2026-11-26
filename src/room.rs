@@ -374,6 +374,22 @@ mod tests {
     }
 
     #[test]
+    fn a_rooms_minute_crosses_the_wire_only_when_said() {
+        let mut room = said(&record(1, KEPT_AT), KEPT_AT + 30).expect("a room");
+        let unsaid = serde_json::to_value(&room).expect("a room is json");
+        assert!(
+            unsaid.get("cpu_minute").is_none(),
+            "a room with no minute says none, as an older node's does"
+        );
+        let older: Room = serde_json::from_value(unsaid).expect("an older room reads");
+        assert_eq!(older.cpu_minute, None, "and reads back as none");
+        room.cpu_minute = Some(31.5);
+        let said_on = serde_json::to_string(&room).expect("a room is json");
+        let heard: Room = serde_json::from_str(&said_on).expect("a room reads");
+        assert_eq!(heard.cpu_minute, Some(31.5), "a minute said is heard");
+    }
+
+    #[test]
     fn a_kept_queue_says_the_room_it_starts_work_by() {
         assert_eq!(
             said(&record(1, KEPT_AT), KEPT_AT + 30),
@@ -421,10 +437,12 @@ mod tests {
 
     const FELT_AT: &str = "2026-11-17T23:50:00Z";
 
-    /// A pressure file as Linux writes it, `some` at `avg10`.
+    /// A pressure file as Linux writes it, `some` at `avg10` and its minute
+    /// at half that, so each file of a kernel says a minute of its own.
     fn psi(avg10: f64) -> String {
+        let avg60 = avg10 / 2.0;
         format!(
-            "some avg10={avg10:.2} avg60=1.00 avg300=0.50 total=123456\n\
+            "some avg10={avg10:.2} avg60={avg60:.2} avg300=0.50 total=123456\n\
              full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
         )
     }
@@ -457,7 +475,11 @@ mod tests {
             "a session carried is no build"
         );
         assert_eq!(room.saturated, None, "saturation is placement's to judge");
-        assert_eq!(room.cpu_minute, Some(1.0), "and its minute is the kernel's");
+        assert_eq!(
+            room.cpu_minute,
+            Some(43.0),
+            "and its minute is the kernel's, of its processors alone"
+        );
     }
 
     #[test]
@@ -544,8 +566,8 @@ mod tests {
         assert_eq!(room.over, Some(vec![Limit::Cpu]));
         assert_eq!(
             cpu_minute(procs.path()),
-            Some(1.0),
-            "the minute is read from the kernel's own file"
+            Some(43.0),
+            "the minute is read from the kernel's own file of its processors"
         );
         fs::remove_file(procs.path().join("pressure").join("io")).expect("removed");
         assert_eq!(

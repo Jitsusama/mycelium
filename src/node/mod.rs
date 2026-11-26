@@ -4499,10 +4499,15 @@ impl<S: Store> Shared<S> {
     /// This machine as it is now, as its realm hears it: a handful of small
     /// files read, or one sysctl on a Mac, quick enough to answer in place.
     fn measure(&self) -> facts::Machine {
-        let sources = facts::Sources {
+        let mut sources = facts::Sources {
             declared: Some(self.declared.clone()),
             ..facts::Sources::here()
         };
+        // Its room's minute is read from the kernel easing reads, so the
+        // two judge this machine by the same pressure.
+        if let Processes::Folder(procs) = self.processes.kernel() {
+            sources.procs.clone_from(procs);
+        }
         let mut here = facts::measure_in(&self.machine, &self.realm, &sources);
         // A fence's `runs` is said only where this machine's launcher takes
         // it, so a machine judging this one by its words judges it as a run

@@ -212,6 +212,9 @@ pub struct Sources {
     pub reached: PathBuf,
     /// Its updater's last update's ending.
     pub updated: PathBuf,
+    /// Its kernel's folder of what it says, `/proc` or a stand-in, whose
+    /// processor pressure over the last minute its room carries.
+    pub procs: PathBuf,
 }
 
 impl Sources {
@@ -225,6 +228,7 @@ impl Sources {
             declared: Some(place::declared()),
             reached: place::reached(),
             updated: place::updated(),
+            procs: "/proc".into(),
         }
     }
 
@@ -240,6 +244,7 @@ impl Sources {
             declared: None,
             reached: "/nowhere".into(),
             updated: "/nowhere".into(),
+            procs: "/nowhere/proc".into(),
         }
     }
 }
@@ -363,7 +368,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         .as_deref()
         .and_then(|queue| room::read(queue, now.as_second()))
         .map(|room| Room {
-            cpu_minute: room::cpu_minute(Path::new("/proc")),
+            cpu_minute: room::cpu_minute(&sources.procs),
             ..room
         });
     // A machine within another has its host's power and room while its
@@ -1129,6 +1134,7 @@ mod tests {
             declared: None,
             reached: "/nowhere".into(),
             updated: "/nowhere".into(),
+            procs: "/nowhere/proc".into(),
         };
         let mut machine = measure("osprey", &nowhere);
         let said = serde_json::to_value(&machine).expect("it says itself");
@@ -1312,6 +1318,7 @@ mod tests {
                 declared: Some(home.path().join("declared.json")),
                 reached: home.path().join("reached.json"),
                 updated: home.path().join("last.json"),
+                procs: home.path().join("proc"),
             },
         );
         assert_eq!(machine.name, "trial", "it carries the name it was given");
@@ -1361,6 +1368,52 @@ mod tests {
     }
 
     #[test]
+    fn a_machines_room_carries_its_kernels_minute_beside_its_queues_seconds() {
+        let home = tempfile::tempdir().expect("a temporary folder");
+        let queue = home.path().join("queue.json");
+        let kept = serde_json::json!({
+            "v": 1,
+            "at": "2026-11-26T07:30:00.000Z",
+            "heartbeat": jiff::Timestamp::now().as_second(),
+            "machine": {"cores": 16, "availableGib": 23.5,
+                "pressure": {"cpu": 44.0, "memory": 0.0, "io": 0.0}, "vms": 0},
+            "room": {"vms": 1, "builds": 8},
+            "quiet": null,
+            "jobs": []
+        });
+        std::fs::write(&queue, kept.to_string()).expect("the queue keeps its record");
+        let procs = home.path().join("proc");
+        std::fs::create_dir_all(procs.join("pressure")).expect("its pressure");
+        std::fs::write(
+            procs.join("pressure").join("cpu"),
+            "some avg10=44.00 avg60=31.00 avg300=9.00 total=1\n\
+             full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+        )
+        .expect("its kernel says its processors' pressure");
+        let sources = Sources {
+            queue: Some(queue),
+            procs: procs.clone(),
+            ..Sources::nowhere()
+        };
+        let room = measure("skiff", &sources).room.expect("its queue says its room");
+        assert!(
+            (room.pressure.cpu - 44.0).abs() < f64::EPSILON,
+            "ten seconds, as its queue says"
+        );
+        assert_eq!(
+            room.cpu_minute,
+            Some(31.0),
+            "and the last minute, as its own kernel says"
+        );
+        std::fs::remove_file(procs.join("pressure").join("cpu")).expect("removed");
+        let room = measure("skiff", &sources).room.expect("its queue says its room");
+        assert_eq!(
+            room.cpu_minute, None,
+            "a kernel saying no pressure, as a Mac's, says no minute"
+        );
+    }
+
+    #[test]
     fn a_machine_declaring_its_processors_is_taken_at_its_word() {
         let home = tempfile::tempdir().expect("a temporary folder");
         let declared = home.path().join("declared.json");
@@ -1379,6 +1432,7 @@ mod tests {
                 declared: Some(declared),
                 reached: home.path().join("reached.json"),
                 updated: home.path().join("last.json"),
+                procs: home.path().join("proc"),
             },
         );
         assert_eq!(
@@ -1409,6 +1463,7 @@ mod tests {
             declared: Some(declared),
             reached: home.path().join("reached.json"),
             updated: home.path().join("last.json"),
+            procs: home.path().join("proc"),
         };
         // A charge no machine running these tests reads of itself.
         let draining = Power {
@@ -1452,6 +1507,7 @@ mod tests {
             declared: Some(home.path().join("declared.json")),
             reached: home.path().join("reached.json"),
             updated: home.path().join("last.json"),
+            procs: home.path().join("proc"),
         };
         assert_eq!(
             measure("tern", &sources).updated,
@@ -1487,6 +1543,7 @@ mod tests {
             declared: Some(declared),
             reached: home.path().join("reached.json"),
             updated: home.path().join("last.json"),
+            procs: home.path().join("proc"),
         };
         let agents = measure_in("skiff", "work", &sources)
             .declared
