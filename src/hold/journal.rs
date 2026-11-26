@@ -188,8 +188,12 @@ impl Journal for SystemJournal {
     fn ended(&self, ended: &Ended) {
         if self.send(&ended.entry()).is_err() {
             // Nothing is left to say it to when even standard error is
-            // gone.
-            let _ = writeln!(io::stderr(), "mycelium: {}", ended.line());
+            // gone. Said in one write, as the holder's own lines are
+            // (holder.rs's logs), so another holder's can't split it, and
+            // escaped, so no control in the program's words reaches
+            // whoever reads the log.
+            let line = format!("mycelium: {}\n", ended.line().escape_debug());
+            let _ = io::stderr().lock().write_all(line.as_bytes());
         }
     }
 }

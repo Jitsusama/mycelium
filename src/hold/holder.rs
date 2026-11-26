@@ -1227,8 +1227,10 @@ const SHOWN_LOGGED: usize = 48;
 /// What the node's log says of `id`'s [`STARTING_LINE`] going after it
 /// `stood`, as `why`, quoting the start of what was `shown` with its
 /// escapes, since a program wrote it, or saying it quotes none where
-/// nothing is, as once keys were typed.
+/// nothing is, as once keys were typed. The id is escaped too, as
+/// `holder --id` takes any words.
 fn starting_line_went(id: &str, stood: Duration, why: &str, shown: Option<&[u8]>) -> String {
+    let id = id.as_bytes().escape_ascii();
     match shown {
         Some(shown) => format!(
             "mycelium: {id}'s starting line went after {stood:?}, as {why}: \"{}\"",
@@ -1245,10 +1247,16 @@ fn starting_line_went(id: &str, stood: Duration, why: &str, shown: Option<&[u8]>
 /// `tell!` does: in one write, so another holder's line can't split it,
 /// and never panicking, as a hold outlives whatever read the log.
 fn logs(line: &str) {
+    logs_to(&mut io::stderr().lock(), line);
+}
+
+/// Says `line` to `out` as [`logs`] says it to the node's log: with its
+/// line end, in one write, and a failed write let go.
+fn logs_to(out: &mut impl io::Write, line: &str) {
     let mut whole = String::with_capacity(line.len() + 1);
     whole.push_str(line);
     whole.push('\n');
-    let _ = io::Write::write_all(&mut io::stderr().lock(), whole.as_bytes());
+    let _ = out.write_all(whole.as_bytes());
 }
 
 impl Shown {
@@ -1268,14 +1276,15 @@ impl Shown {
     /// already joined, and leave a focus there waking nothing.
     fn show(&self, bytes: &[u8]) {
         // Past the bound, what came is the echo of what was typed, which
-        // the log never quotes.
-        let (echo, why, quoted) = match self.holds_echo(bytes) {
-            Some(echo) => (echo, "its program drew", Some(&bytes[echo..])),
-            None => (0, "more echo came than it holds", None),
+        // `unsays_start` never quotes, as a key was typed to be echoed:
+        // it alone decides what the log quotes.
+        let (echo, why) = match self.holds_echo(bytes) {
+            Some(echo) => (echo, "its program drew"),
+            None => (0, "more echo came than it holds"),
         };
         // A read that is only echo leaves the line standing.
         if echo == 0 || echo < bytes.len() {
-            self.unsays_start(why, quoted);
+            self.unsays_start(why, Some(&bytes[echo..]));
             self.passes(&bytes[echo..], None);
         }
         let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1337,10 +1346,12 @@ impl Shown {
     /// Once a key was typed while the line stood, nothing `shown` is
     /// quoted: where the echo is read wrong, or its program draws a key
     /// again, what came holds a key the person pressed, and the log keeps
-    /// none of them.
+    /// none of them. The log is written once the locks are let go, so a
+    /// log nobody reads stalls no window.
     fn unsays_start(&self, why: &str, shown: Option<&[u8]>) {
         let mut modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         let mut said = self.said.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut went = None;
         if *said == Some(STARTING_LINE) {
             *said = None;
             let stood = self
@@ -1358,7 +1369,7 @@ impl Shown {
             // that a terminal echoes.
             let keyed = !(typed.is_empty() && echo.is_empty());
             let quoted = shown.filter(|_| !keyed);
-            (self.log)(&starting_line_went(&self.id, stood, why, quoted));
+            went = Some(starting_line_went(&self.id, stood, why, quoted));
             // Neither a mode nor a title, so it needn't be read as `passes` does.
             let _ = self.output.send(Arc::from(STARTING_CLEARED));
             if !echo.is_empty() {
@@ -1372,6 +1383,9 @@ impl Shown {
         }
         drop(said);
         drop(modes);
+        if let Some(line) = went {
+            (self.log)(&line);
+        }
     }
 
     /// Passes [`STARTING_LINE`] to every joined terminal, and to each
@@ -1520,11 +1534,14 @@ async fn serve(
                 }
                 Err(broadcast::error::RecvError::Lagged(missed)) => {
                     // Said on the node's log, as a window that fell behind
-                    // is a stall worth finding, never a silent gap.
+                    // is a stall worth finding, never a silent gap. The id
+                    // is copied out first, so the record isn't held while
+                    // the log is written.
+                    let id = record.kept().held.id.clone();
                     logs(&format!(
                         "mycelium: a window of {} fell {missed} pieces of output behind, \
                          so its program draws it whole again",
-                        record.kept().held.id
+                        id.as_bytes().escape_ascii()
                     ));
                     // What is still waiting is older than the redraw to
                     // come, so it is let go with what was missed.
@@ -2776,8 +2793,10 @@ mod tests {
         );
     }
 
-    /// What is shown, as a holder makes it, with nobody joined yet.
+    /// What is shown, as a holder makes it, with nobody joined yet, and
+    /// nothing said on this thread's log by a test before it.
     fn shown() -> Shown {
+        LOGGED.with(|said| said.borrow_mut().clear());
         let (output, _) = broadcast::channel(OUTPUT_BACKLOG);
         Shown {
             modes: Mutex::new(Modes::default()),
@@ -3164,7 +3183,13 @@ mod tests {
 
     #[test]
     fn the_log_says_why_the_starting_line_went_quoting_the_start_of_what_came() {
-        let drawn = [b"\x1b]0;title\x07\n".as_slice(), &[b'x'; SHOWN_LOGGED]].concat();
+        // A quote, a backslash and a right-to-left override, each of which
+        // could end or turn the log's own quote, and controls.
+        let drawn = [
+            b"\x1b]0;\"\\\xe2\x80\xae\x07\n".as_slice(),
+            &[b'x'; SHOWN_LOGGED],
+        ]
+        .concat();
         let stood = Duration::from_millis(5);
         let said = starting_line_went("HELD", stood, "its program drew", Some(&drawn));
         assert_eq!(
@@ -3177,11 +3202,73 @@ mod tests {
             said,
             format!(
                 "mycelium: HELD's starting line went after 5ms, as its program drew: \
-                 \"\\x1b]0;title\\x07\\n{}\"",
+                 \"\\x1b]0;\\\"\\\\\\xe2\\x80\\xae\\x07\\n{}\"",
                 "x".repeat(SHOWN_LOGGED - 11)
             ),
-            "escaped, so no control reaches whoever reads the log, and cut to its bound"
+            "escaped, so nothing a program writes ends the quote or reaches whoever reads the \
+             log, and cut to its bound"
         );
+        let split = [[b'y'; SHOWN_LOGGED - 1].as_slice(), "\u{e9}".as_bytes()].concat();
+        assert!(
+            starting_line_went("HELD", stood, "its program drew", Some(&split))
+                .ends_with(&format!("{}\\xc3\"", "y".repeat(SHOWN_LOGGED - 1))),
+            "cut by bytes before it's escaped, so a character the cut splits is half escaped"
+        );
+        assert!(
+            starting_line_went("HELD", stood, "its program drew", Some(&[0x07; 60]))
+                .ends_with(&format!(": \"{}\"", "\\x07".repeat(SHOWN_LOGGED))),
+            "all controls, it's cut at its bound, each escaped"
+        );
+        assert!(
+            starting_line_went("H\x1b\n", stood, "its program drew", None)
+                .starts_with("mycelium: H\\x1b\\n's starting line went"),
+            "an id given with controls is escaped too"
+        );
+    }
+
+    /// A log that takes nothing, as a stderr whose reader went.
+    struct Refusing;
+
+    impl io::Write for Refusing {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A log that counts the writes it takes.
+    #[derive(Default)]
+    struct Counting {
+        writes: usize,
+        said: Vec<u8>,
+    }
+
+    impl io::Write for Counting {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            self.said.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_log_takes_a_line_in_one_write_and_lets_a_failed_one_go() {
+        let mut counting = Counting::default();
+        logs_to(&mut counting, "mycelium: HELD said");
+        assert_eq!(
+            (counting.writes, counting.said.as_slice()),
+            (1, b"mycelium: HELD said\n".as_slice()),
+            "its line end with it, in one write, so another holder's can't split it"
+        );
+        // A panic here would take the hold down with its log.
+        logs_to(&mut Refusing, "mycelium: HELD said");
     }
 
     #[test]
@@ -3427,9 +3514,17 @@ mod tests {
             "a ^D on its own is never echoed, and the literal-next key after it waits on \
              its own echo, so a ^D that came was drawn"
         );
-        assert!(
-            !*shown.literal.lock().unwrap_or_else(PoisonError::into_inner),
-            "no literal-next key is kept once the line has gone"
+        // Said again, the line takes a ^D as unechoed, never as the
+        // literal-next key's, which went with the line before.
+        shown.says_start();
+        shown.keeps_typed(b"\x04");
+        shown.show(b"^D");
+        let line = std::str::from_utf8(STARTING_LINE).expect("plain bytes");
+        assert_eq!(
+            sent(&mut joined),
+            format!("{line}{cleared}^D"),
+            "no literal-next key is kept once the line has gone, so a ^D drawn takes the \
+             next line away"
         );
     }
 
