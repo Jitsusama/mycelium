@@ -1415,7 +1415,9 @@ fn lasting_reach(machines: &[Machine], now: jiff::Timestamp) -> BTreeSet<&str> {
     machines
         .iter()
         .filter(|one| {
-            one.declared.as_ref().is_some_and(|declared| !declared.is_worker())
+            one.declared
+                .as_ref()
+                .is_some_and(|declared| !declared.is_worker())
                 || is_the_persons_cloud(one, now)
         })
         .filter_map(|one| one.declared.as_ref())
@@ -1469,7 +1471,9 @@ pub fn asked_on(work: &Work, here: &Machine, machines: &[Machine], now: jiff::Ti
     let lasting = lasting_reach(machines, now);
     let names_one = work.needs.iter().any(|need| match need {
         Need::Reach(network) => !lasting.contains(network.as_str()),
-        Need::Machine(name) => machines.iter().any(|one| is_worker(one) && one.name == *name),
+        Need::Machine(name) => machines
+            .iter()
+            .any(|one| is_worker(one) && one.name == *name),
         _ => false,
     });
     if is_worker(here) && !names_one {
@@ -3849,7 +3853,10 @@ pub(crate) mod tests {
         let mut busy = cloud.clone();
         busy.cpu.busy = Some(crate::balance::ROOM_PROCESSOR);
         assert_eq!(
-            placed(&place(&anything, &[laptop.clone(), mac.clone(), busy.clone()])),
+            placed(&place(
+                &anything,
+                &[laptop.clone(), mac.clone(), busy.clone()]
+            )),
             Some("osprey"),
             "one heard by its facts and busy past room ranks after a machine with room"
         );
