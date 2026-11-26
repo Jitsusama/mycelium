@@ -378,7 +378,7 @@ fn asked_whole(asked: &str) -> Option<String> {
 /// subjects a cell holds, not the times it says them.
 #[must_use]
 pub fn subjects(declared: &Value) -> Vec<String> {
-    declared
+    let mut subjects: Vec<String> = declared
         .as_array()
         .into_iter()
         .flatten()
@@ -400,7 +400,11 @@ pub fn subjects(declared: &Value) -> Vec<String> {
         })
         .take(MOST_SUBJECTS)
         .map(str::to_owned)
-        .collect()
+        .collect();
+    // Held for each of ten thousand cells, and collected a filtered count
+    // at a time, so up to 24 would sit in room for 32 without this.
+    subjects.shrink_to_fit();
+    subjects
 }
 
 /// Whether `each` draws as nothing: a soft hyphen, a zero-width space or
