@@ -20998,11 +20998,11 @@ esac
             // A holder naming its session by its log's path holds the id
             // that path ends in, and each word beginning it.
             (
-                &["pi", "--session", "s-path"],
+                &["pi", "--session", "s-path", "--thinking", "high"],
                 "s-path is held on skiff already, so it isn't reopened",
             ),
             (
-                &["pi", "--session", "s-pa"],
+                &["pi", "--session-id", "s-pa"],
                 "s-pa is held on skiff already, so it isn't reopened",
             ),
         ] {
@@ -21489,6 +21489,10 @@ esac
             json!({"session": "s-closed", "addresses": ["CLOSED"], "at": now}),
             true,
         );
+        listed_as(socket.clone(), "s-closed", |one| {
+            matches!(one.state, SessionState::Busy | SessionState::Idle)
+        })
+        .await;
         client.ask(rouse(3)).await;
         assert_eq!(
             client.next().await["error"]["message"],

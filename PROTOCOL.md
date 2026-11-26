@@ -2774,9 +2774,13 @@ inbox as it wakes, so what is said is there before it is woken. The node
 there then wakes it, when it parked this boot, by writing its holder's
 `<id>.wake`: the holder's it knows, else the one the session's presence
 names as `wake`, taken only as a holder's in a realm's `.held` folder
-beside its own. A talk's file, `<ADDRESS>/replies/<id>.jsonl`, is opened
-on the asking machine first, and the lines its session writes are
-carried back to it, so a talk reads the same wherever its session runs.
+beside its own. An ended session whose presence never said parked
+counts too where a park marker of this boot names a running holder
+whose own record says its program is parked, and is woken through it;
+one live in a pi of its own is never woken through a marker. A talk's
+file, `<ADDRESS>/replies/<id>.jsonl`, is opened on the asking machine
+first, and the lines its session writes are carried back to it, so a
+talk reads the same wherever its session runs.
 An `act` of `wake`, alone, as the launcher's Wake asks, puts nothing in
 the inbox, since the harness has no such act, and only wakes the session
 there, so the launcher wakes one without starting a program to write its
