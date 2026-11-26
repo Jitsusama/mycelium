@@ -668,13 +668,18 @@ fn a_cell_s_own_folder_titled_wide_is_cut_to_its_room_in_cells() {
     )];
     let mycelium = Mycelium::of("home", &[], &sessions, &[]);
     let kelped = mycelium.cell("KELP01").expect("Kelp");
+    // Measured by Unicode's widths directly, not by the code under test,
+    // as nothing here is coloured. The title is far longer than its room,
+    // so it fills to the edge, or a cell short where a character would
+    // straddle it.
+    let cells = <str as unicode_width::UnicodeWidthStr>::width;
     for width in [60, 80] {
         let drawn = cell(&mycelium, kelped, &Look { width, ..look() });
         let line = drawn.lines().last().expect("its folder's line");
         assert!(
-            line.starts_with("  quest:qest-20261112-kelped  \u{6e2f}\u{6e7e}")
-                && crate::swarm::drawn_width(line) <= width,
-            "{line:?} passed {width} cells:\n{drawn}"
+            line.starts_with("  quest:qest-20261112-kelped  港湾")
+                && (width - 1..=width).contains(&cells(line)),
+            "{line:?} wasn't cut to its room at {width} cells:\n{drawn}"
         );
     }
 }
@@ -1987,19 +1992,17 @@ fn a_wide_team_short_keeps_what_follows_in_line() {
         shown
             .lines()
             .find(|line| line.starts_with(start))
-            .unwrap_or_default()
+            .unwrap_or_else(|| panic!("no line starts {start:?}:\n{shown}"))
     };
     let before = |start: &str, word: &str| {
         let line = line(start);
         line.find(word).map(|at| cells(&line[..at]))
     };
-    let header = line("     ");
     assert!(
         shown.lines().all(|line| cells(line) <= 80)
             && before("  harbor ", "Harbour Ships") == Some(2 + cells("港湾見張り") + 2)
             && before("  dinghy ", "ready") == before("  harbor ", "Harbour Ships")
-            && cells(line("    港湾見張り "))
-                == cells(&header[..header.find("  stuck").unwrap_or(0)]),
+            && Some(cells(line("    港湾見張り "))) == before("     ", "  stuck"),
         "a wide short moved what follows it:\n{shown}"
     );
 }

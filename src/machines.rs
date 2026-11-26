@@ -507,27 +507,28 @@ mod tests {
 
     #[test]
     fn a_wide_name_keeps_the_columns_in_line_and_within_the_edge() {
-        // Four Han characters, two cells each, so counted by characters
-        // the name's column would be four cells short.
+        // Eight Han characters, two cells each: wider than the column's
+        // other names in characters too, so counted by characters, or by
+        // bytes, the column would be eight cells off its sixteen.
+        let name = "港湾".repeat(4);
         let mut wide = osprey();
-        wide.name = "港湾港湾".to_owned();
+        wide.name.clone_from(&name);
         // Measured by Unicode's widths directly, not by the code under
         // test, as nothing here is coloured.
         let cells = <str as unicode_width::UnicodeWidthStr>::width;
         for width in [40, 120] {
             let drawn = table(&[kestrel(), wide.clone()], &[], &look(width));
-            let state = |name: &str| {
+            let at = |start: &str, word: &str| {
                 drawn
                     .lines()
-                    .find(|line| line.starts_with(name))
-                    .and_then(|line| line.find("  ready").map(|at| cells(&line[..at])))
+                    .find(|line| line.starts_with(start))
+                    .and_then(|line| line.find(word).map(|at| cells(&line[..at])))
             };
             assert!(
                 drawn.lines().all(|line| cells(line) <= width)
-                    && state("kestrel").is_some()
-                    && state("kestrel") == state("港湾港湾")
-                    && drawn.lines().next().and_then(|line| line.find("  state"))
-                        == state("kestrel"),
+                    && at("kestrel", "  ready") == Some(cells(&name))
+                    && at(&name, "  ready") == Some(cells(&name))
+                    && at("machine", "  state") == Some(cells(&name)),
                 "a wide name moved its columns or passed {width}:\n{drawn}"
             );
         }
