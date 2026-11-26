@@ -233,6 +233,29 @@ put x.rs "$(printf '%s\n' \
   $'m!(\342\200\250r#r"\\");' '#[allow(x)]' '");' '#[allow(x)]')"
 names "$(printf 'x.rs %s\n' 2 5 10)" \
   "a C raw string, a wide character and a raw name past wide whitespace read as rustc reads them"
+# Each character here is read as rustc reads it, so line 2 is code in c,
+# f, g, h and k.rs, and line 2 in d, e and i.rs, and line 3 in j.rs, sit
+# in a string. c.rs's byte character opens no lifetime, though b.rs's
+# suffix ends where its quote stands, since each file is read alone,
+# unlike d.rs's after a raw name ending b, e.rs's after a suffix ending b
+# and i.rs's after a name ending b; a quote closes f.rs's name, but not
+# k.rs's, which Rust's whitespace past ASCII ends; g.rs's escape passes a
+# quote, h.rs's a wide character; and j.rs's character reads on past a
+# line's end a quote follows.
+tree
+put b.rs $'\047a\047b'
+put c.rs "$(printf '%s\n' $'m!(b\047a"\047);' '#[allow(x)]' '// "')"
+put d.rs "$(printf '%s\n' $'m!(r#b\047a"\047);' '#[allow(x)]' '");' '#[allow(x)]')"
+put e.rs "$(printf '%s\n' $'m!("x"b\047a"\047);' '#[allow(x)]' '");' '#[allow(x)]')"
+put f.rs "$(printf '%s\n' $'m!(\047ab\047"\047");' '#[allow(x)]' '// "' '#[allow(x)]')"
+put g.rs "$(printf '%s\n' $'m!(\047\\\047"\047);' '#[allow(x)]' '// "')"
+put h.rs "$(printf '%s\n' $'m!(\047\\\303\251"\047);' '#[allow(x)]' '// "')"
+put i.rs "$(printf '%s\n' $'m!(xb\047a"\047);' '#[allow(x)]' '");' '#[allow(x)]')"
+put j.rs "$(printf '%s\n' $'m!(\047(' $'\047"' '#[allow(x)]' '");' '#[allow(x)]')"
+put k.rs "$(printf '%s\n' $'m!(\047a\342\200\250\047"\047);' '#[allow(x)]' '// "')"
+names "$(printf '%s\n' 'c.rs 2' 'd.rs 4' 'e.rs 4' 'f.rs 2' 'f.rs 4' 'g.rs 2' 'h.rs 2' 'i.rs 4' \
+  'j.rs 5' 'k.rs 2')" \
+  "a character is told from a lifetime, and read to its close, as rustc reads them"
 # Lines 2 and 6 sit in a string after a string's suffix ending r; each
 # third line from 10 to 28 follows a raw string after Rust's whitespace past
 # ASCII, which ends a name, line 33 one closing at its second hash, and
@@ -279,7 +302,7 @@ names "$(printf '%s\n' 'b.rs 1' 'd.rs 2' 'e.rs 1' 'f.rs 1' 'h.rs 2' 'j.rs 2')" \
 tree
 put a.rs '#[allow(x)]'
 put w.rs 'const S: &str = "a;'
-refuses_naming "These leave a comment or string open at their end, so their lint-offs can't be \
+refuses_naming "These leave a comment, string or character open, so their lint-offs can't be \
 read as rustc reads them:
 w.rs" "in naming lines, one left in a string is refused and no other named"
 tree
@@ -291,6 +314,13 @@ expect fails $'read as rustc reads them:\nw.rs' "so is one left in a raw string"
 tree
 put w.rs '/* a /* b */'
 expect fails $'read as rustc reads them:\nw.rs' "and one left in a comment"
+tree
+put w.rs "$(printf '%s\n' $'m!(\047\\x' '#[allow(x)]' $'\047);')"
+expect fails $'read as rustc reads them:\nw.rs' \
+  "and one whose character a line's end stops, though a quote closes one below"
+tree
+put w.rs $'m!(\047(/ x\047);'
+expect fails $'read as rustc reads them:\nw.rs' "and one whose character a slash stops"
 tree
 put "x y.ts" "export const a = 1;"
 expect fails "paths hold a space" "a code file whose path a list can't name is refused"
