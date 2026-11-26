@@ -346,7 +346,7 @@ pub(super) fn spend_watch_allows(runtime: Option<&Path>, named: &str) -> Result<
     // spend-watch lists a budget it has seen spent but was never told of,
     // with no allowances, so a misspelt name would otherwise be lent as
     // if nothing capped it.
-    if standing.undeclared {
+    if standing.undeclared() {
         return Err(refused(
             503,
             format!("spend-watch declares no budget {named}, so no model is lent"),
@@ -380,11 +380,24 @@ struct Said {
 struct Standing {
     name: String,
     /// Whether spend-watch has only seen it spent, and was never told of
-    /// it.
+    /// it: read loosely, so a marker of another type refuses only this
+    /// budget rather than making the whole word unreadable.
     #[serde(default)]
-    undeclared: bool,
+    undeclared: serde_json::Value,
     #[serde(default)]
     allowances: Vec<Allowance>,
+}
+
+impl Standing {
+    /// Whether this budget is lent nothing as one spend-watch never knew:
+    /// any marker but none, null or false, so one it can't read is held
+    /// to be one.
+    fn undeclared(&self) -> bool {
+        !matches!(
+            self.undeclared,
+            serde_json::Value::Null | serde_json::Value::Bool(false)
+        )
+    }
 }
 
 /// One of a budget's allowances, as spend-watch says it.

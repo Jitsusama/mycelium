@@ -129,19 +129,52 @@ async fn spend_watch_silent_or_stale_or_past_an_allowance_lends_no_model() {
     lending.spend_watch_says(&json!([{"name": "elsewhere", "allowances": []}]));
     let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
     assert_eq!(refusal(&mut answers).await, 503, "silent of its budget");
-    lending.spend_watch_says(&json!([{"name": "proxy", "undeclared": true}]));
+    // As the live word has it: a probe spent under a name nobody declared,
+    // beside declared budgets, one capped and one not.
+    let beside = |name: &str| {
+        json!([
+            {"name": "declared-uncapped", "allowances": []},
+            {"name": name, "undeclared": true, "allowances": []},
+        ])
+    };
+    lending.spend_watch_says(&beside("proxy"));
     let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
+    let (status, why) = refusal_and_why(&mut answers).await;
     assert_eq!(
-        refusal(&mut answers).await,
-        503,
-        "a budget it has only seen spent"
+        (status, why.as_str()),
+        (
+            503,
+            "spend-watch declares no budget proxy, so no model is lent"
+        ),
+        "a budget it has only seen spent, and not for being silent"
+    );
+    // A marker it can't read refuses only that budget, as one it never
+    // declared, rather than the whole word.
+    lending.spend_watch_says(&json!([
+        {"name": "proxy", "undeclared": "yes", "allowances": []},
+    ]));
+    let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
+    let (status, why) = refusal_and_why(&mut answers).await;
+    assert_eq!(
+        (status, why.as_str()),
+        (
+            503,
+            "spend-watch declares no budget proxy, so no model is lent"
+        ),
+        "a marker it can't read"
     );
     lending.spend_watch_says(&proxy(100.0));
     let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
     assert_eq!(refusal(&mut answers).await, 429, "a budget spent");
     assert!(!lending.relay.was_asked(), "none was carried");
     assert_eq!(lending.spent("agents-1"), 0, "and none spent any");
-    lending.spend_watch_says(&proxy(1.0));
+    // The undeclared probe beside it doesn't stop a declared budget
+    // lending.
+    let mut word = proxy(1.0);
+    word.as_array_mut()
+        .expect("a list")
+        .extend(beside("ys-probe").as_array().expect("a list").clone());
+    lending.spend_watch_says(&word);
     let _answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
     lending.relay.asked().await;
 }
