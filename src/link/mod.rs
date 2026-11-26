@@ -524,13 +524,16 @@ async fn pull(
 }
 
 /// The next of the frames `queued`, in the order they came, but for two
-/// things. A frame that waits only behind shares goes ahead of them, if
-/// it [`jumps_shares`]: each share is an act on the disk, which took
-/// seconds apiece on a machine at load 247 on 2026-11-26, and a cloud
-/// machine pulling scratch said hundreds, so a start's answer and the
-/// machine's sessions waited behind them for many minutes, and the
-/// starts there were given up on although they ran. Shares keep their
-/// own order, and every other frame its place behind them. And where
+/// things. A frame that waits only behind shares and facts goes ahead of
+/// them, if it [`jumps_shares`]: each share is an act on the disk, which
+/// took seconds apiece on a machine at load 247 on 2026-11-26, and a
+/// cloud machine pulling scratch said hundreds, so a start's answer and
+/// the machine's sessions waited behind them for many minutes, and the
+/// starts there were given up on although they ran. Facts are passed
+/// too, since the other end says them every minute, so an answer would
+/// otherwise wait behind every share said before the latest. Shares and
+/// facts keep their order between them, and every other frame its place
+/// behind them. And where
 /// facts are taken, the newest waiting before the next share or
 /// handover are taken in their place and the older left out: facts are
 /// said whole every time, so a link whose node fell behind, as one did
@@ -542,7 +545,7 @@ async fn pull(
 fn next_waiting(queued: &mut VecDeque<io::Result<Frame>>) -> Option<io::Result<Frame>> {
     let unshared = queued
         .iter()
-        .position(|frame| !matches!(frame, Ok(Frame::Share(_))));
+        .position(|frame| !matches!(frame, Ok(Frame::Share(_) | Frame::Machine(_))));
     let at = match unshared {
         Some(at) if queued[at].as_ref().is_ok_and(jumps_shares) => at,
         _ => 0,
@@ -574,9 +577,10 @@ fn next_waiting(queued: &mut VecDeque<io::Result<Frame>>) -> Option<io::Result<F
     Some(next)
 }
 
-/// Whether `frame` may go ahead of the shares it came behind: what the
-/// other end says of its sessions, and its answers to what this end
-/// asked, none of which a share it said before can be waiting for. A
+/// Whether `frame` may go ahead of the shares and facts it came behind:
+/// what the other end says of its sessions, and its answers to what this
+/// end asked, none of which a share or the facts said before can be
+/// waiting for. A
 /// message may land before a quest file said ahead of it, which a
 /// reader takes as written apart in time, as it is. A new ask keeps its
 /// place, since a carried session's start must find the handover said
@@ -3199,9 +3203,10 @@ mod tests {
         }
         assert_eq!(
             heard,
-            [facts(3), ended("a"), ended("b")]
+            [ended("a"), ended("b"), facts(3)]
                 .map(|frame: io::Result<Frame>| frame.expect("a frame")),
-            "the newest facts come first, the older are left out, and the rest keep their order"
+            "what is said of sessions goes ahead of facts, in its order; of the facts, only \
+             the newest are taken"
         );
         sender.send(facts(4)).expect("sent");
         assert_eq!(
@@ -3271,9 +3276,9 @@ mod tests {
         assert_eq!(
             heard,
             [
+                started,
                 share("one"),
                 facts(1),
-                started,
                 share("two"),
                 facts(2),
                 unrun,
@@ -3281,8 +3286,9 @@ mod tests {
                 ended,
                 taken,
             ],
-            "an answer goes ahead of the shares it came behind, which keep their order; \
-             facts, an ask and a handover never go ahead of them"
+            "an answer goes ahead of the shares and facts it came behind, which keep their \
+             order, but never ahead of an ask or a handover; facts, an ask and a handover \
+             never go ahead of a share"
         );
         // A frame said while shares still wait goes ahead of them too.
         sender.send(Ok(share("four"))).expect("sent");
@@ -3338,6 +3344,62 @@ mod tests {
                 next, share,
                 "{waits:?} waits behind the share said before it"
             );
+        }
+    }
+
+    // Our council on #482: the other end says its facts every minute,
+    // so an answer that waited behind them waited behind every share
+    // said before the latest.
+    #[test]
+    fn every_answer_goes_ahead_of_the_shares_and_facts_before_it() {
+        let share = Frame::Share(Say::Want {
+            quest: "QEST-20261126-SKIFF1".to_owned(),
+            file: "one".to_owned(),
+            at: None,
+        });
+        let facts = Frame::Machine(Box::new(facts::measure("tern", &facts::Sources::nowhere())));
+        for answer in [
+            Frame::Message {
+                id: "m".to_owned(),
+                body: json!({}),
+            },
+            Frame::Presence {
+                session: "a".to_owned(),
+                body: json!({"session": "a"}),
+                leases: None,
+                held: None,
+                started_by: None,
+            },
+            Frame::Ended {
+                session: "a".to_owned(),
+            },
+            Frame::Replies(Replies {
+                address: "a".to_owned(),
+                id: "t".to_owned(),
+                from: 0,
+                lines: String::new(),
+            }),
+            Frame::Ran {
+                ask: 1,
+                ran: Ran::Failed("refused".to_owned()),
+            },
+            Frame::Taken { ask: 2 },
+            Frame::Lent {
+                ask: 3,
+                lent: Lent::Done,
+            },
+            Frame::Started {
+                ask: 4,
+                reply: Err("refused".to_owned()),
+            },
+        ] {
+            let mut queued: VecDeque<io::Result<Frame>> =
+                [share.clone(), facts.clone(), share.clone(), answer.clone()]
+                    .into_iter()
+                    .map(Ok)
+                    .collect();
+            let next = next_waiting(&mut queued).expect("a frame").expect("read");
+            assert_eq!(next, answer, "{answer:?} goes ahead of the shares and facts");
         }
     }
 
