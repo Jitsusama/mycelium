@@ -170,10 +170,15 @@ impl Work {
     /// node too old to read a tool, which would drop the link rather than
     /// answer, and once a machine is chosen a preference changes nothing.
     /// A tool it needs stays, since only a node that names its kit, and so
-    /// reads a tool, can have been chosen for it.
+    /// reads a tool, can have been chosen for it. A need or preference for
+    /// the cloud goes too: it was met here, by the machine's declaration
+    /// or its make, while a made machine's node may be too old to read
+    /// it, and the machine's own need for itself, which its node adds,
+    /// names it as the worker it is.
     #[must_use]
     pub fn asked_there(mut self) -> Self {
-        self.prefers.retain(|need| !matches!(need, Need::Tool(_)));
+        self.prefers.retain(|need| !matches!(need, Need::Tool(_) | Need::Cloud));
+        self.needs.retain(|need| *need != Need::Cloud);
         self
     }
 }
@@ -3687,6 +3692,22 @@ pub(crate) mod tests {
             [gcloud],
             "only a node naming its kit can meet a need for a tool"
         );
+    }
+
+    #[test]
+    fn work_asked_of_its_chosen_machine_needs_and_prefers_no_cloud() {
+        let linux = Need::System("linux".to_owned());
+        let work = Work {
+            prefers: vec![Need::Cloud, linux.clone()],
+            ..needing(vec![Need::Cloud, linux.clone()])
+        };
+        let there = work.asked_there();
+        assert_eq!(
+            there.needs,
+            [linux.clone()],
+            "a made machine's node may be too old to read a need met here"
+        );
+        assert_eq!(there.prefers, [linux], "nor a preference");
     }
 
     #[test]
