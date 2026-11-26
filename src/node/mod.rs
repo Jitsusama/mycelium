@@ -874,6 +874,17 @@ fn began_nothing_here(why: &str, machine: &str, folder: Option<&Path>) -> bool {
         || folder.is_some_and(|folder| why == start::no_folder(machine, folder))
 }
 
+/// Whether `why`, a refusal of a start placed here, alone or after one
+/// elsewhere that began nothing ([`here_where_it_lacks_its_folder`]),
+/// is `machine`'s hold refusing it before anything began: another start
+/// there holds a session it names. Only its ending is read, as
+/// [`refused_for_one_session`] reads it. It isn't one
+/// [`began_nothing_here`] takes, since a start past room so refused
+/// stands rather than going elsewhere with a second log of the session.
+fn held_here_already(why: &str, machine: &str) -> bool {
+    why.ends_with(&format!("{BEING_REOPENED}{machine} already"))
+}
+
 /// Whether `why`, a refusal of an agent's start a relay was taken as
 /// ([`relayed_why`]), was raised as it was admitted, before anything
 /// began: the person's stop, whether it stands unknown, or the limits
@@ -8500,8 +8511,9 @@ impl<S: Store> Shared<S> {
     /// Keeps `admitted`, joined `joined` times, as `started` ended: as
     /// refused where it was to start here (`here`, naming `folder`) and
     /// was refused before anything began
-    /// ([`began_nothing_here`]), so it spends none of the limits; else as
-    /// it started or failed.
+    /// ([`began_nothing_here`]), or wherever it was placed, where another
+    /// start here held a session it names ([`held_here_already`]), so it
+    /// spends none of the limits; else as it started or failed.
     fn kept_ended(
         &self,
         admitted: starts::Admitted,
@@ -8510,7 +8522,10 @@ impl<S: Store> Shared<S> {
         joined: u32,
     ) {
         match started {
-            Err(why) if here && began_nothing_here(why, &self.machine, folder.as_deref()) => {
+            Err(why)
+                if (here && began_nothing_here(why, &self.machine, folder.as_deref()))
+                    || held_here_already(why, &self.machine) =>
+            {
                 self.starts.keep_unbegun(admitted, why, joined);
             }
             _ => self.starts.keep(
@@ -26116,19 +26131,24 @@ esac
             once: None,
         };
         let starting = link.start_on("skiff".to_owned(), asked, (None, START_ANSWERED_WITHIN));
-        let meanwhile = async {
-            let looked = tokio::time::timeout(PATIENCE, async {
-                while !began_at.exists() {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await;
-            let relayed = link.hold_reopenings(&["s-gone".to_owned()], None, &[]);
-            fs::write(&release, "").expect("the holder is let answer");
-            (looked, relayed)
-        };
-        let (started, (looked, relayed)) = tokio::join!(starting, meanwhile);
-        looked.expect("the holder began");
+        tokio::pin!(starting);
+        // A start that answers before its holder began fails here in its
+        // own words, never waited on as though it might still begin.
+        tokio::time::timeout(PATIENCE, async {
+            tokio::select! {
+                started = &mut starting => panic!("it answered unbegun: {started:?}"),
+                () = async {
+                    while !began_at.exists() {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                } => {}
+            }
+        })
+        .await
+        .expect("the holder began");
+        let relayed = link.hold_reopenings(&["s-gone".to_owned()], None, &[]);
+        fs::write(&release, "").expect("the holder is let answer");
+        let started = starting.await;
         assert_eq!(
             relayed,
             Err("s-gone is being reopened on skiff already".to_owned()),
@@ -26222,6 +26242,113 @@ esac
             .hold_reopenings(&["s-gone".to_owned()], None, &["s-gone".to_owned()])
             .expect("the guard, dropped unkept, gave its holds back");
         link.let_reopenings_go(&after);
+    }
+
+    // Our council's round 2 on the marks: a start asked here naming a
+    // word holds each ended session here the word begins, so a relayed
+    // start of one waits on it.
+    #[test]
+    fn a_start_asked_here_naming_a_word_holds_the_ended_sessions_it_begins() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        let quest = "QEST-20261118-KESTRL";
+        link.lock().state.set_sessions(vec![on_quest(
+            "s-gone-2", "KESTRL2", "skiff", "ended", quest,
+        )]);
+        let held = link
+            .hold_while_starting(&["pi", "--session", "s-gone"].map(str::to_owned))
+            .expect("nothing holds the word");
+        assert_eq!(
+            link.hold_reopenings(&["s-gone-2".to_owned()], None, &[])
+                .err(),
+            Some("s-gone-2 is being reopened on skiff already".to_owned()),
+            "a relayed start of an ended session the word begins waits on it"
+        );
+        drop(held);
+        let after = link
+            .hold_reopenings(&["s-gone-2".to_owned()], None, &[])
+            .expect("its hold went with the guard");
+        link.let_reopenings_go(&after);
+    }
+
+    // Our council's rounds 3 and 4 on the marks: a start placed on another
+    // machine holds nothing here, so a relay holding its session here
+    // leaves it to go there.
+    #[tokio::test]
+    async fn a_start_placed_on_another_machine_holds_nothing_here() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        let relayed = link
+            .hold_reopenings(&["s-gone".to_owned()], None, &[])
+            .expect("a relayed start holds the session");
+        let asked = Start {
+            work: work(vec![Need::Machine("tern".to_owned())]),
+            folder: None,
+            strict: false,
+            command: ["pi", "--session", "s-gone"].map(str::to_owned).to_vec(),
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let answered = link
+            .start_on("tern".to_owned(), asked, (None, START_ANSWERED_WITHIN))
+            .await;
+        assert_eq!(
+            answered,
+            Err("no link reaches tern now".to_owned()),
+            "it went to tern, holding nothing here"
+        );
+        link.let_reopenings_go(&relayed);
+    }
+
+    // Our council's rounds 2 and 3 on the marks: a start asked of this
+    // node, through its whole path, is held here as it starts here, and
+    // one refused so is kept as refused, spending none of the limits.
+    #[tokio::test]
+    async fn a_start_asked_of_this_node_is_refused_where_a_relay_holds_its_session() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let mut link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        // Its fence runs a command, so the agent's start reaches the hold.
+        runs_commands(&mut link, dir.path());
+        link.client = Some(1);
+        let quest = "QEST-20261118-KESTRL";
+        link.lock()
+            .state
+            .set_sessions(vec![on_quest("s-x", "KESTRL1", "skiff", "ended", quest)]);
+        let asked = Start {
+            work: work(vec![Need::Machine("skiff".to_owned())]),
+            folder: Some(dir.path().to_owned()),
+            strict: false,
+            command: ["pi", "--session", "s-x"].map(str::to_owned).to_vec(),
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let relayed = link
+            .hold_reopenings(&["s-x".to_owned()], None, &[])
+            .expect("a relayed start holds the session");
+        let refused = link
+            .started(asked.clone(), 0)
+            .await
+            .expect_err("the relay holds it");
+        assert!(
+            refused.ends_with("s-x is being reopened on skiff already"),
+            "{refused}"
+        );
+        let newest = link.starts.newest(1);
+        assert!(
+            newest
+                .first()
+                .is_some_and(|kept| kept.refused.is_some() && kept.failed.is_none()),
+            "a start the hold refused is kept as refused: {newest:?}"
+        );
+        link.let_reopenings_go(&relayed);
+        link.started(asked, 0)
+            .await
+            .expect("once the relay lets go, it starts here");
     }
 
     // Our council's round 13 on the reopen rule (2026-11-20): a name a
