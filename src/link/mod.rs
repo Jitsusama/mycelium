@@ -306,10 +306,12 @@ pub enum Ending {
 /// so unless the link is a worker's, which is never sent one whatever its
 /// node.
 ///
-/// A machine this end's way in `releases` was made for this machine, and
-/// is reached over a provider's link of a few kilobytes a second shared
-/// with the person's own work, so it is sent only the scratch of quests
-/// given to it ([`Exchange::scratch_where_given`]).
+/// A machine this end's way in `releases` is reached through a provider,
+/// made for this machine or lent as a worker, over a link of a few
+/// kilobytes a second shared with the person's own work, so it is sent
+/// only the scratch of quests given to it
+/// ([`Exchange::scratch_where_given`]). A worker was served only those
+/// already.
 fn exchange_with(
     places: Places,
     here: &Hello,

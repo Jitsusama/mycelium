@@ -239,7 +239,10 @@ impl Hands for Through {
         debug_assert_eq!(quest, self.quest, "a carry shares its own quest");
         let scratch = ["handover".to_owned()];
         let shared = match self.lent(to)? {
-            Lent::Not => self.shares.offer(quest, &scratch),
+            // Given as well as shared, since a machine made for this one
+            // is sent only the scratch of quests given to it, and the
+            // handover is what a carried session arrives to.
+            Lent::Not => self.shares.offer_to(to, quest, &scratch),
             Lent::TakesNone => return Err(ground::takes_none(to)),
             Lent::TakesCarries => {
                 // The whole handover, every machine's, since a worker is
@@ -1073,8 +1076,8 @@ mod tests {
         }));
         hands.share(quest, "osprey").expect("shared");
         assert!(
-            !places.given("osprey", quest),
-            "one of the person's own is given nothing"
+            places.given("osprey", quest),
+            "one of the person's own is given it, as a made one is sent only what it was given"
         );
         assert_eq!(
             hands.share(quest, "wren"),
