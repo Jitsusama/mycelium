@@ -712,7 +712,7 @@ impl Exchange {
     /// other end, as [`Self::withholds`] says.
     fn withholds_quest(&self, id: &str) -> io::Result<bool> {
         let ledgers = self.places.ledgers();
-        Ok(self.above_withheld() && ledgers.shares(id) && ledgers.hold(id)?.ledger.above)
+        Ok(self.above_withheld() && ledgers.shares(id) && ledgers.look(id)?.above)
     }
 
     /// Whether this link carries quest `id`'s whole record, as `ledger`
@@ -1117,6 +1117,39 @@ impl Exchange {
         }
     }
 
+    /// Holds quest `id`'s ledger to enter what a look found: each file of
+    /// `quest` scanned where it `scans`, and the clones `found` in the
+    /// folders walked. Kept where that holds something new, and answered
+    /// with the ledger and the key of each file that changed. Held anew,
+    /// not taken from the look, so nothing kept since is lost.
+    fn scan_held(
+        ledgers: &Ledgers,
+        id: &str,
+        quest: &Quest,
+        machine: &str,
+        scans: bool,
+        walk: &BTreeSet<String>,
+        found: &BTreeMap<String, Option<Clone>>,
+    ) -> io::Result<(Arc<Ledger>, Vec<String>)> {
+        let mut held = ledgers.hold(id)?;
+        let scan = if scans {
+            held.ledger.scan(quest, machine)?
+        } else {
+            Scan::default()
+        };
+        let clones = clones_from(&held.ledger, walk, found);
+        let clones_changed = clones != held.ledger.clones;
+        held.ledger.clones = clones;
+        // A file deleted here drops out of what the other end holds.
+        let dropped = scan.is_new && held.ledger.bound_theirs();
+        // A file read and found as it was is kept as seen too, or every
+        // look would read it again.
+        if scan.is_new || clones_changed || dropped {
+            held.keep()?;
+        }
+        Ok((Arc::new(held.ledger), scan.changed))
+    }
+
     /// Looks at every shared quest as [`Self::look`] does, asking for no
     /// file in its turn.
     fn look_quests(&mut self) -> io::Result<Vec<Say>> {
@@ -1145,8 +1178,10 @@ impl Exchange {
                 self.stop(&ledgers, &id, why)?;
                 continue;
             }
-            let mut held = ledgers.hold(&id)?;
-            if self.withholds(&held.ledger) {
+            // Looked at without holding it, since most looks change
+            // nothing, and held only when the look must write it.
+            let looked = ledgers.look(&id)?;
+            if self.withholds(&looked) {
                 passed_over.insert(id);
                 continue;
             }
@@ -1155,7 +1190,7 @@ impl Exchange {
             // walked and said whole. So is one said ended and live again:
             // the other end may have stopped sharing it meanwhile, and
             // takes it up again only from what this Holds names.
-            let carried = self.quest(&id, &held.ledger);
+            let carried = self.quest(&id, &looked);
             let reopened = self.told.get(&id).is_some_and(|told| told.ended && !ended);
             let anew = !self.told.contains_key(&id)
                 || reopened
@@ -1163,39 +1198,44 @@ impl Exchange {
             if !carried.readme_alone {
                 whole.insert(id.clone());
             }
-            let walk = self.watch.to_walk(&id, &held.ledger.scratch);
+            let walk = self.watch.to_walk(&id, &looked.scratch);
             let record = self.watch.record_to_walk(&id) || anew;
             // A record waiting to move aside is none of the shared quest's,
             // so only its scratch is walked.
-            let quest = carried
-                .clone()
-                .walking(&walk)
-                .record_waits(held.ledger.aside);
+            let quest = carried.clone().walking(&walk).record_waits(looked.aside);
             // A quest nothing was heard to change in isn't walked, so an
             // idle look reads no file's size and time.
-            let scan = if record || !walk.is_empty() {
-                held.ledger.scan(&quest, &self.machine)?
+            let scans = record || !walk.is_empty();
+            let found = quest.clones()?;
+            let holds = scans || clones_from(&looked, &walk, &found) != looked.clones;
+            let (ledger, scanned) = if holds {
+                Self::scan_held(
+                    &ledgers,
+                    &id,
+                    &quest,
+                    &self.machine,
+                    scans,
+                    &walk,
+                    &found,
+                )?
             } else {
-                Scan::default()
+                (looked, Vec::new())
             };
-            let mut changed: BTreeSet<String> = scan.changed.into_iter().collect();
-            let clones_changed = found_clones(&mut held.ledger, &quest, &walk)?;
-            // A file deleted here drops out of what the other end holds.
-            let dropped = scan.is_new && held.ledger.bound_theirs();
-            // A file read and found as it was is kept as seen too, or every
-            // look would read it again.
-            if scan.is_new || clones_changed || dropped {
-                held.keep()?;
-            }
+            let mut changed: BTreeSet<String> = scanned.into_iter().collect();
             changed.extend(self.unsaid.remove(&id).unwrap_or_default());
             self.above_again |= changed.contains(README);
             // A file this link no longer carries, such as a parent's
             // journey once its README alone crosses, is left unsaid.
-            let files: BTreeMap<String, State> = held
-                .ledger
-                .states()
+            let states = if anew {
+                ledger.states()
+            } else {
+                changed
+                    .iter()
+                    .filter_map(|key| Some((key.clone(), ledger.files.get(key)?.state())))
+                    .collect()
+            };
+            let files: BTreeMap<String, State> = states
                 .into_iter()
-                .filter(|(key, _)| anew || changed.contains(key))
                 .filter(|(key, _)| shared_of(key).is_some_and(|shared| carried.carries(&shared)))
                 .filter(|(key, _)| !self.worker || !gate::withheld(key))
                 .collect();
@@ -1209,7 +1249,7 @@ impl Exchange {
             let (folders, clones) = if carried.readme_alone {
                 (BTreeSet::new(), BTreeMap::new())
             } else {
-                (held.ledger.scratch.clone(), held.ledger.clones.clone())
+                (ledger.scratch.clone(), ledger.clones.clone())
             };
             shares.insert(
                 id,
@@ -1217,7 +1257,7 @@ impl Exchange {
                     folders,
                     clones,
                     ended,
-                    above: held.ledger.above,
+                    above: ledger.above,
                 },
             );
         }
@@ -1638,10 +1678,10 @@ impl Exchange {
     }
 
     /// Whether quest `id`, which this end shares, is spent as
-    /// [`spent_above`](Self::spent_above) says, its ledger held only to
-    /// read whether it is shared only for those under it.
+    /// [`spent_above`](Self::spent_above) says, its ledger looked at only
+    /// to read whether it is shared only for those under it.
     fn spent_here(&self, ledgers: &Ledgers, id: &str) -> io::Result<bool> {
-        let above = ledgers.hold(id)?.ledger.above;
+        let above = ledgers.look(id)?.above;
         self.spent_above(id, above)
     }
 
@@ -1665,7 +1705,7 @@ impl Exchange {
             .filter(|quest| *quest != id && is_quest(quest))
         {
             let own = (theirs.quests.contains(quest) && !theirs.above.contains(quest))
-                || (here.contains(quest) && !ledgers.hold(quest)?.ledger.above);
+                || (here.contains(quest) && !ledgers.look(quest)?.above);
             if own && self.places.may_name_above(quest, id, &shared) {
                 return Ok(false);
             }
@@ -2255,10 +2295,14 @@ impl Exchange {
     }
 }
 
-/// Enters in `ledger` the clones found in the scratch folders `walked` of
-/// `quest`, forgetting those no longer there, and answers whether that
-/// changed what it holds. A clone that can't be made again is left out.
-fn found_clones(ledger: &mut Ledger, quest: &Quest, walked: &BTreeSet<String>) -> io::Result<bool> {
+/// The clones `ledger` holds once those `found` in the scratch folders
+/// `walked` are entered, forgetting those no longer there. A clone that
+/// can't be made again is left out.
+fn clones_from(
+    ledger: &Ledger,
+    walked: &BTreeSet<String>,
+    found: &BTreeMap<String, Option<Clone>>,
+) -> BTreeMap<String, Clone> {
     let mut clones: BTreeMap<String, Clone> = ledger
         .clones
         .iter()
@@ -2269,14 +2313,12 @@ fn found_clones(ledger: &mut Ledger, quest: &Quest, walked: &BTreeSet<String>) -
         })
         .map(|(path, clone)| (path.clone(), clone.clone()))
         .collect();
-    for (path, clone) in quest.clones()? {
-        if let Some(clone) = clone.filter(Clone::may_clone) {
-            clones.insert(path, clone);
+    for (path, clone) in found {
+        if let Some(clone) = clone.as_ref().filter(|clone| clone.may_clone()) {
+            clones.insert(path.clone(), clone.clone());
         }
     }
-    let changed = clones != ledger.clones;
-    ledger.clones = clones;
-    Ok(changed)
+    clones
 }
 
 /// Whether a quest's README says it has ended: its front matter's `status`
@@ -3855,6 +3897,32 @@ mod tests {
             !kestrel.places.ledgers().shares(top),
             "once a look finds the README changed, the next decides"
         );
+    }
+
+    // KP0L6A (2026-11-26): each link's look held every shared quest's
+    // ledger once a second and copied it whole, and copying and dropping
+    // them took a third of a node's time.
+    #[test]
+    fn a_look_that_changes_nothing_holds_no_ledger() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        kestrel.write("README.md", "# Shared\n");
+        share(&kestrel, QUEST);
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        talk(&mut near, &mut far);
+        near.look().expect("looks");
+
+        let held = kestrel.places.ledgers().hold(QUEST).expect("held");
+        let (looked, looks) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| looked.send(near.look().map(|says| says.len())));
+            // Bounded only so a look that waits fails rather than hangs.
+            let says = looks
+                .recv_timeout(Duration::from_secs(30))
+                .expect("a look while another holds the ledger doesn't wait on it");
+            assert_eq!(says.expect("looks"), 0, "and says nothing anew");
+        });
+        drop(held);
     }
 
     #[test]
