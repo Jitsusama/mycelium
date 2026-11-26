@@ -1334,9 +1334,9 @@ fn listen_to(
         .iter()
         .map(|folder| (folder.clone(), notify::RecursiveMode::NonRecursive))
         .collect();
-    let watched = crate::watching::watch_all(watcher, &[], &modes);
-    for (folder, watched) in new.into_iter().zip(watched) {
-        if watched {
+    let answers = crate::watching::watch_all(watcher, &[], &modes);
+    for (folder, took) in new.into_iter().zip(answers) {
+        if took {
             listened_to.insert(folder);
         }
     }

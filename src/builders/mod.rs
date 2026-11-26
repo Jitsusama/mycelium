@@ -491,7 +491,6 @@ fn watching(
     Option<notify::RecommendedWatcher>,
     mpsc::UnboundedReceiver<()>,
 ) {
-    use notify::Watcher;
     let (tell, told) = mpsc::unbounded_channel();
     let names: Vec<_> = files
         .iter()
@@ -525,9 +524,9 @@ fn watching(
         .iter()
         .map(|folder| (folder.to_path_buf(), notify::RecursiveMode::NonRecursive))
         .collect();
-    let watched = crate::watching::watch_all(&mut watcher, &[], &new);
-    for (folder, watched) in folders.into_iter().zip(watched) {
-        if !watched {
+    let answers = crate::watching::watch_all(&mut watcher, &[], &new);
+    for (folder, took) in folders.into_iter().zip(answers) {
+        if !took {
             eprintln!(
                 "{} isn't watched, so its builders are read each minute",
                 folder.display()

@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{EventKind, RecommendedWatcher, RecursiveMode};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
@@ -150,9 +150,9 @@ impl<'a> Watching<'a> {
             .iter()
             .map(|inbox| (inbox.clone(), RecursiveMode::NonRecursive))
             .collect();
-        let watched = crate::watching::watch_all(&mut self.watcher, &[], &modes);
-        for (inbox, watched) in new.into_iter().zip(watched) {
-            if watched {
+        let answers = crate::watching::watch_all(&mut self.watcher, &[], &modes);
+        for (inbox, took) in new.into_iter().zip(answers) {
+            if took {
                 waiting = waiting || self.steers.waits_in(&inbox);
                 self.armed.insert(inbox);
             }

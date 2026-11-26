@@ -861,14 +861,14 @@ impl Store for Folders {
             self.messages(),
             self.presence(),
             self.leases(),
-            self.claims.clone(),
+            PathBuf::clone(&self.claims),
         ];
         let new = folders
             .iter()
             .map(|folder| (folder.clone(), RecursiveMode::NonRecursive))
             .collect::<Vec<_>>();
-        let watched = crate::watching::watch_all(&mut watcher, &[], &new);
-        if let Some(at) = watched.iter().position(|watched| !watched) {
+        let answers = crate::watching::watch_all(&mut watcher, &[], &new);
+        if let Some(at) = answers.iter().position(|took| !took) {
             return Err(io::Error::other(format!(
                 "{} can't be watched",
                 folders[at].display()

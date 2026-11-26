@@ -21,7 +21,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use notify::Watcher as _;
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, watch};
 

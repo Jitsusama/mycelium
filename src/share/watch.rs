@@ -292,17 +292,17 @@ impl Watch {
         let Some(watcher) = self.watcher.as_mut() else {
             return;
         };
-        let mut watched = crate::watching::watch_all(watcher.as_mut(), &[], &new).into_iter();
-        for (folder, watched) in folders.into_iter().zip(watched.by_ref()) {
-            if watched {
+        let mut answers = crate::watching::watch_all(watcher.as_mut(), &[], &new).into_iter();
+        for (folder, took) in folders.into_iter().zip(answers.by_ref()) {
+            if took {
                 self.stale.remove(folder);
                 self.watched.insert(folder.clone());
             } else {
                 self.stale.insert(folder.clone());
             }
         }
-        if let (Some(id), Some(watched)) = (record, watched.next()) {
-            if watched {
+        if let (Some(id), Some(took)) = (record, answers.next()) {
+            if took {
                 self.records_stale.remove(id);
                 self.records_watched.insert(id.to_owned());
             } else {
