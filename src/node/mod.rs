@@ -24768,6 +24768,12 @@ esac
                 && Admits::Granted.takes(None, false, true),
             "and the person's own only where they name it"
         );
+        assert!(
+            Admits::Rooms.takes(Some("P9R1KI"), true, true)
+                && !Admits::Rooms.takes(Some(made::PERSON), false, true)
+                && !Admits::Rooms.takes(None, false, true),
+            "the person's run sent to a room as an agent's takes rooms alone"
+        );
     }
 
     /// A node on skiff keeping its book in `dir`, which made each of
