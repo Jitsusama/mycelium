@@ -256,6 +256,22 @@ fn answers(body: &Map<String, Value>) -> Result<(), String> {
 /// taken as this one's.
 #[must_use]
 pub fn wake_for(session: &Session, boot: Option<&str>, held: &Path) -> Option<PathBuf> {
+    wake_among(session, boot, held, |folder, id| {
+        its_holder_among(id, &hold::held(folder))
+    })
+}
+
+/// The wake file [`wake_for`] finds for `session`, its holders' records
+/// read through `holder`, which answers [`its_holder_among`] for a
+/// holders' folder and an id, so a judgement of many sessions reads each
+/// folder once, from one look.
+#[must_use]
+pub fn wake_among(
+    session: &Session,
+    boot: Option<&str>,
+    held: &Path,
+    holder: impl FnOnce(&Path, &str) -> Option<bool>,
+) -> Option<PathBuf> {
     let presence = &session.presence;
     let parked = session.state == State::Ended
         && presence.get("state").and_then(Value::as_str) == Some("parked");
@@ -271,7 +287,8 @@ pub fn wake_for(session: &Session, boot: Option<&str>, held: &Path) -> Option<Pa
         return Some(hold::wake(held, id));
     }
     let named = PathBuf::from(presence.get("wake")?.as_str()?);
-    read_by_a_holder(&named, held).then_some(named)
+    let (folder, id) = holder_of(&named, held)?;
+    holder(folder, id).is_some().then_some(named)
 }
 
 /// Whether `wake` is a holder's wake file beside `held` whose holder

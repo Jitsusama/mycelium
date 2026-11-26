@@ -2855,6 +2855,10 @@ struct Seen<'a> {
     coming_back: &'a HashSet<String>,
     /// The park markers this boot wrote, as [`Shared::marked`] reads them.
     marked: &'a [Marked],
+    /// Each holders' folder read for the markers, by its path, so a
+    /// park a presence names is judged from the same look
+    /// ([`Shared::parked_here`]).
+    folders: &'a HashMap<PathBuf, Vec<hold::Held>>,
 }
 
 /// A park marker this boot wrote, with what its holder's records said of
@@ -5918,7 +5922,7 @@ impl<S: Store> Shared<S> {
         });
         if one.is_some_and(|one| one.state != SessionState::Ended) {
             Err(format!("{shown} is still live on {machine}{NOT_REOPENED}"))
-        } else if one.is_some_and(|one| self.parked_here(one, seen.marked)) {
+        } else if one.is_some_and(|one| self.parked_here(one, seen.marked, seen.folders)) {
             Err(format!(
                 "{shown} is parked on {machine}, and its holder wakes it{NOT_REOPENED}"
             ))
@@ -7812,7 +7816,11 @@ impl<S: Store> Shared<S> {
         // session that ran on this machine.
         let parked = brought
             .filter(|session| by != By::Person && session.machine == self.machine)
-            .filter(|session| self.parked_here(session, &self.marked()))
+            .filter(|session| {
+                let mut folders = HashMap::new();
+                let marked = self.marked_among(&mut folders);
+                self.parked_here(session, &marked, &folders)
+            })
             .map(|session| session.id.clone());
         Judged {
             started_by,
@@ -7903,10 +7911,21 @@ impl<S: Store> Shared<S> {
     /// restarted machine's wave does. A start bringing back one already
     /// coming back is refused by [`starts::Starts::admit`]. A park marker
     /// of this boot counts too, as [`Self::marked_wake`] finds it in
-    /// `marked`, the same marker a steer wakes through.
-    fn parked_here(&self, session: &Session, marked: &[Marked]) -> bool {
+    /// `marked`, the same marker a steer wakes through. A holders'
+    /// folder `folders` holds is judged as it was read for `marked`, and
+    /// any other is read now.
+    fn parked_here(
+        &self,
+        session: &Session,
+        marked: &[Marked],
+        folders: &HashMap<PathBuf, Vec<hold::Held>>,
+    ) -> bool {
+        let holder = |folder: &Path, id: &str| match folders.get(folder) {
+            Some(holders) => steer::its_holder_among(id, holders),
+            None => steer::its_holder_among(id, &hold::held(folder)),
+        };
         session.machine == self.machine
-            && (steer::wake_for(session, self.boot.id.as_deref(), &self.held).is_some()
+            && (steer::wake_among(session, self.boot.id.as_deref(), &self.held, holder).is_some()
                 || Self::marked_wake(session, marked).is_some())
     }
 
@@ -7916,7 +7935,15 @@ impl<S: Store> Shared<S> {
     /// no `sysctl` runs for it, and each holders' folder is read once
     /// however many markers name a holder in it.
     fn marked(&self) -> Vec<Marked> {
-        let mut folders: HashMap<PathBuf, Vec<hold::Held>> = HashMap::new();
+        self.marked_among(&mut HashMap::new())
+    }
+
+    /// The park markers as [`Self::marked`] reads them, each holders'
+    /// folder in `folders` taken as already read and each other one kept
+    /// there once read, so a judgement that read this node's own holders
+    /// reads the markers, and the parks presences name, against that
+    /// very look, not a second one that may disagree with it.
+    fn marked_among(&self, folders: &mut HashMap<PathBuf, Vec<hold::Held>>) -> Vec<Marked> {
         crate::wake::parked(&self.parked, self.boot.began)
             .into_iter()
             .map(|parked| {
@@ -8281,11 +8308,13 @@ impl<S: Store> Shared<S> {
             (known, ended::coming_back(away, inner.turns.waiting()))
         };
         let held = hold::held(&self.held);
-        let marked = self.marked();
+        let mut folders = HashMap::from([(self.held.clone(), held.clone())]);
+        let marked = self.marked_among(&mut folders);
         let seen = Seen {
             held: &held,
             coming_back: &coming_back,
             marked: &marked,
+            folders: &folders,
         };
         let judged = sessions.iter().try_for_each(|session| {
             if ended_here {
@@ -8325,10 +8354,12 @@ impl<S: Store> Shared<S> {
             let coming_back = ended::coming_back(away, inner.turns.waiting());
             // What begins a word is found whether or not it is parked, so
             // no marker is read.
+            let unread = HashMap::new();
             let seen = Seen {
                 held: &held,
                 coming_back: &coming_back,
                 marked: &[],
+                folders: &unread,
             };
             let now = std::time::Instant::now();
             let mut begun = Vec::new();
@@ -22028,6 +22059,72 @@ esac
             "a session live in a pi of its own wakes no holder parked beside it"
         );
         assert!(!held.join("e0r3.wake").exists(), "nor opens a second pi");
+    }
+
+    // Our council's rounds 2 and 4 on the marks (followup 441): markers
+    // are judged by the holders of their own folder, each read once, and
+    // a sibling realm's folder beside this node's own is a look of its
+    // own. One holder id holds in each, the node's own running its
+    // program and the sibling's parked, so a look taken for the other
+    // folder's would judge both markers alike.
+    #[tokio::test]
+    async fn a_marker_is_judged_by_the_holders_of_its_own_folder() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        let held = held_of(&socket);
+        let beside = socket.with_file_name("home.held");
+        fs::create_dir_all(parks_of(&socket)).expect("the parks' folder is made");
+        let now = jiff::Timestamp::now().to_string();
+        for (session, address, folder) in
+            [("s-here", "HERE", &held), ("s-beside", "BESIDE", &beside)]
+        {
+            let marker = json!({"session": session, "addresses": [address],
+                                "wake": folder.join("e0r5.wake")});
+            fs::write(
+                parks_of(&socket).join(format!("{session}.json")),
+                marker.to_string(),
+            )
+            .expect("a marker");
+            store.start_here(
+                session,
+                json!({"session": session, "addresses": [address], "at": now}),
+                false,
+            );
+        }
+        let (holder, program) = holds_for_real(&held, "e0r5");
+        let (other, its_program) = holds_for_real(&beside, "e0r5");
+        let _let_go = LetGo(vec![holder, program, other, its_program]);
+        let record = beside.join("e0r5.json");
+        let mut parked: Value =
+            serde_json::from_slice(&fs::read(&record).expect("its record")).expect("a record");
+        parked["parked"] = json!(true);
+        fs::write(&record, parked.to_string()).expect("its program parks");
+        asks_below(&socket, 7001);
+        assert_eq!(
+            ask(
+                socket.clone(),
+                reopening(&["pi", "--session", "s-here"], false)
+            )
+            .await,
+            Err("skiff's node starts no sessions".to_owned()),
+            "a marker whose holder here runs its program holds nothing back"
+        );
+        assert_eq!(
+            ask(
+                socket.clone(),
+                reopening(&["pi", "--session", "s-beside"], false)
+            )
+            .await,
+            Err(
+                "s-beside is parked on skiff, and its holder wakes it, so it isn't reopened"
+                    .to_owned()
+            ),
+            "a marker whose holder beside keeps its park holds the reopening back"
+        );
     }
 
     // Our council's round 3 on the marks: an agent's start of a session
