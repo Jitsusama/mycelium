@@ -4833,10 +4833,15 @@ mod tests {
 
         let _second = linked(&skiff, &kestrel, 1 << 16);
         let ended = first.await.expect("the first link's end runs to its end");
+        // Kestrel's older end is taken over too, and closes its stream,
+        // so skiff's may hear it leave before it sees the newer claim.
         assert!(
-            ended.as_ref().is_err_and(|why| why
-                .to_string()
-                .contains("a newer link with kestrel took over")),
+            ended.as_ref().map_or_else(
+                |why| why
+                    .to_string()
+                    .contains("a newer link with kestrel took over"),
+                |()| true
+            ),
             "the older end lets its claim go, as one whose other end is gone: {ended:?}"
         );
         until(&skiff, |store| {
