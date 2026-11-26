@@ -5866,7 +5866,10 @@ mod tests {
             "a run and a lend asked of this machine run here, and nothing there"
         );
         runs.asked.insert(3, mpsc::unbounded_channel().0);
-        assert!(runs.under_way_there(), "a run asked of the other machine runs there");
+        assert!(
+            runs.under_way_there(),
+            "a run asked of the other machine runs there"
+        );
         runs.asked.clear();
         runs.borrowed.insert(4, mpsc::unbounded_channel().0);
         assert!(runs.under_way_there(), "and so does a lend");
