@@ -63,6 +63,9 @@ pub struct Eases {
     /// chooses to sleep (`carry::sleep`), or none where it only says
     /// them.
     pub sleeps: Option<PathBuf>,
+    /// The workers it may carry to, by name: one that says it takes
+    /// carries but isn't named here takes none from this node.
+    pub onto: BTreeSet<String>,
 }
 
 /// What a node read for one look at its sessions.
@@ -1998,6 +2001,7 @@ mod tests {
             declared: Some(&declared),
             machines: &machines,
             loads: &Loads::new(),
+            workers: &BTreeSet::new(),
         };
         let look = |easing: &mut Easing| {
             let reading = balance::read(&machines, &[], now());
@@ -2369,6 +2373,7 @@ mod tests {
             declared: Some(&declared),
             machines,
             loads: &Loads::new(),
+            workers: &BTreeSet::new(),
         };
         let holds = [(
             "s1".to_owned(),
@@ -2493,6 +2498,7 @@ mod tests {
             declared: Some(&declared),
             machines: &machines,
             loads: &Loads::new(),
+            workers: &BTreeSet::new(),
         };
         let mut easing = Easing::default();
         let doubt = "the quest records have not been read yet";

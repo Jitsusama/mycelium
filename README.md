@@ -106,9 +106,9 @@ The harness mesh's messages and presence, carried between machines:
 - `mycelium node --eases` has the node say what its machine would do to
   ease itself while over its limits: put its waiting sessions to sleep
   while short of memory, and while another has room, carry one to a
-  peer, each choice a line in the state folder's `eases`, one file a
-  day. It does none of
-  it yet; PROTOCOL.md says how it chooses.
+  peer or a worker that takes carries and that `--eases-onto` names,
+  each choice a line in the state folder's `eases`, one file a day. It
+  does none of it yet; PROTOCOL.md says how it chooses.
 - `mycelium placements` judges in hindsight how well this node placed
   work over the last hour (`--hours` for more), from the placements it
   kept and the balance kept beside them, as one JSON line: each start

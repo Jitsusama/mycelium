@@ -832,18 +832,8 @@ struct Node {
     /// `health`; PROTOCOL.md says what is asked.
     #[arg(long)]
     health_socket: Option<PathBuf>,
-    /// Look each minute at what this machine would do to ease itself
-    /// while over its limits, sleeping or carrying, keeping each choice
-    /// in the state folder's `eases`, a file each day; it does none of
-    /// it.
-    #[arg(long)]
-    eases: bool,
-    /// Make the carries `--eases` chooses, under this node's own name,
-    /// each to ground as firm as an ordered carry's; it still puts no
-    /// session to sleep. Its sessions' harness must read a carry from
-    /// `node@<machine>`, or a carry is kept and told but never taken.
-    #[arg(long, requires = "eases")]
-    eases_carry: bool,
+    #[command(flatten)]
+    easing: EasesAsked,
     /// The machine this one borrows model calls from, through the link
     /// it was accepted by, as a worker's image names its maker. Unnamed,
     /// the node refuses every lend asked of it, so a lender's own node
@@ -857,13 +847,6 @@ struct Node {
     /// this machine is refused.
     #[arg(long)]
     lend: Option<PathBuf>,
-    /// Ask the harness to park the sessions `--eases` chooses to put to
-    /// sleep, each by a file named for it in this folder, the harness's
-    /// own, which parks one only once it is idle and its own rule holds;
-    /// each is taken back once the machine has been clear of its memory
-    /// limit for five minutes, and all of them as the node starts.
-    #[arg(long, requires = "eases")]
-    eases_sleep: Option<PathBuf>,
     /// Where this machine's sessions, running as the account
     /// `--worker-uid` names, are present and speak on the mesh through
     /// the node, which judges what each says, as a worker machine's do.
@@ -2139,16 +2122,48 @@ fn gates_given(
         .transpose()
 }
 
-/// How the node eases its machine, kept under `state`, if it `eases` at
-/// all: whether it `carries`, and where it asks the harness to park the
-/// sessions it `sleeps`.
-fn eases_given(eases: bool, carries: bool, sleeps: Option<PathBuf>, state: &Path) -> Option<Eases> {
-    eases.then(|| Eases {
-        folder: state.join("eases"),
-        every: carry::easing::EVERY,
-        carries,
-        sleeps,
-    })
+/// What a node is asked to do to ease its machine.
+#[derive(clap::Args)]
+struct EasesAsked {
+    /// Look each minute at what this machine would do to ease itself
+    /// while over its limits, sleeping or carrying, keeping each choice
+    /// in the state folder's `eases`, a file each day; it does none of
+    /// it.
+    #[arg(long)]
+    eases: bool,
+    /// Make the carries `--eases` chooses, under this node's own name,
+    /// each to ground as firm as an ordered carry's; it still puts no
+    /// session to sleep. Its sessions' harness must read a carry from
+    /// `node@<machine>`, or a carry is kept and told but never taken.
+    #[arg(long, requires = "eases")]
+    eases_carry: bool,
+    /// A worker `--eases` may carry to, by its name, once for each: a
+    /// worker's word that it takes carries is only its own, so one not
+    /// named here takes none from this node. The person's own machines
+    /// need no naming; unnamed, no worker takes a carry from it.
+    #[arg(long, value_name = "MACHINE", requires = "eases")]
+    eases_onto: Vec<String>,
+    /// Ask the harness to park the sessions `--eases` chooses to put to
+    /// sleep, each by a file named for it in this folder, the harness's
+    /// own, which parks one only once it is idle and its own rule holds;
+    /// each is taken back once the machine has been clear of its memory
+    /// limit for five minutes, and all of them as the node starts.
+    #[arg(long, requires = "eases")]
+    eases_sleep: Option<PathBuf>,
+}
+
+impl EasesAsked {
+    /// How the node eases its machine, kept under `state`, if it eases at
+    /// all.
+    fn given(self, state: &Path) -> Option<Eases> {
+        self.eases.then(|| Eases {
+            folder: state.join("eases"),
+            every: carry::easing::EVERY,
+            carries: self.eases_carry,
+            sleeps: self.eases_sleep,
+            onto: self.eases_onto.into_iter().collect(),
+        })
+    }
 }
 
 /// Runs this machine's node on `socket`, as `node` says, until it is asked
@@ -2232,7 +2247,7 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
         placements: Some(mycelium::placements::Log::at(state.join("placements"))),
         health: node.health_socket,
         scratch,
-        eases: eases_given(node.eases, node.eases_carry, node.eases_sleep, &state),
+        eases: node.easing.given(&state),
         settles: Some(settles_kept(&state, &membership.name)),
         lends_from: node.lends_from,
         lend: node.lend,
@@ -3787,6 +3802,7 @@ mod tests {
     use clap::{CommandFactory as _, Parser as _};
 
     use std::io;
+    use std::path::Path;
 
     use mycelium::wire::Request;
 
@@ -4120,6 +4136,26 @@ mod tests {
         assert!(
             node(&["--eases", "--eases-sleep", "/run/park"]).is_ok(),
             "one that eases can"
+        );
+        assert_eq!(
+            node(&["--eases-onto", "tern"])
+                .err()
+                .map(|error| error.kind()),
+            Some(clap::error::ErrorKind::MissingRequiredArgument),
+            "nor name workers to carry to"
+        );
+        let named = node(&["--eases", "--eases-onto", "tern", "--eases-onto", "osprey"]);
+        let Ok(Some(Action::Node(named))) = named.map(|asked| asked.action) else {
+            panic!("one that eases names its workers");
+        };
+        let onto = named
+            .easing
+            .given(Path::new("/state"))
+            .map(|eases| eases.onto);
+        assert_eq!(
+            onto,
+            Some(["osprey".to_owned(), "tern".to_owned()].into()),
+            "each it names"
         );
     }
 
