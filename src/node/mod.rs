@@ -5624,13 +5624,19 @@ impl<S: Store> Shared<S> {
     /// here, carried away or waiting for its turn is coming back by
     /// itself, and a second pi on it would write over the first, so each
     /// is refused too, with why. A park whose holder has gone is not: it
-    /// has nothing left to wake it, whatever its marker says.
+    /// has nothing left to wake it, whatever its marker says. Those are
+    /// judged first, as one held or carried here before its pi writes its
+    /// presence never ended here yet is coming back, so that only a
+    /// session nothing here brings back is said never to have ended here,
+    /// which an asker past room reads as nothing begun and no log here
+    /// ([`began_nothing_here`]).
     fn reopened_here(
         &self,
         session: &str,
         sessions: &[Session],
         seen: &Seen<'_>,
     ) -> Result<(), String> {
+        self.unclaimed_here(session, sessions, seen)?;
         if !sessions
             .iter()
             .any(|one| one.id == session && one.machine == self.machine)
@@ -5641,7 +5647,7 @@ impl<S: Store> Shared<S> {
                 self.machine
             ));
         }
-        self.unclaimed_here(session, sessions, seen)
+        Ok(())
     }
 
     /// Refuses a start of `session` here where something brings it back
@@ -20975,6 +20981,21 @@ esac
                 "a session coming back by itself gets no second pi"
             );
         }
+        // Round council-20261126T081422687-000004: one held here before
+        // its pi writes its presence, as a carry or a fresh start is,
+        // never ended here, yet is refused as held, never as having no
+        // log here, which an asker past room would start elsewhere.
+        let fresh = json!({"id": "h-new", "command": ["pi", "--session", "s-new"],
+                           "folder": "/", "holder": std::process::id(), "pid": 0,
+                           "parked": false, "since": "2026-11-19T06:00:00Z", "windows": []});
+        fs::write(holders.join("h-new.json"), fresh.to_string()).expect("its record");
+        fs::write(hold::socket(&holders, "h-new"), b"").expect("its socket stands");
+        assert_eq!(
+            ask(socket.clone(), relayed("s-new")).await,
+            Err("s-new is held on skiff already, so it isn't reopened".to_owned()),
+            "held here with no presence yet"
+        );
+        fs::remove_file(holders.join("h-new.json")).expect("its holder ends");
         // Round council-20261125T155712513-000001: a holder naming a word
         // that begins it, which no session here has as its id, may have
         // opened it by that word, or may yet, so holds it too.
