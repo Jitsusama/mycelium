@@ -941,6 +941,17 @@ fn a_letter_a_ligature_joins_still_takes_its_own_cell() {
         ("\u{10C32}\u{200D}\u{10C03}", 2, "Old Turkic's ligature"),
         ("\u{1A15}\u{1A17}\u{200D}\u{1A10}", 2, "Buginese's ligature"),
         ("\u{2D4F}\u{200D}\u{2D3E}", 2, "Tifinagh's ligature"),
+        (
+            "👩\u{200D}\u{5D0}\u{200D}\u{5DC}",
+            4,
+            "a ligature joined on after an emoji",
+        ),
+        ("•\u{200D}\u{5D0}\u{200D}\u{5DC}", 3, "or after a sign"),
+        (
+            "\u{200D}\u{5D0}\u{200D}\u{5DC}",
+            2,
+            "or after a joiner alone",
+        ),
     ] {
         assert_eq!(drawn_width(text), wide, "{what}: {text:?}");
     }
@@ -1251,17 +1262,17 @@ fn a_for_is_cleaned_by_what_protocol_lists() {
 
 #[test]
 fn a_cut_keeps_the_longest_start_that_fits_as_measured_whole() {
-    // Measured by Unicode's widths directly, a start at a time, as the
-    // cut measured before it settled what it had walked.
+    // Measured whole by the cell count, a start at a time, as the cut
+    // measured before it settled what it had walked.
     fn longest(text: &str, room: usize) -> &str {
         let mut kept = "";
         for (at, each) in text.char_indices() {
             let start = &text[..at + each.len_utf8()];
-            if <str as unicode_width::UnicodeWidthStr>::width(start) <= room {
+            if drawn_width(start) <= room {
                 kept = start;
             }
         }
-        kept.trim_end_matches('\u{200D}')
+        kept.trim_end_matches(['\u{200D}', '\u{17D2}'])
     }
     let mut wrong = Vec::new();
     for text in [
@@ -1289,7 +1300,7 @@ fn a_cut_keeps_the_longest_start_that_fits_as_measured_whole() {
     let joined = "👩\u{200D}".repeat(40);
     for room in 0..16 {
         let cut = within(&joined, room);
-        if <str as unicode_width::UnicodeWidthStr>::width(cut) > room {
+        if drawn_width(cut) > room {
             wrong.push(format!("a long joined run to {room} passed it"));
         }
         if room >= 2 && cut.is_empty() {

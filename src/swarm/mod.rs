@@ -370,28 +370,33 @@ pub(crate) fn drawn_width(text: &str) -> usize {
 /// narrowing letter starts a cluster of its own here and counts.
 fn clusters(text: &str) -> usize {
     let (mut count, mut from) = (0, 0);
-    let (mut first, mut before): (Option<char>, Option<char>) = (None, None);
+    let (mut drawn, mut before): (Option<char>, Option<char>) = (None, None);
     for (at, each) in text.char_indices() {
-        if first.is_some() && starts_a_cluster(first, before, each) {
+        if at > 0 && starts_a_cluster(drawn, before, each) {
             count += text[from..at].width();
             from = at;
-            first = None;
         }
-        first = first.or(Some(each));
+        if !draws_nothing(each) {
+            drawn = Some(each);
+        }
         before = Some(each);
     }
     count + text[from..].width()
 }
 
-/// Whether `each` starts a cluster of its own, after `before` in one that
-/// `first` starts: it takes a cell, and no emoji rule joins it.
-fn starts_a_cluster(first: Option<char>, before: Option<char>, each: char) -> bool {
+/// Whether `each` starts a cluster of its own, after `before`, where
+/// `drawn` is the last character before it that takes a cell: it takes a
+/// cell, and no emoji rule joins it.
+fn starts_a_cluster(drawn: Option<char>, before: Option<char>, each: char) -> bool {
     let flag = |each: char| matches!(each, '\u{1F1E6}'..='\u{1F1FF}');
     let joins = match before {
         // A carriage return and its line feed are one.
         Some('\r') => true,
-        // Only emoji join through a joiner; a letter's ligature doesn't.
-        Some('\u{200D}') => first.is_some_and(|first| !first.is_alphabetic()),
+        // Only emoji join through a joiner; a letter's ligature doesn't,
+        // on either side of it, whatever the cluster began with.
+        Some('\u{200D}') => {
+            drawn.is_some_and(|drawn| !drawn.is_alphabetic()) && !each.is_alphabetic()
+        }
         _ => matches!(each, '\u{1F3FB}'..='\u{1F3FF}') || (flag(each) && before.is_some_and(flag)),
     };
     !joins && !draws_nothing(each)
