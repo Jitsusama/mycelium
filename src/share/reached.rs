@@ -7,6 +7,10 @@
 //! quest's ledger ([`super::ledger::Ledger::theirs`]). What this end holds
 //! is read as its link's next look will say it, from a copy of its ledger
 //! that is never kept, so the look still finds and says each change.
+//!
+//! Long because its tests, nearly two thirds of it, walk each way a link
+//! can be slow, lost or behind against the one judgement they prove, and
+//! read best beside it.
 
 use std::collections::BTreeMap;
 use std::io;
