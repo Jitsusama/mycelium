@@ -2110,8 +2110,9 @@ limits, it ranks after every other heard machine with room and before
 those over a limit, since a machine over is swamped while one within
 its ceiling is light by the ceiling's own measure; within its ceiling
 but over a limit of its queue's, after those over too and before those
-saturated; past its ceiling, it carries `kept-lively`, `prefer_not`, ranks over,
-and goes after every other heard machine. Unheard, it ranks with the
+saturated; saturated, or past its ceiling, where it carries
+`kept-lively`, `prefer_not`, and ranks over, it goes after every other
+heard machine. Unheard, it ranks with the
 unheard. It refuses no work, so where nothing else takes a start it
 still does, and a start placed on it heard is past room, as the cloud's
 paragraph below says, so the person's start goes to a cloud machine
@@ -2408,7 +2409,8 @@ not who may use it; the person's own go there only where it is booked
 for the person or for no asker, never into a worker home an agent's
 make wrote. Work that names none of the workers may go to it though it
 costs money, ranked by its room as any machine is, so before a machine
-kept lively. The node marks each one `"held_for": "agents"` as it
+kept lively while it has room, and after one within its ceiling once
+it is over a limit. The node marks each one `"held_for": "agents"` as it
 places, from its own file, and every other as booked, never from what
 the machine says, and a link keeps nothing a machine says of it. A
 session the person granted is booked as the person but isn't one: its
