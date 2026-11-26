@@ -329,8 +329,9 @@ pub trait Hands {
     /// When it may not, with why.
     fn shareable(&mut self, quest: &str) -> Result<(), String>;
     /// Shares the quest, with its handover, for the machine `to`: given
-    /// to it alone where it is a worker that takes carries, once no file
-    /// in the handover names a secret.
+    /// to it where it is a worker that takes carries, once no file in the
+    /// handover names a secret, or one of the person's own, and only
+    /// offered where the realm doesn't list it.
     ///
     /// # Errors
     ///
@@ -1695,7 +1696,10 @@ mod tests {
         }
         fn share(&mut self, quest: &str, to: &str) -> Result<(), String> {
             self.shared.push(quest.to_owned());
-            if self.lent(to)? == Lent::TakesCarries {
+            // As the realm does: a machine it lists as a worker taking
+            // carries, or as one of the person's own, is given the quest;
+            // one it doesn't list is only offered it.
+            if matches!(self.lent.get(to), Some(Lent::TakesCarries | Lent::Not)) {
                 self.given.push(to.to_owned());
             }
             Ok(())
@@ -2501,7 +2505,7 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_that_takes_carries_is_given_the_quest_as_it_is_shared() {
+    fn a_listed_machine_is_given_the_quest_as_it_is_shared_and_an_unlisted_offered() {
         let mut worker = Realm {
             lent: [("tern".to_owned(), Lent::TakesCarries)].into(),
             ..realm()
@@ -2509,12 +2513,22 @@ mod tests {
         let (done, _) = carried(&mut worker, "tern");
         done.expect("carried");
         assert_eq!(worker.shared, [QUEST], "shared once");
-        assert_eq!(worker.given, ["tern"], "and given to the worker alone");
-        let mut own = realm();
+        assert_eq!(worker.given, ["tern"], "and given to the worker");
+        let mut own = Realm {
+            lent: [("tern".to_owned(), Lent::Not)].into(),
+            ..realm()
+        };
         carried(&mut own, "tern").0.expect("carried");
+        assert_eq!(
+            own.given,
+            ["tern"],
+            "one of the person's own is given it too, as its handover is sent only so"
+        );
+        let mut unlisted = realm();
+        carried(&mut unlisted, "tern").0.expect("carried");
         assert!(
-            own.given.is_empty(),
-            "one of the person's own is given nothing"
+            unlisted.given.is_empty(),
+            "one the realm doesn't list is offered it, never given it"
         );
     }
 

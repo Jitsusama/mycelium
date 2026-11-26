@@ -118,6 +118,40 @@ impl Through {
             .and_then(|mut client| client.ask(request))
             .map_err(|error| format!("the node didn't answer: {error}"))?
     }
+
+    /// What `to` is, as the realm lists it, or nothing when the realm
+    /// doesn't list it among the machines beyond this one.
+    fn listed(&self, to: &str) -> Result<Option<Lent>, String> {
+        match self.ask(&Request::Machines)? {
+            Response::Machines(machines) => Ok(machines
+                .iter()
+                .skip(1)
+                .find(|one| one.name == to)
+                .map(Lent::of)),
+            other => Err(format!("the node answered {other:?} for its machines")),
+        }
+    }
+
+    /// Gives `quest` to `to`, a worker taking carries, once its whole
+    /// handover, every machine's, is told free of secrets, since a worker
+    /// is served all of it.
+    fn give_worker(&self, quest: &str, to: &str, scratch: &[String]) -> Result<(), String> {
+        let handover = self.shares.scratch.join(quest).join("handover");
+        let found = secrets::first_in(&handover).map_err(|error| {
+            format!("{quest}'s handover can't be told free of secrets: {error}")
+        })?;
+        if let Some(secret) = found {
+            return Err(format!(
+                "{} names a secret, so {quest} isn't given to {to}, a worker",
+                secret.display()
+            ));
+        }
+        self.shares
+            .offer_to(to, quest, scratch)
+            .map_err(|error| error.to_string())?;
+        eprintln!("mycelium: {quest} given to {to}, a worker, for a carry");
+        Ok(())
+    }
 }
 
 impl Hands for Through {
@@ -132,14 +166,7 @@ impl Hands for Through {
     }
 
     fn lent(&mut self, to: &str) -> Result<Lent, String> {
-        match self.ask(&Request::Machines)? {
-            Response::Machines(machines) => Ok(machines
-                .iter()
-                .skip(1)
-                .find(|one| one.name == to)
-                .map_or(Lent::Not, Lent::of)),
-            other => Err(format!("the node answered {other:?} for its machines")),
-        }
+        Ok(self.listed(to)?.unwrap_or(Lent::Not))
     }
 
     fn sessions(&mut self) -> Result<Vec<Session>, String> {
@@ -238,28 +265,18 @@ impl Hands for Through {
     fn share(&mut self, quest: &str, to: &str) -> Result<(), String> {
         debug_assert_eq!(quest, self.quest, "a carry shares its own quest");
         let scratch = ["handover".to_owned()];
-        let shared = match self.lent(to)? {
-            Lent::Not => self.shares.offer(quest, &scratch),
-            Lent::TakesNone => return Err(ground::takes_none(to)),
-            Lent::TakesCarries => {
-                // The whole handover, every machine's, since a worker is
-                // served all of it.
-                let handover = self.shares.scratch.join(quest).join("handover");
-                let found = secrets::first_in(&handover).map_err(|error| {
-                    format!("{quest}'s handover can't be told free of secrets: {error}")
-                })?;
-                if let Some(secret) = found {
-                    return Err(format!(
-                        "{} names a secret, so {quest} isn't given to {to}, a worker",
-                        secret.display()
-                    ));
-                }
-                let given = self.shares.offer_to(to, quest, &scratch);
-                if given.is_ok() {
-                    eprintln!("mycelium: {quest} given to {to}, a worker, for a carry");
-                }
-                given
-            }
+        let shared = match self.listed(to)? {
+            // A machine the realm doesn't list is only shared with, never
+            // given: a gift is what lets a worker in, and what this is
+            // can't be told, so no gift goes out unscanned.
+            None => self.shares.offer(quest, &scratch),
+            // One of the person's own is given it as well, since a
+            // machine made for this one is sent only the scratch of
+            // quests given to it, and the handover is what a carried
+            // session arrives to.
+            Some(Lent::Not) => self.shares.offer_to(to, quest, &scratch),
+            Some(Lent::TakesNone) => return Err(ground::takes_none(to)),
+            Some(Lent::TakesCarries) => return self.give_worker(quest, to, &scratch),
         };
         shared.map(|_| ()).map_err(|error| error.to_string())
     }
@@ -1073,8 +1090,17 @@ mod tests {
         }));
         hands.share(quest, "osprey").expect("shared");
         assert!(
-            !places.given("osprey", quest),
-            "one of the person's own is given nothing"
+            places.given("osprey", quest),
+            "one of the person's own is given it, as a made one is sent only what it was given"
+        );
+        hands.share(quest, "kestrel").expect("shared");
+        assert!(
+            !places.given("kestrel", quest),
+            "a machine the realm doesn't list is given nothing, as it may be a worker"
+        );
+        assert!(
+            places.ledgers().shares(quest),
+            "but the quest is still shared"
         );
         assert_eq!(
             hands.share(quest, "wren"),

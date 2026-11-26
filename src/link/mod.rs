@@ -305,8 +305,25 @@ pub enum Ending {
 /// declare nothing, so it is never sent a quest above, and this node logs
 /// so unless the link is a worker's, which is never sent one whatever its
 /// node.
-fn exchange_with(places: Places, here: &Hello, there: &Hello, worker: bool) -> Exchange {
+///
+/// A machine this end's way in `releases` is reached through a provider,
+/// made for this machine or lent as a worker, over a link of a few
+/// kilobytes a second shared with the person's own work, so it is sent
+/// only the scratch of quests given to it
+/// ([`Exchange::scratch_where_given`]). A worker was served only those
+/// already.
+fn exchange_with(
+    places: Places,
+    here: &Hello,
+    there: &Hello,
+    (worker, releases): (bool, bool),
+) -> Exchange {
     let exchange = Exchange::new(places, here.machine.clone(), there.machine.clone());
+    let exchange = if releases {
+        exchange.scratch_where_given()
+    } else {
+        exchange
+    };
     let mut exchange = if worker {
         exchange.for_worker()
     } else {
@@ -414,7 +431,7 @@ pub async fn run(
         runs,
         next_ask: 0,
         exchange: shares.map(|places| {
-            let exchange = exchange_with(places, &membership.hello(), &other, worker);
+            let exchange = exchange_with(places, &membership.hello(), &other, (worker, releases));
             if worker {
                 exchange.gating(gates.clone())
             } else {
@@ -3109,6 +3126,28 @@ mod tests {
             worker: false,
             hello_within: Some(dial::HELLO_WITHIN),
             named: None,
+        }
+    }
+
+    // Our council on #481: what a link's way in releases is sent only
+    // the scratch given to it, and any other link all it shares.
+    #[test]
+    fn a_made_machines_link_sends_only_the_scratch_given_to_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let places = || Places {
+            quests: dir.path().join("quests"),
+            scratch: dir.path().join("scratch"),
+            home: dir.path().to_owned(),
+            state: dir.path().join("state"),
+        };
+        let (skiff, kestrel) = (realm("skiff").hello(), realm("kestrel").hello());
+        for (worker, releases) in [(false, false), (false, true), (true, false), (true, true)] {
+            assert_eq!(
+                exchange_with(places(), &skiff, &kestrel, (worker, releases))
+                    .sends_only_given_scratch(),
+                releases,
+                "a link whose way in releases (worker {worker}) sends only what was given"
+            );
         }
     }
 

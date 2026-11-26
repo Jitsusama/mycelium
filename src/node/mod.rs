@@ -1653,8 +1653,10 @@ async fn keep_made(
             Linked::HandedOver => (None, false),
             Linked::Gone(said) => (Some(format!("its provider says it is gone ({said})")), true),
         },
+        // Nothing started on it, or it couldn't be made free of what a
+        // machine of its name was given before; the make says which.
         () = unwanted.notified() => {
-            (Some("nothing started on it once it was made".to_owned()), false)
+            (Some("it was let go unused once it was made".to_owned()), false)
         }
         () = tokio::time::sleep(Duration::try_from(left).unwrap_or_default()) => {
             (Some("its time was up".to_owned()), false)
@@ -8380,6 +8382,13 @@ impl<S: Store> Shared<S> {
                 ),
                 None => refused,
             })?;
+        // A provider may give a name again, so quests given to a machine
+        // once called this are taken back before it links; where they
+        // can't be, it is let go rather than served them.
+        let ungiven = self
+            .shares
+            .as_ref()
+            .map_or(Ok(()), |shares| shares.ungive_all(&made.machine));
         if let Err(error) = self.book.made(&made) {
             eprintln!(
                 "{} was made, but the book doesn't say so: {error}",
@@ -8389,6 +8398,14 @@ impl<S: Store> Shared<S> {
         let unwanted = Arc::new(Notify::new());
         // The loop runs for as long as the node answers anything.
         let _ = self.to_dial.send((made.clone(), unwanted.clone()));
+        if let Err(error) = ungiven {
+            unwanted.notify_one();
+            return Err(format!(
+                "{} was made and let go: quests given to a machine of its name \
+                 before couldn't be taken back: {error}",
+                made.machine
+            ));
+        }
         let started = self.start_once_linked(asked, &made, fence).await;
         let used = || {
             let inner = self.lock();
@@ -25721,7 +25738,7 @@ esac
         );
         let kept = fs::read_to_string(dir.path().join("made.jsonl")).expect("the book reads");
         assert!(
-            kept.contains("nothing started on it once it was made, but it wasn't released")
+            kept.contains("it was let go unused once it was made, but it wasn't released")
                 && kept.contains("so it ends at its time"),
             "the book says why it was let go, and that its release failed: {kept}"
         );

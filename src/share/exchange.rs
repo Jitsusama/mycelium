@@ -30,6 +30,7 @@ use super::ledger::{
 use super::pieces::{PIECE, Pieces, Staged};
 use super::settle::{Merge, Settled, State, settle};
 use super::tree::{Place, Quest, Shared, content, may_name};
+use super::version::Version;
 use super::watch::Watch;
 use super::{journey, log};
 use crate::gate::{self, Gates, Refused};
@@ -177,6 +178,26 @@ impl Places {
         is_quest(id) && self.given_to(worker).join(id).exists()
     }
 
+    /// Forgets every quest given to `machine`, so a machine made again
+    /// under its name, which may be another's to administer, is given
+    /// none of what the one before it was.
+    ///
+    /// A name that can't be a machine's holds nothing, since [`Self::give`]
+    /// refuses it, so nothing outside `given` is removed for it.
+    ///
+    /// # Errors
+    ///
+    /// When the marks can't be removed.
+    pub fn ungive_all(&self, machine: &str) -> io::Result<()> {
+        if !may_be_machine(machine) {
+            return Ok(());
+        }
+        match fs::remove_dir_all(self.given_to(machine)) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        }
+    }
+
     /// Where the quests given to `worker` are marked, one empty file each.
     fn given_to(&self, worker: &str) -> PathBuf {
         self.state.join("given").join(worker)
@@ -278,7 +299,7 @@ impl Places {
                 error.kind(),
                 format!(
                     "{quest} is shared with this machine's links, but it couldn't be given \
-                     to {to}, so a worker there isn't served it: {error}"
+                     to {to}, so its scratch isn't sent there: {error}"
                 ),
             )
         })?;
@@ -512,6 +533,12 @@ pub struct Exchange {
     /// Whether the other end is a worker, which is served only the quests
     /// it was given and has nothing it says of a quest taken.
     worker: bool,
+    /// Whether the other end is sent only the scratch of the quests given
+    /// to it ([`Self::scratch_where_given`]).
+    scratch_given_only: bool,
+    /// The quests whose scratch the last look kept from the other end,
+    /// so one given since is said anew, its scratch with it.
+    scratch_kept: BTreeSet<String>,
     /// How the quests shared only for those under them stand with the
     /// other end: withheld, as from a worker, lifted but not yet taken up,
     /// or carried ([`Self::withhold_above`]).
@@ -531,6 +558,11 @@ pub struct Exchange {
     /// The gates' files asked of the worker and not yet taken, by quest
     /// and file.
     gate_wanted: BTreeSet<(String, String)>,
+    /// The version this end held, by quest and file, as it last took the
+    /// other end's copy of scratch kept from it in place: while this
+    /// end's entry is still that, nothing was written here since, so
+    /// their next copy simply takes its place ([`Self::theirs_in_place`]).
+    in_place: BTreeMap<(String, String), Version>,
 }
 
 /// A shared quest's README, as its ledger keys it.
@@ -592,6 +624,18 @@ struct Theirs {
     scratch: BTreeMap<String, BTreeSet<String>>,
     /// The clones in them, by quest.
     clones: BTreeMap<String, BTreeMap<String, Clone>>,
+}
+
+/// What this end sends of a quest at one look ([`Exchange::sending`]).
+struct Sending {
+    /// What it says and sends of the quest.
+    carried: Quest,
+    /// Whether the quest's scratch is kept from the other end.
+    kept: bool,
+    /// Whether its scratch was kept at the last look and is given since.
+    given: bool,
+    /// The folders of its scratch to walk.
+    walk: BTreeSet<String>,
 }
 
 /// What was last said of a shared quest's scratch.
@@ -662,12 +706,15 @@ impl Exchange {
             sweep_again: BTreeMap::new(),
             above_again: true,
             worker: false,
+            scratch_given_only: false,
+            scratch_kept: BTreeSet::new(),
             above: Above::Carried,
             held_back: BTreeMap::new(),
             whole: BTreeSet::new(),
             passed_over: BTreeSet::new(),
             gates: None,
             gate_wanted: BTreeSet::new(),
+            in_place: BTreeMap::new(),
         }
     }
 
@@ -749,6 +796,19 @@ impl Exchange {
         }
     }
 
+    /// What this end says and sends of quest `id`: what this link carries
+    /// of it ([`Self::quest`]), less its scratch where that is kept from
+    /// the other end ([`Self::withholds_scratch`]). What the other end
+    /// says is still taken whole, so work done there comes back.
+    fn sent(&self, id: &str, ledger: &Ledger) -> Quest {
+        let quest = self.quest(id, ledger);
+        if self.withholds_scratch(id) {
+            quest.without_scratch()
+        } else {
+            quest
+        }
+    }
+
     /// Where this machine keeps the quests it shares.
     #[must_use]
     pub fn places(&self) -> &Places {
@@ -767,6 +827,35 @@ impl Exchange {
             above: Above::Withheld,
             ..self
         }
+    }
+
+    /// This end's talk with a machine reached through a provider, which is
+    /// sent and served the scratch of only the quests given to it
+    /// ([`Places::give`]), and the records of all; what it says of any
+    /// quest is still taken. Such a machine is reached over a link of a
+    /// few kilobytes a second, shared with the person's own work, and on
+    /// 2026-11-25 a new one asked for every shared quest's handovers,
+    /// 1.8 GB, keeping its own sessions' asks and the person's calls
+    /// behind them for hours.
+    #[must_use]
+    pub fn scratch_where_given(self) -> Self {
+        Self {
+            scratch_given_only: true,
+            ..self
+        }
+    }
+
+    /// Whether quest `id`'s scratch is kept from the other end, as a
+    /// machine made for this one is kept from a quest not given to it.
+    /// Whether this exchange sends the other end only the scratch of
+    /// quests given to it, as [`Self::scratch_where_given`] makes it.
+    #[must_use]
+    pub const fn sends_only_given_scratch(&self) -> bool {
+        self.scratch_given_only
+    }
+
+    fn withholds_scratch(&self, id: &str) -> bool {
+        self.scratch_given_only && !self.places.given(&self.other, id)
     }
 
     /// Whether quest `id` was given to the other end, a worker, so a gate
@@ -996,6 +1085,25 @@ impl Exchange {
             other = self.other,
             here = self.machine,
         );
+        self.tell_quest(id, text);
+    }
+
+    /// Tells the sessions on quest `id` that its file `key` was written on
+    /// both machines apart, the other's taking its place, and where this
+    /// end's own now is.
+    fn put_aside(&mut self, id: &str, key: &str, aside: &str) {
+        let text = format!(
+            "{key} of {id} was written on {other} and {here} apart. {other}'s took its place, \
+             and {here}'s own is beside it as {aside}: read both and keep what each says.",
+            other = self.other,
+            here = self.machine,
+        );
+        self.tell_quest(id, text);
+    }
+
+    /// Tells the sessions on quest `id` `text` as a finding, or the
+    /// journal where their group can't be read.
+    fn tell_quest(&mut self, id: &str, text: String) {
         match self.places.group(id) {
             Some(group) => self.findings.push(Draft {
                 from: format!("mycelium@{}", self.machine.replace('-', "_")),
@@ -1090,6 +1198,14 @@ impl Exchange {
         self.machine < self.other
     }
 
+    /// Whether this end settles `shared` of quest `id` where both ends
+    /// wrote it apart: as [`Self::settles`] says, but always for scratch
+    /// kept from the other end, which never hears this end's state of it
+    /// and so could never settle it itself.
+    fn settles_file(&self, id: &str, shared: &Shared) -> bool {
+        self.settles() || (shared.place == Place::Scratch && self.withholds_scratch(id))
+    }
+
     /// Looks at every shared quest for changes, saying which quests are
     /// shared if that changed, everything held of a quest newly shared,
     /// and what changed of the rest, then asks for the next of each
@@ -1117,6 +1233,71 @@ impl Exchange {
         }
     }
 
+    /// The folders of quest `id`'s scratch to walk: those heard to change,
+    /// or all of them once `given`, since scratch kept from the other end
+    /// went unwalked.
+    fn scratch_to_walk(
+        &mut self,
+        id: &str,
+        scratch: &BTreeSet<String>,
+        given: bool,
+    ) -> BTreeSet<String> {
+        let mut walk = self.watch.to_walk(id, scratch);
+        if given {
+            walk.extend(scratch.iter().cloned());
+        }
+        walk
+    }
+
+    /// The files of `ledger` to say: every one `carried` carries where
+    /// the quest is said `anew`, else those `changed`. A file this link no
+    /// longer carries, such as a parent's journey once its README alone
+    /// crosses, is left unsaid, as is a gate's withheld from a worker.
+    fn to_say(
+        &self,
+        ledger: &Ledger,
+        carried: &Quest,
+        anew: bool,
+        changed: &BTreeSet<String>,
+    ) -> BTreeMap<String, State> {
+        ledger
+            .states()
+            .into_iter()
+            .filter(|(key, _)| anew || changed.contains(key))
+            .filter(|(key, _)| shared_of(key).is_some_and(|shared| carried.carries(&shared)))
+            .filter(|(key, _)| !self.worker || !gate::withheld(key))
+            .collect()
+    }
+
+    /// What this end sends of quest `id` at this look, as [`Sending`]
+    /// says. Whether its scratch is kept is read once, so a give landing
+    /// during the look can't split it; one kept at the last look that
+    /// stood and not now is given since, so its scratch is walked whole
+    /// and said, not only what changes after. Kept scratch is neither
+    /// watched nor walked: a walk of its folders, with no scratch to find
+    /// their clones in, would drop them from the ledger every link of
+    /// this machine reads.
+    fn sending(&mut self, id: &str, ledger: &Ledger) -> Sending {
+        let kept = self.withholds_scratch(id);
+        let given = !kept && self.scratch_kept.contains(id);
+        let quest = self.quest(id, ledger);
+        if kept {
+            Sending {
+                carried: quest.without_scratch(),
+                kept,
+                given,
+                walk: BTreeSet::new(),
+            }
+        } else {
+            Sending {
+                carried: quest,
+                kept,
+                given,
+                walk: self.scratch_to_walk(id, &ledger.scratch, given),
+            }
+        }
+    }
+
     /// Looks at every shared quest as [`Self::look`] does, asking for no
     /// file in its turn.
     fn look_quests(&mut self) -> io::Result<Vec<Say>> {
@@ -1133,6 +1314,7 @@ impl Exchange {
             || quests.len() != looked.len()
             || quests.iter().any(|id| !looked.contains(id));
         let mut passed_over = BTreeSet::new();
+        let mut kept_now = BTreeSet::new();
         for id in quests {
             let ended = self.places.ended(&id);
             if ended && self.has_ended_there(&id) && self.swept(&id) {
@@ -1154,16 +1336,22 @@ impl Exchange {
             // now where it carried only its README, or the other way, is
             // walked and said whole. So is one said ended and live again:
             // the other end may have stopped sharing it meanwhile, and
-            // takes it up again only from what this Holds names.
-            let carried = self.quest(&id, &held.ledger);
+            // takes it up again only from what this Holds names, and one
+            // whose scratch is given since the last look.
+            let Sending {
+                carried,
+                kept,
+                given,
+                walk,
+            } = self.sending(&id, &held.ledger);
             let reopened = self.told.get(&id).is_some_and(|told| told.ended && !ended);
             let anew = !self.told.contains_key(&id)
                 || reopened
+                || given
                 || self.whole.contains(&id) == carried.readme_alone;
             if !carried.readme_alone {
                 whole.insert(id.clone());
             }
-            let walk = self.watch.to_walk(&id, &held.ledger.scratch);
             let record = self.watch.record_to_walk(&id) || anew;
             // A record waiting to move aside is none of the shared quest's,
             // so only its scratch is walked.
@@ -1189,28 +1377,17 @@ impl Exchange {
             }
             changed.extend(self.unsaid.remove(&id).unwrap_or_default());
             self.above_again |= changed.contains(README);
-            // A file this link no longer carries, such as a parent's
-            // journey once its README alone crosses, is left unsaid.
-            let files: BTreeMap<String, State> = held
-                .ledger
-                .states()
-                .into_iter()
-                .filter(|(key, _)| anew || changed.contains(key))
-                .filter(|(key, _)| shared_of(key).is_some_and(|shared| carried.carries(&shared)))
-                .filter(|(key, _)| !self.worker || !gate::withheld(key))
-                .collect();
+            let files = self.to_say(&held.ledger, &carried, anew, &changed);
             if !files.is_empty() || anew {
                 holds.push(Say::Holds {
                     quest: id.clone(),
                     files,
                 });
             }
-            // Of a quest whose README alone crosses, no scratch is named.
-            let (folders, clones) = if carried.readme_alone {
-                (BTreeSet::new(), BTreeMap::new())
-            } else {
-                (held.ledger.scratch.clone(), held.ledger.clones.clone())
-            };
+            let (folders, clones) = scratch_named(&held.ledger, carried.readme_alone || kept);
+            if kept {
+                kept_now.insert(id.clone());
+            }
             shares.insert(
                 id,
                 Told {
@@ -1231,6 +1408,9 @@ impl Exchange {
         self.told = shares;
         self.whole = whole;
         self.passed_over = passed_over;
+        // Kept as the look that stands found it, so a look that fails
+        // before a newly given quest is said finds it given again.
+        self.scratch_kept = kept_now;
         // What was kept back is let go only once the look that heard it
         // stands, so a look that fails hears it all again at the next.
         if let Some(wants) = replay {
@@ -1847,7 +2027,7 @@ impl Exchange {
                 .unwrap_or_default();
             match settle(&shared, &ours, &theirs) {
                 Settled::Keep => {}
-                Settled::Merge(_) | Settled::Beside if !self.settles() => {}
+                Settled::Merge(_) | Settled::Beside if !self.settles_file(id, &shared) => {}
                 _ if theirs.hash.is_none() => {
                     // A deletion needs nothing sent: it is taken here, and
                     // from a record waiting to move aside, which isn't the
@@ -1973,7 +2153,7 @@ impl Exchange {
             return Ok(Vec::new());
         }
         let mut held = self.places.ledgers().hold(id)?;
-        let quest = self.quest(id, &held.ledger);
+        let quest = self.sent(id, &held.ledger);
         let Some(shared) = shared_of(key).filter(|shared| quest.carries(shared)) else {
             return Ok(Vec::new());
         };
@@ -2134,6 +2314,59 @@ impl Exchange {
         }
     }
 
+    /// Settles `shared`, file `key` of quest `id` written apart, where its
+    /// scratch is kept from the other end: this end's copy, `ours`, is
+    /// kept aside under a name no earlier clash took, and theirs, `body`,
+    /// takes its place. Where this end holds just what it last took of
+    /// theirs in place, nothing was written here since, so nothing goes
+    /// aside. The entry held joins both versions, so this machine's other
+    /// links, whose ends heard this end's counts, see it as newer rather
+    /// than written apart. Scratch kept from them never crosses, so they
+    /// never hear those counts, and their next write reads as apart once
+    /// more: the version taken is kept for this link alone to know it
+    /// by.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each is a part of the one file being settled, as take_whole has them"
+    )]
+    fn theirs_in_place(
+        &mut self,
+        id: &str,
+        key: &str,
+        quest: &Quest,
+        shared: &Shared,
+        ours: &State,
+        theirs: &State,
+        body: &[u8],
+        mode: Option<u32>,
+    ) -> io::Result<Entry> {
+        let asked = (id.to_owned(), key.to_owned());
+        let unchanged = self.in_place.get(&asked) == Some(&ours.version);
+        let aside = if unchanged {
+            None
+        } else {
+            quest.keep_aside(shared, &self.machine)?
+        };
+        // The aside is a second name for this end's copy, still in place
+        // where theirs can't be written, so it goes again: a write that
+        // fails at each try never fills the names an aside may take.
+        let written = quest.write(shared, Some(body), mode).inspect_err(|_| {
+            if let Some(aside) = &aside {
+                quest.forget_aside(aside);
+            }
+        })?;
+        if let Some(aside) = aside {
+            self.put_aside(id, key, &aside.path);
+        }
+        let version = ours.version.joined(&theirs.version);
+        self.in_place.insert(asked, version.clone());
+        Ok(Entry {
+            hash: theirs.hash.clone(),
+            version,
+            seen: written.and_then(|written| lasting(written, clock())),
+        })
+    }
+
     /// Takes a whole file as [`Self::take_file`] does, asking for nothing.
     fn take_whole(
         &mut self,
@@ -2179,7 +2412,17 @@ impl Exchange {
         let mut says = Vec::new();
         let entry = match settle(&shared, &ours, theirs) {
             Settled::Keep => None,
-            Settled::Merge(_) | Settled::Beside if !self.settles() => None,
+            // Scratch kept from the other end, which never hears this
+            // end's copy, so keeping this end's in place would leave each
+            // later write of theirs settled apart again. This end's moves
+            // aside, theirs takes its place, and while nothing is written
+            // here since, their next write simply takes its place too.
+            Settled::Beside if shared.place == Place::Scratch && self.withholds_scratch(id) => body
+                .map(|body| {
+                    self.theirs_in_place(id, key, &quest, &shared, &ours, theirs, body, mode)
+                })
+                .transpose()?,
+            Settled::Merge(_) | Settled::Beside if !self.settles_file(id, &shared) => None,
             Settled::Take => {
                 let written = quest.write(&shared, body, mode)?;
                 if is_journey(&shared) {
@@ -2252,6 +2495,17 @@ impl Exchange {
             held.keep()?;
         }
         Ok(says)
+    }
+}
+
+/// The scratch folders and clones of `ledger` a look names to the other
+/// end: none where `unnamed`, as of a quest whose README alone crosses,
+/// or whose scratch is kept from the other end.
+fn scratch_named(ledger: &Ledger, unnamed: bool) -> (BTreeSet<String>, BTreeMap<String, Clone>) {
+    if unnamed {
+        (BTreeSet::new(), BTreeMap::new())
+    } else {
+        (ledger.scratch.clone(), ledger.clones.clone())
     }
 }
 
@@ -2578,7 +2832,7 @@ mod tests {
         let body = b"skiff's notes\n";
         let theirs = State {
             hash: Some(content(body).hash),
-            version: super::super::version::Version::default(),
+            version: Version::default(),
         };
         far.take_file(QUEST, "scratch/notes/plan.md", &theirs, Some(body), None)
             .expect("the note is taken");
@@ -2636,7 +2890,7 @@ mod tests {
         let body = b"# Shared\n";
         let theirs = State {
             hash: Some(content(body).hash),
-            version: super::super::version::Version::default(),
+            version: Version::default(),
         };
         far.take_file(QUEST, "record/README.md", &theirs, Some(body), None)
             .expect("the README is taken");
@@ -4276,6 +4530,279 @@ mod tests {
     }
 
     #[test]
+    fn a_made_machine_gets_the_scratch_of_only_the_quests_given_to_it() {
+        const GIVEN: &str = "QEST-20260102-GIVEN1";
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        let scratch = |machine: &Machine, id: &str| machine.places.scratch.join(id);
+        for id in [QUEST, GIVEN] {
+            shared(&skiff, id, "# Shared\n");
+            fs::create_dir_all(scratch(&skiff, id).join(HANDOVER)).expect("made");
+            fs::write(scratch(&skiff, id).join(HANDOVER).join("s.jsonl"), "{}\n").expect("written");
+            skiff
+                .places
+                .name_scratch(id, HANDOVER)
+                .expect("its handover named");
+        }
+        skiff.places.give("kestrel", GIVEN).expect("given");
+
+        let mut near = skiff.exchange(&kestrel).scratch_where_given();
+        let mut far = kestrel.exchange(&skiff);
+        talk(&mut near, &mut far);
+        let read =
+            |id: &str| fs::read_to_string(scratch(&kestrel, id).join(HANDOVER).join("s.jsonl"));
+        assert_eq!(
+            readme(&kestrel, QUEST).as_deref(),
+            Some("# Shared\n"),
+            "every record crosses"
+        );
+        assert!(
+            read(QUEST).is_err(),
+            "but none of a quest's scratch not given"
+        );
+        assert_eq!(
+            read(GIVEN).ok().as_deref(),
+            Some("{}\n"),
+            "and a given one's does"
+        );
+        assert!(
+            near.hear(Say::Want {
+                quest: QUEST.to_owned(),
+                file: format!("scratch/{HANDOVER}/s.jsonl"),
+                at: Some(0),
+            })
+            .expect("heard")
+            .is_empty(),
+            "nor is one asked for sent"
+        );
+
+        // What the made machine writes of a quest not given to it still
+        // comes back, so work done there isn't lost when it goes.
+        let its = scratch(&kestrel, QUEST).join(HANDOVER);
+        fs::create_dir_all(&its).expect("made");
+        fs::write(its.join("k.jsonl"), "kestrel's\n").expect("written");
+        kestrel
+            .places
+            .name_scratch(QUEST, HANDOVER)
+            .expect("its handover named");
+        let mut far = kestrel.exchange(&skiff);
+        talk(&mut near, &mut far);
+        assert_eq!(
+            fs::read_to_string(scratch(&skiff, QUEST).join(HANDOVER).join("k.jsonl"))
+                .ok()
+                .as_deref(),
+            Some("kestrel's\n"),
+            "what it writes of one not given comes back"
+        );
+
+        // A quest given while the link stands sends the scratch it held
+        // already, not only what changes after: even scratch the ledger
+        // every link shares already holds, as one to wren has it walked.
+        let wren = Machine::new("wren");
+        let (mut to_wren, mut from_wren) = (skiff.exchange(&wren), wren.exchange(&skiff));
+        talk(&mut to_wren, &mut from_wren);
+        assert_eq!(
+            fs::read_to_string(scratch(&wren, QUEST).join(HANDOVER).join("s.jsonl"))
+                .ok()
+                .as_deref(),
+            Some("{}\n"),
+            "a machine scratch isn't kept from has it walked"
+        );
+        talk(&mut near, &mut far);
+        assert!(read(QUEST).is_err(), "and still none crosses ungiven");
+        skiff.places.give("kestrel", QUEST).expect("given");
+        talk(&mut near, &mut far);
+        assert_eq!(
+            read(QUEST).ok().as_deref(),
+            Some("{}\n"),
+            "one given later crosses whole"
+        );
+    }
+
+    #[test]
+    fn a_made_machines_link_leaves_the_clones_of_a_quest_kept_from_it_in_the_ledger() {
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        let wren = Machine::new("wren");
+        let put = |path: &str, text: &str| {
+            let path = skiff.places.scratch.join(QUEST).join(path);
+            fs::create_dir_all(path.parent().expect("a file has a folder")).expect("made");
+            fs::write(path, text).expect("written");
+        };
+        skiff.write("README.md", "# Shared\n");
+        put(
+            "notes/ttc/.git/config",
+            "[remote \"origin\"]\n\turl = https://nowhere.invalid/ttc.git\n",
+        );
+        put("notes/ttc/.git/HEAD", "ref: refs/heads/main\n");
+        share(&skiff, QUEST);
+        skiff.places.name_scratch(QUEST, "notes").expect("named");
+        let clones = || {
+            skiff
+                .places
+                .ledgers()
+                .read(QUEST)
+                .expect("the ledger is read")
+                .clones
+        };
+        let mut own = skiff.exchange(&wren);
+        own.watch.hear_anything();
+        own.look().expect("it looks");
+        let found = clones();
+        assert!(
+            !found.is_empty(),
+            "a link to one's own machine finds the clone"
+        );
+
+        // The ledger is the machine's, so a made machine's link, which
+        // walks none of this quest's scratch, must leave it as it is.
+        let mut near = skiff.exchange(&kestrel).scratch_where_given();
+        let mut far = kestrel.exchange(&skiff);
+        talk(&mut near, &mut far);
+        assert_eq!(
+            clones(),
+            found,
+            "and a made machine's link drops none of it"
+        );
+        assert!(
+            far.cloning.making().is_empty(),
+            "nor is the made machine told to make it"
+        );
+    }
+
+    #[test]
+    fn a_file_both_ends_write_of_scratch_kept_from_a_made_machine_comes_back_whatever_its_name() {
+        // kestrel sorts before osprey, so by name kestrel would settle;
+        // it never hears osprey's file, so osprey must. skiff sorts
+        // before tern, so there the person's end settles by name too.
+        for (person, made) in [("osprey", "kestrel"), ("skiff", "tern")] {
+            kept_scratch_written_apart_settles_once(person, made);
+        }
+    }
+
+    fn kept_scratch_written_apart_settles_once(person: &'static str, made: &'static str) {
+        let osprey = Machine::new(person);
+        let kestrel = Machine::new(made);
+        let at = |machine: &Machine| machine.places.scratch.join(QUEST).join(HANDOVER);
+        shared(&osprey, QUEST, "# Shared\n");
+        let mut near = osprey.exchange(&kestrel).scratch_where_given();
+        let mut far = kestrel.exchange(&osprey);
+        talk(&mut near, &mut far);
+        for (machine, text) in [(&osprey, "osprey's\n"), (&kestrel, "kestrel's\n")] {
+            fs::create_dir_all(at(machine)).expect("made");
+            fs::write(at(machine).join("x.jsonl"), text).expect("written");
+            machine
+                .places
+                .name_scratch(QUEST, HANDOVER)
+                .expect("its handover named");
+        }
+        let mut far = kestrel.exchange(&osprey);
+        talk(&mut near, &mut far);
+        let held: Vec<String> = fs::read_dir(at(&osprey))
+            .expect("the handover is there")
+            .map(|entry| fs::read_to_string(entry.expect("an entry").path()).expect("read"))
+            .collect();
+        assert!(
+            held.iter().any(|text| text == "kestrel's\n"),
+            "what the made machine wrote comes back, in its place or beside it: {held:?}"
+        );
+        assert!(
+            held.iter().any(|text| text == "osprey's\n"),
+            "and the person's own is kept too: {held:?}"
+        );
+        let told = near.findings();
+        assert!(
+            told.iter().any(|finding| {
+                finding.text.contains("took its place")
+                    && finding.text.contains(&format!("x.jsonl.from-{person}"))
+            }),
+            "the quest's sessions are told where the person's own now is: {told:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(at(&kestrel).join("x.jsonl"))
+                .ok()
+                .as_deref(),
+            Some("kestrel's\n"),
+            "while none of the person's crosses to it"
+        );
+        assert_eq!(
+            far.waiting(),
+            0,
+            "and the made machine is left wanting nothing it will never be sent"
+        );
+        // The person's other machines heard the person's own write, so
+        // what this machine now holds must read to them as newer, never
+        // as written apart once more.
+        let ledger = osprey
+            .places
+            .ledgers()
+            .read(QUEST)
+            .expect("the ledger is read");
+        let (_, entry) = ledger
+            .files
+            .iter()
+            .find(|(key, _)| key.ends_with("x.jsonl"))
+            .expect("the file is held");
+        assert_eq!(
+            entry
+                .version
+                .against(&Version::default().changed_on(person)),
+            super::super::version::Standing::Newer,
+            "the person's own count is kept beside the made machine's: {:?}",
+            entry.version
+        );
+        // Settled once, it stays settled: the made machine's next write
+        // takes the file's place, with nothing more set beside it.
+        fs::write(at(&kestrel).join("x.jsonl"), "kestrel's again\n").expect("written");
+        talk(&mut near, &mut far);
+        assert_eq!(
+            fs::read_to_string(at(&osprey).join("x.jsonl")).expect("read"),
+            "kestrel's again\n",
+            "the made machine's next write is taken in its place"
+        );
+        assert_eq!(
+            fs::read_dir(at(&osprey)).expect("the handover").count(),
+            2,
+            "beside the person's own copy, and no other"
+        );
+        assert_eq!(far.waiting(), 0, "and it is still left wanting nothing");
+        // Written apart again, the person's second copy is kept beside
+        // the first, never over it.
+        fs::write(at(&osprey).join("x.jsonl"), "osprey's again\n").expect("written");
+        fs::write(at(&kestrel).join("x.jsonl"), "kestrel's third\n").expect("written");
+        talk(&mut near, &mut far);
+        let mut held: Vec<String> = fs::read_dir(at(&osprey))
+            .expect("the handover is there")
+            .map(|entry| fs::read_to_string(entry.expect("an entry").path()).expect("read"))
+            .collect();
+        held.sort();
+        assert_eq!(
+            held,
+            ["kestrel's third\n", "osprey's\n", "osprey's again\n"],
+            "each of the person's copies is kept, and the made machine's stands"
+        );
+    }
+
+    #[test]
+    fn what_was_given_to_a_machine_is_taken_back_whole_and_only_by_a_name() {
+        let skiff = Machine::new("skiff");
+        skiff.places.give("kestrel", QUEST).expect("given");
+        skiff.places.give("tern", QUEST).expect("given");
+        skiff.places.ungive_all("kestrel").expect("taken back");
+        assert!(!skiff.places.given("kestrel", QUEST), "its gifts are gone");
+        assert!(skiff.places.given("tern", QUEST), "and no other's");
+        skiff
+            .places
+            .ungive_all("kestrel")
+            .expect("nothing to take back is no error");
+        skiff
+            .places
+            .ungive_all("..")
+            .expect("a name nothing could be given holds nothing to take back");
+        assert!(skiff.places.given("tern", QUEST), "so tern's still stand");
+    }
+
+    #[test]
     fn only_the_scratch_folders_named_cross_and_the_far_ends_own_moves_aside() {
         let skiff = Machine::new("skiff");
         let kestrel = Machine::new("kestrel");
@@ -5320,7 +5847,7 @@ mod tests {
     fn holding(body: &[u8]) -> State {
         State {
             hash: Some(content(body).hash),
-            version: super::super::version::Version::default(),
+            version: Version::default(),
         }
     }
 
