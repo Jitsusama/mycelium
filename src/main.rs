@@ -2771,8 +2771,19 @@ fn look() -> mycelium::swarm::Look {
     mycelium::swarm::Look {
         width,
         colour: terminal && std::env::var_os("NO_COLOR").is_none(),
-        now: jiff::Zoned::now(),
+        now: known(jiff::Zoned::now()),
         shapes: mycelium::swarm::Shapes::read(),
+    }
+}
+
+/// `now`, or the same instant in UTC where the machine's zone wasn't
+/// found, as in a sandbox with no zone set: that zone acts as UTC but is
+/// named `Etc/Unknown`, which a time kept into a pipe would say.
+fn known(now: jiff::Zoned) -> jiff::Zoned {
+    if now.time_zone().is_unknown() {
+        now.with_time_zone(jiff::tz::TimeZone::UTC)
+    } else {
+        now
     }
 }
 
@@ -3844,7 +3855,7 @@ mod tests {
 
     use super::{
         Action, Command, HELP_WIDTH, SAID_MOST, SwarmAsked, Tree, held_through, in_place, kit,
-        need, orchestrates, processes_here, reader_left, said_text, swarm_asked, tree, width,
+        known, need, orchestrates, processes_here, reader_left, said_text, swarm_asked, tree, width,
         within, write_line,
     };
 
@@ -3913,6 +3924,24 @@ mod tests {
                 "COLUMNS {columns:?}, the terminal saying {said:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_machine_with_no_zone_found_says_its_times_in_utc() {
+        let at = jiff::Timestamp::UNIX_EPOCH;
+        let unknown = known(at.to_zoned(jiff::tz::TimeZone::unknown()));
+        assert_eq!(
+            unknown.strftime("%Z (%:z)").to_string(),
+            "UTC (+00:00)",
+            "a zone not found was named as it is"
+        );
+        assert_eq!(unknown.timestamp(), at, "the instant moved");
+        let zone = jiff::tz::TimeZone::fixed(jiff::tz::offset(-5));
+        assert_eq!(
+            known(at.to_zoned(zone.clone())).time_zone(),
+            &zone,
+            "a zone that was found was changed"
+        );
     }
 
     #[test]
