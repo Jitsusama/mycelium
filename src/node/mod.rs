@@ -126,6 +126,30 @@ const REDIAL_LOOKED_EVERY: Duration = Duration::from_secs(1);
 /// is judged to last, so a cloud machine leaving sooner doesn't take it.
 const PAST_ROOM_LASTS_LEAST: jiff::SignedDuration = jiff::SignedDuration::from_hours(1);
 
+/// How long, in milliseconds, a cloud machine that answered a start past
+/// every machine's room with a refusal that stands is passed over for
+/// the next, so one refusing every start fails one in that while, not
+/// each.
+const PAST_ROOM_PASSED_OVER: i64 = 10 * 60_000;
+
+/// What a node answers a start relayed to it that it would place on
+/// another machine, named after it; and the words a machine, named
+/// before each, answers one it doesn't take now, why after it, or can't
+/// begin: each said once, so an asker can tell it began nothing
+/// ([`began_nothing_here`]).
+const RELAYED_ELSEWHERE: &str = "a start relayed here starts here or nowhere, and it would go to ";
+const DECLINED_NOW: &str = " doesn't take it now: ";
+const LAUNCHER_REFUSED: &str = " can't start this held session ";
+const STARTS_NO_SESSIONS: &str = "'s node starts no sessions";
+const NO_HOME_TO_START: &str = " has no home to start it in";
+
+/// How a relayed start taken as an agent's is told it was refused
+/// ([`relay_refused`]): after the machine where no person works, or after
+/// it and up to how it was judged where one does, the refusal following.
+const UNATTENDED_RELAY: &str = ", so it takes a relayed start as an agent's";
+const ATTENDED_RELAY: &str = " takes a relayed start as an agent's where ";
+const REFUSED_IT: &str = ", and refused it: ";
+
 /// The longest a start placed here takes, from its ask to its answer,
 /// with what it waited for room and for a link and what it waits on
 /// another machine's answer, so it stays under the two minutes the
@@ -714,34 +738,99 @@ fn asked_of_the_cloud(asked: &Start) -> (Start, Work) {
     (cloud, judged)
 }
 
+/// What `machine` tells a start relayed to it and taken as an agent's
+/// when refused for `why`: that it was judged an agent's, since the
+/// person's may be among them and would otherwise read a refusal for a
+/// fence it never asked. Where no person works (`unattended`) that is
+/// said so, and elsewhere as it was `judged`. The person's carry is told
+/// [`Shared::carry_refused`] instead, since no orchestrator of theirs
+/// paces it.
+fn relay_refused(machine: &str, unattended: bool, judged: &str, why: &str) -> String {
+    if unattended {
+        format!("no person works on {machine}{UNATTENDED_RELAY}{REFUSED_IT}{why}")
+    } else {
+        format!("{machine}{ATTENDED_RELAY}{judged}{REFUSED_IT}{why}")
+    }
+}
+
+/// The refusal `said` wraps, where it is `machine`'s [`relay_refused`].
+/// Where a person works it is read after the first [`REFUSED_IT`], so a
+/// refusal quoting the person's own words reads as it was raised; a
+/// presence's claim it was judged by that says those words is a residue
+/// of matching words.
+fn relayed_why<'a>(said: &'a str, machine: &str) -> Option<&'a str> {
+    said.strip_prefix(&format!(
+        "no person works on {machine}{UNATTENDED_RELAY}{REFUSED_IT}"
+    ))
+    .or_else(|| {
+        let judged = said.strip_prefix(&format!("{machine}{ATTENDED_RELAY}"))?;
+        judged.split_once(REFUSED_IT).map(|(_, why)| why)
+    })
+}
+
+/// Whether `why`, `machine`'s own refusal of a start here naming
+/// `folder`, was raised before anything began: placed elsewhere or not
+/// taken now ([`Shared::here`]), or unable to begin it, lacking a
+/// launcher for its fence, a starter, a home, its folder or leave to
+/// begin at home ([`start::begins_strictly`]). Each is matched whole
+/// from its start, so words a refusal only quotes never match.
+fn began_nothing_here(why: &str, machine: &str, folder: Option<&Path>) -> bool {
+    let opens = [
+        RELAYED_ELSEWHERE.to_owned(),
+        format!("{machine}{DECLINED_NOW}"),
+        format!("{machine}{LAUNCHER_REFUSED}"),
+    ];
+    let whole = [
+        format!("{machine}{STARTS_NO_SESSIONS}"),
+        format!("{machine}{NO_HOME_TO_START}"),
+        format!("{machine}{}", start::AT_HOME_STRICTLY),
+    ];
+    opens.iter().any(|said| why.starts_with(said.as_str()))
+        || whole.iter().any(|said| why == said)
+        || folder.is_some_and(|folder| why == start::no_folder(machine, folder))
+}
+
+/// Whether `why`, a refusal of an agent's start, was raised as it was
+/// admitted, before anything began: the person's stop, whether it stands
+/// unknown, or the limits pacing agents.
+fn refused_as_admitted(why: &str) -> bool {
+    why.starts_with(starts::UNTOLD_FOR_AN_AGENT)
+        || why.ends_with(starts::STOPPED_FOR_AN_AGENT)
+        || why.ends_with(starts::PACED_FOR_AN_AGENT)
+}
+
 /// Whether `answered`, `machine`'s answer to a start past room naming
 /// `folder`, says nothing began there, so it may go where placement chose
 /// with nothing begun twice: no link took the ask, or the machine refused
-/// it before beginning it, alone or as the last words of a relay's
-/// refusal: it hasn't the folder ([`start::lacks_folder`]), its node
-/// doesn't take it now or would place it elsewhere, its strict fence
-/// won't begin it at home, or, taken as an agent's where no person works,
-/// agents are paced or stopped there. Any other answer, a lost one among
-/// them, stands.
+/// it before beginning it ([`began_nothing_here`], [`refused_as_admitted`]),
+/// alone or wrapped as a relay taken as an agent's ([`relayed_why`]). Any
+/// other answer, a lost one among them, stands.
 fn began_nowhere(answered: &Result<Reply, Unsent>, machine: &str, folder: Option<&Path>) -> bool {
-    let refused = |why: &str| {
-        let declined = [
-            format!("{machine} doesn't take it now: "),
-            "a start relayed here starts here or nowhere, and it would go to ".to_owned(),
-            format!("{machine} would begin this start at home, which its strict fence won't"),
-        ];
-        let paced = [starts::PACED_FOR_AN_AGENT, starts::STOPPED_FOR_AN_AGENT];
-        folder.is_some_and(|folder| start::lacks_folder(why, machine, folder))
-            || declined
-                .iter()
-                .any(|said| why.starts_with(said) || why.contains(&format!(": {said}")))
-            || paced.iter().any(|said| why.ends_with(said))
-    };
     match answered {
         Err(Unsent { sent, .. }) => !sent,
-        Ok(Err(why)) => refused(why),
+        Ok(Err(said)) => {
+            let why = relayed_why(said, machine).unwrap_or(said);
+            began_nothing_here(why, machine, folder) || refused_as_admitted(why)
+        }
         Ok(Ok(_)) => false,
     }
+}
+
+/// Whether a cloud machine whose refusal past room stood when `refused`
+/// is passed over past room `now`, within [`PAST_ROOM_PASSED_OVER`] of
+/// it, so one refusing every start fails one in that while, not each.
+fn passes_over(refused: Option<i64>, now: i64) -> bool {
+    refused.is_some_and(|refused| (refused..refused + PAST_ROOM_PASSED_OVER).contains(&now))
+}
+
+/// How long a start asked at `at` may wait, `now`, on a cloud machine
+/// past every machine's room, keeping [`RELAYED_ANSWERED_LEAST`] for
+/// asking where placement chose should it begin nothing there, so both
+/// stay within [`START_ANSWERED_ALL`]; none where that is all that is
+/// left.
+fn past_room_within(at: i64, now: i64) -> Option<Duration> {
+    let within = relayed_within(at, now).saturating_sub(RELAYED_ANSWERED_LEAST);
+    (!within.is_zero()).then_some(within)
 }
 
 /// What follows `reply`, the answer of `chosen`, the machine placement
@@ -2528,6 +2617,10 @@ struct Inner {
     /// The sessions a relayed start is reopening here now, and since
     /// when, kept only while the node runs (see [`Reopening`]).
     reopening: Reopening,
+    /// Each cloud machine whose refusal of a start past every machine's
+    /// room stood, by name, with when it answered, so it is passed over
+    /// past room a while ([`passes_over`]); kept only while the node runs.
+    passed_over: HashMap<String, i64>,
 }
 
 /// What a node sees bringing its ended sessions back, for judging a
@@ -6995,6 +7088,8 @@ impl<S: Store> Shared<S> {
                 lead.ends(at, &Err(refused.clone()));
             }
         })?;
+        // A start here refused before it began spent nothing here.
+        let unbegun_here = (matches!(whither, Whither::Here), asked.folder.clone());
         let answered = match (whither, again) {
             // Asked again where it was asked under that name, in the
             // fence its first ask was placed in ([`Self::placed_held`]).
@@ -7027,14 +7122,7 @@ impl<S: Store> Shared<S> {
         let joined = lead.map_or(0, |lead| {
             lead.ends(jiff::Timestamp::now().as_millisecond(), &started)
         });
-        self.starts.keep(
-            admitted,
-            started
-                .as_ref()
-                .map(|started| (started.machine.clone(), started.held.clone()))
-                .map_err(Clone::clone),
-            joined,
-        );
+        self.kept_ended(admitted, &started, unbegun_here, joined);
         if started.is_ok() {
             // Its session may be judged already, its presence written
             // before its holder answered, so it is judged again now its
@@ -7329,28 +7417,6 @@ impl<S: Store> Shared<S> {
         self.starts.admit(asked)
     }
 
-    /// What a start relayed here and taken as an agent's is told when
-    /// refused for `why`: that it was judged an agent's, since the
-    /// person's may be among them and would otherwise read a refusal for
-    /// a fence it never asked. Where no person works that is said so,
-    /// and elsewhere as it was `judged`. The person's carry is told
-    /// [`Self::carry_refused`] instead, since no orchestrator of theirs
-    /// paces it.
-    fn relay_refused(&self, unattended: bool, judged: &str, why: &str) -> String {
-        if unattended {
-            format!(
-                "no person works on {}, so it takes a relayed start as an agent's, and \
-                 refused it: {why}",
-                self.machine
-            )
-        } else {
-            format!(
-                "{} takes a relayed start as an agent's where {judged}, and refused it: {why}",
-                self.machine
-            )
-        }
-    }
-
     /// Why the person's carry, taken as an agent's start where no person
     /// works and refused there as `why` says, didn't stand, said for the
     /// person rather than for an agent.
@@ -7518,7 +7584,7 @@ impl<S: Store> Shared<S> {
                 if persons_carry {
                     self.carry_refused(&why)
                 } else {
-                    self.relay_refused(unattended, &judged, &why)
+                    relay_refused(&self.machine, unattended, &judged, &why)
                 }
             });
         }
@@ -7586,14 +7652,39 @@ impl<S: Store> Shared<S> {
                 self.start_on(machine, asked, (fence, START_ANSWERED_WITHIN))
                     .await
             }
-            Placement::Placed { machine, .. } => Err(format!(
-                "a start relayed here starts here or nowhere, and it would go to {machine}"
-            )),
+            Placement::Placed { machine, .. } => Err(format!("{RELAYED_ELSEWHERE}{machine}")),
             Placement::Pending { misses } | Placement::Refused { misses } => Err(format!(
-                "{} doesn't take it now: {}",
+                "{}{DECLINED_NOW}{}",
                 self.machine,
                 placement::said(&misses)
             )),
+        }
+    }
+
+    /// Keeps `admitted`, joined `joined` times, as `started` ended: as
+    /// refused where it was to start here (`here`, naming `folder`) and
+    /// was refused before anything began
+    /// ([`began_nothing_here`]), so it spends none of the limits; else as
+    /// it started or failed.
+    fn kept_ended(
+        &self,
+        admitted: starts::Admitted,
+        started: &Result<Started, String>,
+        (here, folder): (bool, Option<PathBuf>),
+        joined: u32,
+    ) {
+        match started {
+            Err(why) if here && began_nothing_here(why, &self.machine, folder.as_deref()) => {
+                self.starts.keep_unbegun(admitted, why, joined);
+            }
+            _ => self.starts.keep(
+                admitted,
+                started
+                    .as_ref()
+                    .map(|started| (started.machine.clone(), started.held.clone()))
+                    .map_err(Clone::clone),
+                joined,
+            ),
         }
     }
 
@@ -7934,8 +8025,11 @@ impl<S: Store> Shared<S> {
     /// room rather than onto a machine already past it: on a cloud machine
     /// linked, heard lately within its room ([`placement::placed_with_room`])
     /// and not leaving within [`PAST_ROOM_LASTS_LEAST`], counted there as
-    /// any start is. None where no such machine is linked, or where the one
-    /// chosen began nothing there ([`began_nowhere`]), this machine's own
+    /// any start is. None where no such machine is linked, where the one
+    /// chosen refused a start past room lately and it stood
+    /// ([`passes_over`]), where too little of the start's wait is left to
+    /// ask it and still place it as before ([`past_room_within`]), or where
+    /// it began nothing there ([`began_nowhere`]), this machine's own
     /// answer judged the same: no link reached it, or it refused the start
     /// before beginning it, so it goes to the machine placement chose, as
     /// before; else its answer, so a start whose answer was lost is never
@@ -7954,12 +8048,16 @@ impl<S: Store> Shared<S> {
         let Placement::Placed { machine, .. } = &decision.placement else {
             return None;
         };
-        if !placement::placed_with_room(&decision) {
+        let now = jiff::Timestamp::now().as_millisecond();
+        let within = past_room_within(at, now);
+        let passed_over = self.lock().passed_over.get(machine).copied();
+        let Some(within) = within
+            .filter(|_| placement::placed_with_room(&decision) && !passes_over(passed_over, now))
+        else {
             self.lock().starts.unplaced(machine, weighed);
             return None;
-        }
+        };
         eprintln!("a start past every machine's room goes to {machine}, in the cloud");
-        let within = relayed_within(at, jiff::Timestamp::now().as_millisecond());
         let fenced = starts_in(fence, screen);
         let there = cloud.once.clone();
         let answered = if *machine == self.machine {
@@ -7981,6 +8079,10 @@ impl<S: Store> Shared<S> {
             let said = why.escape_debug();
             eprintln!("a start past every machine's room is placed as before, as {said}");
             return None;
+        }
+        if matches!(answered, Ok(Err(_))) {
+            eprintln!("{machine} is passed over past room a while, its refusal standing");
+            self.lock().passed_over.insert(machine.clone(), now);
         }
         Some(answered.unwrap_or_else(|unsent| {
             if let Some(there) = there {
@@ -8280,13 +8382,13 @@ impl<S: Store> Shared<S> {
                 .is_some_and(|declared| declared.pi_fences_itself);
         let within = held_within(fences, fence, (&asked.command, &agent), |kind| {
             crate::declared::launcher(&self.declared, kind, &self.runs.declarers)
-                .map_err(|why| format!("{machine} can't start this held session {kind}: {why}"))
+                .map_err(|why| format!("{machine}{LAUNCHER_REFUSED}{kind}: {why}"))
         })?;
         let Some(starter) = self.starter.clone() else {
-            return Err(format!("{machine}'s node starts no sessions"));
+            return Err(format!("{machine}{STARTS_NO_SESSIONS}"));
         };
         let Some(home) = std::env::home_dir() else {
-            return Err(format!("{machine} has no home to start it in"));
+            return Err(format!("{machine}{NO_HOME_TO_START}"));
         };
         let folder = start::begins_strictly(
             asked.folder.as_deref(),
@@ -24253,13 +24355,21 @@ esac
         assert_eq!(judged.lasts, Some(PAST_ROOM_LASTS_LEAST), "an hour");
         asked.folder = Some(PathBuf::from("/home/kestrel/src/rows"));
         asked.work.lasts = Some(jiff::SignedDuration::from_mins(10));
+        asked.work.needs = vec![Need::Reach("basin".to_owned())];
+        asked.once = Some("01J-past-room".to_owned());
         let (cloud, judged) = asked_of_the_cloud(&asked);
-        assert!(cloud.strict, "naming a folder, strictly");
+        let mut sent = asked.clone();
+        sent.work.needs.push(Need::Cloud);
+        sent.strict = true;
         assert_eq!(
-            cloud.work.lasts, asked.work.lasts,
-            "sent lasting as it said"
+            cloud, sent,
+            "its own needs, the cloud too, strictly, as it said"
         );
-        assert_eq!(judged.lasts, Some(PAST_ROOM_LASTS_LEAST), "judged an hour");
+        let lasting = Work {
+            lasts: Some(PAST_ROOM_LASTS_LEAST),
+            ..sent.work
+        };
+        assert_eq!(judged, lasting, "judged an hour, needing what it's sent");
         asked.work.lasts = Some(jiff::SignedDuration::from_hours(3));
         let (_, judged) = asked_of_the_cloud(&asked);
         assert_eq!(judged.lasts, asked.work.lasts, "or longer, as it said");
@@ -24315,12 +24425,16 @@ esac
                 "another lacks it",
             ),
             (
-                said(format!(
-                    "wren takes a relayed start as an agent's, and refused it: {lacks}"
-                )),
+                said(relay_refused("wren", false, "by OSPREY", &lacks)),
                 Some(folder),
                 true,
-                "a relay's refusal ending in it",
+                "a relay's refusal wrapping it",
+            ),
+            (
+                said(format!("couldn't hold pi why: {lacks}")),
+                Some(folder),
+                false,
+                "words only quoting it",
             ),
             (
                 said("wren doesn't take it now: it's saturated".to_owned()),
@@ -24362,14 +24476,11 @@ esac
     // person's relay as an agent's.
     #[test]
     fn a_cloud_machine_no_person_works_at_falls_back_where_it_refused_first() {
-        let unattended = |why: &str| -> Result<Reply, Unsent> {
-            Ok(Err(format!(
-                "no person works on wren, so it takes a relayed start as an agent's, and \
-                 refused it: {why}"
-            )))
-        };
-        let paced = format!("agents started 8 sessions. {}", starts::PACED_FOR_AN_AGENT);
+        let unattended = |why: &str| Ok(Err(relay_refused("wren", true, "", why)));
+        let paced = starts::paced("agents started 8", 1_700_000_060_000, 1_700_000_000_000);
         let stopped = format!("agents were stopped; {}", starts::STOPPED_FOR_AN_AGENT);
+        let untold = format!("{}/stopped: denied", starts::UNTOLD_FOR_AN_AGENT);
+        let quoting = "couldn't hold pi why: wren doesn't take it now: x: gone";
         let as_said_unattended = [
             ("wren doesn't take it now: it's saturated", true, "declined"),
             (
@@ -24396,6 +24507,15 @@ esac
             ),
             (paced.as_str(), true, "agents paced"),
             (stopped.as_str(), true, "agents stopped"),
+            (untold.as_str(), true, "whether agents are stopped unknown"),
+            (
+                "wren can't start this held session strict: none",
+                true,
+                "no launcher",
+            ),
+            ("wren's node starts no sessions", true, "no starter"),
+            ("wren has no home to start it in", true, "no home"),
+            (quoting, false, "words only quoting a refusal"),
         ];
         for (why, falls_back, case) in as_said_unattended {
             assert_eq!(
@@ -24404,6 +24524,38 @@ esac
                 "unattended, {case}"
             );
         }
+    }
+
+    #[test]
+    fn the_cloud_past_room_leaves_the_machine_placed_its_wait() {
+        let at = 1_700_000_000_000;
+        let all = i64::try_from(START_ANSWERED_ALL.as_millis()).expect("short");
+        for spent in (0..=all + 5_000).step_by(500) {
+            let asked = at + spent;
+            let Some(within) = past_room_within(at, asked) else {
+                assert!(spent >= all - 30_000, "asked after {spent} ms");
+                continue;
+            };
+            let answered = asked + i64::try_from(within.as_millis()).expect("short");
+            let after = relayed_within(at, answered);
+            assert!(
+                answered - at + i64::try_from(after.as_millis()).expect("short") <= all,
+                "both within the start's wait, asked after {spent} ms"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cloud_machine_whose_refusal_stood_is_passed_over_a_while() {
+        let at = 1_700_000_000_000;
+        assert!(!passes_over(None, at), "none refused");
+        assert!(passes_over(Some(at), at), "just refused");
+        assert!(passes_over(Some(at), at + PAST_ROOM_PASSED_OVER - 1));
+        assert!(
+            !passes_over(Some(at), at + PAST_ROOM_PASSED_OVER),
+            "a while on"
+        );
+        assert!(!passes_over(Some(at), at - 1), "a clock stepped back");
     }
 
     // A start that falls back here is placed again, pinned here, so the

@@ -295,6 +295,11 @@ pub enum Needs {
     AwayFromHome,
 }
 
+/// What a machine, named before it, answers a start [`begins_strictly`]
+/// won't begin at home, said once so an asker can tell it began nothing.
+pub const AT_HOME_STRICTLY: &str = " would begin this start at home, which its strict fence won't \
+     let it write, so the start must name the folder of the work it's for";
+
 /// The folder a start begins in on `machine`, as [`begins_in`] finds it,
 /// or why it's refused, as it `needs`: it names a folder there is none of
 /// there, which the work it's for is in, so home won't do; or it would
@@ -312,12 +317,7 @@ pub fn begins_strictly(
     home: &Path,
     machine: &str,
 ) -> Result<PathBuf, String> {
-    let at_home = || {
-        Err(format!(
-            "{machine} would begin this start at home, which its strict fence won't let it \
-             write, so the start must name the folder of the work it's for"
-        ))
-    };
+    let at_home = || Err(format!("{machine}{AT_HOME_STRICTLY}"));
     match (found(folder, home), folder) {
         (Some(wanted), _) if needs == Needs::AwayFromHome && is_home(&wanted, home) => at_home(),
         (Some(wanted), _) => Ok(wanted),
