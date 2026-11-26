@@ -40,7 +40,7 @@ use crate::awake;
 use crate::declared::Declared;
 use crate::declared::{Effect, Lively, Taint};
 use crate::disk::Band;
-use crate::facts::{AcceleratorKind, Machine, Readiness};
+use crate::facts::{AcceleratorKind, HeldFor, Machine, Readiness};
 use crate::offer::Offer;
 use crate::room::{Limit, Room};
 
@@ -970,7 +970,7 @@ fn decide_at(
             // A room made for agents to share is paid for by being up, so
             // it takes work that names none of the workers.
             if one.declared.as_ref().is_some_and(Declared::is_worker)
-                && !one.agent_room
+                && one.held_for != HeldFor::Agents
                 && !names_worker(work, &lasting)
                 && !work.needs.contains(&Need::Machine(one.name.clone()))
             {
@@ -2738,7 +2738,11 @@ pub(crate) mod tests {
 
     #[test]
     fn a_room_made_for_agents_takes_work_naming_no_worker_ahead_of_a_machine_kept_lively() {
-        let kestrel = lively(pressed(machine("kestrel", "linux", 60, &[]), 20.0), 28, None);
+        let kestrel = lively(
+            pressed(machine("kestrel", "linux", 60, &[]), 20.0),
+            28,
+            None,
+        );
         let mut wren = machine("wren", "linux", 30, &[]);
         wren.declared.as_mut().expect("declared").costs_money = true;
         let anything = needing(Vec::new());
@@ -2751,7 +2755,7 @@ pub(crate) mod tests {
             Some("kestrel"),
             "a machine that costs money, not made for agents, takes none of it"
         );
-        wren.agent_room = true;
+        wren.held_for = HeldFor::Agents;
         assert_eq!(
             chosen_of(&wren).as_deref(),
             Some("wren"),

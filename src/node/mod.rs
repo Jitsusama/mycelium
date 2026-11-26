@@ -4932,7 +4932,9 @@ impl<S: Store> Shared<S> {
         // person's own machines only where they name it.
         let rooms = self.book.agent_rooms();
         for one in &mut machines {
-            one.agent_room = rooms.contains(&one.name);
+            if rooms.contains(&one.name) {
+                one.held_for = facts::HeldFor::Agents;
+            }
         }
         let mut at = 0;
         machines.retain(|one| {
@@ -23068,7 +23070,10 @@ esac
         for name in ["osprey", "wren"] {
             let mut cloud = placement::tests::machine(name, "linux", 32, &["basin"]);
             cloud.declared.as_mut().expect("declared").costs_money = true;
-            shared.store.put_machine(&cloud).expect("the made machine is kept");
+            shared
+                .store
+                .put_machine(&cloud)
+                .expect("the made machine is kept");
             let mut made = made_by("/usr/bin/lend", name, jiff::Timestamp::now());
             made.asker = Some(made::PERSON.to_owned());
             shared.book_for(&made);

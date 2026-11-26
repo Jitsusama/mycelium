@@ -2403,8 +2403,8 @@ whoever it is booked for, since its booking says who pays for it and
 may let it go, not who may use it; and work that names none of the
 workers may go to it though it costs money, ranked by its room as any
 machine is, so before a machine kept lively. The node marks each one
-`agent_room` as it places, from its own file, never from what the
-machine says. A session the person granted is booked as the person but
+`"held_for": "agents"` as it places, from its own file, never from
+what the machine says. A session the person granted is booked as the person but
 isn't one: its starts go to a machine booked for the person, and not
 named in the file, only where they name it, and even then that machine
 is full one session short of the most it holds, kept for the person. A
