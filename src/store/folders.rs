@@ -201,11 +201,23 @@ impl Folders {
                 continue;
             };
             let path = dir.join(&name);
-            let same = kept.remove(&path).filter(|one| one.stamp == stamp);
-            let one = same.unwrap_or_else(|| Kept {
-                stamp,
-                body: read_in::<Value>(&folder, &name).map(Arc::new),
-            });
+            let one = match kept.remove(&path).filter(|one| one.stamp == stamp) {
+                Some(same) => same,
+                None => match folder.read(&name) {
+                    Ok(Some(bytes)) => Kept {
+                        stamp,
+                        body: serde_json::from_slice(&bytes).ok().map(Arc::new),
+                    },
+                    // A file that can't be read for what it is, or as it is
+                    // kept, stays unread until its stamp moves, as a fix
+                    // to it moves it.
+                    Err(error) if fails_for_the_file(&error) => Kept { stamp, body: None },
+                    // Gone since its stat, or not read for the node's own
+                    // want, such as of descriptors: kept as nothing, so the
+                    // next pass tries it again.
+                    Ok(None) | Err(_) => continue,
+                },
+            };
             seen.insert(path, one);
         }
         *kept = seen;
@@ -956,6 +968,16 @@ fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
 /// Reads the plain file `name` in the mesh's `folder` as `T`, or nothing
 /// when it is gone, half-written, not of this kind, or not a plain file,
 /// as a link put in its place isn't.
+/// Whether a read failed for what the file is or how it is kept (not plain,
+/// of two names, too large, or not readable by this account), so that only
+/// a change to the file can mend it.
+fn fails_for_the_file(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::InvalidData | io::ErrorKind::PermissionDenied
+    )
+}
+
 fn read_in<T: for<'de> Deserialize<'de>>(folder: &Folder, name: &str) -> Option<T> {
     serde_json::from_slice(&folder.read(name).ok()??).ok()
 }
@@ -1329,7 +1351,7 @@ mod tests {
         for name in ["s-one", "s-two"] {
             fs::write(
                 presence.join(format!("{name}.json")),
-                json!({"session": name}).to_string(),
+                json!({"session": name, "title": "first"}).to_string(),
             )
             .expect("written");
         }
@@ -1359,7 +1381,7 @@ mod tests {
         let one = presence.join("s-one.json");
         fs::write(
             &one,
-            json!({"session": "s-one", "title": "again"}).to_string(),
+            json!({"session": "s-one", "title": "again, longer"}).to_string(),
         )
         .expect("written in place");
         // The write's own open is heard before this mark, so only what
@@ -1369,19 +1391,70 @@ mod tests {
         let third = opened_until(&heard, &presence.join("third-mark"));
         assert_eq!(third, [one], "only the changed file is opened");
 
-        // A mode changed moves only the file's change time, yet it is tried
-        // again and, unreadable, is no presence. Root reads past a mode, so
-        // only another account loses the file.
+        // Rewritten in place at its length, its time put back as a mark's
+        // rewrite puts it, only the file's change time moves; it is read
+        // again all the same.
         let two = presence.join("s-two.json");
+        let probe = presence.join("tick-probe");
+        let written = fs::metadata(&two)
+            .and_then(|found| found.modified())
+            .expect("its time");
+        past_change_of(&two, &probe);
+        fs::write(
+            &two,
+            json!({"session": "s-two", "title": "again"}).to_string(),
+        )
+        .expect("rewritten at its length");
+        fs::File::options()
+            .write(true)
+            .open(&two)
+            .and_then(|file| file.set_modified(written))
+            .expect("its time put back");
+        let titles: Vec<Value> = folders
+            .presence_bodies()
+            .iter()
+            .filter(|body| body["session"] == "s-two")
+            .map(|body| body["title"].clone())
+            .collect();
+        assert_eq!(titles, [json!("again")], "read again by its change time");
+
+        // Root reads past a mode, so only another account can see a file
+        // made unreadable drop out; the rewrite above pins the change time
+        // for both.
+        if rustix::process::geteuid().is_root() {
+            return;
+        }
+        past_change_of(&two, &probe);
         let mut mode = fs::metadata(&two).expect("its mode").permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o000);
         fs::set_permissions(&two, mode).expect("made unreadable");
-        let root = rustix::process::geteuid().is_root();
         assert_eq!(
             folders.presence_bodies().len(),
-            if root { 2 } else { 1 },
+            1,
             "a file made unreadable is tried again"
         );
+    }
+
+    /// Returns once the file system's clock has ticked past `file`'s last
+    /// change, by writing `probe` until its own change time is later, so a
+    /// change made next moves `file`'s change time however coarse that
+    /// clock is. Each write reads the clock afresh, so no sleep is needed.
+    #[cfg(target_os = "linux")]
+    fn past_change_of(file: &Path, probe: &Path) {
+        use std::os::unix::fs::MetadataExt;
+        const TRIES: u32 = 1_000_000;
+        let changed = |path: &Path| {
+            let found = fs::metadata(path).expect("its stat");
+            (found.ctime(), found.ctime_nsec())
+        };
+        let last = changed(file);
+        for tried in 0..TRIES {
+            fs::write(probe, tried.to_string()).expect("the probe written");
+            if changed(probe) > last {
+                return;
+            }
+        }
+        panic!("the clock never passed {file:?}'s change");
     }
 
     #[test]

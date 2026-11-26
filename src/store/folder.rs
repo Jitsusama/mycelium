@@ -49,8 +49,12 @@ pub struct Folder(OwnedFd);
 /// What moves whenever a plain file is written or its standing changes:
 /// written whole by rename, a file is a new inode; written in place, its
 /// length or time moves; its mode or its names changed, its change time
-/// moves. A file of the same stamp holds what it held, so it needn't be
-/// opened to be known.
+/// moves. A file of the same stamp is taken to hold what it held, so it
+/// needn't be opened to be known. That holds but for two writes of the
+/// same length within one tick of the file system's clock, the second on
+/// the inode the first had or in place, whose stamps match; the next write
+/// mends it. It also takes the folder to be on a local disk: on a network
+/// file system a stat may answer from a cache an open would have checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stamp {
     inode: u64,
