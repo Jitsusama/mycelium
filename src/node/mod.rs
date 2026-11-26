@@ -8904,10 +8904,14 @@ impl<S: Store> Shared<S> {
         })
     }
 
-    /// Whether `machine` takes work `admits` lets through: any machine not
-    /// booked, and a booked one only as [`Admits::takes`] says.
+    /// Whether a carry may take a session to `machine` for `admits`: any
+    /// machine not booked, and a booked one only as [`Admits::takes`]
+    /// says. Rooms made for agents count for nothing here, since a carry
+    /// asks as its session's address, which never says whether it is the
+    /// person's, so a session carried never lands in a worker home another
+    /// asker's make wrote.
     fn admitted_on(&self, machine: &str, admits: &Admits) -> bool {
-        self.admitted_among(machine, admits, &self.book.agent_rooms(), false)
+        self.admitted_among(machine, admits, &std::collections::BTreeSet::new(), false)
     }
 
     /// Whether `machine` takes work `admits` lets through, of `rooms`
@@ -23151,6 +23155,20 @@ esac
             (None, Some("osprey")),
             "its last session is kept for the person"
         );
+        let mut unasked = made_by("/usr/bin/lend", "osprey", jiff::Timestamp::now());
+        unasked.asker = None;
+        shared.book_for(&unasked);
+        shared.lock().promised.insert("osprey".to_owned(), 1);
+        let mut naming = basin();
+        naming.push(Need::Machine("osprey".to_owned()));
+        assert_eq!(
+            (
+                placed(naming.clone(), &Admits::Granted),
+                placed(naming, &Admits::Asker(made::PERSON.to_owned())).as_deref(),
+            ),
+            (None, Some("osprey")),
+            "so is one made at no asker's word"
+        );
     }
 
     #[tokio::test]
@@ -23174,10 +23192,10 @@ esac
             let refused = misses
                 .into_iter()
                 .map(|miss| {
-                    let lent = miss
-                        .because
-                        .iter()
-                        .any(|why| why.to_string().contains("lent or paid for"));
+                    let lent = miss.because.iter().any(|why| {
+                        matches!(why, placement::Because::Refuses(taint)
+                            if taint.key == placement::WORKER)
+                    });
                     (miss.machine, lent)
                 })
                 .collect::<BTreeMap<_, _>>();

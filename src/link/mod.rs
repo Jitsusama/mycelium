@@ -5998,6 +5998,7 @@ mod tests {
             );
             let mut tern = tern_undeclared();
             tern.worker = says_it_is;
+            tern.held_for = facts::HeldFor::Agents;
             says(
                 &mut far_writing,
                 &[
@@ -6022,9 +6023,9 @@ mod tests {
                 .into_iter()
                 .find(|machine| machine.name == "tern");
             assert_eq!(
-                kept.map(|machine| machine.worker),
-                Some(worker),
-                "tern said it was a worker: {says_it_is}, but the link's word is kept"
+                kept.map(|machine| (machine.worker, machine.held_for)),
+                Some((worker, facts::HeldFor::AsBooked)),
+                "tern said it was a worker: {says_it_is}, and a room, but the link's word is kept"
             );
         }
     }

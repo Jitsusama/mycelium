@@ -14,9 +14,10 @@
 
 use std::collections::BTreeSet;
 use std::fs::OpenOptions;
-use std::io::{self, Write};
-use std::path::PathBuf;
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -170,7 +171,14 @@ pub struct Grant {
 pub struct Book {
     path: PathBuf,
     realm: Option<String>,
+    /// Why the rooms file last couldn't be read, if it couldn't, so the
+    /// journal says so once each time that changes, not on every read.
+    rooms_unread: Arc<Mutex<Option<String>>>,
 }
+
+/// The most of the rooms file read, far past any list of machines, so a
+/// file grown without end costs a placement no more than this.
+const ROOMS_AT_MOST: u64 = 64 * 1024;
 
 /// The machines a book says are made and not yet released, and how many
 /// of its lines it couldn't read.
@@ -189,7 +197,11 @@ impl Book {
     /// A book kept at `path`, its makes naming no realm.
     #[must_use]
     pub fn at(path: PathBuf) -> Self {
-        Self { path, realm: None }
+        Self {
+            path,
+            realm: None,
+            rooms_unread: Arc::default(),
+        }
     }
 
     /// The same book, kept by `realm`'s node.
@@ -222,21 +234,39 @@ impl Book {
     /// line, what follows a `#` and blank lines passed over. A machine it
     /// doesn't name stays as booked, so the person's own are theirs. A
     /// file that isn't there names none, and so does one that can't be
-    /// read, said in the node's journal, since agents' work then goes
-    /// back to the machines it would leave.
+    /// read or isn't a plain file, said in the node's journal once each
+    /// time that changes, since agents' work then goes back to the
+    /// machines it would leave. Only its first [`ROOMS_AT_MOST`] bytes
+    /// are read.
     #[must_use]
     pub fn agent_rooms(&self) -> BTreeSet<String> {
         let path = self.path.with_file_name(AGENT_ROOMS);
-        let said = std::fs::read_to_string(&path).unwrap_or_else(|error| {
-            if error.kind() != io::ErrorKind::NotFound {
-                eprintln!(
-                    "{} names no rooms, as it can't be read: {error}",
-                    path.display()
-                );
+        let read = rooms_said(&path);
+        let unread = read
+            .as_ref()
+            .err()
+            .filter(|error| error.kind() != io::ErrorKind::NotFound)
+            .map(ToString::to_string);
+        let mut last = self
+            .rooms_unread
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *last != unread {
+            match (&unread, &read) {
+                (Some(why), _) => {
+                    eprintln!(
+                        "{} names no rooms, as it can't be read: {why}",
+                        path.display()
+                    );
+                }
+                (None, Ok(_)) => eprintln!("{} can be read again", path.display()),
+                (None, Err(_)) => eprintln!("{} is gone, so it names no rooms", path.display()),
             }
-            String::new()
-        });
-        said.lines()
+            last.clone_from(&unread);
+        }
+        drop(last);
+        read.unwrap_or_default()
+            .lines()
             .filter_map(|line| line.split('#').next())
             .map(str::trim)
             .filter(|name| !name.is_empty())
@@ -358,6 +388,23 @@ struct Released {
     place: String,
 }
 
+/// What the rooms file at `path` says, read only where it is a plain
+/// file, so a pipe or a device left there never holds a placement, and
+/// only so far as [`ROOMS_AT_MOST`].
+fn rooms_said(path: &Path) -> io::Result<String> {
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "it isn't a plain file",
+        ));
+    }
+    let mut said = String::new();
+    std::fs::File::open(path)?
+        .take(ROOMS_AT_MOST)
+        .read_to_string(&mut said)?;
+    Ok(said)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -366,7 +413,7 @@ mod tests {
     use crate::offer::Shape;
 
     /// A program at `dir`'s `provider` running `body`.
-    fn provider(dir: &std::path::Path, body: &str) -> String {
+    fn provider(dir: &Path, body: &str) -> String {
         let program = dir.join("provider");
         crate::stand_in::program(&program, &format!("#!/bin/sh\n{body}\n"));
         program.display().to_string()
@@ -456,6 +503,19 @@ mod tests {
             book.agent_rooms(),
             BTreeSet::from(["tern".to_owned(), "wren".to_owned()]),
             "each name a line, trimmed, past blanks and comments"
+        );
+        fs::remove_file(dir.path().join(AGENT_ROOMS)).expect("removed");
+        fs::create_dir(dir.path().join(AGENT_ROOMS)).expect("a folder in its place");
+        assert!(
+            book.agent_rooms().is_empty(),
+            "what isn't a file names none"
+        );
+        assert!(
+            book.rooms_unread
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_some(),
+            "and why is kept, so it is said once"
         );
     }
 
