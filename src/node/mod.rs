@@ -26141,6 +26141,56 @@ esac
         link.let_reopenings_go(&after);
     }
 
+    // Our council's round 4 on the marks: a start asked here and stopped
+    // part way keeps its holds, since its pi may still be starting.
+    #[tokio::test]
+    async fn a_start_asked_here_stopped_part_way_keeps_its_holds() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        let (began_at, release) = (dir.path().join("began"), dir.path().join("release"));
+        // A holder that answers once let, or once its folder is gone.
+        crate::stand_in::program(
+            &dir.path().join("holder"),
+            &format!(
+                "#!/bin/sh\n: > '{0}'\nwhile [ ! -e '{1}' ] && [ -e '{0}' ]; do sleep 0.01; done\n\
+                 echo held\n",
+                began_at.display(),
+                release.display()
+            ),
+        );
+        let asked = Start {
+            work: work(vec![Need::Machine("skiff".to_owned())]),
+            folder: Some(dir.path().to_owned()),
+            strict: false,
+            command: ["pi", "--session", "s-gone"].map(str::to_owned).to_vec(),
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let starting = link.start_on("skiff".to_owned(), asked, (None, START_ANSWERED_WITHIN));
+        let stopped = tokio::time::timeout(PATIENCE, async {
+            tokio::select! {
+                _ = starting => false,
+                () = async {
+                    while !began_at.exists() {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                } => true,
+            }
+        })
+        .await
+        .expect("the holder began");
+        assert!(stopped, "the start was stopped as its holder began");
+        assert_eq!(
+            link.hold_reopenings(&["s-gone".to_owned()], None, &[])
+                .err(),
+            Some("s-gone is being reopened on skiff already".to_owned()),
+            "a stopped start keeps its hold while its pi may still start"
+        );
+        fs::write(&release, "").expect("the holder is let answer");
+    }
+
     // Our council's round 1 on the marks: a start asked here naming a
     // word holds each longer id it begins that a relayed start holds, as
     // a relayed one does, so pi opening the longer id is refused.
@@ -26170,7 +26220,7 @@ esac
         drop(held);
         let after = link
             .hold_reopenings(&["s-gone".to_owned()], None, &["s-gone".to_owned()])
-            .expect("its hold went with its start");
+            .expect("the guard, dropped unkept, gave its holds back");
         link.let_reopenings_go(&after);
     }
 
