@@ -282,4 +282,47 @@ mod tests {
     fn a_realm_declaring_nothing_has_no_hubs() {
         assert!(records(&[holder("KESTRL", &[], 0.0)]).is_empty());
     }
+
+    // Scratch timing, never proposed: what 24 subjects a cell costs.
+    #[test]
+    #[ignore = "scratch timing"]
+    fn scratch_timing_of_subject_caps() {
+        for cells in [192_usize, 1000] {
+            for each in [12_usize, 24] {
+                for (case, pool) in [("distinct", usize::MAX), ("pooled", 400)] {
+                    let holders: Vec<Holder> = (0..cells)
+                        .map(|cell| Holder {
+                            address: format!("C{cell:05}"),
+                            subjects: (0..each)
+                                .map(|nth| {
+                                    let n = (cell * 7919 + nth * 104_729) % pool.min(cells * each);
+                                    format!("agentic-harness.pi:lib/internal/area-{n:04}")
+                                })
+                                .collect(),
+                            heard: (cell % 13) as f64,
+                        })
+                        .collect();
+                    let runs = 20;
+                    let start = std::time::Instant::now();
+                    let mut made = BTreeMap::new();
+                    for _ in 0..runs {
+                        made = records(&holders);
+                    }
+                    let took = start.elapsed() / runs;
+                    let bytes: usize = made
+                        .values()
+                        .map(|record| serde_json::to_string(record).unwrap().len())
+                        .sum();
+                    let presence: usize = holders
+                        .iter()
+                        .map(|holder| serde_json::to_string(&holder.subjects).unwrap().len())
+                        .sum();
+                    println!(
+                        "TIMING cells={cells} subjects={each} case={case} hubs={} took={took:?} hub_bytes={bytes} subject_bytes={presence}",
+                        made.len()
+                    );
+                }
+            }
+        }
+    }
 }
