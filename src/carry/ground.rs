@@ -909,7 +909,7 @@ mod tests {
         room.worker = true;
         let said = room.declared.as_mut().expect("declared");
         said.leaves_at = Some(now + jiff::SignedDuration::from_hours(12));
-        said.reach = vec!["gcp-experiments".to_owned(), "shopify-services".to_owned()];
+        said.reach = vec!["experiments".to_owned(), "basin".to_owned()];
         assert_eq!(
             Lent::at(&room, now),
             Lent::TakesNone,
