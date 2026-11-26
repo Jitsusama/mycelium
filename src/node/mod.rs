@@ -7028,17 +7028,25 @@ impl<S: Store> Shared<S> {
             return Answer::Err("the node has no home folder".to_owned());
         };
         let here = self.machine.clone();
+        let (words, at_home) = (asked.words.clone(), home.clone());
         let (client, started, processes) =
             (self.client, self.client_started, self.processes.clone());
         let judged = tokio::task::spawn_blocking(move || {
             sprouted(&asked, by, client.zip(started), &processes, &home, &here)
         })
         .await;
-        let sprout::Sprouted { start, left_out } = match judged {
+        let sprout::Sprouted {
+            mut start,
+            left_out,
+        } = match judged {
             Ok(Ok(sprouted)) => sprouted,
             Ok(Err(refused)) => return refused,
             Err(error) => return Answer::Err(format!("the sprout couldn't be judged: {error}")),
         };
+        // Read as it starts, so a switch's new word counts from then.
+        if let Some(declared) = crate::declared::read(&self.declared) {
+            sprout::needs_as_declared(&mut start, &words, &at_home, &declared.needs_in);
+        }
         let reply = self.start(start).await;
         // A log that can't be written takes nothing from the asker, whose
         // session started or didn't as the reply says.
@@ -23880,6 +23888,7 @@ esac
                     fence: None,
                     basin: None,
                     sessions_at_most: None,
+                    needs_in: Vec::new(),
                 }),
                 ..facts::measure("kestrel", &facts::Sources::nowhere())
             })
@@ -25566,6 +25575,7 @@ esac
                     fence: None,
                     basin: None,
                     sessions_at_most: None,
+                    needs_in: Vec::new(),
                 }),
                 ..facts::measure("wren", &facts::Sources::nowhere())
             })

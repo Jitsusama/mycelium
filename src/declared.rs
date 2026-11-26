@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::hold::start::Kit;
+use crate::placement::Need;
 
 /// What a machine's configuration says of it. Tests alone have a
 /// default, declaring nothing at all: no reach, no taints, no fence,
@@ -108,6 +109,11 @@ pub struct Declared {
         deserialize_with = "lively_or_none"
     )]
     pub kept_lively: Option<Lively>,
+    /// What work begun here needs wherever placement sends it, by where
+    /// it begins or what it names, as work in a checkout only some
+    /// machines can work in needs a network only they reach.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs_in: Vec<NeedsIn>,
 }
 
 /// The ceiling a machine kept lively ([`Declared::kept_lively`]) holds its
@@ -122,6 +128,22 @@ pub struct Lively {
     /// keeps no more than any machine does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_available: Option<u64>,
+}
+
+/// What work begun here needs, wherever placement sends it, where it
+/// begins in one of `folders` or its words name one of `words`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NeedsIn {
+    /// The folders, each within home, as `src/rows` names `~/src/rows`,
+    /// or whole; work begun in one or anywhere below it needs `needs`.
+    #[serde(default)]
+    pub folders: Vec<PathBuf>,
+    /// The words, as a link's host, found in any case anywhere in what
+    /// the work says.
+    #[serde(default)]
+    pub words: Vec<String>,
+    /// What such work needs.
+    pub needs: Vec<Need>,
 }
 
 /// The fence an agent session runs in, as the harness names it.
@@ -1117,6 +1139,7 @@ mod tests {
                 basin: None,
                 sessions_at_most: None,
                 kept_lively: None,
+                needs_in: Vec::new(),
             }),
             "it reads as declared"
         );
@@ -1141,6 +1164,7 @@ mod tests {
             basin: None,
             sessions_at_most: None,
             kept_lively: None,
+            needs_in: Vec::new(),
         };
         assert!(
             !lasting.is_worker(),
