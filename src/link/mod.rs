@@ -1344,6 +1344,20 @@ impl Runs {
         (runs, said)
     }
 
+    /// How many runs and lends the other end asked of this machine are
+    /// still under way here: work running on this machine as a session
+    /// does, so it hasn't handed over while one is.
+    fn under_way_here(&self) -> usize {
+        self.here.len() + self.lending.len()
+    }
+
+    /// Whether a run or lend this machine asked of the other is still
+    /// under way there, so a handover it says isn't taken yet: taking it
+    /// ends the link, and with it every run and lend still going over it.
+    fn under_way_there(&self) -> bool {
+        !self.asked.is_empty() || !self.borrowed.is_empty()
+    }
+
     /// Hands what the run asked as `ask` of the other machine said on to
     /// its asker, letting go of it once it ends.
     fn ran(&mut self, ask: u64, ran: Ran) {
@@ -2578,7 +2592,7 @@ impl<S: Store> End<S> {
         }
         let held_as: Vec<Option<String>> = self.living().into_values().map(|(_, id)| id).collect();
         let held = self.held.as_deref().map(hold::held).unwrap_or_default();
-        let running = handover::running(&held_as, &held);
+        let running = handover::running(&held_as, &held) + self.runs.under_way_here();
         self.handover.ran |= running > 0;
         let Handover { leaves, ran, .. } = self.handover;
         if !handover::handed_over(leaves, jiff::Timestamp::now(), ran, running) {
@@ -2591,7 +2605,12 @@ impl<S: Store> End<S> {
     /// Takes the other end's word that its machine has handed over, if this
     /// end holds all it said: frames cross in the order they are said, so
     /// every file it holds has been heard of, and asked for if wanted.
+    /// The other end says it again at each keep, so one not taken while
+    /// this end's own runs there go on is taken once they have ended.
     fn heard_handed_over(&mut self) {
+        if self.runs.under_way_there() {
+            return;
+        }
         let lacking = self.exchange.as_ref().map_or(0, Exchange::waiting);
         if self.handover.skipped_shares.load(Ordering::Relaxed) {
             eprintln!(
@@ -5821,6 +5840,36 @@ mod tests {
             !matches!(ended, Ok(Ending::HandedOver)),
             "the link ends as the other end leaves, not as handed over: {ended:?}"
         );
+    }
+
+    // A machine with a run or lend under way hasn't handed over, and one
+    // whose own run or lend is under way over the link takes no handover,
+    // which would end the link and drop it, as kept rooms dropped runs
+    // at their first keep.
+    #[test]
+    fn a_run_or_lend_under_way_holds_its_link_through_a_handover() {
+        let running = || RunningHere {
+            window: Arc::new(tokio::sync::Semaphore::new(1)),
+            _stop: oneshot::channel().0,
+        };
+        let (mut runs, _said) = Runs::new();
+        assert_eq!(
+            (runs.under_way_here(), runs.under_way_there()),
+            (0, false),
+            "with nothing asked, nothing is under way"
+        );
+        runs.here.insert(1, running());
+        runs.lending.insert(2, running());
+        assert_eq!(
+            (runs.under_way_here(), runs.under_way_there()),
+            (2, false),
+            "a run and a lend asked of this machine run here, and nothing there"
+        );
+        runs.asked.insert(3, mpsc::unbounded_channel().0);
+        assert!(runs.under_way_there(), "a run asked of the other machine runs there");
+        runs.asked.clear();
+        runs.borrowed.insert(4, mpsc::unbounded_channel().0);
+        assert!(runs.under_way_there(), "and so does a lend");
     }
 
     /// How a link that can release ends when the other machine says its
