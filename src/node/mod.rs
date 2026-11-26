@@ -7575,12 +7575,20 @@ impl<S: Store> Shared<S> {
         };
         // After the join, so an ask again under its name is answered the
         // first's start rather than refused for it; and kept, as every
-        // refusal is.
-        let admitted = match left_to_its_holder(parked, turning) {
+        // refusal is. One asked here holds each session it names while
+        // it starts, as a start relayed here does ([`Self::relayed`]), so
+        // neither starts a second pi on it while the other is on its way
+        // (followup 423).
+        let (holds, refused) = match self.held_while_asked(&asked, whither) {
+            Ok(holds) => (holds, left_to_its_holder(parked, turning)),
+            Err(why) => (Vec::new(), Some(why)),
+        };
+        let admitted = match refused {
             Some(why) => Err(self.starts.refuse(kept, why)),
             None => self.admitted(kept, waits).await,
         };
         let admitted = admitted.inspect_err(|refused| {
+            self.let_reopenings_go(&holds);
             if let Some(lead) = lead.take() {
                 lead.ends(at, &Err(refused.clone()));
             }
@@ -7609,6 +7617,9 @@ impl<S: Store> Shared<S> {
             }
             (Whither::Here, _) => self.here(asked, fence).await,
         };
+        // Once it answers, its holder's record says it is held, or it
+        // failed and may be asked again.
+        self.let_reopenings_go(&holds);
         let started = match says_who(answered, within) {
             Ok(Response::Started(started)) => Ok(started),
             Ok(_) => Err("it answered with no session".to_owned()),
@@ -7628,6 +7639,26 @@ impl<S: Store> Shared<S> {
             self.rejudge.notify_one();
         }
         started.map(Response::Started)
+    }
+
+    /// The holds a start asked here takes on each session its command
+    /// names, as [`hold::turn::sessions_named`] finds them, and on the
+    /// words it names them by, or why it can't take them: another start
+    /// of one is on its way. One relayed here (`Here`) holds them
+    /// already, where [`Self::relayed`] took it.
+    fn held_while_asked(
+        &self,
+        asked: &Start,
+        whither: Whither,
+    ) -> Result<Vec<(String, u64)>, String> {
+        match whither {
+            Whither::Placed => self.hold_reopenings(
+                &hold::turn::sessions_named(&asked.command),
+                None,
+                &hold::turn::words_named(&asked.command),
+            ),
+            Whither::Here => Ok(Vec::new()),
+        }
     }
 
     /// Says in this node's log a carried session, as `arriving` names it
@@ -21629,13 +21660,21 @@ esac
             let back = crate::carry::arriving("QEST-20261112-HARBOR", "tern", "skiff", &done, by);
             let words: Vec<&str> = back.command.iter().map(String::as_str).collect();
             let carried = ask(socket.clone(), reopening(&words, carries)).await;
-            // Every refusal judging a session says it isn't, or nothing
-            // is, reopened, or that it is being reopened.
+            // No refusal judging a session, of the carries' own words,
+            // the book's or the node's, stands in its way (followup 426).
+            let judged = [
+                NOT_REOPENED,
+                BEING_REOPENED,
+                " ended on ",
+                "coming back",
+                "carries can't be read",
+                "is parked",
+            ];
             assert!(
                 carried
                     .as_ref()
                     .err()
-                    .is_none_or(|why| !why.contains("reopened")),
+                    .is_none_or(|why| !judged.iter().any(|said| why.contains(said))),
                 "its carry back is no way back to refuse: {carried:?}"
             );
         }
@@ -25926,6 +25965,45 @@ esac
             panic!("the name is still held for tern");
         };
         assert_eq!(machine, "tern");
+    }
+
+    // Followup 423: a start asked here holds each session it names while
+    // it starts, as one relayed here does, so a relayed start of it
+    // meanwhile is refused, and one asked here while a relayed one runs
+    // is too; the hold goes once it answers.
+    #[tokio::test]
+    async fn a_start_asked_here_holds_its_sessions_as_a_relayed_one_does() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let mut link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        link.client = Some(1);
+        let asked = || Start {
+            work: work(vec![Need::Machine("tern".to_owned())]),
+            folder: None,
+            strict: false,
+            command: ["pi", "--session", "s-gone"].map(str::to_owned).to_vec(),
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let relayed = link
+            .hold_reopenings(&["s-gone".to_owned()], None, &[])
+            .expect("a relayed start holds it");
+        assert_eq!(
+            link.started(asked(), 0).await,
+            Err("s-gone is being reopened on skiff already".to_owned()),
+            "one asked here waits on the relayed one"
+        );
+        link.let_reopenings_go(&relayed);
+        let refused = link
+            .started(asked(), 0)
+            .await
+            .expect_err("tern isn't linked");
+        assert!(!refused.contains(BEING_REOPENED), "{refused}");
+        let after = link
+            .hold_reopenings(&["s-gone".to_owned()], None, &[])
+            .expect("its hold went once it answered");
+        link.let_reopenings_go(&after);
     }
 
     // Our council's round 13 on the reopen rule (2026-11-20): a name a
