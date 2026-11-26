@@ -58,6 +58,11 @@ pub const STOPPED_FOR_AN_AGENT: &str =
 pub const PACED_FOR_AN_AGENT: &str =
     "It paces agents and isn't the person's to lift: tell your orchestrator, as a finding";
 
+/// How a refusal of an agent's start opens where whether the person's
+/// stop stands can't be told, so it is held before anything begins.
+pub const UNTOLD_FOR_AN_AGENT: &str =
+    "agents' starts are held, since whether the person stopped them can't be told from ";
+
 /// The most ended sessions agents together may bring back through one
 /// node in an hour uncounted: past it, each counts as new work. A
 /// machine's sessions coming back after a restart fit within it, and an
@@ -686,11 +691,7 @@ impl Starts {
             }
             Err(error) => {
                 return Some((
-                    format!(
-                        "agents' starts are held, since whether the person stopped them \
-                         can't be told from {}: {error}",
-                        self.stopped.display()
-                    ),
+                    format!("{UNTOLD_FOR_AN_AGENT}{}: {error}", self.stopped.display()),
                     None,
                 ));
             }
@@ -765,6 +766,21 @@ impl Starts {
         }
         // Going and kept under one lock, so a start asked meanwhile never
         // sees it in neither.
+        let mut book = self.lock();
+        book.going.retain(|(going, _)| *going != id);
+        self.keep_line(&mut book, asked);
+    }
+
+    /// Keeps `admitted`, joined `joined` times, as refused for `why`,
+    /// where it was refused once admitted but before anything began, so
+    /// it spends none of the limits a start that began or failed counts
+    /// toward ([`Kept::counts`]).
+    pub fn keep_unbegun(&self, admitted: Admitted, why: &str, joined: u32) {
+        let Admitted { id, mut asked } = admitted;
+        asked.joined = joined;
+        // Cut as a failure is, to its first words, since what follows
+        // may be as long as the asker's words make it.
+        asked.refused = Some(failure(why));
         let mut book = self.lock();
         book.going.retain(|(going, _)| *going != id);
         self.keep_line(&mut book, asked);
@@ -913,7 +929,7 @@ fn room_after(mut ats: Vec<i64>, most: usize) -> Option<i64> {
 /// `why` a start is refused, said with when there is room again, `room`,
 /// as from `at`, and what an agent does then: it paces agents, so the
 /// person is no one to ask.
-fn paced(why: &str, room: i64, at: i64) -> String {
+pub fn paced(why: &str, room: i64, at: i64) -> String {
     let minutes = match u64::try_from(room - at).unwrap_or(0).div_ceil(60_000) {
         1 => "1 minute".to_owned(),
         minutes => format!("{minutes} minutes"),
@@ -1859,6 +1875,22 @@ mod tests {
             started(&starts, asked(By::Person, None, NOW), "h");
         }
         started(&starts, agent("SKIFFS", NOW), "h");
+    }
+
+    #[test]
+    fn a_start_refused_once_admitted_but_begun_nowhere_counts_for_nothing() {
+        let (dir, starts) = book();
+        for _ in 0..=CELL_AN_HOUR {
+            let admitted = starts.admit(agent("OSPREY", NOW)).expect("within");
+            starts.keep_unbegun(admitted, "osprey doesn't take it now: it's over", 0);
+        }
+        started(&starts, agent("OSPREY", NOW), "h");
+        let book = std::fs::read_to_string(dir.path().join("starts.jsonl")).expect("kept");
+        assert!(
+            book.contains(r#""refused":"osprey doesn't take it now""#),
+            "{book}"
+        );
+        assert!(!book.contains("it's over"), "kept cut: {book}");
     }
 
     #[test]

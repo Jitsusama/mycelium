@@ -2397,7 +2397,10 @@ saying which. A claim proves nothing, so the 8 are a cell's fair
 share, and the 32, with the ended sessions below, the bound no agent
 gets round. A start counts whether it started or failed, since a failed one may
 still have spent, and so does one still starting, so starts asked at
-once can't pass the limit; a refused one doesn't. The person's own
+once can't pass the limit; a refused one doesn't, nor one relayed to
+the node and refused there before anything began: placed elsewhere,
+not taken now, or not to be begun for want of a launcher, a starter,
+a home, its folder or leave to begin at home. The person's own
 starts are never counted or refused. An agent's first start in the
 hour that brings back a session the node knows has ended, on the
 machine it ran on, counts toward neither, up to 128 through the node
@@ -2579,10 +2582,16 @@ within its room, takes it, counted there. No machine is made for it,
 since one made holds none of the person's checkouts and making one
 outlasts the asker's wait; one made by naming `cloud` serves those
 after it. Where none is chosen, or the one chosen began nothing (no
-link took the ask, or it refused it first: lacking its folder, not
-taking it now, its strict fence keeping it from home, or, where no
-person works, pacing or stopping agents), it goes where placement
-chose, as before; any other answer, a lost one among them, stands.
+link took the ask, or it refused it before anything began, as the
+limits above, the person's stop or a relay refused there do), it goes
+where placement chose, as before; any other answer, a lost one among
+them, stands, and that machine is passed over past room for ten
+minutes, for starts asked as that one was, by the person or by an
+agent, so no agent's passes it over for the person's; a lost answer
+does so only where it had 30 seconds or more, and a start already
+asked of it then and taken ends it. The cloud is asked within what
+leaves the start 30 seconds for the machine placement chose, and not
+at all where no more is left.
 Beside its first words the
 session is given `QUEST_WORKFLOW_SPROUT`, the same work as data, a
 JSON object such as
