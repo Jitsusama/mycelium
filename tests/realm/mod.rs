@@ -2,9 +2,10 @@
 //! bar what the node makes of them is held to: within the memory each
 //! test names, and in time that grows with the cells rather than faster.
 //! Its networks are held within the 30 MB the map and the launcher hold
-//! them to, each cell holding two trees. Its cells, a record each held
-//! as the bytes it is sent as, are held within 30 MB too. The time is the
-//! processor's own for this thread, not the clock's, so a builder busy
+//! them to, each cell holding two trees and as many subjects as a cell
+//! may say, each a little longer than a live cell's. Its cells, a
+//! record each held as the bytes it is sent as, are held within 30 MB
+//! too. The time is the processor's own for this thread, not the clock's, so a builder busy
 //! with other work, which only makes this thread wait its turn, can't
 //! fail it. The time itself, 100 ms
 //! on the machine the bar is set for, is no builder's to hold, since
@@ -264,6 +265,21 @@ fn machines(cells: usize) -> BTreeMap<String, Value> {
         .collect()
 }
 
+/// As many subjects as a cell may say, of 27 and 34 characters, where
+/// a live cell's are 28 on the whole: a third of them areas of a
+/// repository a third of the cells share, the rest areas of its own.
+fn subjects(n: usize, repositories: usize) -> Value {
+    let shared = n % 3;
+    let own = n % repositories;
+    let said: Vec<String> = (0..mycelium::networks::MOST_SUBJECTS)
+        .map(|nth| match nth % 3 {
+            0 => format!("repository-{shared:04} lib/area-{nth:02}"),
+            _ => format!("repository-{own:04} src/n{n:05}/area-{nth:02}"),
+        })
+        .collect();
+    json!(said)
+}
+
 /// The `n`th session of a realm of `cells`, about the size of a live one:
 /// an orchestration's member, sharing a project with a few others, in a
 /// few repositories some cells share many of, and now and then in a named
@@ -321,6 +337,7 @@ fn session(n: usize, cells: usize) -> Session {
         "repo": "repository",
         "session": id,
         "state": "listening",
+        "subjects": subjects(n, repositories),
         "title": format!("pi - {address} - the work at hand"),
         "trees": trees,
         "usage": {

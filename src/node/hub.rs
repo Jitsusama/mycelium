@@ -11,9 +11,11 @@
 //! it, and each hub names at most [`MOST_FITS`] of them as its fits, the
 //! least heard lately first, since a cell talking least has the most room
 //! for a need. A cell hubs one subject, the rarest first, so a subject
-//! only a few hold still gets one of them: where each of its holders
-//! already hubs another, the one hubbing fewest hubs it too, since a
-//! subject with no hub loses the needs only a hub would find.
+//! only a few hold still gets one of them: where too few of its holders
+//! are free, those hubbing fewest hub it too, since a subject with no
+//! hub loses the needs only a hub would find, and one with a hub short
+//! sends all its needs to fewer cells than its holders could share them
+//! among.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -114,7 +116,8 @@ pub fn records(holders: &[Holder]) -> BTreeMap<String, serde_json::Value> {
 
 /// The hubs of a subject held by `at`, least heard first: one for every
 /// [`HOLDERS_A_HUB`] of them, of those hubbing nothing yet, and where
-/// none is, the one hubbing fewest, so every subject has one.
+/// too few are, the rest of them hubbing fewest, so every subject has as
+/// many as its holders make.
 fn hubs_of(at: &[usize], hubbing: &mut [usize]) -> Vec<usize> {
     let wanted = at.len().div_ceil(HOLDERS_A_HUB);
     let mut hubs: Vec<usize> = at
@@ -123,8 +126,15 @@ fn hubs_of(at: &[usize], hubbing: &mut [usize]) -> Vec<usize> {
         .filter(|one| hubbing[*one] == 0)
         .take(wanted)
         .collect();
-    if hubs.is_empty() {
-        hubs.extend(at.iter().copied().min_by_key(|one| hubbing[*one]));
+    if hubs.len() < wanted {
+        let mut busy: Vec<usize> = at
+            .iter()
+            .copied()
+            .filter(|one| hubbing[*one] > 0)
+            .collect();
+        // Stable, so the least heard of those hubbing alike comes first.
+        busy.sort_by_key(|one| hubbing[*one]);
+        hubs.extend(busy.into_iter().take(wanted - hubs.len()));
     }
     for hub in &hubs {
         hubbing[*hub] += 1;
@@ -225,6 +235,39 @@ mod tests {
             record["hubs"][1]["fits"],
             json!(["K00001", "K00004", "K00007", "K00010", "K00013"]),
             "the holders are shared out among the hubs, so no two name the same fit"
+        );
+    }
+
+    #[test]
+    fn a_subject_whose_holders_each_hub_a_rarer_one_keeps_a_hub_for_every_ten() {
+        // Each of 21 holders also says a subject of its own, which it hubs
+        // first, so none is free when the shared one's turn comes.
+        let many: Vec<Holder> = (0..21)
+            .map(|n| {
+                let own = format!("own {n}");
+                holder(&format!("K{n:05}"), &["busy", &own], f64::from(n))
+            })
+            .collect();
+        let made = records(&many);
+        assert_eq!(
+            hubs(&made, "busy"),
+            ["K00000", "K00001", "K00002"],
+            "the least heard of those hubbing fewest make up its three"
+        );
+        let fits: usize = made["hub:busy"]["hubs"]
+            .as_array()
+            .expect("its hubs")
+            .iter()
+            .map(|hub| hub["fits"].as_array().expect("its fits").len())
+            .sum();
+        assert_eq!(fits, 15, "three hubs name five fits each");
+        // Two free of the three it wants: the third is one hubbing already.
+        let mut some = many.clone();
+        some[20].subjects = vec!["busy".to_owned()];
+        some[19].subjects = vec!["busy".to_owned()];
+        assert_eq!(
+            hubs(&records(&some), "busy"),
+            ["K00019", "K00020", "K00000"]
         );
     }
 

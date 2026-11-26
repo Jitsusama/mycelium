@@ -29,7 +29,7 @@ mod made;
 mod shown;
 
 use made::slug;
-pub use made::{FORMED, read, subjects};
+pub use made::{FORMED, MOST_SUBJECTS, read, subjects};
 pub use shown::{cell, cells, network, overview};
 
 /// The machines' own network's name.
