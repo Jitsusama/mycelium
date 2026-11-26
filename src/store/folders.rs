@@ -203,18 +203,9 @@ impl Folders {
             let path = dir.join(&name);
             let one = match kept.remove(&path).filter(|one| one.stamp == stamp) {
                 Some(same) => same,
-                None => match folder.read(&name) {
-                    Ok(Some(bytes)) => Kept {
-                        stamp,
-                        body: serde_json::from_slice(&bytes).ok().map(Arc::new),
-                    },
-                    // A file refused for what it is stays unread until its
-                    // stamp moves, as a fix to it moves it.
-                    Err(error) if fails_for_the_file(&error) => Kept { stamp, body: None },
-                    // Gone since its stat, or not read for a cause that may
-                    // pass, such as a want of descriptors or a refusal to
-                    // open: not kept, so the next pass tries it again.
-                    Ok(None) | Err(_) => continue,
+                None => match kept_from(stamp, folder.read(&name)) {
+                    Some(read) => read,
+                    None => continue,
                 },
             };
             seen.insert(path, one);
@@ -964,6 +955,23 @@ fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
 
+/// What is kept of a presence whose file had `stamp`, from its `read`: its
+/// body; no body until the stamp moves, when the file was refused for what
+/// it is, as a fix to it moves the stamp; or nothing kept at all, so the
+/// next pass reads it again, when it was gone since its stat or not read
+/// for a cause that may pass, such as a want of descriptors or a refusal to
+/// open.
+fn kept_from(stamp: Stamp, read: io::Result<Option<Vec<u8>>>) -> Option<Kept> {
+    match read {
+        Ok(Some(bytes)) => Some(Kept {
+            stamp,
+            body: serde_json::from_slice(&bytes).ok().map(Arc::new),
+        }),
+        Err(error) if fails_for_the_file(&error) => Some(Kept { stamp, body: None }),
+        Ok(None) | Err(_) => None,
+    }
+}
+
 /// Whether a read was refused for what the file is, as the store judges
 /// it from the file's own stat (not plain, of two names, or too large),
 /// which its stamp holds, so that only a change to the file can mend it.
@@ -1456,9 +1464,16 @@ mod tests {
             .expect("a second name");
         // Past the largest file the mesh reads, 8 MiB.
         fs::write(presence.join("large.json"), vec![b' '; 9 << 20]).expect("written");
+        fs::write(presence.join("plain.json"), r#"{"session":"s"}"#).expect("written");
+        let stamp = folder.stamp("plain.json").expect("stamped").expect("there");
+        let read = kept_from(stamp, folder.read("plain.json")).expect("kept");
+        assert_eq!(read.body.as_deref(), Some(&json!({"session": "s"})));
         for name in ["named.json", "large.json"] {
-            let error = folder.read(name).expect_err("refused");
-            assert!(fails_for_the_file(&error), "{name}: {error}");
+            let refused = kept_from(stamp, folder.read(name));
+            assert!(
+                refused.is_some_and(|one| one.body.is_none()),
+                "{name} is kept unread until its stamp moves"
+            );
         }
         // As the read path's own failures arrive, through rustix.
         for passing in [
@@ -1471,8 +1486,10 @@ mod tests {
             rustix::io::Errno::IO,
             rustix::io::Errno::STALE,
         ] {
-            let error = io::Error::from(passing);
-            assert!(!fails_for_the_file(&error), "{error} may pass");
+            assert!(
+                kept_from(stamp, Err(io::Error::from(passing))).is_none(),
+                "{passing} may pass, so it is tried again"
+            );
         }
     }
 
