@@ -626,7 +626,7 @@ pub async fn hold(
                 // Said on the node's log, since the window ends as on any
                 // exit: a wrapper that runs attach without exec passes its
                 // 69 on with another pid's file.
-                logs(&gone_unheard(&holding.id, said, pid));
+                logs(&gone_unheard(holding.id, said, pid));
             }
             let gone = how.is_some();
             // A quit to park that hung is ended by a signal, which says no
@@ -1410,7 +1410,7 @@ impl Shown {
             let keyed =
                 std::mem::take(&mut *self.keyed.lock().unwrap_or_else(PoisonError::into_inner));
             let quoted = match took {
-                Took::Drawn(shown) => Some(shown).filter(|_| !keyed),
+                Took::Drawn(shown) => (!keyed).then_some(shown),
                 Took::Own(line) => Some(line),
             };
             went = Some(starting_line_went(&self.id, stood, why, quoted));
