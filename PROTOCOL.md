@@ -4294,6 +4294,22 @@ start again stays parked and says why on its terminal, and the next
 wake tries again, with any command named since. A parked program is no
 work: it keeps no machine awake and holds up no handover.
 
+A program that exits with 79 quit though nobody asked it to, as a pi
+whose own code gave up does, and is started again at once on the same
+terminal, as one that restarts is, never shown as parked: its window
+stays rather than closing on the person. Its run's end warns in the
+journal, as `quit unasked (exit 79)`. One killed by `SIGUSR2` quit
+unasked too, as a pi does when a name lookup it can't cut short holds
+its exit, and is started again the same way; it warns too, its
+journal line naming the signal. One such quit with three others in
+the minute before it is parked instead, so a program that quits as it
+starts can't start forever: every window, and each joining while it
+is parked, is told why, and the journal warns that it was parked,
+with `MYCELIUM_PARKED=too-often`. A key in its window starts it
+again, with as many quits as at first, and a wake file left beside
+the quit doesn't. A message doesn't wake it, since nothing marks it
+parked for one to find.
+
 A program that exits with 69 (sysexits' `EX_UNAVAILABLE`) having
 written `<id>.gone`, told its path in `MYCELIUM_GONE`, is kept as a
 parked one is, with its windows, and each window joining meanwhile,
