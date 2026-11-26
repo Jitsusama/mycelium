@@ -5640,8 +5640,9 @@ impl<S: Store> Shared<S> {
     /// is refused too, with why. A park whose holder has gone is not: it
     /// has nothing left to wake it, whatever its marker says. One that
     /// never ended here is held or coming back by that very id where a
-    /// holder resumes it or it is carried here before its pi writes its
-    /// presence, and refused so; any other is said never to have ended
+    /// holder resumes it, as a carry's holder does before its pi writes
+    /// its presence, or it was carried away from here or waits its turn
+    /// here, and refused so; any other is said never to have ended
     /// here, which an asker past room reads as nothing begun and no log
     /// here ([`began_nothing_here`]). Ids it begins, and holders' words
     /// beginning it, are judged only of one that ended here, as pi opens
@@ -20923,6 +20924,83 @@ esac
         }
     }
 
+    // Round council-20261126T081422687-000004: one held here before its
+    // pi writes its presence, as a carry or a fresh start is, never ended
+    // here, yet is refused as held, never as having no log here, which an
+    // asker past room would start elsewhere. Round
+    // council-20261126T083519809-000005: only that very id is judged so.
+    // One beginning a live session here, or one a fresh holder's shorter
+    // word begins, never ended here and has no log here, so is refused as
+    // never ended, which an asker past room places elsewhere.
+    #[tokio::test]
+    async fn a_reopening_relayed_here_of_one_never_ended_is_held_only_by_its_very_id() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        store.start_here(
+            "s-live",
+            json!({"session": "s-live", "addresses": ["LIVE01"], "at": "2026-11-19T06:00:00Z"}),
+            true,
+        );
+        let relayed = |session: &str| reopening(&["pi", "--session", session], false);
+        let holders = held_of(&socket);
+        fs::create_dir_all(&holders).expect("the holders' folder is made");
+        let fresh = json!({"id": "h-new", "command": ["pi", "--session", "s-new"],
+                           "folder": "/", "holder": std::process::id(), "pid": 0,
+                           "parked": false, "since": "2026-11-19T06:00:00Z", "windows": []});
+        fs::write(holders.join("h-new.json"), fresh.to_string()).expect("its record");
+        fs::write(hold::socket(&holders, "h-new"), b"").expect("its socket stands");
+        // A carry's holder names it only in its script's arguments.
+        let done = crate::carry::Done {
+            session: "s-car".to_owned(),
+            started_before: None,
+        };
+        let carry = crate::carry::arriving("QEST-20261112-HARBOR", "tern", "skiff", &done, None);
+        let carrying = json!({"id": "h-car", "command": carry.command,
+                              "folder": "/", "holder": std::process::id(), "pid": 0,
+                              "parked": false, "since": "2026-11-19T06:00:00Z", "windows": []});
+        fs::write(holders.join("h-car.json"), carrying.to_string()).expect("its record");
+        fs::write(hold::socket(&holders, "h-car"), b"").expect("its socket stands");
+        let away = json!({"at": jiff::Timestamp::now().to_string(), "session": "s-away",
+                          "quest": "QEST-20261112-HARBOR", "to": "tern"});
+        fs::write(socket.with_file_name("carries.jsonl"), format!("{away}\n"))
+            .expect("its carry is kept");
+        asks_below(&socket, 7001);
+        for (session, why) in [
+            ("s-new", "held here with no presence yet"),
+            ("s-car", "held by a carry's script"),
+        ] {
+            assert_eq!(
+                ask(socket.clone(), relayed(session)).await,
+                Err(format!(
+                    "{session} is held on skiff already, so it isn't reopened"
+                )),
+                "{why}"
+            );
+        }
+        assert_eq!(
+            ask(socket.clone(), relayed("s-away")).await,
+            Err(
+                "s-away is coming back on skiff, carried or waiting for its turn, so it isn't \
+                 reopened"
+                    .to_owned()
+            ),
+            "carried away from here, with no presence here"
+        );
+        for session in ["s-liv", "s-newer"] {
+            assert_eq!(
+                ask(socket.clone(), relayed(session)).await,
+                Err(format!(
+                    "no session {session} ended on skiff, so nothing is reopened here"
+                )),
+                "{session} is no session here"
+            );
+        }
+    }
+
     // An asking node lets a bare reopening through unfenced, so the node
     // it reaches takes one only for a session that ended there.
     #[tokio::test]
@@ -21001,35 +21079,6 @@ esac
                 "a session coming back by itself gets no second pi"
             );
         }
-        // Round council-20261126T081422687-000004: one held here before
-        // its pi writes its presence, as a carry or a fresh start is,
-        // never ended here, yet is refused as held, never as having no
-        // log here, which an asker past room would start elsewhere.
-        let fresh = json!({"id": "h-new", "command": ["pi", "--session", "s-new"],
-                           "folder": "/", "holder": std::process::id(), "pid": 0,
-                           "parked": false, "since": "2026-11-19T06:00:00Z", "windows": []});
-        fs::write(holders.join("h-new.json"), fresh.to_string()).expect("its record");
-        fs::write(hold::socket(&holders, "h-new"), b"").expect("its socket stands");
-        assert_eq!(
-            ask(socket.clone(), relayed("s-new")).await,
-            Err("s-new is held on skiff already, so it isn't reopened".to_owned()),
-            "held here with no presence yet"
-        );
-        // Round council-20261126T083519809-000005: only that very id is
-        // judged so. One beginning a live session here, or one a fresh
-        // holder's shorter word begins, never ended here and has no log
-        // here, so is refused as never ended, which an asker past room
-        // places elsewhere.
-        for session in ["s-liv", "s-newer"] {
-            assert_eq!(
-                ask(socket.clone(), relayed(session)).await,
-                Err(format!(
-                    "no session {session} ended on skiff, so nothing is reopened here"
-                )),
-                "{session} is no session here"
-            );
-        }
-        fs::remove_file(holders.join("h-new.json")).expect("its holder ends");
         // Round council-20261125T155712513-000001: a holder naming a word
         // that begins it, which no session here has as its id, may have
         // opened it by that word, or may yet, so holds it too.
@@ -25819,43 +25868,6 @@ esac
                 "wren's node would place it elsewhere",
             ),
             (
-                said(
-                    "no start naming a session is taken on wren, as its carries can't be read"
-                        .to_owned(),
-                ),
-                None,
-                false,
-                "wren can't read its carries, so can't tell whether the session is its own",
-            ),
-            (
-                said("s-1 is held on wren already, so it isn't reopened".to_owned()),
-                None,
-                false,
-                "one session held there",
-            ),
-            (
-                said("no session s-1 ended on wren, so nothing is reopened here".to_owned()),
-                None,
-                true,
-                "a session that never ended there, with no log there",
-            ),
-            (
-                said("no session s-1 ended on tern, so nothing is reopened here".to_owned()),
-                None,
-                false,
-                "never ended on another",
-            ),
-            (
-                said(
-                    "couldn't hold pi: no session s-1 ended on wren, so nothing is reopened \
-                     here"
-                        .to_owned(),
-                ),
-                None,
-                false,
-                "words only quoting that",
-            ),
-            (
                 said("its program failed".to_owned()),
                 Some(folder),
                 false,
@@ -25868,6 +25880,43 @@ esac
                 falls_back,
                 "{case}"
             );
+        }
+    }
+
+    // A refusal of one session stands, but one never ended there began
+    // nothing, since there is no log there to open twice.
+    #[test]
+    fn a_start_past_room_falls_back_for_a_session_only_where_it_never_ended() {
+        let said = |why: &str| Ok(Err(why.to_owned()));
+        let cases = [
+            (
+                said("no start naming a session is taken on wren, as its carries can't be read"),
+                false,
+                "wren can't read its carries, so can't tell whether the session is its own",
+            ),
+            (
+                said("s-1 is held on wren already, so it isn't reopened"),
+                false,
+                "one session held there",
+            ),
+            (
+                said("no session s-1 ended on wren, so nothing is reopened here"),
+                true,
+                "a session that never ended there, with no log there",
+            ),
+            (
+                said("no session s-1 ended on tern, so nothing is reopened here"),
+                false,
+                "never ended on another",
+            ),
+            (
+                said("couldn't hold pi: no session s-1 ended on wren, so nothing is reopened here"),
+                false,
+                "words only quoting that",
+            ),
+        ];
+        for (answered, falls_back, case) in cases {
+            assert_eq!(began_nowhere(&answered, "wren", None), falls_back, "{case}");
         }
     }
 
