@@ -992,6 +992,28 @@ fn tell_hosted(here: &facts::Machine) {
     }
 }
 
+/// The worker the node answers, with its socket bound: none where it was
+/// given none, or where its socket can't be put in place, for any of
+/// bind's reasons, a folder another account may change among them, so
+/// nothing is bound there; and then the words that say why and what to
+/// do, for the node to say as it serves its own socket without it.
+fn serve_workers(given: Option<Worker>) -> Result<Option<(Worker, worker::Listening)>, String> {
+    let Some(serving) = given else {
+        return Ok(None);
+    };
+    match worker::bind(&serving) {
+        Ok(listening) => Ok(Some((serving, listening))),
+        Err(error) => Err(format!(
+            "the worker socket {} isn't served, so no session of account {} reaches this \
+             node through it, though the node's own socket still serves: {error}; make its \
+             folder, changeable by this account or the system's alone, and start the node \
+             again",
+            serving.socket.display(),
+            serving.uid
+        )),
+    }
+}
+
 /// Runs a node serving `socket` until `stop` resolves, then ends its links
 /// and lets go of the sessions they carried.
 #[expect(
@@ -1020,10 +1042,17 @@ where
     if let Err(error) = store::out_of_reach_of_unclaimed(&store, began) {
         eprintln!("the start's sweep of machines out of reach failed: {error}");
     }
-    // Bound before any task is spawned, so a socket that can't be put
-    // in place leaves nothing running.
-    let serving = given.worker.take();
-    let workers = serving.as_ref().map(worker::bind).transpose()?;
+    // A worker socket that can't be put in place, as where its folder
+    // is missing, costs only the workers' sessions, said as it fails: the
+    // node runs on for its own, rather than leaving the machine with no
+    // node at all.
+    let (serving, workers) = match serve_workers(given.worker.take()) {
+        Ok(served) => served.unzip(),
+        Err(said) => {
+            eprintln!("{said}");
+            (None, None)
+        }
+    };
     // Said by the node, never left to its environment, so what it holds
     // is told the socket it serves and no other.
     if let Some(starter) = given.starter.as_mut() {
@@ -22086,8 +22115,9 @@ esac
     }
 
     /// What a session the node started was told of its worker socket, by a
-    /// node serving one for `uid`: the socket, or `unset`.
-    async fn worker_socket_told(uid: u32) -> (PathBuf, String) {
+    /// node given one for `uid`: the socket, or `unset`. Where `blocked`,
+    /// the socket's folder can't be made, as a file stands in its way.
+    async fn worker_socket_told(uid: u32, blocked: bool) -> (PathBuf, String) {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("mycelium").join("work.sock");
         let told = dir.path().join("told");
@@ -22108,6 +22138,9 @@ esac
         };
         declares_runs(&socket, true);
         let worker = dir.path().join("worker").join("socket");
+        if blocked {
+            fs::write(dir.path().join("worker"), "").expect("a file stands in the folder's way");
+        }
         let given = Given {
             declared: socket.with_file_name("declared.json"),
             runs: runs_of(&socket),
@@ -22150,16 +22183,68 @@ esac
     #[tokio::test]
     async fn a_node_tells_what_it_starts_the_worker_socket_it_serves_for_its_own_account() {
         let own = rustix::process::geteuid().as_raw();
-        let (worker, told) = worker_socket_told(own).await;
+        let (worker, told) = worker_socket_told(own, false).await;
         assert_eq!(
             told,
             worker.display().to_string(),
             "a session it starts speaks through the worker socket it serves"
         );
-        let (_, told) = worker_socket_told(own + 1).await;
+        let (_, told) = worker_socket_told(own + 1, false).await;
         assert_eq!(
             told, "unset",
             "one serving another account is told none, since it would be refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_whose_worker_socket_cant_be_placed_serves_its_own_and_tells_none() {
+        let own = rustix::process::geteuid().as_raw();
+        let (_, told) = worker_socket_told(own, true).await;
+        assert_eq!(
+            told, "unset",
+            "a session it starts is told no worker socket it doesn't serve"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_worker_socket_that_cant_be_placed_binds_nothing_and_says_why() {
+        let own = rustix::process::geteuid().as_raw();
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        // A folder another account may change, refused for its safety,
+        // and one that can't be made, as a file stands in its way.
+        let open = dir.path().join("open");
+        fs::create_dir(&open).expect("the folder is made");
+        fs::set_permissions(&open, fs::Permissions::from_mode(0o777)).expect("opened");
+        fs::write(dir.path().join("blocked"), "").expect("a file in the way");
+        for (folder, why) in [
+            (open.clone(), "may be changed by others"),
+            (dir.path().join("blocked"), "File exists"),
+        ] {
+            let socket = folder.join("socket");
+            let said = serve_workers(Some(Worker {
+                socket: socket.clone(),
+                uid: own + 1,
+            }))
+            .map(|served| served.map(|(worker, _)| worker))
+            .expect_err("it isn't served");
+            assert!(
+                said.starts_with(&format!(
+                    "the worker socket {} isn't served, so no session of account {} ",
+                    socket.display(),
+                    own + 1
+                )) && said.contains(why)
+                    && said.ends_with("and start the node again"),
+                "{said}"
+            );
+        }
+        // The folder that could take a socket is left with none.
+        assert!(
+            fs::read_dir(&open).expect("it is read").next().is_none(),
+            "nothing is bound in a folder refused for its safety"
+        );
+        assert!(
+            matches!(serve_workers(None), Ok(None)),
+            "a node given no worker socket serves none and says nothing"
         );
     }
 
