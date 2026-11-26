@@ -763,18 +763,22 @@ fn relay_refused(machine: &str, unattended: bool, judged: &str, why: &str) -> St
 /// ([`judged_as`]): past the session a presence claims, read to its
 /// closing quote, since a claim may say anything, [`REFUSED_IT`] among
 /// it; else past the first [`REFUSED_IT`], as the node's own words for
-/// why no session claims it never say it.
+/// why no session claims it never say it. A claim is read only where
+/// [`CLAIMED_AS`] comes before the first [`REFUSED_IT`], since the
+/// node's words before a claim say neither, so a refusal's own words
+/// never choose how it is read.
 fn relayed_why<'a>(said: &'a str, machine: &str) -> Option<&'a str> {
     said.strip_prefix(&format!(
         "no person works on {machine}{UNATTENDED_RELAY}{REFUSED_IT}"
     ))
     .or_else(|| {
         let judged = said.strip_prefix(&format!("{machine}{ATTENDED_RELAY}"))?;
+        let seam = judged.find(REFUSED_IT)?;
         match judged.split_once(CLAIMED_AS) {
-            Some((_, claimed)) => past_quoted(claimed)?
+            Some((before, claimed)) if before.len() < seam => past_quoted(claimed)?
                 .strip_prefix(CLAIMS_IT)?
                 .strip_prefix(REFUSED_IT),
-            None => judged.split_once(REFUSED_IT).map(|(_, why)| why),
+            _ => Some(&judged[seam + REFUSED_IT.len()..]),
         }
     })
 }
@@ -783,7 +787,8 @@ fn relayed_why<'a>(said: &'a str, machine: &str) -> Option<&'a str> {
 /// none where it opens with no quote or never closes.
 fn past_quoted(quoted: &str) -> Option<&str> {
     let mut escaped = false;
-    for (at, letter) in quoted.char_indices().skip(1) {
+    let quoted = quoted.strip_prefix('"')?;
+    for (at, letter) in quoted.char_indices() {
         match letter {
             _ if escaped => escaped = false,
             '\\' => escaped = true,
@@ -844,14 +849,17 @@ fn began_nowhere(answered: &Result<Reply, Unsent>, machine: &str, folder: Option
     }
 }
 
-/// Why `answered`, a cloud machine's answer to a start past room that
-/// began somewhere or may have ([`began_nowhere`]), passes it over past
-/// room a while: its refusal, or its lost answer, since a node that
-/// hangs costs each start its whole wait. None where it started, which
-/// ends any pass-over.
-fn passed_over_for(answered: &Result<Reply, Unsent>) -> Option<&str> {
+/// Why `answered`, a cloud machine's answer within `within` to a start
+/// past room that began somewhere or may have ([`began_nowhere`]),
+/// passes it over past room a while: its refusal, or its answer lost
+/// though it had at least [`RELAYED_ANSWERED_LEAST`], since a node that
+/// hangs costs each start its whole wait, while one asked with less may
+/// only have been slower than what was left. None where it started,
+/// which ends a pass-over another start set meanwhile.
+fn passed_over_for(answered: &Result<Reply, Unsent>, within: Duration) -> Option<&str> {
     match answered {
-        Ok(Err(why)) | Err(Unsent { why, .. }) => Some(why),
+        Ok(Err(why)) => Some(why),
+        Err(Unsent { why, .. }) => (within >= RELAYED_ANSWERED_LEAST).then_some(why.as_str()),
         Ok(Ok(_)) => None,
     }
 }
@@ -8130,7 +8138,7 @@ impl<S: Store> Shared<S> {
             return None;
         }
         let answered_at = jiff::Timestamp::now().as_millisecond();
-        match passed_over_for(&answered) {
+        match passed_over_for(&answered, within) {
             Some(why) => {
                 let said = why.escape_debug();
                 eprintln!("{machine} is passed over past room a while, as it answered {said}");
@@ -24628,6 +24636,14 @@ esac
                 false,
                 "a refusal quoting the seam",
             ),
+            (
+                attended(
+                    &[],
+                    &format!("{begun} , as session \"y\" claims it, and refused it: {lacks}"),
+                ),
+                false,
+                "a refusal saying a claim, none claiming",
+            ),
         ];
         for (answered, falls_back, case) in cases {
             assert_eq!(
@@ -24636,6 +24652,13 @@ esac
                 "{case}"
             );
         }
+        let odd = Path::new("/home/kestrel/src/a, as session \"y\" claims it");
+        let lacks_odd = attended(&[], &start::no_folder("wren", odd));
+        assert!(
+            began_nowhere(&lacks_odd, "wren", Some(odd)),
+            "a folder saying a claim"
+        );
+        assert_eq!(past_quoted("y\" claims it"), None, "no opening quote");
     }
 
     #[test]
@@ -24669,15 +24692,22 @@ esac
         );
         assert!(!passes_over(Some(at), at - 1), "a clock stepped back");
         let refused: Result<Reply, Unsent> = Ok(Err("its program failed".to_owned()));
-        assert_eq!(passed_over_for(&refused), Some("its program failed"));
+        let fair = RELAYED_ANSWERED_LEAST;
+        assert_eq!(passed_over_for(&refused, fair), Some("its program failed"));
         let lost = Err(Unsent {
             why: "wren didn't answer".to_owned(),
             sent: true,
         });
         assert_eq!(
-            passed_over_for(&lost),
+            passed_over_for(&lost, fair),
             Some("wren didn't answer"),
             "a hung node"
+        );
+        let short = RELAYED_ANSWERED_LEAST.saturating_sub(Duration::from_millis(1));
+        assert_eq!(
+            passed_over_for(&lost, short),
+            None,
+            "slower than what was left"
         );
         let started = Ok(Ok(Response::Started(Started {
             machine: "wren".to_owned(),
@@ -24685,7 +24715,11 @@ esac
             folder: "/home/kestrel".into(),
             attach: Vec::new(),
         })));
-        assert_eq!(passed_over_for(&started), None, "it took one, so no longer");
+        assert_eq!(
+            passed_over_for(&started, fair),
+            None,
+            "it took one, so no longer"
+        );
     }
 
     // A start that falls back here is placed again, pinned here, so the

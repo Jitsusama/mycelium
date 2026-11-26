@@ -778,7 +778,8 @@ impl Starts {
     pub fn keep_unbegun(&self, admitted: Admitted, why: &str, joined: u32) {
         let Admitted { id, mut asked } = admitted;
         asked.joined = joined;
-        // Cut as a failure is, since it may name the asker's folder.
+        // Cut as a failure is, to its first words, since what follows
+        // may be as long as the asker's words make it.
         asked.refused = Some(failure(why));
         let mut book = self.lock();
         book.going.retain(|(going, _)| *going != id);
@@ -1885,7 +1886,11 @@ mod tests {
         }
         started(&starts, agent("OSPREY", NOW), "h");
         let book = std::fs::read_to_string(dir.path().join("starts.jsonl")).expect("kept");
-        assert!(book.contains(r#""refused":"osprey doesn't"#), "{book}");
+        assert!(
+            book.contains(r#""refused":"osprey doesn't take it now""#),
+            "{book}"
+        );
+        assert!(!book.contains("it's over"), "kept cut: {book}");
     }
 
     #[test]
