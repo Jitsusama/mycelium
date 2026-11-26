@@ -181,16 +181,15 @@ impl Places {
     /// under its name, which may be another's to administer, is given
     /// none of what the one before it was.
     ///
+    /// A name that can't be a machine's holds nothing, since [`Self::give`]
+    /// refuses it, so nothing outside `given` is removed for it.
+    ///
     /// # Errors
     ///
-    /// When `machine` can't be a machine's name, so nothing outside
-    /// `given` is removed, or when the marks can't be removed.
+    /// When the marks can't be removed.
     pub fn ungive_all(&self, machine: &str) -> io::Result<()> {
         if !may_be_machine(machine) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("{machine:?} can't be a machine's name, so nothing is taken back"),
-            ));
+            return Ok(());
         }
         match fs::remove_dir_all(self.given_to(machine)) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
@@ -299,7 +298,7 @@ impl Places {
                 error.kind(),
                 format!(
                     "{quest} is shared with this machine's links, but it couldn't be given \
-                     to {to}, so a worker there isn't served it: {error}"
+                     to {to}, so its scratch isn't sent there: {error}"
                 ),
             )
         })?;
@@ -1072,6 +1071,25 @@ impl Exchange {
             other = self.other,
             here = self.machine,
         );
+        self.tell_quest(id, text);
+    }
+
+    /// Tells the sessions on quest `id` that its file `key` was written on
+    /// both machines apart, the other's taking its place, and where this
+    /// end's own now is.
+    fn put_aside(&mut self, id: &str, key: &str, aside: &str) {
+        let text = format!(
+            "{key} of {id} was written on {other} and {here} apart. {other}'s took its place, \
+             and {here}'s own is beside it as {aside}: read both and keep what each says.",
+            other = self.other,
+            here = self.machine,
+        );
+        self.tell_quest(id, text);
+    }
+
+    /// Tells the sessions on quest `id` `text` as a finding, or the
+    /// journal where their group can't be read.
+    fn tell_quest(&mut self, id: &str, text: String) {
         match self.places.group(id) {
             Some(group) => self.findings.push(Draft {
                 from: format!("mycelium@{}", self.machine.replace('-', "_")),
@@ -2282,6 +2300,35 @@ impl Exchange {
         }
     }
 
+    /// Settles `shared`, file `key` of quest `id` written apart, where its
+    /// scratch is kept from the other end: this end's copy moves beside,
+    /// theirs, `body`, takes its place, and the entry this end then holds
+    /// is just what they sent.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each is a part of the one file being settled, as take_whole has them"
+    )]
+    fn theirs_in_place(
+        &mut self,
+        id: &str,
+        key: &str,
+        quest: &Quest,
+        shared: &Shared,
+        theirs: &State,
+        body: &[u8],
+        mode: Option<u32>,
+    ) -> io::Result<Entry> {
+        let ours = quest.read(shared)?.unwrap_or_default();
+        let aside = quest.write_beside(shared, &self.machine, &ours, None)?;
+        let written = quest.write(shared, Some(body), mode)?;
+        self.put_aside(id, key, &aside.path);
+        Ok(Entry {
+            hash: theirs.hash.clone(),
+            version: theirs.version.clone(),
+            seen: written.and_then(|written| lasting(written, clock())),
+        })
+    }
+
     /// Takes a whole file as [`Self::take_file`] does, asking for nothing.
     fn take_whole(
         &mut self,
@@ -2327,6 +2374,14 @@ impl Exchange {
         let mut says = Vec::new();
         let entry = match settle(&shared, &ours, theirs) {
             Settled::Keep => None,
+            // Scratch kept from the other end, which never hears this
+            // end's copy, so keeping this end's in place would leave each
+            // later write of theirs settled apart again. This end's moves
+            // beside, theirs takes its place, and this end holds just
+            // what they sent, so their next write is simply taken.
+            Settled::Beside if shared.place == Place::Scratch && self.withholds_scratch(id) => body
+                .map(|body| self.theirs_in_place(id, key, &quest, &shared, theirs, body, mode))
+                .transpose()?,
             Settled::Merge(_) | Settled::Beside if !self.settles_file(id, &shared) => None,
             Settled::Take => {
                 let written = quest.write(&shared, body, mode)?;
@@ -4565,9 +4620,16 @@ mod tests {
     #[test]
     fn a_file_both_ends_write_of_scratch_kept_from_a_made_machine_comes_back_whatever_its_name() {
         // kestrel sorts before osprey, so by name kestrel would settle;
-        // it never hears osprey's file, so osprey must.
-        let osprey = Machine::new("osprey");
-        let kestrel = Machine::new("kestrel");
+        // it never hears osprey's file, so osprey must. skiff sorts
+        // before tern, so there the person's end settles by name too.
+        for (person, made) in [("osprey", "kestrel"), ("skiff", "tern")] {
+            kept_scratch_written_apart_settles_once(person, made);
+        }
+    }
+
+    fn kept_scratch_written_apart_settles_once(person: &'static str, made: &'static str) {
+        let osprey = Machine::new(person);
+        let kestrel = Machine::new(made);
         let at = |machine: &Machine| machine.places.scratch.join(QUEST).join(HANDOVER);
         shared(&osprey, QUEST, "# Shared\n");
         let mut near = osprey.exchange(&kestrel).scratch_where_given();
@@ -4602,6 +4664,26 @@ mod tests {
             Some("kestrel's\n"),
             "while none of the person's crosses to it"
         );
+        assert_eq!(
+            far.waiting(),
+            0,
+            "and the made machine is left wanting nothing it will never be sent"
+        );
+        // Settled once, it stays settled: the made machine's next write
+        // takes the file's place, with nothing more set beside it.
+        fs::write(at(&kestrel).join("x.jsonl"), "kestrel's again\n").expect("written");
+        talk(&mut near, &mut far);
+        assert_eq!(
+            fs::read_to_string(at(&osprey).join("x.jsonl")).expect("read"),
+            "kestrel's again\n",
+            "the made machine's next write is taken in its place"
+        );
+        assert_eq!(
+            fs::read_dir(at(&osprey)).expect("the handover").count(),
+            2,
+            "beside the person's own copy, and no other"
+        );
+        assert_eq!(far.waiting(), 0, "and it is still left wanting nothing");
     }
 
     #[test]
@@ -4616,10 +4698,10 @@ mod tests {
             .places
             .ungive_all("kestrel")
             .expect("nothing to take back is no error");
-        assert!(
-            skiff.places.ungive_all("..").is_err(),
-            "nor is anything outside the marks removed"
-        );
+        skiff
+            .places
+            .ungive_all("..")
+            .expect("a name nothing could be given holds nothing to take back");
         assert!(skiff.places.given("tern", QUEST), "so tern's still stand");
     }
 

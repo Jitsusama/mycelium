@@ -1435,8 +1435,10 @@ async fn keep_made(
             Linked::HandedOver => (None, false),
             Linked::Gone(said) => (Some(format!("its provider says it is gone ({said})")), true),
         },
+        // Nothing started on it, or it couldn't be made free of what a
+        // machine of its name was given before; the make says which.
         () = unwanted.notified() => {
-            (Some("nothing started on it once it was made".to_owned()), false)
+            (Some("it was let go unused once it was made".to_owned()), false)
         }
         () = tokio::time::sleep(Duration::try_from(left).unwrap_or_default()) => {
             (Some("its time was up".to_owned()), false)
@@ -24782,7 +24784,7 @@ esac
         );
         let kept = fs::read_to_string(dir.path().join("made.jsonl")).expect("the book reads");
         assert!(
-            kept.contains("nothing started on it once it was made, but it wasn't released")
+            kept.contains("it was let go unused once it was made, but it wasn't released")
                 && kept.contains("so it ends at its time"),
             "the book says why it was let go, and that its release failed: {kept}"
         );
