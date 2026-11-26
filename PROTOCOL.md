@@ -259,9 +259,19 @@ same code, each line a JSON value:
    its sessions, and again each minute. The other end keeps it only if
    it names the sending machine, as ready while the link stands and as
    unreachable, with what it last said, once the link drops. An end
-   fallen behind what it hears keeps, of the `Machine` frames waiting,
-   only the newest, and takes every other frame in the order it came,
-   since each says the machine whole. Between
+   fallen behind what it hears keeps, of the `Machine` frames waiting
+   before the next `Share` or `HandedOver`, only the newest, since each
+   says the machine whole. It takes every other frame in the order it
+   came, but that one waiting only behind `Share` and `Machine` frames
+   goes ahead of them where it is a `Message`, `Presence`, `Ended`,
+   `Replies`, `Ran`, `Taken`, `Lent` or `Started`: what the sending end
+   says of its sessions and its answers, none of which a share or facts
+   before it wait for. Shares and `Machine` frames keep their order
+   between them, since what a machine declares decides which shares
+   are heard. Every other frame keeps its place behind both: an ask,
+   since a carried start must find the shares said before it;
+   `HandedOver`, since it lets the machine go once those shares are;
+   and a line that isn't a frame, so a link ends where it broke. Between
    two ends that both say `facts`, an end that has heard nothing at all
    for three minutes by the wall clock ends the link, so one left from
    before its machine slept gives way to its dialler's new one. Any end
