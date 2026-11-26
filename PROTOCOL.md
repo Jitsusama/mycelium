@@ -2640,8 +2640,13 @@ where placement chose, as before; any other answer, a lost one among
 them, stands, and that machine is passed over past room for ten
 minutes, for starts asked as that one was, by the person or by an
 agent, so no agent's passes it over for the person's; a lost answer
-does so only where it had 30 seconds or more, and a start already
-asked of it then and taken ends it. The cloud is asked within what
+does so only where it had 30 seconds or more, a refusal of the one
+session it names (being reopened, live, parked, held or coming back
+there, or never ended there) does so for none, and a start already
+asked of it then and taken ends it. A refusal there of every start
+naming a session, as its carries can't be read, stands, since that
+machine couldn't tell whether the session is its own. The cloud is
+asked within what
 leaves the start 30 seconds for the machine placement chose, and not
 at all where no more is left.
 Beside its first words the

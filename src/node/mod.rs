@@ -145,18 +145,23 @@ const STARTS_NO_SESSIONS: &str = "'s node starts no sessions";
 const NO_HOME_TO_START: &str = " has no home to start it in";
 
 /// The words a machine, named between them, answers a start naming a
-/// session where its carries can't be read, before anything began.
+/// session where its carries can't be read. It began nothing, but
+/// stands, since the machine couldn't tell whether the session is its
+/// own, and placed elsewhere, one that ended there would open a second
+/// log.
 const NAMING_UNTAKEN: &str = "no start naming a session is taken on ";
 const CARRIES_UNREAD: &str = ", as its carries can't be read";
 
 /// The words a machine, named after the first, answers a start of a
 /// session another start holds, and how each of its other refusals of
-/// one session coming back, or never there, ends: each said once, so an
-/// asker can tell a refusal of one session from one of every start
+/// one session coming back, parked or never there ends, as
+/// [`starts::UNLESS_RUNNING`] does too: each said once, so an asker can
+/// tell a refusal of one session from one of every start
 /// ([`refused_for_one_session`]).
 const BEING_REOPENED: &str = " is being reopened on ";
 const NOT_REOPENED: &str = ", so it isn't reopened";
 const NOTHING_REOPENED: &str = ", so nothing is reopened here";
+const STEER_IT: &str = ": steer it rather than starting it again";
 
 /// How a relayed start taken as an agent's is told it was refused
 /// ([`relay_refused`]): after the machine where no person works, or after
@@ -563,12 +568,12 @@ fn stands(session: &Session) -> bool {
 fn left_to_its_holder(parked: Option<String>, turning: Option<String>) -> Option<String> {
     match (parked, turning) {
         (Some(id), _) => Some(format!(
-            "{id} is parked, and its holder brings it back as it's steered: steer it rather \
-             than starting it again"
+            "{id} is parked, and its holder brings it back as it's steered{STEER_IT}"
         )),
         (None, Some(id)) => Some(format!(
             "{id} is coming back already, waiting for its turn or running it: ask again once \
-             it has come back, only if it isn't running"
+             it has come back,{}",
+            starts::UNLESS_RUNNING
         )),
         (None, None) => None,
     }
@@ -830,8 +835,7 @@ fn past_quoted(quoted: &str) -> Option<&str> {
 /// `folder`, was raised before anything began: placed elsewhere or not
 /// taken now ([`Shared::here`]), or unable to begin it, lacking a
 /// launcher for its fence, a starter, a home, its folder or leave to
-/// begin at home ([`start::begins_strictly`]), or unable to read its
-/// carries to judge a start naming a session. Each is matched whole
+/// begin at home ([`start::begins_strictly`]). Each is matched whole
 /// from its start, so words a refusal only quotes never match.
 fn began_nothing_here(why: &str, machine: &str, folder: Option<&Path>) -> bool {
     let opens = [
@@ -843,7 +847,6 @@ fn began_nothing_here(why: &str, machine: &str, folder: Option<&Path>) -> bool {
         format!("{machine}{STARTS_NO_SESSIONS}"),
         format!("{machine}{NO_HOME_TO_START}"),
         format!("{machine}{}", start::AT_HOME_STRICTLY),
-        format!("{NAMING_UNTAKEN}{machine}{CARRIES_UNREAD}"),
     ];
     opens.iter().any(|said| why.starts_with(said.as_str()))
         || whole.iter().any(|said| why == said)
@@ -883,14 +886,33 @@ fn began_nowhere(answered: &Result<Reply, Unsent>, machine: &str, folder: Option
 /// passes it over past room a while: its refusal, or its answer lost
 /// though it had at least [`RELAYED_ANSWERED_LEAST`], since a node that
 /// hangs costs each start its whole wait, while one asked with less may
-/// only have been slower than what was left. None where it started,
-/// which ends a pass-over another start set meanwhile.
-fn passed_over_for(answered: &Result<Reply, Unsent>, within: Duration) -> Option<&str> {
+/// only have been slower than what was left. A refusal of one session
+/// alone ([`refused_for_one_session`]) leaves it as it is, and where it
+/// started, or may only have been slow, a pass-over another start set
+/// meanwhile ends.
+fn passed_over_for<'a>(
+    answered: &'a Result<Reply, Unsent>,
+    within: Duration,
+    machine: &str,
+) -> PassOver<'a> {
     match answered {
-        Ok(Err(why)) => Some(why),
-        Err(Unsent { why, .. }) => (within >= RELAYED_ANSWERED_LEAST).then_some(why.as_str()),
-        Ok(Ok(_)) => None,
+        Ok(Err(why)) if refused_for_one_session(answered, machine) => PassOver::Left(why),
+        Ok(Err(why)) => PassOver::For(why),
+        Err(Unsent { why, .. }) if within >= RELAYED_ANSWERED_LEAST => PassOver::For(why),
+        Err(_) | Ok(Ok(_)) => PassOver::Ended,
     }
+}
+
+/// What a cloud machine's answer to a start past room does to its
+/// pass-over ([`passed_over_for`]).
+#[derive(Debug, PartialEq, Eq)]
+enum PassOver<'a> {
+    /// Passed over past room a while, for why.
+    For(&'a str),
+    /// Left as it is, refusing one session, for why.
+    Left(&'a str),
+    /// Ended, as it took a start or may only have been slow.
+    Ended,
 }
 
 /// Whether `answered`, `machine`'s answer to a start past room, refused
@@ -899,15 +921,23 @@ fn passed_over_for(answered: &Result<Reply, Unsent>, within: Duration) -> Option
 /// parked, held, coming back or never ended there. It stands, since the
 /// start may go nowhere else without a second log of that session, but
 /// says nothing of the machine's other starts, so passes it over for
-/// none. Matched by its end, as the session it names leads it.
+/// none. Only its ending is read, as the session it names leads it;
+/// only the held one's ending names the machine, and a node says the
+/// others only of its own.
 fn refused_for_one_session(answered: &Result<Reply, Unsent>, machine: &str) -> bool {
     let Ok(Err(said)) = answered else {
         return false;
     };
     let why = relayed_why(said, machine).unwrap_or(said);
     why.ends_with(&format!("{BEING_REOPENED}{machine} already"))
-        || why.ends_with(NOT_REOPENED)
-        || why.ends_with(NOTHING_REOPENED)
+        || [
+            NOT_REOPENED,
+            NOTHING_REOPENED,
+            STEER_IT,
+            starts::UNLESS_RUNNING,
+        ]
+        .iter()
+        .any(|ending| why.ends_with(ending))
 }
 
 /// Whether a cloud machine whose refusal past room stood when `refused`
@@ -8658,22 +8688,20 @@ impl<S: Store> Shared<S> {
             return None;
         }
         let answered_at = jiff::Timestamp::now().as_millisecond();
-        match passed_over_for(&answered, within) {
-            // Up, and judging, though this start stands refused, so a
-            // pass-over another start set meanwhile is left as it is.
-            Some(why) if refused_for_one_session(&answered, machine) => {
+        match passed_over_for(&answered, within, machine) {
+            PassOver::Left(why) => {
                 let said = why.escape_debug();
                 eprintln!(
                     "{machine} isn't passed over past room, as it refused one session: {said}"
                 );
             }
-            Some(why) => {
+            PassOver::For(why) => {
                 let said = why.escape_debug();
                 eprintln!("{machine} is passed over past room a while, as it answered {said}");
                 let kept = (answered_at, why.to_owned());
                 self.lock().passed_over.insert(over, kept);
             }
-            None => {
+            PassOver::Ended => {
                 self.lock().passed_over.remove(&over);
             }
         }
@@ -25740,17 +25768,8 @@ esac
                         .to_owned(),
                 ),
                 None,
-                true,
-                "wren can't read its carries",
-            ),
-            (
-                said(
-                    "no start naming a session is taken on tern, as its carries can't be read"
-                        .to_owned(),
-                ),
-                None,
                 false,
-                "another can't",
+                "wren can't read its carries, so can't tell whether the session is its own",
             ),
             (
                 said("s-1 is held on wren already, so it isn't reopened".to_owned()),
@@ -25939,6 +25958,40 @@ esac
                 true,
                 "never ended there",
             ),
+            (
+                "s-1 is still live on tern, so it isn't reopened",
+                true,
+                "only the ending is read, which a node says only of itself",
+            ),
+            (
+                "s-1 is parked, and its holder brings it back as it's steered: steer it \
+                 rather than starting it again",
+                true,
+                "parked, as admitted",
+            ),
+            (
+                "s-1 is coming back already, waiting for its turn or running it: ask again \
+                 once it has come back, only if it isn't running",
+                true,
+                "its turn, as admitted",
+            ),
+            (
+                "s-1 is coming back already, from a start of it still going; ask again once \
+                 it has gone only if it isn't running",
+                true,
+                "a start still going",
+            ),
+            (
+                "s-1 is coming back already, from a start asked in the last 90 seconds; ask \
+                 again after that only if it isn't running",
+                true,
+                "a start asked lately",
+            ),
+            (
+                "no start naming a session is taken on wren, as its carries can't be read",
+                false,
+                "every start naming a session",
+            ),
             ("its program failed", false, "any other refusal"),
             (
                 "s-1 is held on wren already, so it isn't reopened: then it failed",
@@ -25956,6 +26009,12 @@ esac
         let held = "s-1 is held on wren already, so it isn't reopened";
         let relayed = Ok(Err(relay_refused("wren", true, "", held)));
         assert!(refused_for_one_session(&relayed, "wren"), "a relay's");
+        let wrapped = relay_refused("wren", true, "", held);
+        assert_eq!(
+            passed_over_for(&relayed, RELAYED_ANSWERED_LEAST, "wren"),
+            PassOver::Left(wrapped.as_str()),
+            "its pass-over left as it is"
+        );
         let lost = Err(Unsent {
             why: held.to_owned(),
             sent: true,
@@ -25995,20 +26054,23 @@ esac
         assert!(!passes_over(Some(at), at - 1), "a clock stepped back");
         let refused: Result<Reply, Unsent> = Ok(Err("its program failed".to_owned()));
         let fair = RELAYED_ANSWERED_LEAST;
-        assert_eq!(passed_over_for(&refused, fair), Some("its program failed"));
+        assert_eq!(
+            passed_over_for(&refused, fair, "wren"),
+            PassOver::For("its program failed")
+        );
         let lost = Err(Unsent {
             why: "wren didn't answer".to_owned(),
             sent: true,
         });
         assert_eq!(
-            passed_over_for(&lost, fair),
-            Some("wren didn't answer"),
+            passed_over_for(&lost, fair, "wren"),
+            PassOver::For("wren didn't answer"),
             "a hung node"
         );
         let short = RELAYED_ANSWERED_LEAST.saturating_sub(Duration::from_millis(1));
         assert_eq!(
-            passed_over_for(&lost, short),
-            None,
+            passed_over_for(&lost, short, "wren"),
+            PassOver::Ended,
             "slower than what was left"
         );
         let started = Ok(Ok(Response::Started(Started {
@@ -26018,8 +26080,8 @@ esac
             attach: Vec::new(),
         })));
         assert_eq!(
-            passed_over_for(&started, fair),
-            None,
+            passed_over_for(&started, fair, "wren"),
+            PassOver::Ended,
             "it took one, so no longer"
         );
     }
