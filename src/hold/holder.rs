@@ -3218,8 +3218,10 @@ mod tests {
         assert_eq!(said.len(), 3, "each said once: {said:?}");
         let cases = ["echo read wrong", "a key drawn again", "a literal-next key"];
         for (said, case) in said.iter().zip(cases) {
+            // "drew" is the log's own word, so what it quotes is found by
+            // its quotes.
             assert!(
-                !said.contains("secret") && !said.contains("drew"),
+                !said.contains("secret") && !said.contains('"'),
                 "{case}: no key quoted: {said}"
             );
             assert!(
