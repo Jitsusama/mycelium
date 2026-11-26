@@ -291,9 +291,7 @@ fn kept(meminfo: &str, name: &str) -> Option<u64> {
 fn memory_over(pressure: &str) -> Option<bool> {
     let some = stalled(pressure)?;
     let full = stall(pressure, "full ", "avg60=").unwrap_or(0.0);
-    Some(
-        some >= crate::balance::OVER_MEMORY_PRESSURE || full >= crate::balance::OVER_MEMORY_FULL,
-    )
+    Some(some >= crate::balance::OVER_MEMORY_PRESSURE || full >= crate::balance::OVER_MEMORY_FULL)
 }
 
 /// The share of the last ten seconds in which some task stalled, in
