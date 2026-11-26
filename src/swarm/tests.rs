@@ -1222,6 +1222,10 @@ fn a_cut_or_pad_keeps_to_cells_and_never_splits_a_wide_character() {
         split.is_empty(),
         "a joined emoji or an escape was split: {split:?}"
     );
+}
+
+#[test]
+fn a_wrap_breaks_a_word_by_cells_and_moves_a_widened_heart_whole() {
     assert_eq!(
         wrapped("港湾港 湾", "", "", 5),
         "港湾\n港 湾\n",

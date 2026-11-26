@@ -539,14 +539,14 @@ mod tests {
             );
             // Marks take no cell, so a pile is held by the cut's eight
             // steps a cell of its room instead.
-            let piles: Vec<usize> = drawn
+            let past_cut: Vec<usize> = drawn
                 .lines()
                 .map(|line| line.matches('\u{301}').count())
                 .filter(|marks| *marks > 8 * (width + 1))
                 .collect();
             assert!(
-                piles.is_empty(),
-                "lines holding a pile past their cut at {width}: {piles:?}"
+                past_cut.is_empty(),
+                "lines holding a pile past their cut at {width}: {past_cut:?}"
             );
         }
     }
