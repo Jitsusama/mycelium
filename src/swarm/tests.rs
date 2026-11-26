@@ -1160,6 +1160,7 @@ fn a_for_is_cleaned_by_what_protocol_lists() {
     // both ends of the ideographic selectors select, and a non-joiner, as
     // a joiner, stands only between two. A selector follows the last
     // character kept, so what this pass drops before it parts nothing.
+    // The cap on joiners in a run has its cases in the chain test above.
     for (said, cleaned) in [
         ("\u{1820}\u{180B}", "\u{1820}"),
         ("\u{1820}\u{FE00}", "\u{1820}\u{FE00}"),

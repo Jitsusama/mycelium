@@ -3643,8 +3643,8 @@ to U+2065, U+206A to U+206F, U+3164, U+FE00 to U+FE0F, U+FEFF,
 U+FFA0, U+FFF0 to U+FFFB, U+1BCA0 to U+1BCA3, U+1D173 to U+1D17A and
 U+E0000 to U+E0FFF), keeping one selector (U+FE00 to U+FE0F or
 U+E0100 to U+E01EF, so no Mongolian one) only where the last
-character kept is one drawn as part of a word past ASCII (none a
-space, here any character Unicode gives White_Space, such as U+00A0
+character kept is itself past ASCII and drawn as part of a word (none
+a space, here any character Unicode gives White_Space, such as U+00A0
 or U+3000, nor a braille blank), so what this pass drops between them
 parts nothing, and a joiner (U+200C or U+200D) only between two such,
 the first perhaps followed by its selector and the second the very
