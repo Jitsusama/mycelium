@@ -28,6 +28,8 @@ struct Held {
     gone: Vec<Presence>,
     holdings: BTreeMap<String, Value>,
     claimed: BTreeSet<String>,
+    /// When a newer link last asked for each machine's claim.
+    superseded: BTreeMap<String, i64>,
     linked: BTreeMap<String, i64>,
     /// When a link with each machine was last let in.
     admitted: BTreeMap<String, i64>,
@@ -256,6 +258,16 @@ impl Store for Memory {
             store: self.clone(),
             machine: machine.to_owned(),
         })))
+    }
+
+    fn supersede(&self, machine: &str) -> io::Result<()> {
+        let at = jiff::Timestamp::now().as_millisecond();
+        self.held().superseded.insert(machine.to_owned(), at);
+        Ok(())
+    }
+
+    fn superseded(&self, machine: &str) -> Option<i64> {
+        self.held().superseded.get(machine).copied()
     }
 
     fn linked_until(&self, machine: &str) -> Option<i64> {

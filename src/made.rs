@@ -137,6 +137,27 @@ pub async fn make(offer: &Offer, lasting: Duration, asker: &str) -> Result<Made,
     })
 }
 
+/// The file beside the book that holds the person's grants.
+pub const GRANTS: &str = "grants.json";
+
+/// The person's word that a session may have machines made and placed for
+/// it as though the person asked, until `until`: its makes are told to
+/// the provider as [`PERSON`] and booked for the person, so the person's
+/// own starts may use them. It changes only who a machine is for; the
+/// session's own fence still holds its work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Grant {
+    /// The session granted, by its mesh address.
+    pub address: String,
+    /// The person's words granting it, as said.
+    pub said: String,
+    /// When they said them.
+    pub at: jiff::Timestamp,
+    /// When the grant ends.
+    pub until: jiff::Timestamp,
+}
+
 /// Where a node keeps each make and release, a JSON line each, newest
 /// last. Every realm's node on a machine keeps the same book, so each
 /// make names the realm whose node made it.
@@ -173,6 +194,21 @@ impl Book {
             realm: Some(realm.to_owned()),
             ..self
         }
+    }
+
+    /// The grant `address` holds at `now` to have machines made and
+    /// placed for it as the person's, as the person said it, from
+    /// `grants.json` beside the book ([`Grant`]). A grant past its end, a
+    /// file that isn't there or can't be read, and a line that isn't a
+    /// grant all grant nothing, so a mistake never makes an agent the
+    /// person.
+    #[must_use]
+    pub fn granted(&self, address: &str, now: jiff::Timestamp) -> Option<Grant> {
+        let text = std::fs::read_to_string(self.path.with_file_name(GRANTS)).ok()?;
+        let grants: Vec<Grant> = serde_json::from_str(&text).ok()?;
+        grants
+            .into_iter()
+            .find(|grant| grant.address.eq_ignore_ascii_case(address) && now < grant.until)
     }
 
     /// Keeps that `made` was made.
@@ -370,6 +406,40 @@ mod tests {
             ),
             (&json!("0.12"), &json!("its work was done")),
             "each make and release is kept, a line each, in order"
+        );
+    }
+
+    #[test]
+    fn a_grant_holds_only_for_its_session_and_until_its_end() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let book = Book::at(dir.path().join("made.jsonl"));
+        let at = |said: &str| said.parse::<jiff::Timestamp>().expect("a time");
+        let now = at("2026-11-25T23:50:00Z");
+        assert_eq!(book.granted("WREN01", now), None, "no file grants nothing");
+
+        fs::write(dir.path().join(GRANTS), "not json").expect("written");
+        assert_eq!(
+            book.granted("WREN01", now),
+            None,
+            "nor does one that isn't grants"
+        );
+
+        fs::write(
+            dir.path().join(GRANTS),
+            r#"[{"address":"WREN01","said":"you may make it as me",
+                "at":"2026-11-25T23:05:00Z","until":"2026-11-26T12:00:00Z"}]"#,
+        )
+        .expect("written");
+        assert_eq!(
+            book.granted("wren01", now).map(|grant| grant.said),
+            Some("you may make it as me".to_owned()),
+            "the session granted, however its address is cased"
+        );
+        assert_eq!(book.granted("TERN02", now), None, "and no other");
+        assert_eq!(
+            book.granted("WREN01", at("2026-11-26T12:00:00Z")),
+            None,
+            "and not once it ends"
         );
     }
 

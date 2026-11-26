@@ -428,6 +428,16 @@ impl Store for Folders {
         }
     }
 
+    fn supersede(&self, machine: &str) -> io::Result<()> {
+        let file = format!("{}.newer", safe(machine)?);
+        write_whole(&self.claims, &file, &Value::from(now()))
+    }
+
+    fn superseded(&self, machine: &str) -> Option<i64> {
+        let file = self.claims.join(format!("{}.newer", safe(machine).ok()?));
+        fs::read_to_string(file).ok()?.trim().parse().ok()
+    }
+
     fn linked_until(&self, machine: &str) -> Option<i64> {
         let file = self.claims.join(format!("{}.linked", safe(machine).ok()?));
         fs::read_to_string(file).ok()?.trim().parse().ok()

@@ -364,7 +364,7 @@ pub async fn run(
     .await?;
     pinned(&store, named.as_deref(), &other.machine)?;
     know_how_it_runs(starting.as_ref(), &other.machine);
-    let claim = claimed(&store, &other.machine)?;
+    let (claim, claimed_at) = claimed(&store, &other.machine).await?;
     let reach = reach_start(&store, &other.machine);
     // As it stood before admission, which marks a machine never linked
     // as of now.
@@ -438,31 +438,47 @@ pub async fn run(
 
     let (mut keeping, mut looking) = paces();
     let mut queued = VecDeque::new();
-    let result = loop {
-        let step = tokio::select! {
-            frame = pull(&mut queued, &mut frames) => match frame {
-                Some(Ok(frame)) => end.take(frame, &mut writing).await,
-                Some(Err(error)) => Err(error),
-                None => break Ok(Ending::Left),
-            },
-            _ = keeping.tick() => end.keep(&mut writing).await,
-            Some(ask) = next(&mut asked) => end.ask(ask, &mut writing).await,
-            Some((ask, reply)) = answered.recv() => end.answered(ask, reply, &mut writing).await,
-            Some(said) = run_said.recv() => end.run_said(said, &mut writing).await,
-            Some(found) = learned.recv() => end.learned(found, &mut writing).await,
-            _ = looking.tick() => end.look(&mut writing).await,
-            () = own_health::moved(&mut end.health.told) => end.send_machine(&mut writing).await,
-            gathered = changes.gathered() => match gathered {
-                Some(gathered) => end.changed_all(gathered, &mut writing).await,
-                None => break Ok(Ending::Left),
-            },
-        };
-        if let Err(error) = step {
-            break Err(error);
+    let (store, other_machine) = (end.store.clone(), end.other.clone());
+    let carrying = async {
+        loop {
+            let step = tokio::select! {
+                frame = pull(&mut queued, &mut frames) => match frame {
+                    Some(Ok(frame)) => end.take(frame, &mut writing).await,
+                    Some(Err(error)) => Err(error),
+                    None => break Ok(Ending::Left),
+                },
+                _ = keeping.tick() => end.keep(&mut writing).await,
+                Some(ask) = next(&mut asked) => end.ask(ask, &mut writing).await,
+                Some((ask, reply)) = answered.recv() => {
+                    end.answered(ask, reply, &mut writing).await
+                }
+                Some(said) = run_said.recv() => end.run_said(said, &mut writing).await,
+                Some(found) = learned.recv() => end.learned(found, &mut writing).await,
+                _ = looking.tick() => end.look(&mut writing).await,
+                () = own_health::moved(&mut end.health.told) => {
+                    end.send_machine(&mut writing).await
+                }
+                gathered = changes.gathered() => match gathered {
+                    Some(gathered) => end.changed_all(gathered, &mut writing).await,
+                    None => break Ok(Ending::Left),
+                },
+            };
+            if let Err(error) = step {
+                break Err(error);
+            }
+            if end.handover.done {
+                break Ok(Ending::HandedOver);
+            }
         }
-        if end.handover.done {
-            break Ok(Ending::HandedOver);
-        }
+    };
+    // Raced whole, so a link held in a write that never goes through
+    // still lets its claim go to a newer one at once.
+    let result = tokio::select! {
+        result = carrying => result,
+        () = superseded(&store, &other_machine, claimed_at) => Err(io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            format!("a newer link with {other_machine} took over"),
+        )),
     };
     end.leave(result)
 }
@@ -959,11 +975,51 @@ fn pinned(store: &impl Store, named: Option<&OnceLock<String>>, said: &str) -> i
     Err(refusal(why))
 }
 
-/// This link's hold on `machine`, refused when another link carries it.
-fn claimed(store: &impl Store, machine: &str) -> io::Result<Claim> {
-    store
-        .claim(machine)?
-        .ok_or_else(|| refusal(format!("a link to {machine} already carries it here")))
+/// How long a newer link waits for the link holding its machine's claim
+/// to let it go: that one looks each [`LOOK_EVERY`], and lets go what it
+/// carried in under a second.
+const TAKEN_OVER_WITHIN: Duration = Duration::from_secs(10);
+
+/// This link's hold on `machine`, and when it took it. Where another link
+/// holds it, that one is asked to let it go ([`Store::supersede`]), since a
+/// newer link from the same machine means the older one's other end is
+/// gone though it hasn't heard so: a node restarted on 25 November had its
+/// new links to a cloud machine refused there while the old one's end
+/// went on for minutes. Refused when it isn't let go in time.
+async fn claimed(store: &impl Store, machine: &str) -> io::Result<(Claim, i64)> {
+    if let Some(claim) = store.claim(machine)? {
+        return Ok((claim, now()));
+    }
+    store.supersede(machine)?;
+    let taken = tokio::time::timeout(TAKEN_OVER_WITHIN, async {
+        loop {
+            tokio::time::sleep(LOOK_EVERY / 4).await;
+            if let Some(claim) = store.claim(machine)? {
+                return Ok::<_, io::Error>((claim, now()));
+            }
+        }
+    });
+    taken.await.unwrap_or_else(|_| {
+        Err(refusal(format!(
+            "a link to {machine} already carries it here, and didn't let it go \
+             within {TAKEN_OVER_WITHIN:?}"
+        )))
+    })
+}
+
+/// Waits until a newer link with `machine` asks for the claim this link
+/// took at `claimed_at`, looking each [`LOOK_EVERY`].
+async fn superseded(store: &impl Store, machine: &str, claimed_at: i64) {
+    let mut looking = tokio::time::interval(LOOK_EVERY);
+    loop {
+        looking.tick().await;
+        if store
+            .superseded(machine)
+            .is_some_and(|asked| asked > claimed_at)
+        {
+            return;
+        }
+    }
 }
 
 /// Keeps that this store is linked with `machine`, as of now where it
@@ -2706,11 +2762,26 @@ fn parked_in(body: &Value, boot: Option<&str>) -> bool {
         }
 }
 
+/// Writes `frame` as a line, ending the link when the other end takes none
+/// of it for [`SILENT_AFTER`]. A write that never goes through would hold
+/// the link past every keep that judges silence: a cloud machine's end of
+/// a link went on holding its claim on a node restarted at 18:48 on 25
+/// November, so the node's new link was refused there for minutes.
 async fn send(writing: &mut (impl AsyncWrite + Unpin), frame: &Frame) -> io::Result<()> {
     let mut line = serde_json::to_vec(frame).map_err(io::Error::other)?;
     line.push(b'\n');
-    writing.write_all(&line).await?;
-    writing.flush().await
+    let written = async {
+        writing.write_all(&line).await?;
+        writing.flush().await
+    };
+    tokio::time::timeout(SILENT_AFTER, written)
+        .await
+        .unwrap_or_else(|_| {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("the other end took nothing for {SILENT_AFTER:?}"),
+            ))
+        })
 }
 
 /// How far back a link to `machine` reaches for messages, in milliseconds
@@ -4753,21 +4824,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_second_link_to_a_machine_already_linked_is_refused() {
+    async fn a_newer_link_to_a_machine_already_linked_takes_over_from_the_older() {
         let skiff = Memory::default();
         let kestrel = Memory::default();
         kestrel.start_here("walgit", json!({"session": "walgit"}), true);
-        let _first = linked(&skiff, &kestrel, 1 << 16);
+        let (first, _first_far) = linked(&skiff, &kestrel, 1 << 16);
         until(&skiff, |store| !store.presences().is_empty()).await;
 
-        let (near, far) = linked(&skiff, &kestrel, 1 << 16);
-        let refused = near.await.expect("the second link's end runs to its end");
+        let _second = linked(&skiff, &kestrel, 1 << 16);
+        let ended = first.await.expect("the first link's end runs to its end");
+        // Kestrel's older end is taken over too, and closes its stream,
+        // so skiff's may hear it leave before it sees the newer claim.
         assert!(
-            refused.is_err(),
-            "skiff already carries the Mac by the first link"
+            ended.as_ref().map_or_else(
+                |why| why
+                    .to_string()
+                    .contains("a newer link with kestrel took over"),
+                |()| true
+            ),
+            "the older end lets its claim go, as one whose other end is gone: {ended:?}"
         );
-        drop(far);
-        assert_eq!(skiff.presences().len(), 1, "the first link's sessions stay");
+        until(&skiff, |store| {
+            matches!(
+                store.presences().as_slice(),
+                [one] if one.session == "walgit" && one.unreachable_since.is_none()
+            )
+        })
+        .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_write_the_other_end_never_takes_ends_the_link() {
+        let (mut near, _far) = tokio::io::duplex(8);
+        let sent = send(&mut near, &Frame::Hello(realm("kestrel").hello())).await;
+        assert!(
+            sent.as_ref()
+                .is_err_and(|why| why.kind() == io::ErrorKind::TimedOut),
+            "a link held in a write ends as one silent would: {sent:?}"
+        );
     }
 
     #[tokio::test]

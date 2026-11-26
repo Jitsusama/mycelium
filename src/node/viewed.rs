@@ -332,6 +332,7 @@ mod tests {
             folder: Some(folder.to_owned()),
             from: None,
             on: None,
+            needs: Vec::new(),
             cwd: None,
         }
     }

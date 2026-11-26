@@ -114,8 +114,13 @@ the mesh takes as there, and with `machine` naming where it runs. It never
 goes over a session of this machine's or of a third machine's.
 
 One link at a time carries a machine's sessions into a store: it claims
-that machine first, by a lock in `~/.local/state/mycelium/claims/`, and a
-second link to the same machine is refused until the first ends. The link
+that machine first, by a lock in `~/.local/state/mycelium/claims/`. A
+second link to the same machine asks the first to let it go, by writing
+the time in that machine's `.newer` file there; the first, looking each
+second, ends, and the second is refused only when it isn't let go within
+ten seconds. A newer link from a machine means the older one's other end
+is gone, though it may not have heard so, as when that machine's node
+restarted while its end of the link waited on a write. The link
 lets go of what it carried when the session ends. When the link drops,
 it keeps what it carried but marks each `unreachableSince` the drop, in
 milliseconds since the epoch, since a dropped link says nothing of
@@ -259,7 +264,8 @@ same code, each line a JSON value:
    since each says the machine whole. Between
    two ends that both say `facts`, an end that has heard nothing at all
    for three minutes by the wall clock ends the link, so one left from
-   before its machine slept gives way to its dialler's new one.
+   before its machine slept gives way to its dialler's new one. Any end
+   whose write the other end takes none of for three minutes ends too.
 8. `{"Start": {"ask", "start"}}`: start a session held on the other
    end's machine, as a `"Start"` request says it. The other end hands it
    to its own node's socket as `{"Relayed": {"from", "start"}}`, `from`
@@ -1561,7 +1567,7 @@ reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"PlaceToStart": work}` | `{"Placement": placement}`, as `"Place"` for a start, counted here as one |
 | `{"Start": {"work", "folder", "strict", "command", "may_cost", "once"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
 | `{"Takes": {"starts", "ordered"}}` | `{"Placement": placement}`, the last start's, placed as `"Start"` would, or a refusal; starts nothing |
-| `{"Sprout": {"words", "folder", "from", "on", "cwd"}}` | `{"Started": {"machine", "held", "folder", "attach"}}`, as for `"Start"`, or `{"Refused": {"code", "why"}}` |
+| `{"Sprout": {"words", "folder", "from", "on", "cwd", "needs"}}` | `{"Started": {"machine", "held", "folder", "attach"}}`, as for `"Start"`, or `{"Refused": {"code", "why"}}` |
 | `{"Places": {}}` | `{"Places": [{"folder", "name", "kind", "out", "checkOut"}]}`, where work can begin, as the asker sees the disk |
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by", "carries_on", "carries_with"}}`, where it was put, who ordered a carry, whether the node carries it on, and whether with those it named |
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
@@ -2001,7 +2007,12 @@ hourly cost is a decimal written out, such as `"0.12"`, in a
 three-letter currency; `lasts` is the longest one lives, in seconds,
 where its provider fixes it. Each offer comes back with the `provider`
 that offered it, and a program that couldn't say is in `unanswered`
-with why, rather than taken as offering nothing. An offer is the
+with why, rather than taken as offering nothing. Beside them, `needs`
+lists the needs without a value this node places a `"Sprout"` by,
+`["cloud"]`, so a client offers cloud work only where a node says it;
+a node from before says none, and drops a sprout's `needs` unsaid,
+where a node that says them refuses a sprout field it doesn't know.
+An offer is the
 provider's promise, never a fact about a machine: it only decides
 whether one is worth making, and once made, the machine's own node says
 what it is.
@@ -2009,10 +2020,12 @@ what it is.
 `"Place"` asks which of those machines work should go to. The work says
 its `needs` and `prefers`, each one of `{"machine": name}`,
 `{"system": "linux"}`, `{"arch": "x86_64"}`, `{"reach": network}`,
-`{"accelerator": "gpu"}` or `{"tool": name}`, the earliest preference
-most wanted (a machine reaches a network it declares in `reach`, or one
-it probes while its probe last answered, and lacks one whose probe
-didn't; it has a tool its `kit` lists, lacks one its kit doesn't, and
+`{"accelerator": "gpu"}`, `{"tool": name}` or `"cloud"`, the earliest
+preference most wanted (a machine is a cloud one where it declares it
+`costs_money`, as an offer does; a machine reaches a network it
+declares in `reach`, or one it probes while its probe last answered,
+and lacks one whose probe didn't; it has a tool its `kit` lists, lacks
+one its kit doesn't, and
 hasn't said one where it says no kit, nor has a machine not yet made); the
 keys of the taints it `tolerates`; whether it `may_wait` for a machine
 out of reach; how long it `lasts`, as an ISO 8601 duration such as
@@ -2306,8 +2319,10 @@ meets no need, and none is a machine already named. An offer whose
 `hourly` is nothing, written with any number of zeros, may be made for
 any start, so a provider lending machines that cost nothing is as easy
 to start on as a machine of the realm. One that costs is made only for
-a start that says it `may_cost` (`mycelium start --may-cost`); a start
-that doesn't is refused, saying which offer would have done and what it
+a start that says it `may_cost` (`mycelium start --may-cost`), or for
+the person's own start that names a machine or needs `"cloud"`, since
+he pays for what he names; a start that doesn't is refused, saying
+which offer would have done and what it
 costs, and nothing is made. Of those that would take the work, it makes
 one of the cheapest an hour, after taints and preferences, as
 `PROGRAM make SHAPE --lasting SECONDS`: the work's
@@ -2320,7 +2335,14 @@ orchestrator is proved, as that session's own presence says it; else
 `person` for the person's own login; else `unknown`, as for an agent
 no session is proved for, a session whose presence says no address of
 letters and digits (told in capitals), or any agent on a Mac, which
-proves no session. The node's journal, and a refused make's error, say
+proves no session. A session the person granted is told `person`
+instead, while its grant stands: `grants.json`, beside the node's book
+of makes, is a JSON list of `{"address", "said", "at", "until"}`, the
+session's address, the person's words granting it, when they said them
+and when the grant ends. Its makes are booked for the person, so the
+person's own starts may use them; its own fence still holds its work.
+A file that can't be read, or a grant past `until`, grants nothing.
+The node's journal, and a refused make's error, say
 why for each `unknown`. A provider serving only some refuses the rest
 by failing its `make`, and nothing is made; it should refuse a `make`
 where the variable is missing too, as it is from a node older than it,
@@ -2524,8 +2546,12 @@ as the first counted.
 in no window: the node makes the `"Start"` and starts it as above, under
 the same limits. `words` is the work, a link alone or words, which
 become the session's first words; `from` the address of the cell it
-comes from; `on` the machine; and all but `words` may be left out.
-With no `on`, a sprout whose folder is in a repository's own checkout
+comes from; `on` the machine; `needs`, a list of needs as a `"Start"`'s
+work says them, such as `"cloud"`, a machine that costs money
+(`mycelium sprout --need cloud`), which it must meet; and all but
+`words` may be left out. With no `on`, a sprout with `needs` is placed
+by them, wherever its folder is, and is never placed again here. With
+no `on` or `needs`, a sprout whose folder is in a repository's own checkout
 where the person keeps them, `~/src/<repo>` or
 `~/src/<host>/<owner>/<repo>`, fetching from a remote, names no
 machine, so placement chooses, as for any start, and new work goes

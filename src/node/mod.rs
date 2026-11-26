@@ -883,6 +883,42 @@ pub struct Given {
 /// seconds, and its node in a few more.
 const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
+/// How long a start on a machine just made is given to answer: the first
+/// start there readies what its node runs it with, and on 25 November one
+/// on a cloud machine answered past the 90 seconds a start on a machine
+/// standing is given, so the machine was let go with its session
+/// starting.
+const MADE_ANSWERED_WITHIN: Duration = Duration::from_secs(10 * 60);
+
+/// Whether a start by `by` asking `work` may cost money unasked: the
+/// person's, where it names a machine or needs the cloud, since he pays
+/// for what he names. His other starts go where room is, as an agent's
+/// do, so none makes a machine he didn't ask for.
+fn may_cost_unasked(by: By, work: &Work) -> bool {
+    by == By::Person
+        && work
+            .needs
+            .iter()
+            .any(|need| matches!(need, Need::Cloud | Need::Machine(_)))
+}
+
+/// Whether a machine made for `made`'s start is let go when nothing
+/// started on it: not one made for the person, which its provider keeps
+/// until he releases it, so asking would only be refused again.
+fn let_go_unstarted(made: &Made) -> bool {
+    made.asker.as_deref() != Some(made::PERSON)
+}
+
+impl<S: Store> Shared<S> {
+    /// Whether `machine` is one this node made and keeps, as its book of
+    /// machines made says; one the book can't be read for isn't.
+    fn was_made(&self, machine: &str) -> bool {
+        self.book
+            .standing()
+            .is_ok_and(|standing| standing.made.iter().any(|made| made.machine == machine))
+    }
+}
+
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
 pub const HOLDS: [&str; 19] = [
@@ -4785,7 +4821,10 @@ impl<S: Store> Shared<S> {
         }
         let mut asked = asking.join_all().await;
         asked.sort_by_key(|(order, _, _)| *order);
-        let mut offers = Offers::default();
+        let mut offers = Offers {
+            needs: vec![Need::Cloud],
+            ..Offers::default()
+        };
         for (_, program, said) in asked {
             match said {
                 Ok(each) => offers.offers.extend(each),
@@ -7527,7 +7566,10 @@ impl<S: Store> Shared<S> {
     /// only on the machine it names ([`Self::placed`]). It was asked at
     /// `at`, in milliseconds of the wall clock. A carried session placed
     /// on a worker is told in the log ([`Self::says_carried_to_a_worker`]).
-    async fn placed_held(&self, asked: Start, by: By, reopens: bool, at: i64) -> Reply {
+    async fn placed_held(&self, mut asked: Start, by: By, reopens: bool, at: i64) -> Reply {
+        // The person pays for what they name; a worker still takes only
+        // work that names it.
+        asked.may_cost |= may_cost_unasked(by, &asked.work);
         if reopens {
             return self
                 .placed((asked, at), None, held_screen(None), true)
@@ -7926,7 +7968,15 @@ impl<S: Store> Shared<S> {
                 .any(|one| one.machine == made.machine)
         };
         if started.is_err() && !used() {
-            unwanted.notify_one();
+            if let_go_unstarted(&made) {
+                unwanted.notify_one();
+            } else {
+                eprintln!(
+                    "nothing started on {}, but it is kept for the person, so it stands \
+                     until they release it or its time is up",
+                    made.machine
+                );
+            }
         }
         started
     }
@@ -7971,7 +8021,7 @@ impl<S: Store> Shared<S> {
             &Admits::All,
         ) {
             Placement::Placed { machine, .. } => {
-                self.start_on(machine, asked, (fence, START_ANSWERED_WITHIN))
+                self.start_on(machine, asked, (fence, MADE_ANSWERED_WITHIN))
                     .await
             }
             Placement::Pending { misses } | Placement::Refused { misses } => {
@@ -8069,6 +8119,14 @@ impl<S: Store> Shared<S> {
         (fence, within): (Option<crate::declared::Kind>, Duration),
     ) -> Reply {
         if machine != self.machine {
+            // A machine made has none of what its starts run with until
+            // the first readies it, and on 25 November one standing for
+            // ten minutes still took 80 seconds to start a pi.
+            let within = if self.was_made(&machine) {
+                within.max(MADE_ANSWERED_WITHIN)
+            } else {
+                within
+            };
             asked.work.fence = declaring_at_least(asked.work.fence, fence);
             return self.asked_there(&machine, asked, false, within).await;
         }
@@ -8442,7 +8500,8 @@ impl<S: Store> Shared<S> {
     /// `unknown`. A start relayed by another machine's node never makes
     /// one, since the link pins it to this machine by name, which no offer
     /// meets. It is read before any provider is asked what it offers, so
-    /// an asker that ends meanwhile is still told as it was.
+    /// an asker that ends meanwhile is still told as it was. A session the
+    /// person granted ([`made::Grant`]) is told as the person.
     async fn asker_of_a_make(&self) -> Asker {
         let unknown = |why: String| Asker {
             told: made::UNKNOWN.to_owned(),
@@ -8461,6 +8520,17 @@ impl<S: Store> Shared<S> {
                     .and_then(|presence| presence.body.get("addresses")?.get(0)?.as_str())
                     .and_then(address_told);
                 match address {
+                    // The person's grant makes and places for it as for
+                    // them, so their own starts may use what it made.
+                    Some(address)
+                        if self
+                            .book
+                            .granted(&address, jiff::Timestamp::now())
+                            .is_some() =>
+                    {
+                        eprintln!("{address} asks for the person, by the person's grant to it");
+                        told(made::PERSON)
+                    }
                     Some(address) => told(&address),
                     None => unknown(format!("{session} says no address")),
                 }
@@ -10805,6 +10875,20 @@ esac
             told_asker(&socket, &told).await,
             "WCJQSG\n",
             "the session whose pi the asker runs below, by its own presence's address"
+        );
+
+        let until = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        fs::write(
+            socket.with_file_name(made::GRANTS),
+            json!([{"address": "WCJQSG", "said": "you may make it as me",
+                    "at": jiff::Timestamp::now(), "until": until}])
+            .to_string(),
+        )
+        .expect("the grant is written");
+        assert_eq!(
+            told_asker(&socket, &told).await,
+            "person\n",
+            "a session the person granted asks as the person"
         );
     }
 
@@ -23866,6 +23950,7 @@ esac
             folder: Some(folder.clone()),
             from: Some("QEST-1".to_owned()),
             on: Some(on.to_owned()),
+            needs: Vec::new(),
             cwd: None,
         };
         let logged = || {
@@ -24399,6 +24484,53 @@ esac
         }
     }
 
+    #[test]
+    fn a_machine_made_for_the_person_stands_though_nothing_started_on_it() {
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        for (asker, let_go) in [
+            (Some(made::PERSON), false),
+            (Some("P9R1KI"), true),
+            (Some(made::UNKNOWN), true),
+            (None, true),
+        ] {
+            let mut made = made_by("/nowhere/lend", "kestrel", later);
+            made.asker = asker.map(str::to_owned);
+            assert_eq!(
+                let_go_unstarted(&made),
+                let_go,
+                "a machine made for {asker:?} is let go unstarted: {let_go}"
+            );
+        }
+        assert!(
+            MADE_ANSWERED_WITHIN >= 4 * START_ANSWERED_WITHIN,
+            "a first start on a machine just made has minutes, not a standing one's 90 seconds"
+        );
+    }
+
+    #[test]
+    fn the_persons_start_may_cost_unasked_only_where_he_names_where_it_goes() {
+        let agent = By::Agent(crate::declared::Kind::Fence);
+        for (by, work, may) in [
+            (By::Person, work(vec![Need::Cloud]), true),
+            (
+                By::Person,
+                work(vec![Need::Machine("kestrel".into())]),
+                true,
+            ),
+            (By::Person, work(vec![]), false),
+            (By::Person, work(vec![Need::System("linux".into())]), false),
+            (agent, work(vec![Need::Cloud]), false),
+            (agent, work(vec![Need::Machine("kestrel".into())]), false),
+        ] {
+            assert_eq!(
+                may_cost_unasked(by, &work),
+                may,
+                "{by:?} asking {:?} may cost unasked: {may}",
+                work.needs
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_machine_kept_and_let_go_is_booked_for_nobody() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -24739,6 +24871,7 @@ esac
             folder: None,
             from: None,
             on: None,
+            needs: Vec::new(),
             cwd: cwd.map(Path::to_owned),
         }
     }
