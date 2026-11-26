@@ -260,8 +260,14 @@ same code, each line a JSON value:
    it names the sending machine, as ready while the link stands and as
    unreachable, with what it last said, once the link drops. An end
    fallen behind what it hears keeps, of the `Machine` frames waiting,
-   only the newest, and takes every other frame in the order it came,
-   since each says the machine whole. Between
+   only the newest, since each says the machine whole. It takes every
+   other frame in the order it came, but that one waiting only behind
+   `Share` frames goes ahead of them where it is a `Message`,
+   `Presence`, `Ended`, `Machine`, `Replies`, `Ran`, `Taken`, `Lent` or
+   `Started`: what the sending end says of itself and its answers, none
+   of which a share before it waits for. Shares keep their own order,
+   and asks, `HandedOver` and a line that isn't a frame keep their
+   place behind them. Between
    two ends that both say `facts`, an end that has heard nothing at all
    for three minutes by the wall clock ends the link, so one left from
    before its machine slept gives way to its dialler's new one. Any end

@@ -524,13 +524,13 @@ async fn pull(
 }
 
 /// The next of the frames `queued`, in the order they came, but for two
-/// things. A frame that waits only behind shares goes ahead of them:
-/// each share is an act on the disk, which took seconds apiece on a
-/// machine at load 247 on 2026-11-26, and a cloud machine pulling
-/// scratch said hundreds, so a start's answer, a machine's facts and its
-/// sessions waited behind them for many minutes, and the starts there
-/// were given up on although they ran. Shares keep their own order, and
-/// a handover, said once its shares are, never goes ahead of them. And
+/// things. A frame that waits only behind shares goes ahead of them, if
+/// it [`jumps_shares`]: each share is an act on the disk, which took
+/// seconds apiece on a machine at load 247 on 2026-11-26, and a cloud
+/// machine pulling scratch said hundreds, so a start's answer, a
+/// machine's facts and its sessions waited behind them for many minutes,
+/// and the starts there were given up on although they ran. Shares keep
+/// their own order, and every other frame its place behind them. And
 /// where facts are taken, the newest waiting are taken in their place
 /// and every older facts left out: facts are said whole every time, so a
 /// link whose node fell behind, as one did by 49 minutes on 2026-11-21,
@@ -540,7 +540,7 @@ fn next_waiting(queued: &mut VecDeque<io::Result<Frame>>) -> Option<io::Result<F
         .iter()
         .position(|frame| !matches!(frame, Ok(Frame::Share(_))));
     let at = match unshared {
-        Some(at) if !matches!(queued[at], Ok(Frame::HandedOver) | Err(_)) => at,
+        Some(at) if queued[at].as_ref().is_ok_and(jumps_shares) => at,
         _ => 0,
     };
     let next = queued.remove(at)?;
@@ -556,6 +556,29 @@ fn next_waiting(queued: &mut VecDeque<io::Result<Frame>>) -> Option<io::Result<F
     };
     queued.retain(|frame| !matches!(frame, Ok(Frame::Machine(_))));
     Some(next)
+}
+
+/// Whether `frame` may go ahead of the shares it came behind: what the
+/// other end says of itself and its sessions, and its answers to what
+/// this end asked, none of which a share it said before can be waiting
+/// for. A message may land before a quest file said ahead of it, which
+/// a reader takes as written apart in time, as it is. A new ask keeps
+/// its place, since a carried session's start must find the handover
+/// said before it, and so does a handover, said once its shares are,
+/// and a frame that couldn't be read, so a link ends where it broke.
+const fn jumps_shares(frame: &Frame) -> bool {
+    matches!(
+        frame,
+        Frame::Message { .. }
+            | Frame::Presence { .. }
+            | Frame::Ended { .. }
+            | Frame::Machine(_)
+            | Frame::Replies(_)
+            | Frame::Ran { .. }
+            | Frame::Taken { .. }
+            | Frame::Lent { .. }
+            | Frame::Started { .. }
+    )
 }
 
 /// The task reading a link's frames, stopped when this end of the link is,
@@ -3194,20 +3217,33 @@ mod tests {
         let ended = Frame::Ended {
             session: "a".to_owned(),
         };
+        // A run's piece taken answers this end; a run let go asks it.
+        let taken = Frame::Taken { ask: 3 };
+        let unrun = Frame::Unrun { ask: 4 };
+        let tern = facts::measure("tern", &facts::Sources::nowhere());
+        let facts = |cores: u32| {
+            let mut machine = tern.clone();
+            machine.cpu.cores = Some(cores);
+            Frame::Machine(Box::new(machine))
+        };
         let said = [
             share("one"),
+            facts(1),
             share("two"),
             started.clone(),
+            facts(2),
+            unrun.clone(),
             Frame::HandedOver,
             share("three"),
             ended.clone(),
+            taken.clone(),
         ];
         for frame in said {
             sender.send(Ok(frame)).expect("sent");
         }
         let mut queued = VecDeque::new();
         let mut heard = Vec::new();
-        for _ in 0..6 {
+        for _ in 0..8 {
             heard.push(
                 pull(&mut queued, &mut frames)
                     .await
@@ -3218,15 +3254,77 @@ mod tests {
         assert_eq!(
             heard,
             [
+                facts(2),
                 started,
                 share("one"),
                 share("two"),
+                unrun,
                 Frame::HandedOver,
                 ended,
-                share("three"),
+                taken,
             ],
-            "an answer goes ahead of the shares it came behind, which keep their order, and \
-             a handover never goes ahead of them"
+            "the newest facts and an answer go ahead of the shares they came behind, which \
+             keep their order; an ask and a handover never go ahead of them"
+        );
+        // A frame said while shares still wait goes ahead of them too.
+        sender.send(Ok(share("four"))).expect("sent");
+        assert_eq!(
+            pull(&mut queued, &mut frames)
+                .await
+                .expect("a frame")
+                .expect("read"),
+            share("three"),
+        );
+        let message = Frame::Presence {
+            session: "later".to_owned(),
+            body: json!({"session": "later"}),
+            leases: None,
+            held: None,
+            started_by: None,
+        };
+        sender.send(Ok(message.clone())).expect("sent");
+        assert_eq!(
+            pull(&mut queued, &mut frames)
+                .await
+                .expect("a frame")
+                .expect("read"),
+            message,
+            "a presence said later goes ahead of a share still waiting"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_frame_that_cant_be_read_waits_behind_the_shares_before_it() {
+        let (sender, mut frames) = mpsc::unbounded_channel();
+        let share = Frame::Share(Say::Want {
+            quest: "QEST-20261126-SKIFF1".to_owned(),
+            file: "one".to_owned(),
+            at: None,
+        });
+        sender.send(Ok(share.clone())).expect("sent");
+        sender
+            .send(Err(io::Error::other("a line that isn't a frame")))
+            .expect("sent");
+        sender
+            .send(Ok(Frame::Ended {
+                session: "a".to_owned(),
+            }))
+            .expect("sent");
+        let mut queued = VecDeque::new();
+        assert_eq!(
+            pull(&mut queued, &mut frames)
+                .await
+                .expect("a frame")
+                .expect("read"),
+            share,
+            "the share comes first"
+        );
+        assert!(
+            pull(&mut queued, &mut frames)
+                .await
+                .expect("a frame")
+                .is_err(),
+            "then where it broke, and nothing said after that is looked through"
         );
     }
 
