@@ -1304,12 +1304,11 @@ fn a_cut_keeps_the_longest_start_that_fits_as_measured_whole() {
         "\u{1780}\u{17D2}\u{1780} \u{1781}\u{17D2}\u{1782}\u{17D2}\u{1783}",
         "港\u{200D}湾 e\u{301}\u{302}x",
         "a\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}b",
-        // A selector past a run of steps with no fresh start, where a cut
-        // that settled between it and its heart would count a cell less.
-        &format!("{}\u{200D}❤\u{FE0F}x", "ب".repeat(30)),
-        // The same, its run held by accents, which never start afresh,
-        // so the selector falls just past the longest run.
-        &format!("a{}\u{200D}❤\u{FE0F}x", "\u{301}".repeat(LONGEST_RUN - 3)),
+        // A selector just past the longest run of steps with no fresh
+        // start, where a cut that settled between it and its heart would
+        // count a cell less. Arabic letters hold the run, as accents can't:
+        // a pile of them is cut at its steps to a cell first.
+        &format!("{}\u{200D}❤\u{FE0F}x", "ب".repeat(LONGEST_RUN - 2)),
     ] {
         for room in 0..36 {
             let (cut, whole) = (within(text, room), longest(text, room));
