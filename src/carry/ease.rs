@@ -810,16 +810,16 @@ fn carried(
 
 /// Where `work` goes of `peers`, or why none takes it: the person's own
 /// machines first, and only where none of them takes it, the best of the
-/// workers that take carries. Placement keeps work that names no worker
-/// off every worker, so each is placed by name, alone, and they are
-/// ranked here as placement ranks machines: by tier, then by headroom,
-/// then by name.
+/// rest. Placement keeps work that names no worker off every machine it
+/// counts a worker, the person's cloud machines among them, so each of
+/// those is placed by name, alone, and they are ranked here as placement
+/// ranks machines: by tier, then by headroom, then by name.
 fn placed(work: &Work, peers: &[Machine], loads: &Loads, now: Timestamp) -> Result<String, String> {
     let weights = &placement::Weights::STARTING;
-    let (own, workers): (Vec<Machine>, Vec<Machine>) = peers
-        .iter()
-        .cloned()
-        .partition(|machine| ground::Lent::of(machine) == ground::Lent::Not);
+    let (own, workers): (Vec<Machine>, Vec<Machine>) = peers.iter().cloned().partition(|machine| {
+        ground::Lent::of(machine) == ground::Lent::Not
+            && !machine.declared.as_ref().is_some_and(Declared::is_worker)
+    });
     let mut refused = Vec::new();
     if !own.is_empty() {
         match placement::decide_as(work, &own, loads, &[], now, weights).placement {
@@ -2147,6 +2147,26 @@ pub(super) mod tests {
             why_not(&chose(&untold, &[cell("s1")], &history))
                 .starts_with("no machine with room is a peer"),
             "a machine that says nothing of itself can't be told a peer"
+        );
+    }
+
+    #[test]
+    fn a_cloud_machine_of_the_persons_own_takes_a_session_eased_as_the_mac_does() {
+        let history = hot_for(&realm(), 11);
+        let mut cloud = realm();
+        cloud[1].declared.as_mut().expect("declared").costs_money = true;
+        assert_eq!(
+            carries(&chose(&cloud, &[cell("s1")], &history)),
+            Some(("s1", "tern")),
+            "one of the person's cloud machines takes a session, saying nothing of carries, \
+             though placement keeps unnamed work off it"
+        );
+        let mut both = cloud;
+        both.push(machine("wren", 20.0));
+        assert_eq!(
+            carries(&chose(&both, &[cell("s1")], &hot_for(&both, 11))),
+            Some(("s1", "wren")),
+            "a machine placement takes unnamed goes first"
         );
     }
 

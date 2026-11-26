@@ -1845,6 +1845,21 @@ const ENDED_LET_GO_AFTER: jiff::SignedDuration = jiff::SignedDuration::from_mins
 /// its name is no longer taken for that machine's.
 const UNNAMED_LOOKED_FOR: jiff::SignedDuration = jiff::SignedDuration::from_hours(7 * 24);
 
+/// `machine` as leaving no later than the make that made it ends, where
+/// `ends` holds one: its provider ends it then whatever it declares, so
+/// a machine made to live an hour that declares no leaving never reads
+/// to a carry as staying. A machine no make booked, or one that declares
+/// nothing, is as it said.
+fn leaving_as_made(
+    mut machine: facts::Machine,
+    ends: &BTreeMap<String, jiff::Timestamp>,
+) -> facts::Machine {
+    if let (Some(end), Some(said)) = (ends.get(&machine.name), machine.declared.as_mut()) {
+        said.leaves_at = Some(said.leaves_at.map_or(*end, |leaves| leaves.min(*end)));
+    }
+    machine
+}
+
 /// Lets go of each machine `book` says was made and stands, though its
 /// time was up [`ENDED_LET_GO_AFTER`] before `now`, where no link reaches
 /// it. Its provider ended it at its time whatever else happened, so one
@@ -2834,6 +2849,10 @@ struct Inner {
     /// promised it holds at most, where it promised any, weighed while
     /// the machine's own configuration says none ([`placement::full`]).
     promised: BTreeMap<String, u32>,
+    /// When each booked machine's make ends, whatever the machine says,
+    /// so a machine made to live an hour never reads as staying because
+    /// it declares no leaving of its own ([`leaving_as_made`]).
+    ends: BTreeMap<String, jiff::Timestamp>,
     /// The sessions a relayed start is reopening here now, and since
     /// when, kept only while the node runs (see [`Reopening`]).
     reopening: Reopening,
@@ -4936,9 +4955,11 @@ impl<S: Store> Shared<S> {
     }
 
     /// Each other machine of the realm that hasn't left, as its links last
-    /// carried it.
+    /// carried it, each this node made leaving no later than its make
+    /// ends ([`leaving_as_made`]).
     fn others(&self) -> Vec<facts::Machine> {
         let now = jiff::Timestamp::now();
+        let ends = self.lock().ends.clone();
         self.store
             .machines()
             .into_iter()
@@ -4946,6 +4967,7 @@ impl<S: Store> Shared<S> {
                 one.name != self.machine
                     && !one.declared.as_ref().is_some_and(|said| said.has_left(now))
             })
+            .map(|one| leaving_as_made(one, &ends))
             .collect()
     }
 
@@ -9629,6 +9651,7 @@ impl<S: Store> Shared<S> {
         {
             inner.booked.remove(&made.machine);
             inner.promised.remove(&made.machine);
+            inner.ends.remove(&made.machine);
         }
     }
 
@@ -9646,6 +9669,7 @@ impl<S: Store> Shared<S> {
             Some(most) => inner.promised.insert(made.machine.clone(), most),
             None => inner.promised.remove(&made.machine),
         };
+        inner.ends.insert(made.machine.clone(), made.until);
         drop(inner);
         Arc::new(Program {
             program: made.provider.clone(),
@@ -24715,6 +24739,60 @@ esac
             shared.book_for(&made);
         }
         shared
+    }
+
+    #[test]
+    fn a_machine_made_for_the_person_leaves_to_a_carry_when_its_make_ends() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let kept: jiff::Timestamp = "9999-01-01T00:00:00Z".parse().expect("a time");
+        for (name, until) in [("tern", soon), ("wren", kept)] {
+            let mut cloud = placement::tests::machine(name, "linux", 32, &["basin"]);
+            cloud.declared.as_mut().expect("declared").costs_money = true;
+            shared
+                .store
+                .put_machine(&cloud)
+                .expect("the made machine is kept");
+            let mut made = made_by("/usr/bin/lend", name, until);
+            made.asker = Some(made::PERSON.to_owned());
+            shared.book_for(&made);
+        }
+        let others = shared.others();
+        let seen = |name: &str| {
+            others
+                .iter()
+                .find(|one| one.name == name)
+                .expect("the machine is known")
+                .clone()
+        };
+        let tern = seen("tern");
+        assert_eq!(
+            tern.declared.as_ref().and_then(|said| said.leaves_at),
+            Some(soon),
+            "its make's end stands for the leaving it doesn't declare"
+        );
+        assert_ne!(
+            crate::carry::ground::Lent::of(&tern),
+            crate::carry::ground::Lent::Not,
+            "made to live an hour, it is no full place for a carried session"
+        );
+        assert_eq!(
+            crate::carry::ground::Lent::of(&seen("wren")),
+            crate::carry::ground::Lent::Not,
+            "kept for good, it is one of the person's own"
+        );
+        shared.unbook(&made_by("/usr/bin/lend", "tern", soon));
+        assert_eq!(
+            shared
+                .others()
+                .iter()
+                .find(|one| one.name == "tern")
+                .and_then(|one| one.declared.as_ref())
+                .and_then(|said| said.leaves_at),
+            None,
+            "unbooked, it is as it says"
+        );
     }
 
     #[tokio::test]
