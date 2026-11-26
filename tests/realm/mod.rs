@@ -280,6 +280,11 @@ fn subjects(n: usize, repositories: usize) -> Value {
     } else {
         0
     };
+    // Scratch: how many each cell says, for a sweep of the bars.
+    let says: usize = std::env::var("SWEEP_SUBJECTS")
+        .ok()
+        .and_then(|many| many.parse().ok())
+        .unwrap_or(says);
     let said: Vec<String> = (0..says)
         .map(|nth| match nth % 3 {
             0 => format!("repository-{shared:04} lib/area-{nth:02}"),
