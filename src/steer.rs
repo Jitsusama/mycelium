@@ -287,6 +287,15 @@ pub fn read_by_a_holder(wake: &Path, held: &Path) -> bool {
 /// one look at its holders' records; none where it isn't.
 #[must_use]
 pub fn its_holder(wake: &Path, held: &Path) -> Option<bool> {
+    let (folder, id) = holder_of(wake, held)?;
+    its_holder_among(id, &hold::held(folder))
+}
+
+/// Where `wake` is a holder's wake file beside `held`, the holders'
+/// folder it sits in and the id of the holder that reads it; none where
+/// it is no holder's.
+#[must_use]
+pub fn holder_of<'a>(wake: &'a Path, held: &Path) -> Option<(&'a Path, &'a str)> {
     let folder = wake.parent()?;
     let a_holders = wake.extension().is_some_and(|it| it == "wake")
         && folder.extension().is_some_and(|it| it == "held")
@@ -294,12 +303,17 @@ pub fn its_holder(wake: &Path, held: &Path) -> Option<bool> {
     if !a_holders {
         return None;
     }
-    let id = wake.file_stem()?.to_str()?;
-    let holders: Vec<hold::Held> = hold::held(folder)
-        .into_iter()
-        .filter(|one| one.id == id)
-        .collect();
-    (!holders.is_empty()).then(|| holders.iter().any(|one| one.parked))
+    Some((folder, wake.file_stem()?.to_str()?))
+}
+
+/// Among `holders`, read once from their folder, whether the one named
+/// `id` still runs, and if so whether its own record says its program is
+/// parked; none where no record names it.
+#[must_use]
+pub fn its_holder_among(id: &str, holders: &[hold::Held]) -> Option<bool> {
+    let mut its = holders.iter().filter(|one| one.id == id).peekable();
+    its.peek()?;
+    Some(its.any(|one| one.parked))
 }
 
 /// Wakes the session whose wake file is `file`, for the steer left for

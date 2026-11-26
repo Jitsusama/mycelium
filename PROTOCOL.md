@@ -2368,7 +2368,11 @@ program or in the script given right after the `-c`, alone or among
 other letters, of `sh`, `bash`, `zsh`, `dash`, `ksh` or `mksh`, where
 every word between the shell and the `-c` is a flag, reading only
 `$N` and `${N}` as its positional parameters, and to each id a log's
-path may end in, what follows each `_` of its name.
+path may end in, what follows each `_` of its name. A start asked of
+the node itself and placed on its own machine is held to the same
+sessions and words while it starts there, never as it waits for room
+or a machine, so neither it nor one relayed meanwhile starts a second
+pi on a session the other is starting.
 Each word it names as written is held, too, to each session here that
 word begins, and to each another start holds that it begins, since pi
 opens one so; it is refused where another start holds, as written, a
