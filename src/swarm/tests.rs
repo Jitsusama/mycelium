@@ -699,6 +699,30 @@ fn a_short_a_keyboard_types_is_kept_and_one_it_cannot_is_not() {
 }
 
 #[test]
+fn a_name_a_quest_gave_and_that_is_held_back_says_why_it_reaches_no_team() {
+    // Harbour's quest names it with a character a shell reads otherwise,
+    // so the name is held back, and asking for it says whose it was;
+    // a name no quest gave says only that nothing goes by it.
+    let mut held = swarm();
+    held.teams[1]["swarm"] = json!("tide;plan");
+    assert_eq!(
+        team(&held, "tide;plan", &look()),
+        Err(
+            "no team is named tide;plan: Harbour's quest gives it that name, held back as, \
+             typed or drawn, it reads as more than one name or as other than a name; ask for it \
+             by its title"
+                .to_owned()
+        ),
+        "a held-back name said nothing of why"
+    );
+    assert_eq!(
+        team(&held, "ebb", &look()),
+        Err("no team is named ebb".to_owned()),
+        "a name no quest gave was said to be held back"
+    );
+}
+
+#[test]
 fn two_shorts_drawn_alike_keep_neither() {
     // So a lookalike drawn as another team's short is never a twin that
     // steers it: the keyboard's spelling keeps its team.
