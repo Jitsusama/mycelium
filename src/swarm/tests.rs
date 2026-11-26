@@ -561,22 +561,89 @@ fn a_team_held_back_by_its_title_s_act_is_reached_by_its_title_however_dashed() 
 }
 
 #[test]
+fn a_short_spelt_with_any_dash_is_drawn_with_a_hyphen_and_reached_however_dashed() {
+    // A dash drawn like a hyphen is typed as the keyboard's, and asked
+    // for as the quest spelt it, or with another dash, it reaches the
+    // team too; names.rs's own case tries every dash.
+    for (given, other) in [
+        ("harbour\u{2011}tides", "harbour\u{2212}tides"),
+        ("harbour\u{2212}tides", "harbour\u{2011}tides"),
+        ("harbour\u{FF0D}tides", "harbour\u{2013}tides"),
+        ("harbour\u{58A}tides", "harbour\u{2010}tides"),
+        ("harbour\u{10EAD}tides", "harbour\u{FE63}tides"),
+    ] {
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!(given);
+        let shown = overview(&swarm, &look());
+        assert!(
+            !shown.contains(given) && typed(&swarm).iter().any(|name| name == "harbour-tides"),
+            "{given} was not drawn as harbour-tides:\n{shown}"
+        );
+        for asked in ["harbour-tides", "harbour tides", given, other] {
+            let found = team(&swarm, asked, &look()).unwrap_or_default();
+            assert!(
+                found.starts_with("Harbour"),
+                "{asked}, given as {given}, missed Harbour: {found}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_short_a_keyboard_types_is_kept_and_one_it_cannot_is_not() {
+    // Letters, digits and ASCII's punctuation are typed as drawn; what's
+    // drawn like a hyphen and isn't one, an emoji or a lone mark isn't,
+    // so the team goes by its title.
+    for kept in [
+        "kelp_beds",
+        "v2.1",
+        "paus\u{E9}",
+        "\u{6E2F}\u{6E7E}",
+        "harbour;ls",
+    ] {
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!(kept);
+        assert!(
+            typed(&swarm).iter().any(|name| name == kept),
+            "{kept} was refused: {:?}",
+            typed(&swarm)
+        );
+    }
+    for refused in ["tide\u{2043}plan", "\u{1F30A}tide", "tide\u{301}"] {
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!(refused);
+        assert!(
+            !typed(&swarm).iter().any(|name| name.contains("tide")),
+            "{refused} was given as Harbour's name: {:?}",
+            typed(&swarm)
+        );
+    }
+    // So a lookalike drawn as another team's short is never a twin that
+    // steers it: the keyboard's spelling keeps its team.
+    let mut twins = swarm();
+    twins.teams[0]["swarm"] = json!("tide-plan");
+    twins.teams[1]["swarm"] = json!("tide\u{2043}plan");
+    let names = typed(&twins);
+    assert_eq!(
+        names
+            .iter()
+            .filter(|name| name.contains("tide"))
+            .collect::<Vec<_>>(),
+        ["tide-plan"],
+        "a lookalike twin was drawn beside its team: {names:?}"
+    );
+}
+
+#[test]
 fn a_short_name_is_drawn_as_it_is_typed_and_reaches_only_its_team() {
     // Drawn with its space, `tide plan` typed would reach `tide-plan`'s
     // team; a braille blank or a control draws like a space but parts no
-    // words, so each is folded as a space is. A dash drawn like a hyphen
-    // is typed as the keyboard's, and asked for as the quest spelt it
-    // reaches the team too; names.rs's own case tries every dash.
+    // words, so each is folded as a space is.
     for (given, drawn) in [
         ("harbour  tides", "harbour-tides"),
         ("harbour\u{2800}tides", "harbour-tides"),
         ("harbour\u{1}tides", "harbour-tides"),
         ("harbour\u{1b}tides", "harbour-tides"),
-        ("harbour\u{2011}tides", "harbour-tides"),
-        ("harbour\u{2212}tides", "harbour-tides"),
-        ("harbour\u{FF0D}tides", "harbour-tides"),
-        ("harbour\u{58A}tides", "harbour-tides"),
-        ("harbour\u{10EAD}tides", "harbour-tides"),
     ] {
         let mut swarm = swarm();
         swarm.teams[1]["swarm"] = json!(given);
@@ -585,11 +652,7 @@ fn a_short_name_is_drawn_as_it_is_typed_and_reaches_only_its_team() {
             !shown.contains(given) && typed(&swarm).iter().any(|name| name == drawn),
             "{given} was not drawn as {drawn}:\n{shown}"
         );
-        let mut asking = vec![drawn.to_owned(), drawn.replace('-', " ")];
-        if super::hyphens(given) == drawn {
-            asking.push(given.to_owned());
-        }
-        for asked in asking {
+        for asked in [drawn.to_owned(), drawn.replace('-', " ")] {
             let found = team(&swarm, &asked, &look()).unwrap_or_default();
             assert!(
                 found.starts_with("Harbour"),

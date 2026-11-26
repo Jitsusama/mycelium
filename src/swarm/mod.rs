@@ -1113,12 +1113,26 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
             })
             .collect()
     };
-    let lower = hyphens(&unmarked(asked).to_lowercase());
-    let found = if whole.is_empty() {
+    // A title as it's spelt first, and with its dashes folded only where
+    // none is, so one holding the very spelling asked is the one found.
+    let titled = |folded: bool| -> Vec<&T> {
+        let spelt = |text: &str| {
+            let lower = unmarked(text).to_lowercase();
+            if folded { hyphens(&lower) } else { lower }
+        };
+        let lower = spelt(asked);
         things
             .iter()
-            .filter(|thing| hyphens(&unmarked(naming(thing).title).to_lowercase()).contains(&lower))
+            .filter(|thing| spelt(naming(thing).title).contains(&lower))
             .collect()
+    };
+    let found = if whole.is_empty() {
+        let spelt = titled(false);
+        if spelt.is_empty() {
+            titled(true)
+        } else {
+            spelt
+        }
     } else {
         whole
     };

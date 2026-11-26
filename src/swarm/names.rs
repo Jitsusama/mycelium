@@ -57,23 +57,30 @@ pub(super) fn one_word(name: &str) -> bool {
 /// Whether `name`, cleaned as a page draws it, holds a word `swarm` reads
 /// as other than a team's name: an act, `team` or a flag. Typed as a page
 /// drew it, `reef pause` would pause Reef, and `pause` reach no team.
-/// A short's words may be typed apart, so each part between what isn't a
-/// letter or a digit counts as a word too: `reef-pause`, typed as `reef
-/// pause`, would pause Reef, and so would one joined by a hyphen bullet,
-/// as U+2043 is, which no keyboard types and many fonts draw as a
-/// hyphen. A word led by such a character may be typed as a flag, as
-/// `--names` is.
+/// A short's words may be typed apart, so each part between hyphens
+/// counts as a word too: `reef-pause`, typed as `reef pause`, would pause
+/// Reef.
 fn acts_for(name: &str) -> bool {
     let drawn = unmarked(name).to_lowercase();
-    let flagged = drawn.split(blank).any(|word| {
-        word.chars()
-            .next()
-            .is_some_and(|lead| !lead.is_alphanumeric())
-    });
+    let flagged = drawn.split(blank).any(|word| word.starts_with('-'));
     flagged
         || drawn
-            .split(|each: char| !each.is_alphanumeric())
+            .split(|each: char| blank(each) || each == '-')
             .any(|word| ACTS.contains(&word) || word == "team")
+}
+
+/// Whether a keyboard types `name` as it's drawn: each of its characters
+/// a letter, a digit or printable ASCII, so none is punctuation drawn
+/// like what a keyboard types and read otherwise. A hyphen bullet, as
+/// U+2043 is, a heavy minus or a box line, drawn as a hyphen by many
+/// fonts, would join `reef` to `pause` unseen, and two teams drawn as
+/// `tide-plan` would go by two names; an emoji or a mark standing alone
+/// can't be typed at all. A letter drawn like another, a Cyrillic one in
+/// Latin's place, is still kept, which only Unicode's confusables would
+/// tell apart.
+fn typable(name: &str) -> bool {
+    name.chars()
+        .all(|each| each.is_alphanumeric() || each.is_ascii_graphic())
 }
 
 /// Whether `each` is drawn as a space between words.
@@ -248,7 +255,7 @@ pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
         })
         // One that cleans to nothing would be drawn blank, and offered to
         // a shell as an empty word.
-        .filter(|(_, name)| !acts_for(name) && !name.is_empty())
+        .filter(|(_, name)| !acts_for(name) && typable(name) && !name.is_empty())
         .collect();
     named
         .iter()
@@ -279,12 +286,13 @@ pub fn shown<'a>(team: &Value, shorts: &'a BTreeMap<String, String>) -> Option<&
     (!says_again(title(team), short)).then_some(short.as_str())
 }
 
-/// Whether `short` only says `title` again, as `reef` says Reef, both in
-/// the [`typed_form`] a swarm short is held in, as a network's short may
-/// not be.
+/// Whether `short` only says `title` again, as `reef` says Reef, the
+/// title's words in the [`typed_form`] a swarm short is held in, and
+/// the short's dashes folded as that form folds them, as a network's
+/// short isn't held in it.
 pub(crate) fn says_again(title: &str, short: &str) -> bool {
     let spelt: Vec<String> = words(title).into_iter().map(|word| word.typed).collect();
-    typed_form(&spelt.join("-")) == typed_form(short)
+    typed_form(&spelt.join("-")) == hyphens(short)
 }
 
 #[cfg(test)]

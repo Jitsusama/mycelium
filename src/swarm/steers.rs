@@ -108,6 +108,32 @@ fn session_by_address<'a>(swarm: &'a Swarm, asked: &str) -> Option<&'a Value> {
         })
 }
 
+/// The teams whose titles hold `asked`, else the living sessions whose
+/// titles do, with dashes `folded` or not. A title is matched as it's
+/// spelt first, and folded only where nothing is, so a session whose
+/// title holds the very spelling asked is never taken over by a team's
+/// spelt otherwise.
+fn titled<'a>(swarm: &'a Swarm, asked: &str, folded: bool) -> Vec<Named<'a>> {
+    let spelt = |text: &str| {
+        let lower = unmarked(text).to_lowercase();
+        if folded { hyphens(&lower) } else { lower }
+    };
+    let lower = spelt(asked);
+    let matches = |record: &&Value| spelt(title(record)).contains(&lower);
+    let teams: Vec<&Value> = swarm.teams.iter().filter(matches).collect();
+    if teams.is_empty() {
+        swarm
+            .sessions
+            .iter()
+            .filter(|session| Standing::of(session).is_some())
+            .filter(matches)
+            .map(Named::Session)
+            .collect()
+    } else {
+        teams.into_iter().map(Named::Team).collect()
+    }
+}
+
 /// The team or session `asked` names: a living session by its address,
 /// as [`session_by_address`] finds it, then a team by its address, then
 /// a team by its short name, then a team by a part of its name, then a
@@ -120,12 +146,6 @@ fn session_by_address<'a>(swarm: &'a Swarm, asked: &str) -> Option<&'a Value> {
 /// teams whose short names clean alike are several, as `picked` finds
 /// them, so neither takes a steer meant for the other.
 fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
-    let living = || {
-        swarm
-            .sessions
-            .iter()
-            .filter(|session| Standing::of(session).is_some())
-    };
     let shorts = shorts_of(swarm);
     // A short name's words may be typed apart, as `part deux`. Short
     // names and titles are matched as the swarm's pages draw them,
@@ -170,14 +190,11 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
         by_address
     };
     let mut found: Vec<Named<'_>> = if whole.is_empty() {
-        let lower = hyphens(&unmarked(asked).to_lowercase());
-        let matches =
-            |record: &&Value| hyphens(&unmarked(title(record)).to_lowercase()).contains(&lower);
-        let teams: Vec<&Value> = swarm.teams.iter().filter(matches).collect();
-        if teams.is_empty() {
-            living().filter(matches).map(Named::Session).collect()
+        let spelt = titled(swarm, asked, false);
+        if spelt.is_empty() {
+            titled(swarm, asked, true)
         } else {
-            teams.into_iter().map(Named::Team).collect()
+            spelt
         }
     } else {
         whole
@@ -601,6 +618,25 @@ mod tests {
                 ["LEAD", "BUSY", "ASK"],
                 "{asked} steered another than Harbour"
             );
+        }
+    }
+
+    #[test]
+    fn a_title_spelt_as_asked_comes_before_one_whose_dashes_fold_to_it() {
+        // Harbour's title folds to what's asked, but a session's title
+        // holds the very spelling, so that session is the one steered;
+        // asked with the keyboard's hyphen, Harbour's is.
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!("dock");
+        swarm.teams[1]["title"] = json!("Bootstrap harbour-tides tools");
+        swarm.sessions[4]["title"] = json!("harbour\u{2011}tides notes");
+        for (asked, steered) in [
+            ("harbour\u{2011}tides", vec!["CORAL"]),
+            ("harbour-tides", vec!["LEAD", "BUSY", "ASK"]),
+        ] {
+            let aimed = aim(&swarm, Act::Pause, asked)
+                .unwrap_or_else(|why| panic!("{asked} steered nothing: {why}"));
+            assert_eq!(addresses(&aimed), steered, "{asked} steered another");
         }
     }
 
