@@ -46,6 +46,26 @@ pub enum Kind {
 #[derive(Debug)]
 pub struct Folder(OwnedFd);
 
+/// What moves whenever a plain file is written or its standing changes:
+/// written whole by rename, a file is a new inode; written in place, its
+/// length or time moves; its mode or its names changed, its change time
+/// moves. A file of the same stamp holds what it held, so it needn't be
+/// opened to be known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamp {
+    inode: u64,
+    len: i64,
+    modified: i128,
+    changed: i128,
+}
+
+/// A time a file's stat says, in nanoseconds since the epoch. The
+/// nanoseconds' type is each platform's own, so it is taken as whatever
+/// widens without loss.
+fn moment(seconds: i64, nanos: impl Into<i128>) -> i128 {
+    i128::from(seconds) * 1_000_000_000 + nanos.into()
+}
+
 /// Refuses `root` where another account could put something else in its
 /// place: where any folder a name on its way is looked up in, links
 /// followed, may be written by a group or by anyone, unless it is sticky
@@ -193,6 +213,29 @@ impl Folder {
     /// Whether `name` is a plain file in this folder.
     pub fn holds(&self, name: &str) -> bool {
         self.kind(name) == Kind::File
+    }
+
+    /// The stamp of the plain file `name` in this folder, looked at without
+    /// opening or following it; none where it isn't there. Anything else of
+    /// that name is refused.
+    pub fn stamp(&self, name: &str) -> io::Result<Option<Stamp>> {
+        let stat = match rustix::fs::statat(&self.0, name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) => stat,
+            Err(rustix::io::Errno::NOENT) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if !matches!(FileType::from_raw_mode(stat.st_mode), FileType::RegularFile) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{name:?} isn't a plain file"),
+            ));
+        }
+        Ok(Some(Stamp {
+            inode: stat.st_ino,
+            len: stat.st_size,
+            modified: moment(stat.st_mtime, stat.st_mtime_nsec),
+            changed: moment(stat.st_ctime, stat.st_ctime_nsec),
+        }))
     }
 
     /// The plain file `name` in this folder, opened to read, never through

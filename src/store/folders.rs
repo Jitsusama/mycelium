@@ -39,7 +39,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::ends::Ends;
-use super::folder::{Folder, Kind};
+use super::folder::{Folder, Kind, Stamp};
 use super::{Change, Changes, Claim, Presence, Store};
 use crate::facts::Machine;
 
@@ -129,14 +129,10 @@ struct Verdict {
     times: u32,
 }
 
-/// A presence as it was read, and the file it was read from, by what
-/// changes whenever it is written: written whole by rename, a file is a
-/// new inode, and written in place, its length or time moves.
+/// A presence as it was read, and the stamp of the file it was read from.
 #[derive(Debug)]
 struct Kept {
-    inode: u64,
-    len: u64,
-    modified: Option<SystemTime>,
+    stamp: Stamp,
     body: Option<Arc<Value>>,
 }
 
@@ -187,7 +183,6 @@ impl Folders {
     /// since it was last read, and none kept of one gone; each shared, not
     /// copied, with what reads it.
     fn presence_bodies(&self) -> Vec<Arc<Value>> {
-        use std::os::unix::fs::MetadataExt;
         let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
         let mut seen = BTreeMap::new();
         // A folder that can't be opened, such as a link put in its place,
@@ -197,23 +192,18 @@ impl Folders {
             return Vec::new();
         };
         let dir = self.presence();
+        // Each file is only looked at, never opened, unless its stamp moved:
+        // the node reads presence on every change any session makes, so
+        // opening every file each time opened the whole folder several
+        // times a second.
         for name in records_in(&folder) {
-            let Ok(Some(file)) = folder.file(&name) else {
-                continue;
-            };
-            let Ok(meta) = file.metadata() else {
+            let Ok(Some(stamp)) = folder.stamp(&name) else {
                 continue;
             };
             let path = dir.join(&name);
-            let same = kept.remove(&path).filter(|one| {
-                one.inode == meta.ino()
-                    && one.len == meta.len()
-                    && one.modified == meta.modified().ok()
-            });
+            let same = kept.remove(&path).filter(|one| one.stamp == stamp);
             let one = same.unwrap_or_else(|| Kept {
-                inode: meta.ino(),
-                len: meta.len(),
-                modified: meta.modified().ok(),
+                stamp,
                 body: read_in::<Value>(&folder, &name).map(Arc::new),
             });
             seen.insert(path, one);
@@ -1307,6 +1297,80 @@ mod tests {
             1,
             "only what stands is kept"
         );
+    }
+
+    /// The presence files a watch that hears opens heard opened, up to the
+    /// making of `mark`, which is made once what is asked of has run, so
+    /// everything it could have said has been said before the mark.
+    #[cfg(target_os = "linux")]
+    fn opened_until(heard: &std::sync::mpsc::Receiver<notify::Event>, mark: &Path) -> Vec<PathBuf> {
+        const PATIENCE: Duration = Duration::from_secs(30);
+        fs::write(mark, "").expect("the mark made");
+        let mut opened = Vec::new();
+        while let Ok(event) = heard.recv_timeout(PATIENCE) {
+            if matches!(event.kind, EventKind::Create(_)) && event.paths.iter().any(|p| p == mark) {
+                return opened;
+            }
+            if matches!(
+                event.kind,
+                EventKind::Access(notify::event::AccessKind::Open(_))
+            ) {
+                opened.extend(event.paths.into_iter().filter(|path| is_record(path)));
+            }
+        }
+        panic!("the mark {mark:?} was never heard");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_unchanged_presence_is_judged_without_opening_its_file() {
+        let (dir, folders) = store();
+        let presence = dir.path().join("mesh/presence");
+        for name in ["s-one", "s-two"] {
+            fs::write(
+                presence.join(format!("{name}.json")),
+                json!({"session": name}).to_string(),
+            )
+            .expect("written");
+        }
+        let (tell, heard) = std::sync::mpsc::channel();
+        // Every kind of event, opens included, unlike the store's own.
+        let mut watch = notify::RecommendedWatcher::new(
+            move |event: notify::Result<notify::Event>| {
+                if let Ok(event) = event {
+                    let _ = tell.send(event);
+                }
+            },
+            notify::Config::default(),
+        )
+        .expect("a watcher");
+        watch
+            .watch(&presence, RecursiveMode::NonRecursive)
+            .expect("the folder is watched");
+
+        assert_eq!(folders.presence_bodies().len(), 2, "both read");
+        let first = opened_until(&heard, &presence.join("first-mark"));
+        assert_eq!(first.len(), 2, "the first reading opens each: {first:?}");
+
+        assert_eq!(folders.presence_bodies().len(), 2, "both read again");
+        let again = opened_until(&heard, &presence.join("second-mark"));
+        assert!(again.is_empty(), "unchanged, yet opened: {again:?}");
+
+        // A mode changed moves the file's change time, so it is opened again
+        // and, unreadable, is no presence.
+        let one = presence.join("s-one.json");
+        let mut mode = fs::metadata(&one).expect("its mode").permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o000);
+        fs::set_permissions(&one, mode).expect("made unreadable");
+        // Root reads past a mode, so only another account loses the file.
+        let root = rustix::process::geteuid().is_root();
+        assert_eq!(
+            folders.presence_bodies().len(),
+            if root { 2 } else { 1 },
+            "a file made unreadable is read again"
+        );
+        let third = opened_until(&heard, &presence.join("third-mark"));
+        assert_eq!(third, [one], "only the changed file is opened");
     }
 
     #[test]
