@@ -31,6 +31,10 @@ use super::tree::{Content, Place, Quest, Shared, content};
 /// crosses: a mark no person writes.
 const HOME: &[u8] = b"\x01home\x01";
 
+/// How many copies of one file a clash may keep aside before the next is
+/// refused, so a file that clashes at every write can't fill its folder.
+const ASIDE_NAMES: u32 = 100;
+
 /// The harness's lock on a quest, in the quest's folder.
 const LOCK: &str = ".quest.lock";
 
@@ -188,6 +192,49 @@ impl Quest {
             self.write(&at, Some(body), mode)?;
         }
         Ok(at)
+    }
+
+    /// Keeps this end's own `shared` beside it as written on `machine`,
+    /// under the first of [`beside`]'s names no earlier clash took, so a
+    /// second clash never writes over the first's copy, answering where,
+    /// or `None` where this end holds none. The copy is a second name for
+    /// the file as it stands, so it keeps its bytes and its mode, and what
+    /// is then written in the file's place leaves it as it was.
+    ///
+    /// # Errors
+    ///
+    /// Where the file is reached through a link, or every name is taken.
+    pub fn keep_aside(&self, shared: &Shared, machine: &str) -> io::Result<Option<Shared>> {
+        let Some(path) = self.unlinked(shared)? else {
+            return Err(io::Error::other(format!(
+                "{} is reached through a link here, so nothing is kept aside",
+                shared.path
+            )));
+        };
+        let first = beside(&shared.path, machine);
+        for tried in 1..=ASIDE_NAMES {
+            let at = Shared {
+                place: shared.place,
+                path: if tried == 1 {
+                    first.clone()
+                } else {
+                    format!("{first}-{tried}")
+                },
+            };
+            let Some(to) = self.unlinked(&at)? else {
+                continue;
+            };
+            match fs::hard_link(&path, &to) {
+                Ok(()) => return Ok(Some(at)),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::other(format!(
+            "{} has {ASIDE_NAMES} copies kept aside already: read and clear them",
+            shared.path
+        )))
     }
 }
 
@@ -461,6 +508,44 @@ mod tests {
             fs::read(quest.record.join("attachments/a.md.from-skiff")).expect("read"),
             mark,
             "what a record attaches crosses as it was, beside as anywhere"
+        );
+    }
+
+    #[test]
+    fn each_clash_keeps_its_copy_aside_under_a_name_of_its_own_and_mode() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let quest = Quest::new(dir.path().join("record"), PathBuf::from("/home/x"));
+        let notes = record("notes.txt");
+        quest
+            .write(&notes, Some(b"first"), Some(0o640))
+            .expect("written");
+        let first = quest.keep_aside(&notes, "tern").expect("kept aside");
+        quest
+            .write(&notes, Some(b"second"), Some(0o600))
+            .expect("written in its place");
+        let second = quest.keep_aside(&notes, "tern").expect("kept aside again");
+        quest
+            .write(&notes, Some(b"third"), None)
+            .expect("written in its place again");
+        let (first, second) = (first.expect("a first copy"), second.expect("a second"));
+        assert_eq!(
+            first.path, "notes.txt.from-tern",
+            "named for where it was written"
+        );
+        assert_eq!(second.path, "notes.txt.from-tern-2", "never over the first");
+        let at = |name: &str| quest.record.join(name);
+        assert_eq!(fs::read(at(&first.path)).expect("read"), b"first");
+        assert_eq!(fs::read(at(&second.path)).expect("read"), b"second");
+        assert_eq!(fs::read(at("notes.txt")).expect("read"), b"third");
+        let mode = |name: &str| fs::metadata(at(name)).expect("there").permissions().mode();
+        assert_eq!(mode(&first.path) & 0o777, 0o640, "each copy keeps its mode");
+        assert_eq!(mode(&second.path) & 0o777, 0o600);
+        assert_eq!(
+            quest
+                .keep_aside(&record("none.txt"), "tern")
+                .expect("nothing to keep"),
+            None,
+            "a file this end doesn't hold keeps nothing aside"
         );
     }
 

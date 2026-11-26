@@ -2301,9 +2301,13 @@ impl Exchange {
     }
 
     /// Settles `shared`, file `key` of quest `id` written apart, where its
-    /// scratch is kept from the other end: this end's copy moves beside,
-    /// theirs, `body`, takes its place, and the entry this end then holds
-    /// is just what they sent.
+    /// scratch is kept from the other end: this end's copy is kept aside
+    /// under a name no earlier clash took, theirs, `body`, takes its place,
+    /// and the entry this end then holds is just what they sent. Their
+    /// version alone is held, not one joined with this end's: scratch kept
+    /// from them never crosses, so this end's counts in it are nothing they
+    /// can ever have seen, and a joined version would leave each later
+    /// write of theirs settled apart again.
     #[expect(
         clippy::too_many_arguments,
         reason = "each is a part of the one file being settled, as take_whole has them"
@@ -2318,10 +2322,11 @@ impl Exchange {
         body: &[u8],
         mode: Option<u32>,
     ) -> io::Result<Entry> {
-        let ours = quest.read(shared)?.unwrap_or_default();
-        let aside = quest.write_beside(shared, &self.machine, &ours, None)?;
+        let aside = quest.keep_aside(shared, &self.machine)?;
         let written = quest.write(shared, Some(body), mode)?;
-        self.put_aside(id, key, &aside.path);
+        if let Some(aside) = aside {
+            self.put_aside(id, key, &aside.path);
+        }
         Ok(Entry {
             hash: theirs.hash.clone(),
             version: theirs.version.clone(),
@@ -4657,6 +4662,14 @@ mod tests {
             held.iter().any(|text| text == "osprey's\n"),
             "and the person's own is kept too: {held:?}"
         );
+        let told = near.findings();
+        assert!(
+            told.iter().any(|finding| {
+                finding.text.contains("took its place")
+                    && finding.text.contains(&format!("x.jsonl.from-{person}"))
+            }),
+            "the quest's sessions are told where the person's own now is: {told:?}"
+        );
         assert_eq!(
             fs::read_to_string(at(&kestrel).join("x.jsonl"))
                 .ok()
@@ -4684,6 +4697,21 @@ mod tests {
             "beside the person's own copy, and no other"
         );
         assert_eq!(far.waiting(), 0, "and it is still left wanting nothing");
+        // Written apart again, the person's second copy is kept beside
+        // the first, never over it.
+        fs::write(at(&osprey).join("x.jsonl"), "osprey's again\n").expect("written");
+        fs::write(at(&kestrel).join("x.jsonl"), "kestrel's third\n").expect("written");
+        talk(&mut near, &mut far);
+        let mut held: Vec<String> = fs::read_dir(at(&osprey))
+            .expect("the handover is there")
+            .map(|entry| fs::read_to_string(entry.expect("an entry").path()).expect("read"))
+            .collect();
+        held.sort();
+        assert_eq!(
+            held,
+            ["kestrel's third\n", "osprey's\n", "osprey's again\n"],
+            "each of the person's copies is kept, and the made machine's stands"
+        );
     }
 
     #[test]
