@@ -187,14 +187,14 @@ const LEAVING_EVERY: Duration = Duration::from_secs(60);
 const FENCES_SEEN_EVERY: Duration = Duration::from_secs(2);
 
 /// The longest a session is held as being reopened by a relayed start
-/// whose answer was never waited for, as when its asker hung up mid-start.
-/// One answered is let go at once, since its holder's record then says it
-/// is held, or it failed and may be asked again. A minute past the longest
-/// any start is waited on, a first one on a machine just made, since a
-/// hold lapsing while its start is still waited on lets a second ask, as
-/// the harness's after its own two minutes, start a second pi beside it;
-/// letting go when its asker hangs up instead would do the same, as the
-/// start it dropped may still run.
+/// that hasn't answered. One answered is let go at once, since its
+/// holder's record then says it is held, or it failed and may be asked
+/// again. A start here runs to its answer even once its asker hangs up,
+/// and a holder silent for ten seconds is killed, so this bounds only a
+/// start stuck before it answers: a minute past the longest an asker waits
+/// on one, a first start on a machine just made, so no second ask, as the
+/// harness's after its own two minutes, is let in beside a start still
+/// waited on.
 const REOPENING_HELD: Duration = Duration::from_secs(MADE_ANSWERED_WITHIN.as_secs() + 60);
 const _: () = assert!(
     REOPENING_HELD.as_secs() > MADE_ANSWERED_WITHIN.as_secs()
