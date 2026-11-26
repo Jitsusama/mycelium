@@ -3461,7 +3461,7 @@ pub(crate) mod tests {
             "the refused machine says why, whatever the work tolerates: {said}"
         );
         assert!(
-            said.contains("cloud refuses"),
+            said.contains("refuses: it is lent or paid for, so it takes only work that names it"),
             "and a worker still refuses work for a network the person's refused machine \
              reaches: {said}"
         );
