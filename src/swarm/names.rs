@@ -74,16 +74,53 @@ fn blank(each: char) -> bool {
     each.is_whitespace() || each == BRAILLE_BLANK
 }
 
+/// Whether `each` is a dash, as Unicode 16's Dash property says: a
+/// hyphen, an en or em dash, a minus sign, and their small, fullwidth and
+/// other scripts' forms, each read as a keyboard's hyphen.
+fn dash(each: char) -> bool {
+    matches!(
+        each,
+        '\u{2D}'
+            | '\u{58A}'
+            | '\u{5BE}'
+            | '\u{1400}'
+            | '\u{1806}'
+            | '\u{2010}'..='\u{2015}'
+            | '\u{2053}'
+            | '\u{207B}'
+            | '\u{208B}'
+            | '\u{2212}'
+            | '\u{2E17}'
+            | '\u{2E1A}'
+            | '\u{2E3A}'..='\u{2E3B}'
+            | '\u{2E40}'
+            | '\u{2E5D}'
+            | '\u{301C}'
+            | '\u{3030}'
+            | '\u{30A0}'
+            | '\u{FE31}'..='\u{FE32}'
+            | '\u{FE58}'
+            | '\u{FE63}'
+            | '\u{FF0D}'
+            | '\u{10D6E}'
+            | '\u{10EAD}'
+    )
+}
+
 /// `name` as a page draws it and a person types it: cleaned, so each
-/// control is the space it's drawn as, in lower case, and with each run
-/// of what's drawn as a space one hyphen, as a typed name's words are
-/// joined. So what a page draws is what reaches it: `tide plan` drawn as
-/// said would be typed as `tide-plan`, another team's, and a braille
-/// blank or a control drawn like a space would let `reef pause` through
-/// as one word.
+/// control is the space it's drawn as, in lower case, with each dash the
+/// keyboard's hyphen, and with each run of what's drawn as a space one
+/// hyphen, as a typed name's words are joined. So what a page draws is
+/// what reaches it: `tide plan` drawn as said would be typed as
+/// `tide-plan`, another team's; a braille blank or a control drawn like a
+/// space would let `reef pause` through as one word; and a `reef-pause`
+/// whose hyphen is a lookalike, as U+2011 is, would hide its act from the
+/// check on each part, and miss the keyboard's `reef-pause` it seems to
+/// be.
 fn typed_form(name: &str) -> String {
     unmarked(name)
         .to_lowercase()
+        .replace(dash, "-")
         .split(blank)
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()

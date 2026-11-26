@@ -551,12 +551,19 @@ fn a_short_name_that_cleans_to_an_act_is_never_drawn() {
 fn a_short_name_is_drawn_as_it_is_typed_and_reaches_only_its_team() {
     // Drawn with its space, `tide plan` typed would reach `tide-plan`'s
     // team; a braille blank or a control draws like a space but parts no
-    // words, so each is folded as a space is.
+    // words, so each is folded as a space is. A dash drawn like a hyphen
+    // is typed as the keyboard's, from the first of Unicode's dashes to
+    // the last.
     for (given, drawn) in [
         ("harbour  tides", "harbour-tides"),
         ("harbour\u{2800}tides", "harbour-tides"),
         ("harbour\u{1}tides", "harbour-tides"),
         ("harbour\u{1b}tides", "harbour-tides"),
+        ("harbour\u{2011}tides", "harbour-tides"),
+        ("harbour\u{2212}tides", "harbour-tides"),
+        ("harbour\u{FF0D}tides", "harbour-tides"),
+        ("harbour\u{58A}tides", "harbour-tides"),
+        ("harbour\u{10EAD}tides", "harbour-tides"),
     ] {
         let mut swarm = swarm();
         swarm.teams[1]["swarm"] = json!(given);
@@ -581,6 +588,11 @@ fn a_short_name_is_drawn_as_it_is_typed_and_reaches_only_its_team() {
         "reef\u{2800}pause",
         "reef\u{1b}pause",
         "--names",
+        "reef\u{2010}pause",
+        "reef\u{2013}pause",
+        "reef\u{FE63}pause",
+        "\u{2212}\u{2212}names",
+        "\u{FF0D}names",
     ] {
         let mut acting = swarm();
         acting.teams[1]["swarm"] = json!(given);
@@ -602,20 +614,24 @@ fn a_short_name_is_drawn_as_it_is_typed_and_reaches_only_its_team() {
         "a title's controlled word was not drawn as typed: {:?}, {found}",
         typed(&controlled)
     );
-    // And to the same rule on acts.
-    let worked_out = "Bootstrap reef\u{2800}pause tools";
-    let mut titled = swarm();
-    titled.teams[1]["title"] = json!(worked_out);
-    assert!(
-        !typed(&titled)
-            .iter()
-            .any(|name| name != worked_out && name.contains("pause")),
-        "a title's word was given as Harbour's name: {:?}",
-        typed(&titled)
-    );
-    // A spaced name, a controlled one and a hyphened one are typed alike,
-    // so go to neither.
-    for spaced in ["tide plan", "tide\u{1b}plan"] {
+    // And to the same rule on acts, a dash in a title's word too.
+    for worked_out in [
+        "Bootstrap reef\u{2800}pause tools",
+        "Bootstrap reef\u{2011}pause tools",
+    ] {
+        let mut titled = swarm();
+        titled.teams[1]["title"] = json!(worked_out);
+        assert!(
+            !typed(&titled)
+                .iter()
+                .any(|name| name != worked_out && name.contains("pause")),
+            "a title's word was given as Harbour's name: {:?}",
+            typed(&titled)
+        );
+    }
+    // A spaced name, a controlled one, one with a lookalike dash and a
+    // hyphened one are typed alike, so go to neither.
+    for spaced in ["tide plan", "tide\u{1b}plan", "tide\u{2010}plan"] {
         let mut twins = swarm();
         twins.teams[0]["swarm"] = json!("tide-plan");
         twins.teams[1]["swarm"] = json!(spaced);
