@@ -3739,15 +3739,14 @@ fn need(said: &str) -> Result<Need, String> {
     if said == "cloud" {
         return Ok(Need::Cloud);
     }
-    let (kind, value) = said
-        .split_once('=')
-        .ok_or_else(|| format!("{said:?} is not kind=value, such as system=linux"))?;
-    serde_json::from_value(serde_json::json!({ kind: value })).map_err(|_| {
+    let not_one = || {
         format!(
             "{said:?} is not a need: cloud, machine, system, arch, reach, accelerator (gpu, \
-             npu) or tool"
+             npu) or tool, each but cloud as kind=value, such as system=linux"
         )
-    })
+    };
+    let (kind, value) = said.split_once('=').ok_or_else(not_one)?;
+    serde_json::from_value(serde_json::json!({ kind: value })).map_err(|_| not_one())
 }
 
 /// A kit's folder as it can go on a path: whole, since every session
