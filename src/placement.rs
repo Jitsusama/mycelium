@@ -965,7 +965,7 @@ fn decide_at(
     pick: &mut dyn FnMut(usize) -> usize,
     weights: &Weights,
 ) -> Decision {
-    let lasting = lasting_reach(machines);
+    let lasting = lasting_reach(machines, now);
     let judged: Vec<Judged> = machines
         .iter()
         .map(|one| {
@@ -1160,7 +1160,7 @@ pub fn to_make<'a>(
     offers: &'a [Offer],
     machines: &[Machine],
 ) -> Result<&'a Offer, Vec<Miss>> {
-    let named = names_worker(work, &lasting_reach(machines));
+    let named = names_worker(work, &lasting_reach(machines, jiff::Timestamp::now()));
     let judged: Vec<(Judged, &Offer)> = offers
         .iter()
         .map(|offer| {
@@ -1409,11 +1409,16 @@ fn past_lively(lively: Lively, room: &Room) -> Option<String> {
 /// The networks the person's own lasting machines reach, always or by a
 /// probe: what a worker alone reaches is the worker's, so work needing it
 /// names the worker, and what one of the person's own reaches names none.
-fn lasting_reach(machines: &[Machine]) -> BTreeSet<&str> {
+/// The person's own cloud machines, as they are at `now`, are theirs here
+/// too, so what they reach names no worker.
+fn lasting_reach(machines: &[Machine], now: jiff::Timestamp) -> BTreeSet<&str> {
     machines
         .iter()
+        .filter(|one| {
+            one.declared.as_ref().is_some_and(|declared| !declared.is_worker())
+                || is_the_persons_cloud(one, now)
+        })
         .filter_map(|one| one.declared.as_ref())
-        .filter(|declared| !declared.is_worker())
         .flat_map(|declared| {
             let always = declared.reach.iter().map(String::as_str);
             always.chain(declared.probes.keys().map(String::as_str))
@@ -1452,19 +1457,21 @@ fn worker_refuses() -> Because {
 /// `here`, so an agent on a machine lent for its work runs that work
 /// where it was lent, never on the person's own machines, which it was
 /// never given. One of the person's own cloud machines is no worker here,
-/// so work asked on it spreads as work asked on any of theirs.
+/// so work asked on it spreads as work asked on any of theirs. Needing a
+/// cloud machine names no worker here, since the person's own are cloud
+/// machines too, so it keeps such work where it was lent as well.
 #[must_use]
 pub fn asked_on(work: &Work, here: &Machine, machines: &[Machine], now: jiff::Timestamp) -> Work {
     let mut work = work.clone();
     let is_worker = |one: &Machine| {
         one.declared.as_ref().is_some_and(Declared::is_worker) && !is_the_persons_cloud(one, now)
     };
-    let names_one = names_worker(&work, &lasting_reach(machines))
-        || work.needs.iter().any(|need| {
-            machines
-                .iter()
-                .any(|one| is_worker(one) && *need == Need::Machine(one.name.clone()))
-        });
+    let lasting = lasting_reach(machines, now);
+    let names_one = work.needs.iter().any(|need| match need {
+        Need::Reach(network) => !lasting.contains(network.as_str()),
+        Need::Machine(name) => machines.iter().any(|one| is_worker(one) && one.name == *name),
+        _ => false,
+    });
     if is_worker(here) && !names_one {
         work.needs.push(Need::Machine(here.name.clone()));
     }
@@ -3635,6 +3642,19 @@ pub(crate) mod tests {
             at_home,
             "and so is work asked on one of the person's own cloud machines"
         );
+        // What the person's own cloud machine reaches, and its being a
+        // cloud machine, name no worker, so neither takes lent work there.
+        let declared = theirs.declared.as_mut().expect("declared");
+        declared.reach.push("their-net".to_owned());
+        let mut with_theirs = realm.to_vec();
+        with_theirs.push(theirs);
+        for need in [vec![Need::Cloud], vec![Need::Reach("their-net".to_owned())]] {
+            let work = asked_on(&needing(need.clone()), &with_theirs[2], &with_theirs, now());
+            assert!(
+                work.needs.contains(&Need::Machine("lent".to_owned())),
+                "work needing {need:?} asked on a lent worker stays there, off the person's own"
+            );
+        }
     }
 
     // Work placed past every heard machine's room is placed where a
