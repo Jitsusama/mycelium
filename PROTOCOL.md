@@ -2462,9 +2462,13 @@ only to a machine booked for the person or for no asker, never to one
 an agent's make booked, whose worker home that agent wrote. An agent's
 start on the person's leaves the person the last session it holds, as
 a granted session's does below. A
-preview is held to it as its run would be, and an ordered carry there
-of another's session is refused; only a start pinned to the machine
-made for it is not held to it. The booking is the making node's, kept
+preview is held to it as its run would be, and an ordered carry to a
+machine an agent's make booked, of another's session, is refused. A
+carry to one booked for the person takes any session, as its starts
+do, but keeps the person no session there, since a carry is ordered
+to that machine by name, to spread load onto it. Only a start pinned
+to the machine made for it is not held to it. The booking is the
+making node's, kept
 while it runs and made again as it redials its book. Like the judging
 of a run, this fences habit, not an agent set on passing as another,
 which runs as the same account; an agent's process left with no agent

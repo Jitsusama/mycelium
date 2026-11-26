@@ -395,15 +395,20 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
     // the kernel's own, which no queue's record carries. A machine that
     // keeps no queue, as a cloud machine made for sessions, says the room
     // its kernel feels, so placement hears it as it hears one with a
-    // queue rather than ranking it last, as unheard.
+    // queue rather than ranking it last, as unheard. Keeping no queue is
+    // having no queue's file, whether or not there is a runtime folder
+    // for one; a queue whose file is there but has gone quiet still says
+    // nothing, so its machine ranks unheard.
+    let keeps_no_queue = sources
+        .queue
+        .as_deref()
+        .is_none_or(|queue| !queue.exists());
     let room = sources
         .queue
         .as_deref()
         .and_then(|queue| room::read(queue, now.as_second()))
         .or_else(|| {
-            sources
-                .queue
-                .is_none()
+            keeps_no_queue
                 .then(|| room::felt(&sources.procs, &now.to_string()))
                 .flatten()
         })
@@ -1569,6 +1574,43 @@ mod tests {
             measure("tern", &sources).updated,
             Some(done),
             "then as its updater kept it, a restart it waits on included"
+        );
+    }
+
+    #[test]
+    fn a_machine_with_no_queues_file_says_the_room_its_kernel_feels() {
+        let home = tempfile::tempdir().expect("a temporary folder");
+        let procs = home.path().join("proc");
+        std::fs::create_dir_all(procs.join("pressure")).expect("its pressure");
+        for name in ["cpu", "memory", "io"] {
+            std::fs::write(
+                procs.join("pressure").join(name),
+                "some avg10=1.00 avg60=1.00 avg300=1.00 total=1\n\
+                 full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+            )
+            .expect("written");
+        }
+        std::fs::write(procs.join("meminfo"), "MemAvailable:   1024 kB\n").expect("written");
+        let sources = Sources {
+            home: home.path().to_owned(),
+            // A runtime folder's queue path, with no queue keeping it.
+            queue: Some(home.path().join("queue.json")),
+            disk_guard: None,
+            declared: None,
+            reached: home.path().join("reached.json"),
+            updated: home.path().join("last.json"),
+            procs,
+        };
+        assert_eq!(
+            measure("tern", &sources).room.map(|room| room.memory_available),
+            Some(1024 * 1024),
+            "a queue's path with no file says the kernel's room"
+        );
+        std::fs::write(home.path().join("queue.json"), "{}").expect("a queue's file");
+        assert_eq!(
+            measure("tern", &sources).room,
+            None,
+            "a queue's file that says nothing still says no room"
         );
     }
 

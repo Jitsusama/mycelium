@@ -1509,9 +1509,19 @@ fn judge(
         |taint: &&Taint| [MEMORY_PRESSURE, CPU_PRESSURE, KEPT_LIVELY].contains(&taint.key.as_str());
     // Over is read from the room even where it is unheard, and harmlessly:
     // a machine unheard ranks with those over either way.
-    let over = rather_not.iter().any(|taint| is_over(&taint));
     let cloud = is_the_persons_cloud(machine, now);
-    let lately = heard(machine, now) || (cloud && heard_by_its_facts(machine, now));
+    let by_its_facts = cloud && !heard(machine, now) && heard_by_its_facts(machine, now);
+    // A cloud machine heard by its facts alone has no queue's limits to
+    // be over, so its processors stand in for them: busy past what
+    // balance counts as room, it ranks with those over, after every
+    // machine with room, rather than taking every start however loaded.
+    let over = rather_not.iter().any(|taint| is_over(&taint))
+        || (by_its_facts
+            && machine
+                .cpu
+                .busy
+                .is_some_and(|busy| busy >= crate::balance::ROOM_PROCESSOR));
+    let lately = heard(machine, now) || by_its_facts;
     // A room unheard says nothing of its processors now, so it neither
     // ranks the machine saturated nor is given as why it was passed.
     if !lately {
@@ -1559,16 +1569,19 @@ const LASTS_AS_THE_PERSONS: jiff::SignedDuration = jiff::SignedDuration::from_ho
 /// money while it is up, stays a month or more past `now`, and isn't one
 /// of Aquifer's, so it is where agents' sessions go first, as the person
 /// asked on 26 November. A machine lent for a while, or Aquifer's, is a
-/// worker still, taking only work that names it.
+/// worker still, taking only work that names it, and so is one its link
+/// marks a worker, whatever it declares of itself, since the link is this
+/// node's own word and the declaration the machine's.
 fn is_the_persons_cloud(machine: &Machine, now: jiff::Timestamp) -> bool {
     let lasting = now.checked_add(LASTS_AS_THE_PERSONS).ok();
-    machine.declared.as_ref().is_some_and(|declared| {
-        declared.costs_money
-            && !declared.reach.iter().any(|network| network == "aquifer")
-            && declared
-                .leaves_at
-                .is_none_or(|leaves| lasting.is_some_and(|lasting| leaves > lasting))
-    })
+    !machine.worker
+        && machine.declared.as_ref().is_some_and(|declared| {
+            declared.costs_money
+                && !declared.reach.iter().any(|network| network == "aquifer")
+                && declared
+                    .leaves_at
+                    .is_none_or(|leaves| lasting.is_some_and(|lasting| leaves > lasting))
+        })
 }
 
 /// Whether `machine`, saying no room, was measured within
@@ -3792,6 +3805,20 @@ pub(crate) mod tests {
             placed(&place(&anything, &[laptop.clone(), mac.clone(), silent])),
             Some("osprey"),
             "a cloud machine unheard for ten minutes ranks with the unheard"
+        );
+        let mut busy = cloud.clone();
+        busy.cpu.busy = Some(crate::balance::ROOM_PROCESSOR);
+        assert_eq!(
+            placed(&place(&anything, &[laptop.clone(), mac.clone(), busy])),
+            Some("osprey"),
+            "one heard by its facts and busy past room ranks after a machine with room"
+        );
+        let mut lent = cloud.clone();
+        lent.worker = true;
+        assert_eq!(
+            placed(&place(&anything, &[laptop.clone(), mac.clone(), lent])),
+            Some("osprey"),
+            "one its link marks a worker is a worker, whatever it declares"
         );
         let mut aquifers = cloud.clone();
         aquifers.declared.as_mut().expect("declared").reach = vec!["aquifer".to_owned()];
