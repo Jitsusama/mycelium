@@ -1243,7 +1243,15 @@ fn a_cut_keeps_the_longest_start_that_fits_as_measured_whole() {
     // So does a cut before a Khmer letter past a coeng and a selector,
     // which measured whole counts no cell and measured apart counts one.
     let subscripted = "\u{1780}\u{17D2}\u{FE00}\u{1780}".repeat(20);
+    // Nor does a cut part a coeng from the letter it sets under the one
+    // before, which measured apart counts a cell the run whole doesn't.
+    let coenged = "\u{1780}\u{17D2}\u{1780}".repeat(20);
     for room in 0..16 {
+        if within(&coenged, room).ends_with('\u{17D2}') {
+            wrong.push(format!(
+                "a coenged run to {room} parted a coeng from its letter"
+            ));
+        }
         let cut = within(&subscripted, room);
         if <str as unicode_width::UnicodeWidthStr>::width(cut) > room {
             wrong.push(format!("a subscripted run to {room} passed it"));

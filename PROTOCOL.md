@@ -3659,8 +3659,10 @@ grapheme, such as U+09BE; no nonspacing mark, conjoining jamo vowel or
 final, or selector is) and following no zero-width joiner kept, to the
 next, the rest dropped, a non-joiner (U+200C) never counted; a Khmer
 coeng (U+17D2) only after a Khmer character (U+1780 to U+17FF or
-U+19E0 to U+19FF) given a cell by that per-character width, so never
-after a coeng or a sign drawn on the letter before, and at most two
+U+19E0 to U+19FF) given a cell by that per-character width, or after
+a robat (U+17CC) or register shifter (U+17C9, U+17CA) following one,
+so never after a coeng or another sign drawn on the letter before,
+and at most two
 from the start or from one character given a cell by that width, a
 skin tone or regional indicator included, with no coeng kept since the
 last character given one, the rest dropped; each judged against

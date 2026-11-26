@@ -1403,10 +1403,11 @@ pub(crate) fn one_line(text: &str) -> String {
     // with no coeng kept since the last character that took one:
     // unicode-width counts a letter after a coeng as none even past a
     // selector or a joiner between them. A coeng follows only a Khmer
-    // character given a cell of its own, so never a coeng or a sign
-    // drawn on the letter before, as Khmer spells a subscript straight
-    // after its letter; a joiner just before one is always dropped, as
-    // it joins no letter, and the coeng is judged by what's before it.
+    // character given a cell of its own, or a robat or register shifter
+    // on one, as Unicode's model and UTN #61 both let those come before
+    // a subscript; so never a coeng, nor another sign drawn on the letter
+    // before; a joiner just before one is always dropped, as it joins no
+    // letter, and the coeng is judged by what's before it.
     let mut joined = 0;
     let mut subscripts = 0;
     let mut subscripting = false;
@@ -1422,7 +1423,10 @@ pub(crate) fn one_line(text: &str) -> String {
             }
             each if selects(each) => before.is_some_and(spells),
             COENG => {
-                before.is_some_and(|before| khmer(before) && takes_a_cell(before))
+                kept.iter()
+                    .rev()
+                    .find(|kept| !shifts(**kept))
+                    .is_some_and(|under| khmer(*under) && takes_a_cell(*under))
                     && subscripts < MOST_SUBSCRIPTS
             }
             each => !unseen(each),
@@ -1486,6 +1490,13 @@ fn takes_a_cell(each: char) -> bool {
 /// takes a cell.
 const fn khmer(each: char) -> bool {
     matches!(each, '\u{1780}'..='\u{17FF}' | '\u{19E0}'..='\u{19FF}')
+}
+
+/// Whether `each` is Khmer's robat (U+17CC) or one of its register
+/// shifters (U+17C9, U+17CA), which may come between a letter and its
+/// subscript.
+const fn shifts(each: char) -> bool {
+    matches!(each, '\u{17C9}' | '\u{17CA}' | '\u{17CC}')
 }
 
 /// Whether `each` is an emoji modifier, a skin tone, which is drawn as
@@ -3888,6 +3899,11 @@ mod tests {
                 format!("{ka}{coeng}{ka}{coeng}{ka}\u{1F469}{ka}{coeng}{ka}{coeng}{ka}{coeng}{ka}"),
                 format!("{ka}{coeng}{ka}{coeng}{ka}\u{1F469}{ka}{coeng}{ka}{coeng}{ka}{ka}"),
             ),
+            // So does a regional indicator, a flag's half or not.
+            (
+                format!("{ka}{coeng}{ka}{coeng}{ka}\u{1F1E6}{ka}{coeng}{ka}{coeng}{ka}{coeng}{ka}"),
+                format!("{ka}{coeng}{ka}{coeng}{ka}\u{1F1E6}{ka}{coeng}{ka}{coeng}{ka}{ka}"),
+            ),
             // A coeng follows only Khmer, never what starts the text, ASCII,
             // an emoji, a skin tone, an Arabic lam and alef or Tifinagh.
             (format!("{coeng}{coeng}{ka}"), ka.to_owned()),
@@ -3905,9 +3921,9 @@ mod tests {
                 format!("\u{2D30}\u{2D7F}\u{2D31}{coeng}{ka}"),
                 format!("\u{2D30}\u{2D7F}\u{2D31}{ka}"),
             ),
-            // Nor a coeng, or a sign drawn on the letter before, so a
-            // doubled one keeps only its first, and none follows a sign,
-            // whether it starts the text or not.
+            // Nor a coeng, or a vowel sign drawn on the letter before, so
+            // a doubled one keeps only its first, and none follows a vowel
+            // sign, whether it starts the text or not.
             (
                 format!("{ka}{coeng}{coeng}{ka}"),
                 format!("{ka}{coeng}{ka}"),
@@ -3939,6 +3955,40 @@ mod tests {
     }
 
     #[test]
+    fn a_robat_or_shifter_on_a_letter_may_come_before_its_subscript() {
+        let (ka, coeng) = ('\u{1780}', '\u{17D2}');
+        // As Unicode's model and UTN #61 let them, though not alone, nor
+        // after a coeng, and the run's cap of two holds past them.
+        for (given, kept) in [
+            (
+                format!("{ka}\u{17CC}{coeng}{ka}"),
+                format!("{ka}\u{17CC}{coeng}{ka}"),
+            ),
+            (
+                format!("{ka}\u{17C9}{coeng}{ka}\u{17CA}{coeng}{ka}"),
+                format!("{ka}\u{17C9}{coeng}{ka}\u{17CA}{coeng}{ka}"),
+            ),
+            (format!("\u{17C9}{coeng}{ka}"), format!("\u{17C9}{ka}")),
+            (
+                format!("{ka}{coeng}\u{17CC}{coeng}{ka}"),
+                format!("{ka}{coeng}\u{17CC}{ka}"),
+            ),
+            (
+                format!("{ka}\u{17C9}{coeng}{ka}\u{17C9}{coeng}{ka}\u{17C9}{coeng}{ka}"),
+                format!("{ka}\u{17C9}{coeng}{ka}\u{17C9}{coeng}{ka}\u{17C9}{ka}"),
+            ),
+        ] {
+            let cleaned = one_line(&given);
+            assert_eq!(cleaned, kept, "{given:?} kept the wrong coengs");
+            assert_eq!(
+                one_line(&cleaned),
+                cleaned,
+                "cleaned again, {given:?} changed"
+            );
+        }
+    }
+
+    #[test]
     fn every_short_text_of_khmer_and_emoji_cleans_once_for_all_within_its_bound() {
         use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
         // Every text of up to six characters from each alphabet, and of up
@@ -3950,6 +4000,9 @@ mod tests {
         // for Khmer, as MOST_SUBSCRIPTS bounds a run, and four with
         // emoji, as MOST_JOINED bounds a chain, or eight where each
         // carries a skin tone, which past six characters can pass four.
+        // Within eleven characters, though, a toned chain reaches the
+        // cap and not past it, so a row of five toned emoji below pins
+        // that eight, as a sweep to fourteen would cost too much.
         let drawn =
             |text: &str| -> usize { text.chars().filter_map(UnicodeWidthChar::width).sum() };
         let sweep = |alphabet: &[char], bound: usize, longest: u32| {
@@ -4003,6 +4056,17 @@ mod tests {
         );
         sweep(&['\u{1F469}', '\u{200D}'], 4, 9);
         sweep(&['\u{1F469}', '\u{200D}', '\u{1F3FB}'], 8, 11);
+        // A robat or register shifter may stand between a letter and its
+        // coeng, and a lone one may not vouch for one.
+        sweep(&[ka, coeng, '\u{17C9}', '\u{17CC}', '\u{17B7}'], 3, 8);
+        let toned = ["\u{1F469}\u{1F3FB}"; 5].join("\u{200D}");
+        let cleaned = one_line(&toned);
+        assert!(
+            drawn(&cleaned) <= 8 * cleaned.width(),
+            "five toned emoji joined clean to {cleaned:?}, drawn as {} cells for {} counted",
+            drawn(&cleaned),
+            cleaned.width()
+        );
     }
 
     #[test]
