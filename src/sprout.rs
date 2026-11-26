@@ -1534,7 +1534,7 @@ pub(crate) mod tests {
             Path::new("/home/kestrel"),
             &rules,
         );
-        assert!(start.work.needs.is_empty());
+        assert_eq!(start.work.needs, Vec::new(), "an empty folder or word names nothing");
     }
 
     #[test]
