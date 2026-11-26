@@ -28,8 +28,9 @@ pub enum HeldFor {
     AsBooked,
     /// Agents to share, as a room made for them
     /// ([`crate::made::Book::agent_rooms`]): already up and paid for by
-    /// being so, so agents' work naming none of its workers may go to it
-    /// though it costs money, whoever it is booked for.
+    /// being so, so work naming none of its workers may go to it though
+    /// it costs money, an agent's whoever it is booked for, the person's
+    /// only where it is booked for the person.
     Agents,
 }
 

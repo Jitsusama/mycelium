@@ -219,16 +219,27 @@ impl Book {
     /// The machines made for agents to share, each already up and paid
     /// for by being so, which agents' work may go to though it names
     /// none of them: `agent-rooms` beside the book, a machine's name a
-    /// line, blank lines and those starting `#` passed over. A machine it
+    /// line, what follows a `#` and blank lines passed over. A machine it
     /// doesn't name stays as booked, so the person's own are theirs. A
-    /// file that isn't there or can't be read names none.
+    /// file that isn't there names none, and so does one that can't be
+    /// read, said in the node's journal, since agents' work then goes
+    /// back to the machines it would leave.
     #[must_use]
     pub fn agent_rooms(&self) -> BTreeSet<String> {
-        std::fs::read_to_string(self.path.with_file_name(AGENT_ROOMS))
-            .unwrap_or_default()
-            .lines()
+        let path = self.path.with_file_name(AGENT_ROOMS);
+        let said = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            if error.kind() != io::ErrorKind::NotFound {
+                eprintln!(
+                    "{} names no rooms, as it can't be read: {error}",
+                    path.display()
+                );
+            }
+            String::new()
+        });
+        said.lines()
+            .filter_map(|line| line.split('#').next())
             .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .filter(|name| !name.is_empty())
             .map(str::to_owned)
             .collect()
     }
@@ -438,7 +449,7 @@ mod tests {
         assert!(book.agent_rooms().is_empty(), "no file names none");
         fs::write(
             dir.path().join(AGENT_ROOMS),
-            "# rooms for agents\nwren\n\n  tern  \n",
+            "# rooms for agents\nwren # the big one\n\n  tern  \n",
         )
         .expect("written");
         assert_eq!(
