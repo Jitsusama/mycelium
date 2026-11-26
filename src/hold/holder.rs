@@ -563,6 +563,7 @@ pub async fn hold(
         said: Mutex::new(None),
         standing: Mutex::new(None),
         typed: Mutex::new(Vec::new()),
+        literal: Mutex::new(false),
         echo: Mutex::new(Vec::new()),
         id: holding.id.to_owned(),
         saying: Mutex::new(None),
@@ -624,11 +625,11 @@ pub async fn hold(
                 // exit: a wrapper that runs attach without exec passes its
                 // 69 on with another pid's file. What the file held is
                 // quoted with its escapes, since a program wrote it.
-                eprintln!(
+                logs(&format!(
                     "mycelium: {} exited {GONE}, but its gone file ({said:?}) doesn't say \
                      {pid} saw its pi host go, so its window ends",
                     holding.id,
-                );
+                ));
             }
             let gone = how.is_some();
             // A quit to park that hung is ended by a signal, which says no
@@ -886,15 +887,16 @@ const LITERAL_NEXT: u8 = 0x16;
 /// end as one `\n`, which [`echoed`] matches with or without its `\r`,
 /// another control key as `^` and its letter, an erasing key as
 /// [`ERASING`], one of [`UNECHOED`] as nothing, and one after
-/// [`LITERAL_NEXT`] as itself. Only near what Linux's line discipline
-/// does: a tab erased echoes plain backspaces, and macOS says a status
-/// line for ^T. Where it's wrong, the echo reads as drawing and the line
-/// goes early, with nothing lost.
-fn as_echoed(given: &[u8]) -> Vec<u8> {
+/// [`LITERAL_NEXT`] as itself, `literal` saying one ended the last of
+/// what was given, and ends what this does, since a window gives each
+/// key a person presses on its own. Only near what Linux's line
+/// discipline does: a tab erased echoes plain backspaces, macOS says a
+/// status line for ^T, and may echo ^D. Where it's wrong, the echo reads
+/// as drawing and the line goes early, with nothing lost.
+fn as_echoed(given: &[u8], literal: &mut bool) -> Vec<u8> {
     let mut echo = Vec::with_capacity(given.len());
-    let mut literal = false;
     for &byte in given {
-        if std::mem::take(&mut literal) {
+        if std::mem::take(literal) {
             echoes_as_itself(&mut echo, byte);
             continue;
         }
@@ -902,7 +904,7 @@ fn as_echoed(given: &[u8]) -> Vec<u8> {
             b'\r' | b'\n' => echo.push(b'\n'),
             LITERAL_NEXT => {
                 echo.extend_from_slice(b"^\x08");
-                literal = true;
+                *literal = true;
             }
             _ if ERASES.contains(&byte) => echo.push(ERASING),
             _ if UNECHOED.contains(&byte) => {}
@@ -937,8 +939,15 @@ fn echoed(typed: &[u8], output: &[u8]) -> (Vec<u8>, usize) {
         };
         if next == ERASING {
             // Kept while its erasures come, as a run may span reads.
-            if output[at..].starts_with(ERASED) {
+            let tail = &output[at..];
+            if tail.starts_with(ERASED) {
                 at += ERASED.len();
+            } else if ERASED.starts_with(tail) {
+                // An erasure the read's end cut: what's left of it comes
+                // first in the next, with the erasing key's place after.
+                let mut kept = ERASED[tail.len()..].to_vec();
+                kept.extend_from_slice(left);
+                return (kept, output.len());
             } else {
                 left = rest;
             }
@@ -1184,6 +1193,10 @@ struct Shown {
     /// terminal's echo hasn't shown back yet, so an echo isn't taken for
     /// the program drawing. Only ever taken while `modes` is held.
     typed: Mutex<Vec<u8>>,
+    /// Whether the last key typed into `typed` was [`LITERAL_NEXT`], so
+    /// the key given after it is kept as itself. Only ever taken while
+    /// `modes` is held.
+    literal: Mutex<bool>,
     /// The echo of what was typed, held back while [`STARTING_LINE`]
     /// stands and passed on just after [`STARTING_CLEARED`], so no echoed
     /// line end scrolls the line from where the cursor goes back to, and
@@ -1199,6 +1212,26 @@ struct Shown {
 
 /// The most of what took [`STARTING_LINE`] away that the log quotes.
 const SHOWN_LOGGED: usize = 48;
+
+/// What the node's log says of `id`'s [`STARTING_LINE`] going after it
+/// `stood`, as `why`, quoting the start of what was `shown` with its
+/// escapes, since a program wrote it.
+fn starting_line_went(id: &str, stood: Duration, why: &str, shown: &[u8]) -> String {
+    format!(
+        "mycelium: {id}'s starting line went after {stood:?}, as {why}: \"{}\"",
+        shown[..shown.len().min(SHOWN_LOGGED)].escape_ascii()
+    )
+}
+
+/// Says `line` on the node's log, the holder's stderr, as `main`'s
+/// `tell!` does: in one write, so another holder's line can't split it,
+/// and never panicking, as a hold outlives whatever read the log.
+fn logs(line: &str) {
+    let mut whole = String::with_capacity(line.len() + 1);
+    whole.push_str(line);
+    whole.push('\n');
+    let _ = io::Write::write_all(&mut io::stderr().lock(), whole.as_bytes());
+}
 
 impl Shown {
     /// Says the program has shown all it will, so each joined window is
@@ -1216,13 +1249,15 @@ impl Shown {
     /// screen and focus reporting would otherwise hide it from a window
     /// already joined, and leave a focus there waking nothing.
     fn show(&self, bytes: &[u8]) {
-        let (echo, why) = match self.holds_echo(bytes) {
-            Some(echo) => (echo, "its program drew"),
-            None => (0, "more echo came than it holds"),
+        // Past the bound, what came is the echo of what was typed, which
+        // the log never quotes.
+        let (echo, why, quoted) = match self.holds_echo(bytes) {
+            Some(echo) => (echo, "its program drew", &bytes[echo..]),
+            None => (0, "more echo came than it holds", &b""[..]),
         };
         // A read that is only echo leaves the line standing.
         if echo == 0 || echo < bytes.len() {
-            self.unsays_start(why, &bytes[echo..]);
+            self.unsays_start(why, quoted);
             self.passes(&bytes[echo..], None);
         }
         let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1267,8 +1302,9 @@ impl Shown {
         let said = *self.said.lock().unwrap_or_else(PoisonError::into_inner);
         if said == Some(STARTING_LINE) {
             let mut typed = self.typed.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut literal = self.literal.lock().unwrap_or_else(PoisonError::into_inner);
             let room = TYPED_KEPT.saturating_sub(typed.len());
-            typed.extend(as_echoed(given).into_iter().take(room));
+            typed.extend(as_echoed(given, &mut literal).into_iter().take(room));
         }
         drop(modes);
     }
@@ -1291,16 +1327,12 @@ impl Shown {
                 .unwrap_or_else(PoisonError::into_inner)
                 .take()
                 .map_or(Duration::ZERO, |at| at.elapsed());
-            // Quoted with its escapes, since a program wrote it.
-            eprintln!(
-                "mycelium: {}'s starting line went after {stood:?}, as {why}: \"{}\"",
-                self.id,
-                shown[..shown.len().min(SHOWN_LOGGED)].escape_ascii()
-            );
+            logs(&starting_line_went(&self.id, stood, why, shown));
             self.typed
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .clear();
+            *self.literal.lock().unwrap_or_else(PoisonError::into_inner) = false;
             let echo =
                 std::mem::take(&mut *self.echo.lock().unwrap_or_else(PoisonError::into_inner));
             // Neither a mode nor a title, so it needn't be read as `passes` does.
@@ -1465,11 +1497,11 @@ async fn serve(
                 Err(broadcast::error::RecvError::Lagged(missed)) => {
                     // Said on the node's log, as a window that fell behind
                     // is a stall worth finding, never a silent gap.
-                    eprintln!(
+                    logs(&format!(
                         "mycelium: a window of {} fell {missed} pieces of output behind, \
                          so its program draws it whole again",
                         record.kept().held.id
-                    );
+                    ));
                     // What is still waiting is older than the redraw to
                     // come, so it is let go with what was missed.
                     let (modes, caught) = shown.join();
@@ -1580,10 +1612,10 @@ impl Reading {
         self.watched = None;
         self.watched = watching(&self.parent)
             .inspect_err(|error| {
-                eprintln!(
+                logs(&format!(
                     "mycelium: a holder can't watch its terminal, so what this start \
                      shows goes unseen: {error}"
-                );
+                ));
             })
             .ok();
     }
@@ -2730,6 +2762,7 @@ mod tests {
             said: Mutex::new(None),
             standing: Mutex::new(None),
             typed: Mutex::new(Vec::new()),
+            literal: Mutex::new(false),
             echo: Mutex::new(Vec::new()),
             id: "HELD".to_owned(),
             saying: Mutex::new(None),
@@ -3054,22 +3087,53 @@ mod tests {
         );
     }
 
+    /// What `given` alone is echoed as, typed after no literal-next key.
+    fn echo_of(given: &[u8]) -> Vec<u8> {
+        as_echoed(given, &mut false)
+    }
+
     #[test]
     fn what_is_typed_is_kept_as_a_terminal_echoes_it() {
         assert_eq!(
-            as_echoed(b"a\r\tb\n\x1b[A\x03\x7f\x15\x17"),
+            echo_of(b"a\r\tb\n\x1b[A\x03\x7f\x15\x17"),
             b"a\n\tb\n^[[A^C\x7f\x7f\x7f".to_vec(),
             "line ends as one, control keys by their letter, erasing keys as where they were"
         );
         assert_eq!(
-            as_echoed(b"\x04a\x11b\x13"),
+            echo_of(b"\x04a\x11b\x13"),
             b"ab".to_vec(),
             "end of file, stop and start, as a terminal never echoes them"
         );
         assert_eq!(
-            as_echoed(b"\x16\x04\x16\x7f\x16\r\x16a"),
+            echo_of(b"\x16\x04\x16\x7f\x16\r\x16a"),
             b"^\x08^D^\x08^?^\x08^M^\x08a".to_vec(),
             "a key after the literal-next key, as itself"
+        );
+        let mut literal = false;
+        let keys: Vec<Vec<u8>> = [b"\x16", b"\x04", b"\x16", b"\x7f", b"\x04"]
+            .iter()
+            .map(|key| as_echoed(&key[..], &mut literal))
+            .collect();
+        assert_eq!(
+            keys.concat(),
+            b"^\x08^D^\x08^?".to_vec(),
+            "a key given apart from the literal-next key before it, as itself, and none after"
+        );
+    }
+
+    #[test]
+    fn the_log_says_why_the_starting_line_went_quoting_the_start_of_what_came() {
+        let drawn = [b"\x1b]0;title\x07\n".as_slice(), &[b'x'; SHOWN_LOGGED]].concat();
+        let stood = Duration::from_millis(5);
+        let said = starting_line_went("HELD", stood, "its program drew", &drawn);
+        assert_eq!(
+            said,
+            format!(
+                "mycelium: HELD's starting line went after 5ms, as its program drew: \
+                 \"\\x1b]0;title\\x07\\n{}\"",
+                "x".repeat(SHOWN_LOGGED - 11)
+            ),
+            "escaped, so no control reaches whoever reads the log, and cut to its bound"
         );
     }
 
@@ -3082,22 +3146,32 @@ mod tests {
         );
         assert_eq!(echoed(b"now", b"no"), (b"w".to_vec(), 2), "echoed in part");
         assert_eq!(
-            echoed(&as_echoed(b"a\x7fb"), b"a\x08 \x08b"),
+            echoed(&echo_of(b"a\x7fb"), b"a\x08 \x08b"),
             (Vec::new(), 5),
             "a key erased between"
         );
         assert_eq!(
-            echoed(&as_echoed(b"ab\x15c"), b"ab\x08 \x08\x08 \x08c"),
+            echoed(&echo_of(b"ab\x15c"), b"ab\x08 \x08\x08 \x08c"),
             (Vec::new(), 9),
             "a line killed, erasing each key"
         );
         assert_eq!(
-            echoed(&as_echoed(b"ab\x15"), b"ab\x08 \x08"),
+            echoed(&echo_of(b"ab\x15"), b"ab\x08 \x08"),
             (vec![ERASING], 5),
             "a kill is kept through its erasures, as the next read may bring more"
         );
         assert_eq!(
-            echoed(&as_echoed(b"\x7fa"), b"a"),
+            echoed(&echo_of(b"ab\x15"), b"ab\x08 \x08\x08"),
+            (b" \x08\x7f".to_vec(), 6),
+            "an erasure the read cut is kept to be finished, before the kill's place"
+        );
+        assert_eq!(
+            echoed(b" \x08\x7f", b" \x08\x08 \x08"),
+            (vec![ERASING], 5),
+            "and finished by the next read"
+        );
+        assert_eq!(
+            echoed(&echo_of(b"\x7fa"), b"a"),
             (Vec::new(), 1),
             "an erasing key on an empty line, echoed as nothing"
         );
@@ -3112,7 +3186,7 @@ mod tests {
             "as are those after a key with no erasing key typed"
         );
         assert_eq!(
-            echoed(&as_echoed(b"\x04\x13now"), b"now"),
+            echoed(&echo_of(b"\x04\x13now"), b"now"),
             (Vec::new(), 3),
             "keys a terminal never echoes leave the echo after them to be found"
         );
@@ -3200,6 +3274,30 @@ mod tests {
                 .unwrap_or_else(PoisonError::into_inner)
                 .is_empty(),
             "nothing typed once it's gone is kept"
+        );
+    }
+
+    #[test]
+    fn a_key_typed_after_the_literal_next_key_on_its_own_is_echoed_as_itself() {
+        let shown = shown();
+        shown.says_start();
+        let (_, mut joined) = shown.join();
+        shown.keeps_typed(b"\x16");
+        shown.keeps_typed(b"\x04");
+        shown.show(b"^\x08^D");
+        assert_eq!(sent(&mut joined), "", "its echo is held, the line standing");
+        shown.keeps_typed(b"\x04");
+        shown.keeps_typed(b"\x16");
+        shown.show(b"^D");
+        let cleared = std::str::from_utf8(STARTING_CLEARED).expect("plain bytes");
+        assert_eq!(
+            sent(&mut joined),
+            format!("{cleared}^\x08^D^D"),
+            "a key after it is taken as it always is, never echoed, so what came was drawn"
+        );
+        assert!(
+            !*shown.literal.lock().unwrap_or_else(PoisonError::into_inner),
+            "no literal-next key is kept once the line has gone"
         );
     }
 
