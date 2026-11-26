@@ -4955,15 +4955,28 @@ impl<S: Store> Shared<S> {
     }
 
     /// Each other machine of the realm that hasn't left, as its links last
-    /// carried it.
+    /// carried it, held for agents where this node names it a room
+    /// ([`made::Book::agent_rooms`]).
     fn others(&self) -> Vec<facts::Machine> {
         let now = jiff::Timestamp::now();
+        let rooms = self.book.agent_rooms();
         self.store
             .machines()
             .into_iter()
             .filter(|one| {
                 one.name != self.machine
                     && !one.declared.as_ref().is_some_and(|said| said.has_left(now))
+            })
+            .map(|mut one| {
+                // Held as the node names it, set both ways, so a carry
+                // takes a room as placement does and nothing a machine
+                // says of itself counts.
+                one.held_for = if rooms.contains(&one.name) {
+                    facts::HeldFor::Agents
+                } else {
+                    facts::HeldFor::AsBooked
+                };
+                one
             })
             .collect()
     }
@@ -24952,6 +24965,37 @@ esac
             weighed(naming, &Admits::Granted).0.as_deref(),
             Some("wren"),
             "a room keeps no last session for the person"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_carry_takes_a_room_as_its_node_names_it_and_never_as_the_machine_says() {
+        use crate::carry::Lent;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        // Lent by a provider's link, paid for, and saying it is a room.
+        let mut tern = placement::tests::machine("tern", "linux", 32, &[]);
+        tern.worker = true;
+        tern.declared.as_mut().expect("declared").costs_money = true;
+        tern.held_for = facts::HeldFor::Agents;
+        shared.store.put_machine(&tern).expect("tern is kept");
+        let lent = || {
+            shared
+                .others()
+                .into_iter()
+                .find(|one| one.name == "tern")
+                .map(|one| Lent::of(&one))
+        };
+        assert_eq!(
+            lent(),
+            Some(Lent::TakesNone),
+            "a machine saying it is a room is a worker all the same"
+        );
+        fs::write(dir.path().join(made::AGENT_ROOMS), "tern\n").expect("named");
+        assert_eq!(
+            lent(),
+            Some(Lent::Not),
+            "the room its node names takes a carry as any of the person's own"
         );
     }
 

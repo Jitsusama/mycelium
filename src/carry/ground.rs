@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 
 use crate::declared::{Accepted, Declared, Doors, Effect, Kind, Taint, Unrunnable};
-use crate::facts::{Machine, Readiness};
+use crate::facts::{HeldFor, Machine, Readiness};
 use crate::placement::{Because, LIFTS_FENCE, LOOSER_GROUND, Miss, RUNS_NOTHING};
 
 /// The fence the session `address` is judged to run in: the one its
@@ -94,7 +94,8 @@ impl Lent {
     pub fn at(machine: &Machine, now: jiff::Timestamp) -> Self {
         let declared = machine.declared.as_ref();
         if !(machine.worker || declared.is_some_and(Declared::is_worker))
-            || declared.is_some_and(|said| in_the_cloud(machine, said, now))
+            || declared
+                .is_some_and(|said| in_the_cloud(machine, said, now) || a_room(machine, said))
         {
             Self::Not
         } else if declared.is_some_and(|said| said.takes_carries) {
@@ -122,6 +123,19 @@ fn in_the_cloud(machine: &Machine, said: &Declared, now: jiff::Timestamp) -> boo
         && said
             .leaves_at
             .is_none_or(|leaves| now.checked_add(STAYS_FOR).is_ok_and(|month| leaves > month))
+}
+
+/// Whether `machine`, as it `said` itself, is a room its node names for
+/// agents to share ([`crate::made::Book::agent_rooms`]) and reaches no
+/// network only a lent machine reaches. The person ruled on 26 November
+/// that carries go to the cloud machines made for sessions with no word
+/// of their own, so the node's naming is enough, and the machine's own
+/// word is never asked, since the node sets the mark both ways. It is
+/// held to the same realm, reach and fences as any of the person's, and
+/// a carry ordered there goes though the room leaves sooner than a month,
+/// as its maker chose; an ease or a placement still weighs its leaving.
+fn a_room(machine: &Machine, said: &Declared) -> bool {
+    machine.held_for == HeldFor::Agents && !reaches_aquifer(said)
 }
 
 /// Whether a machine reaches Aquifer, whose cells are lent for its own
