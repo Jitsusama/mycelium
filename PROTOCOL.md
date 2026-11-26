@@ -3625,9 +3625,9 @@ hubbing fewest hub it too, so no subject has fewer hubs than its cells
 make. A record says its `subject`, its `hubs`, each `{"hub", "fits"}`,
 and the first of them again as `hub` and `fits`, for a reader of one
 hub. A hub is made by the node's own count and grants nothing: it is
-where a need is sent first, never a cell that may do more. The kind is told as the sessions change, so a busy
-hour of talk moves the hubs with the next change, not a message at a
-time.
+where a need is sent first, never a cell that may do more. The kind
+is told as the sessions change, so a busy hour of talk moves the hubs
+with the next change, not a message at a time.
 
 The `ended` kind holds each session of this machine's whose work
 stopped while its quest goes on, keyed `ended:<session>`, so whoever
