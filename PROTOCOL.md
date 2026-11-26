@@ -2347,11 +2347,11 @@ either is reopened as any ended session), held by a holder there,
 carried away or waiting for its turn, each refused with why. One that
 never ended there is refused as held or coming back where a holder
 resumes it, as it names it in the words and scripts read below (an
-id or log path ending in `_` and it counting too), or it was carried
-away from there or waits its turn there, and otherwise as never ended
-there, whatever ids it begins; nor
-while the carries can't be read. Once taken, the session is
-held as being reopened while its start runs, and another reopening of
+id or log path ending in `_` and then the id counts too), or it was
+carried away from there or waits its turn there, and otherwise as
+never ended there, whatever ids it begins; nor while the carries
+can't be read. Once taken, the session is held as being reopened
+while its start runs, and another reopening of
 it meanwhile is refused as `<id> is being reopened on <machine>
 already`. The hold ends when the start here answers, which it does
 within seconds, since a holder silent for ten is killed, whether or
@@ -2386,9 +2386,10 @@ works out as it runs, a script in any other shape or shell, as after
 `pi --continue`, is not judged. A start asked of the node itself and
 placed on its own machine takes the same holds while it starts there,
 never as it waits for room or a machine, and is not judged by them: it
-and a start relayed meanwhile refuse each other only while both start.
-A reopening
-let through without its asker's fence is asked only of a node whose
+is refused where another start, relayed or asked here, holds one of
+them, as a relayed start is, and the two refuse each other only while
+both start. A reopening let through without its asker's fence is
+asked only of a node whose
 link says `reopens`, since one older
 would take it as any relayed start, so one asked of an older node is
 refused as

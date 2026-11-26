@@ -2862,11 +2862,21 @@ struct Marked {
 }
 
 /// The reopenings a start asked of this node holds while it starts here
-/// ([`Shared::hold_while_starting`]), let go however the start ends,
-/// stopped part way included, so none is held past its start.
+/// ([`Shared::hold_while_starting`]), let go if it is dropped, as where
+/// a later hold is refused, unless they were [`kept`](Self::kept).
 struct Reopenings<'a, S: Store> {
     node: &'a Shared<S>,
     holds: Vec<(String, u64)>,
+}
+
+impl<S: Store> Reopenings<'_, S> {
+    /// The holds, kept past this guard for their start to let go once
+    /// it ends: a start stopped part way may leave its pi still
+    /// starting, so its holds then stand till [`REOPENING_HELD`] runs
+    /// out rather than going before it does.
+    fn kept(mut self) -> Vec<(String, u64)> {
+        std::mem::take(&mut self.holds)
+    }
 }
 
 impl<S: Store> Drop for Reopenings<'_, S> {
@@ -9227,11 +9237,12 @@ impl<S: Store> Shared<S> {
             return self.asked_there(&machine, asked, false, within).await;
         }
         // Held only while it starts here, never as it waited for room or
-        // a machine, and let go however its start ends, so a start
-        // relayed here meanwhile starts no second pi on it (followup 423).
-        let held = self.hold_while_starting(&asked.command)?;
+        // a machine, so a start relayed here meanwhile starts no second
+        // pi on it (followup 423). Let go once its start answers, as
+        // `relayed` lets go, so one stopped part way holds on.
+        let held = self.hold_while_starting(&asked.command)?.kept();
         let started = self.start_here(machine, asked, fence).await;
-        drop(held);
+        self.let_reopenings_go(&held);
         started
     }
 
@@ -22004,6 +22015,60 @@ esac
         assert!(!held.join("e0r3.wake").exists(), "nor opens a second pi");
     }
 
+    // Our council's round 3 on the marks: an agent's start of a session
+    // that ended here, whose park only a marker of this boot and its
+    // holder's record tell, is left to that holder, as a reopening is,
+    // though judging reads the markers apart from the lock.
+    #[tokio::test]
+    async fn an_agents_start_of_a_session_a_marker_parks_is_left_to_its_holder() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        let held = held_of(&socket);
+        fs::create_dir_all(parks_of(&socket)).expect("the parks' folder is made");
+        let marker = json!({"session": "s-closed", "addresses": ["CLOSED"],
+                            "wake": held.join("e0r4.wake")});
+        fs::write(parks_of(&socket).join("s-closed.json"), marker.to_string()).expect("a marker");
+        let now = jiff::Timestamp::now().to_string();
+        store.start_here(
+            "s-closed",
+            json!({"session": "s-closed", "addresses": ["CLOSED"], "at": now}),
+            false,
+        );
+        let (holder, program) = holds_for_real(&held, "e0r4");
+        let _let_go = LetGo(vec![holder, program]);
+        asks_below(&socket, 7001);
+        let start = || {
+            Request::Start(Start {
+                work: work(vec![Need::Machine("skiff".to_owned())]),
+                folder: None,
+                command: ["pi", "--session", "s-closed"].map(str::to_owned).to_vec(),
+                may_cost: false,
+                carries: false,
+                once: None,
+                strict: false,
+            })
+        };
+        assert_eq!(
+            ask(socket.clone(), start()).await,
+            Err("skiff's node starts no sessions".to_owned()),
+            "a marker whose holder runs its program again holds nothing back"
+        );
+        let record = held.join("e0r4.json");
+        let mut parked: Value =
+            serde_json::from_slice(&fs::read(&record).expect("its record")).expect("a record");
+        parked["parked"] = json!(true);
+        fs::write(&record, parked.to_string()).expect("its program parks");
+        let refused = ask(socket.clone(), start()).await;
+        assert!(
+            matches!(&refused, Err(why) if why.contains(STEER_IT)),
+            "a park its holder keeps leaves the session to it: {refused:?}"
+        );
+    }
+
     /// Reads asked for while one runs are one more read once it ends,
     /// however many asked, and a read that panicked lets the next begin.
     #[test]
@@ -26031,13 +26096,13 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let processes = Processes::Folder("/nowhere/proc".into());
         let link = holding_skiff(dir.path(), Memory::default(), None, processes);
-        let (began, release) = (dir.path().join("began"), dir.path().join("release"));
+        let (began_at, release) = (dir.path().join("began"), dir.path().join("release"));
         // A holder that answers only once the test has looked.
         crate::stand_in::program(
             &dir.path().join("holder"),
             &format!(
                 "#!/bin/sh\n: > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\necho held\n",
-                began.display(),
+                began_at.display(),
                 release.display()
             ),
         );
@@ -26052,18 +26117,18 @@ esac
         };
         let starting = link.start_on("skiff".to_owned(), asked, (None, START_ANSWERED_WITHIN));
         let meanwhile = async {
-            let begun = tokio::time::timeout(PATIENCE, async {
-                while !began.exists() {
+            let looked = tokio::time::timeout(PATIENCE, async {
+                while !began_at.exists() {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             })
             .await;
             let relayed = link.hold_reopenings(&["s-gone".to_owned()], None, &[]);
             fs::write(&release, "").expect("the holder is let answer");
-            (begun, relayed)
+            (looked, relayed)
         };
-        let (started, (begun, relayed)) = tokio::join!(starting, meanwhile);
-        begun.expect("the holder began");
+        let (started, (looked, relayed)) = tokio::join!(starting, meanwhile);
+        looked.expect("the holder began");
         assert_eq!(
             relayed,
             Err("s-gone is being reopened on skiff already".to_owned()),
@@ -26095,13 +26160,14 @@ esac
         link.let_reopenings_go(&relayed);
         let held = link
             .hold_while_starting(&command)
-            .map(|held| held.holds.clone())
-            .ok();
+            .expect("once the relay lets go, the start holds its word");
         assert_eq!(
-            held.map(|holds| holds.into_iter().map(|(id, _)| id).collect::<Vec<_>>()),
-            Some(vec!["s-gone".to_owned()]),
-            "once it goes, the word alone is held, and let go as its start ends"
+            link.hold_reopenings(&["s-gone".to_owned()], None, &[])
+                .err(),
+            Some("s-gone is being reopened on skiff already".to_owned()),
+            "a relayed start of its word waits on it"
         );
+        drop(held);
         let after = link
             .hold_reopenings(&["s-gone".to_owned()], None, &["s-gone".to_owned()])
             .expect("its hold went with its start");
