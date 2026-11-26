@@ -498,66 +498,64 @@ async fn next<T>(asked: &mut Option<mpsc::UnboundedReceiver<T>>) -> Option<T> {
     }
 }
 
-/// How many frames waiting behind a machine's facts are looked through
-/// for newer facts at once, so a long queue still lets the link's other
-/// work in between.
-const FACTS_LOOKED_THROUGH: usize = 256;
+/// How many of the other end's frames waiting are looked through at
+/// once, for newer facts and for frames that go ahead of shares, so a
+/// long queue still lets the link's other work in between.
+const FRAMES_LOOKED_THROUGH: usize = 1024;
 
-/// The other end's next frame: the first of `queued`, else the next of
-/// `frames`, where facts it brings are kept only if no newer facts wait
-/// behind them ([`newest_facts`]). It is cancel safe, as `select!` needs:
-/// nothing is taken from `frames` but in the wait for its next.
+/// The other end's next frame, from `queued` and what waits in `frames`,
+/// taken as [`next_waiting`] takes it. It is cancel safe, as `select!`
+/// needs: nothing is taken from `frames` but in the wait for its next,
+/// and what is taken is kept in `queued` until it is pulled.
 async fn pull(
     queued: &mut VecDeque<io::Result<Frame>>,
     frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>,
 ) -> Option<io::Result<Frame>> {
-    if let Some(frame) = queued.pop_front() {
-        return Some(frame);
+    if queued.is_empty() {
+        queued.push_back(frames.recv().await?);
     }
-    let first = frames.recv().await?;
-    Some(newest_facts(first, frames, queued))
+    while queued.len() < FRAMES_LOOKED_THROUGH
+        && !queued.back().is_some_and(Result::is_err)
+        && let Ok(frame) = frames.try_recv()
+    {
+        queued.push_back(frame);
+    }
+    next_waiting(queued)
 }
 
-/// `first`, or where it is a machine's facts and others wait behind it,
-/// the newest facts waiting, taken in `first`'s place, with the other
-/// frames waiting put in `queued` in the order they came and every older
-/// facts left out. Facts are said whole every time, so older ones held up
-/// behind newer ones say nothing the newest doesn't: a link whose node
-/// fell behind, as one did by 49 minutes on 2026-11-21, catches up on
-/// what its machine is now rather than on what it was. The newest come
-/// first so no frame is judged on facts older than those it came behind.
-fn newest_facts(
-    first: io::Result<Frame>,
-    frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>,
-    queued: &mut VecDeque<io::Result<Frame>>,
-) -> io::Result<Frame> {
-    if !matches!(first, Ok(Frame::Machine(_))) {
-        return first;
-    }
-    let mut waiting = vec![first];
-    while waiting.len() < FACTS_LOOKED_THROUGH {
-        match frames.try_recv() {
-            Ok(frame) => {
-                let failed = frame.is_err();
-                waiting.push(frame);
-                if failed {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    let newest = waiting
+/// The next of the frames `queued`, in the order they came, but for two
+/// things. A frame that waits only behind shares goes ahead of them:
+/// each share is an act on the disk, which took seconds apiece on a
+/// machine at load 247 on 2026-11-26, and a cloud machine pulling
+/// scratch said hundreds, so a start's answer, a machine's facts and its
+/// sessions waited behind them for many minutes, and the starts there
+/// were given up on although they ran. Shares keep their own order, and
+/// a handover, said once its shares are, never goes ahead of them. And
+/// where facts are taken, the newest waiting are taken in their place
+/// and every older facts left out: facts are said whole every time, so a
+/// link whose node fell behind, as one did by 49 minutes on 2026-11-21,
+/// catches up on what its machine is now rather than on what it was.
+fn next_waiting(queued: &mut VecDeque<io::Result<Frame>>) -> Option<io::Result<Frame>> {
+    let unshared = queued
         .iter()
-        .rposition(|frame| matches!(frame, Ok(Frame::Machine(_))))
-        .unwrap_or_else(|| unreachable!("the first is facts"));
-    let next = waiting.remove(newest);
-    queued.extend(
-        waiting
-            .into_iter()
-            .filter(|frame| !matches!(frame, Ok(Frame::Machine(_)))),
-    );
-    next
+        .position(|frame| !matches!(frame, Ok(Frame::Share(_))));
+    let at = match unshared {
+        Some(at) if !matches!(queued[at], Ok(Frame::HandedOver) | Err(_)) => at,
+        _ => 0,
+    };
+    let next = queued.remove(at)?;
+    if !matches!(next, Ok(Frame::Machine(_))) {
+        return Some(next);
+    }
+    let newest = queued
+        .iter()
+        .rposition(|frame| matches!(frame, Ok(Frame::Machine(_))));
+    let next = match newest {
+        Some(newest) => queued.remove(newest).unwrap_or(next),
+        None => next,
+    };
+    queued.retain(|frame| !matches!(frame, Ok(Frame::Machine(_))));
+    Some(next)
 }
 
 /// The task reading a link's frames, stopped when this end of the link is,
@@ -3173,6 +3171,62 @@ mod tests {
                 .expect("read"),
             facts(4).expect("a frame"),
             "facts nothing newer waits behind are taken as they come"
+        );
+    }
+
+    // On 2026-11-26 starts asked of a cloud machine ran there, but their
+    // answers waited behind hundreds of shares, each an act on a loaded
+    // disk, until the asker gave up on them.
+    #[tokio::test]
+    async fn what_waits_only_behind_shares_goes_ahead_of_them() {
+        let (sender, mut frames) = mpsc::unbounded_channel();
+        let share = |file: &str| {
+            Frame::Share(Say::Want {
+                quest: "QEST-20261126-SKIFF1".to_owned(),
+                file: file.to_owned(),
+                at: None,
+            })
+        };
+        let started = Frame::Started {
+            ask: 7,
+            reply: Err("refused".to_owned()),
+        };
+        let ended = Frame::Ended {
+            session: "a".to_owned(),
+        };
+        let said = [
+            share("one"),
+            share("two"),
+            started.clone(),
+            Frame::HandedOver,
+            share("three"),
+            ended.clone(),
+        ];
+        for frame in said {
+            sender.send(Ok(frame)).expect("sent");
+        }
+        let mut queued = VecDeque::new();
+        let mut heard = Vec::new();
+        for _ in 0..6 {
+            heard.push(
+                pull(&mut queued, &mut frames)
+                    .await
+                    .expect("a frame")
+                    .expect("read"),
+            );
+        }
+        assert_eq!(
+            heard,
+            [
+                started,
+                share("one"),
+                share("two"),
+                Frame::HandedOver,
+                ended,
+                share("three"),
+            ],
+            "an answer goes ahead of the shares it came behind, which keep their order, and \
+             a handover never goes ahead of them"
         );
     }
 
