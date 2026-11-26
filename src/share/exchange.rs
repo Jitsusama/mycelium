@@ -1209,36 +1209,14 @@ impl Exchange {
             let found = quest.clones()?;
             let writes = scans || clones_from(&looked, &walk, &found) != looked.clones;
             let (ledger, scanned) = if writes {
-                Self::scan_held(
-                    &ledgers,
-                    &id,
-                    &quest,
-                    &self.machine,
-                    scans,
-                    &walk,
-                    &found,
-                )?
+                Self::scan_held(&ledgers, &id, &quest, &self.machine, scans, &walk, &found)?
             } else {
                 (looked, Vec::new())
             };
             let mut changed: BTreeSet<String> = scanned.into_iter().collect();
             changed.extend(self.unsaid.remove(&id).unwrap_or_default());
             self.above_again |= changed.contains(README);
-            // A file this link no longer carries, such as a parent's
-            // journey once its README alone crosses, is left unsaid.
-            let states = if anew {
-                ledger.states()
-            } else {
-                changed
-                    .iter()
-                    .filter_map(|key| Some((key.clone(), ledger.files.get(key)?.state())))
-                    .collect()
-            };
-            let files: BTreeMap<String, State> = states
-                .into_iter()
-                .filter(|(key, _)| shared_of(key).is_some_and(|shared| carried.carries(&shared)))
-                .filter(|(key, _)| !self.worker || !gate::withheld(key))
-                .collect();
+            let files = self.files_said(&ledger, (!anew).then_some(&changed), &carried);
             if !files.is_empty() || anew {
                 holds.push(Say::Holds {
                     quest: id.clone(),
@@ -1279,6 +1257,30 @@ impl Exchange {
             self.above = Above::Carried;
         }
         Ok(says)
+    }
+
+    /// The state of each file of `ledger` this link says: those whose keys
+    /// `changed`, or every one where that is none, as for a quest said
+    /// anew. A file this link no longer carries, such as a parent's
+    /// journey once its README alone crosses, is left unsaid.
+    fn files_said(
+        &self,
+        ledger: &Ledger,
+        changed: Option<&BTreeSet<String>>,
+        carried: &Quest,
+    ) -> BTreeMap<String, State> {
+        let states = match changed {
+            None => ledger.states(),
+            Some(changed) => changed
+                .iter()
+                .filter_map(|key| Some((key.clone(), ledger.files.get(key)?.state())))
+                .collect(),
+        };
+        states
+            .into_iter()
+            .filter(|(key, _)| shared_of(key).is_some_and(|shared| carried.carries(&shared)))
+            .filter(|(key, _)| !self.worker || !gate::withheld(key))
+            .collect()
     }
 
     /// Stops sharing quest `id`, which `why` says, forgetting what was
