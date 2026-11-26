@@ -2105,11 +2105,10 @@ pub(super) mod tests {
     fn a_worker_with_room_takes_a_session_only_where_it_says_it_takes_carries() {
         let history = hot_for(&realm(), 11);
         let mut paid = realm();
-        // Lent for a day, so a worker rather than one of the person's own
-        // cloud machines, which stay a month or more.
-        let lent = paid[1].declared.as_mut().expect("declared");
-        lent.costs_money = true;
-        lent.leaves_at = Some(now() + PIN);
+        // Its link marks it a worker, so it is no cloud machine of the
+        // person's own, and it stays, so a carried session may last there.
+        paid[1].worker = true;
+        paid[1].declared.as_mut().expect("declared").costs_money = true;
         assert!(
             why_not(&chose(&paid, &[cell("s1")], &history))
                 .starts_with("no machine with room is a peer"),
@@ -2157,9 +2156,9 @@ pub(super) mod tests {
     fn the_best_worker_takes_a_session_none_of_the_persons_own_takes() {
         use crate::declared::{Effect, Taint};
         let taking = |mut machine: Machine| {
+            machine.worker = true;
             let declared = machine.declared.as_mut().expect("declared");
             declared.costs_money = true;
-            declared.leaves_at = Some(now() + PIN);
             declared.takes_carries = true;
             machine
         };
@@ -2225,9 +2224,9 @@ pub(super) mod tests {
             one.declared = Some(declaring(&kinds));
             one.system = Some("linux".to_owned());
         }
+        realm[1].worker = true;
         let worker = realm[1].declared.as_mut().expect("declared");
         worker.costs_money = true;
-        worker.leaves_at = Some(now() + PIN);
         worker.takes_carries = true;
         let mut strict = cell("s1");
         strict.fence = Some(Kind::Strict);
