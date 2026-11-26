@@ -719,7 +719,7 @@ fn a_short_name_is_drawn_as_it_is_typed_and_reaches_only_its_team() {
         "reef\u{1b}pause",
         "--names",
         "kelp --names",
-        "kelp\u{2212}\u{2212}names",
+        "kelp \u{2212}\u{2212}names",
         "reef\u{2010}pause",
         "reef\u{2013}pause",
         "reef\u{FE63}pause",

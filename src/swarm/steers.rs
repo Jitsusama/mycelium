@@ -658,7 +658,12 @@ mod tests {
         // is named to be picked.
         swarm.teams[1]["title"] = json!("Bootstrap harbour\u{2011}tides tools");
         swarm.sessions[4]["title"] = json!("harbour-tides notes");
-        let both = aim(&swarm, Act::Pause, "harbour-tides").map(|aimed| addresses(&aimed));
+        let both = aim(&swarm, Act::Pause, "harbour-tides").map(|aimed| {
+            addresses(&aimed)
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        });
         assert!(
             both.as_ref().is_err_and(|why| why.contains(" could be ")),
             "one of two drawn alike took the steer: {both:?}"
