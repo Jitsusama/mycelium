@@ -345,9 +345,9 @@ impl Asks {
         match self.send(machine, asked, Some(within)).await {
             Ok(reply) => reply,
             // Once sent, the end may still be under way there.
-            Err(Unsent { why, sent: true }) => {
-                Err(format!("{why}; it was asked, so it may still end there"))
-            }
+            Err(Unsent { why, sent: true }) => Err(format!(
+                "{why}; it went to the link, so it may still end there"
+            )),
             Err(unsent) => Err(unsent.into()),
         }
     }
@@ -753,8 +753,8 @@ mod tests {
         );
         let why = ended.expect_err("a silent machine's end isn't said to have ended");
         assert!(
-            why.ends_with("; it was asked, so it may still end there"),
-            "the person is told it was asked, not that it failed: {why}"
+            why.ends_with("; it went to the link, so it may still end there"),
+            "the person is told it may still end, not that it failed: {why}"
         );
     }
 }

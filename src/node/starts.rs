@@ -1993,10 +1993,10 @@ mod tests {
         starts.keep(admitted, Err("it didn't start".to_owned()), 0);
         started(&starts, agent("OSPREY", NOW), "h-2");
         let admitted = starts.admit(person()).expect("the person may start");
-        starts.keep(admitted, Ok(("wren".to_owned(), "h-1".to_owned())), 0);
+        starts.keep(admitted, Ok(("tern".to_owned(), "h-1".to_owned())), 0);
         let again = Starts::at(dir.path().join("starts.jsonl"));
         for read in [&starts, &again] {
-            assert_eq!(read.landed_on("h-1").as_deref(), Some("wren"), "the newest");
+            assert_eq!(read.landed_on("h-1").as_deref(), Some("tern"), "the newest");
             assert_eq!(read.landed_on("h-2").as_deref(), Some("kestrel"));
             assert_eq!(read.landed_on("h-3"), None, "no start landed as it");
         }
