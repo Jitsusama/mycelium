@@ -3658,6 +3658,16 @@ mod tests {
             .expect("sleep starts");
         let child = i32::try_from(sleeping.id()).expect("an id");
         let me = i32::try_from(std::process::id()).expect("an id");
+        // A spawn can return between the child's start and its exec
+        // taking its new name, when it is still named for the thread that
+        // started it, so its name is waited for, as a gate's build showed.
+        let named = procs.join(child.to_string()).join("comm");
+        let by = Instant::now() + Duration::from_secs(10);
+        while fs::read_to_string(&named).is_ok_and(|name| name.trim() != "sleep")
+            && Instant::now() < by
+        {
+            std::thread::yield_now();
+        }
         let mut left = LOOKED_THROUGH;
         let children = Tree::of(procs).children_of(me, &mut left);
         let _ = sleeping.kill();

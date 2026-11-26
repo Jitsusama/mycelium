@@ -1407,8 +1407,11 @@ async fn keep_made(
 /// otherwise leave what keeps the machine waiting for good, and its book
 /// never saying it was let go. It is under [`ENDED_LET_GO_AFTER`], with
 /// time to spare for writing the book.
+// In tests it stays well inside their patience but long enough that a
+// stand-in's shell, slow on a loaded machine, isn't cut off mid-answer:
+// at 2 s one was, and its test failed though nothing was wrong.
 const RELEASED_WITHIN: Duration = if cfg!(test) {
-    Duration::from_secs(2)
+    Duration::from_secs(20)
 } else {
     Duration::from_secs(9 * 60)
 };
