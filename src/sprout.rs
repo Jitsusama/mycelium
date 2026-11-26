@@ -774,9 +774,9 @@ pub fn within_home(folder: PathBuf, home: &Path) -> PathBuf {
 /// where a place is listed ([`places::checkouts`]) may go: a
 /// repository's own checkout at `~/src/<repo>` or
 /// `~/src/<host>/<owner>/<repo>` under `home`, fetching from a remote,
-/// or the trunk's tree of a bare repository kept under home, since a
-/// person's machines keep those at the same places, from the same
-/// remotes; a machine that hasn't it refuses the strict start, which
+/// or the trunk's tree of a bare repository kept under home, fetching
+/// from its origin, since a person's machines keep those at the same
+/// places, from the same remotes; a machine that hasn't it refuses the strict start, which
 /// then begins here. Everything else stays, since no other machine has it
 /// as it is here: the checkout nearest `folder` a tree cut from a
 /// repository kept elsewhere (a quest's tree, a zone's, a submodule), a
@@ -787,11 +787,13 @@ pub fn within_home(folder: PathBuf, home: &Path) -> PathBuf {
 fn stays(folder: &Path, home: &Path, disk: &impl Disk) -> bool {
     let kept = places::checkouts(home, disk);
     let src = home.join("src");
-    // Those listed outside `~/src` are bare repositories' trunks, each cut
-    // from a repository that fetches; one under it is its own checkout.
+    // Those listed outside `~/src` are bare repositories' trunks; one under
+    // it is its own checkout. Either moves only fetching from a remote.
     let shared = |top: &Path| {
         kept.iter().any(|one| one == top)
-            && (!top.starts_with(&src) || (!disk.is_cut_tree(top) && disk.origin(top).is_some()))
+            && top.starts_with(home)
+            && disk.origin(top).is_some()
+            && (!top.starts_with(&src) || !disk.is_cut_tree(top))
     };
     folder
         .ancestors()
@@ -803,7 +805,8 @@ fn stays(folder: &Path, home: &Path, disk: &impl Disk) -> bool {
 /// What a sprout asks the node to start: its session on `machine` and
 /// nowhere else, or where placement chooses where it names none, in
 /// `folder` and never at home where that machine hasn't
-/// it (`strict`), never on a machine that costs money, its seed carrying
+/// it (`strict`), never saying it may cost (the node says so for the
+/// person's, never for an agent's), its seed carrying
 /// the sprout's own `id`, told the cell it came `from` and any `note` on
 /// where it begins; and what that seed leaves out.
 #[must_use]
@@ -1511,15 +1514,24 @@ pub(crate) mod tests {
                 "/srv/rows",
                 "/home/kestrel/reef",
                 "/home/kestrel/reef/trees/trunk/areas",
+                "/home/kestrel/reef/trees/tidy/areas",
+                "/home/kestrel/wild",
+                "/home/kestrel/wild/trees/trunk/areas",
             ],
             &[
                 "/home/kestrel",
                 "/home/kestrel/trees/tidy",
                 "/home/kestrel/src/loose",
                 "/home/kestrel/reef/trees/trunk",
+                "/home/kestrel/reef/trees/tidy",
+                "/home/kestrel/wild/trees/trunk",
             ],
         )
         .bare("/home/kestrel/reef/git", "/home/kestrel/reef/trees/trunk")
+        .bare("/home/kestrel/wild/git", "/home/kestrel/wild/trees/trunk")
+        .fetching("/home/kestrel/reef/trees/trunk", origin)
+        .fetching("/home/kestrel/reef/trees/tidy", origin)
+        .cutting("/home/kestrel/reef/trees/tidy")
         .fetching("/home/kestrel/src/rows", origin)
         .fetching("/home/kestrel/src/example.com/kestrel/reef", origin)
         .fetching("/home/kestrel/src/rows/.worktrees/tidy", origin)
@@ -1555,7 +1567,7 @@ pub(crate) mod tests {
         );
         assert!(
             needs("reef/trees/trunk/areas", None).is_empty(),
-            "so does a bare repository's trunk, cut from it as it is"
+            "so does a bare repository's trunk fetching from a remote"
         );
         for (folder, why) in [
             ("trees/tidy/docs", "a tree cut from a repository elsewhere"),
@@ -1564,6 +1576,14 @@ pub(crate) mod tests {
             ("src/rows/sea", "a clone just inside a checkout"),
             ("src/tidy", "a tree cut where checkouts are kept"),
             ("src/loose", "a checkout fetching from nowhere"),
+            (
+                "reef/trees/tidy/areas",
+                "another tree cut from a bare repository",
+            ),
+            (
+                "wild/trees/trunk/areas",
+                "a bare repository's trunk fetching from nowhere",
+            ),
             ("scratch/rows", "a clone each machine keeps its own"),
             ("/srv/rows", "a checkout outside home"),
             ("notes", "no checkout below home, home one or not"),

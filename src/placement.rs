@@ -688,11 +688,14 @@ impl Starts {
         self.placed.push((machine.to_owned(), at));
     }
 
-    /// Forgets the newest start kept as placed on `machine`, which refused
-    /// it before it began, so it weighs there no longer.
-    pub fn unplaced(&mut self, machine: &str) {
-        if let Some(newest) = self.placed.iter().rposition(|(one, _)| one == machine) {
-            self.placed.remove(newest);
+    /// Forgets the start kept as placed on `machine` at `at`, which it
+    /// refused before it began, so it weighs there no longer. One already
+    /// forgotten, as its machine's room showed it, is left so, rather than
+    /// another start's load forgotten in its place.
+    pub fn unplaced(&mut self, machine: &str, at: jiff::Timestamp) {
+        let this = |(one, when): &(String, jiff::Timestamp)| one == machine && *when == at;
+        if let Some(kept) = self.placed.iter().position(this) {
+            self.placed.remove(kept);
         }
     }
 
@@ -795,6 +798,20 @@ pub fn placed_past_room(decision: &Decision) -> bool {
         .judged
         .iter()
         .any(|one| one.machine == *machine && !one.unheard && (one.over || one.saturated))
+}
+
+/// Whether `decision` placed its work on a machine heard lately and within
+/// its room, neither over a limit of its queue's nor saturated: one that
+/// says it takes more, where one silent may be stuck.
+#[must_use]
+pub fn placed_with_room(decision: &Decision) -> bool {
+    let Placement::Placed { machine, .. } = &decision.placement else {
+        return false;
+    };
+    decision
+        .judged
+        .iter()
+        .any(|one| one.machine == *machine && !one.unheard && !one.over && !one.saturated)
 }
 
 /// Each of `machines` that holds as many sessions as it holds at most,
@@ -2726,17 +2743,29 @@ pub(crate) mod tests {
 
     #[test]
     fn a_start_its_machine_refused_counts_there_no_longer() {
-        let kestrel = machine("kestrel", "linux", 32, &[]);
-        let at: jiff::Timestamp = "2026-10-29T06:00:05Z".parse().expect("a time");
+        // Kestrel's room shows the first start, not the second.
+        let mut kestrel = machine("kestrel", "linux", 32, &[]);
+        kestrel.room.as_mut().expect("a room").said_at = "2026-10-29T06:00:40Z".to_owned();
+        let skiff = machine("skiff", "linux", 32, &[]);
+        let first: jiff::Timestamp = "2026-10-29T06:00:05Z".parse().expect("a time");
+        let second = first + jiff::SignedDuration::from_secs(45);
         let mut starts = Starts::default();
-        starts.placed("kestrel", at);
-        starts.placed("kestrel", at);
-        starts.placed("skiff", at);
-        starts.unplaced("kestrel");
-        starts.unplaced("tern");
-        let later = at + jiff::SignedDuration::from_secs(10);
-        let loads = starts.loads(std::slice::from_ref(&kestrel), [], later);
-        assert_eq!(loads["kestrel"].placed, 1, "one refused, one still counted");
+        starts.placed("kestrel", first);
+        starts.placed("kestrel", second);
+        starts.placed("skiff", first);
+        starts.unplaced("kestrel", first);
+        starts.unplaced("tern", first);
+        starts.unplaced("skiff", second);
+        let later = second + jiff::SignedDuration::from_secs(10);
+        let loads = starts.loads(&[kestrel, skiff], [], later);
+        assert_eq!(
+            loads["kestrel"].placed, 1,
+            "the refused start is forgotten, the one its room doesn't show still counts"
+        );
+        assert_eq!(
+            loads["skiff"].placed, 1,
+            "a start never placed at that time forgets nothing"
+        );
     }
 
     #[test]
@@ -3038,16 +3067,18 @@ pub(crate) mod tests {
     #[test]
     fn work_is_placed_past_room_only_where_every_heard_machine_is_past_it() {
         let work = needing(Vec::new());
-        let past = |machines: &[Machine]| {
-            placed_past_room(&decide_as(
+        let decided = |machines: &[Machine]| {
+            decide_as(
                 &work,
                 machines,
                 &Loads::new(),
                 &[],
                 now(),
                 &Weights::STARTING,
-            ))
+            )
         };
+        let past = |machines: &[Machine]| placed_past_room(&decided(machines));
+        let room = |machines: &[Machine]| placed_with_room(&decided(machines));
         let mut over = pressed(machine("kestrel", "linux", 60, &[]), 20.0);
         over.room.as_mut().expect("a room").over = Some(vec![Limit::Cpu]);
         let saturated = pressed(machine("osprey", "linux", 60, &[]), 95.0);
@@ -3055,11 +3086,24 @@ pub(crate) mod tests {
         assert!(past(&[over.clone()]), "over its room");
         assert!(past(std::slice::from_ref(&saturated)), "saturated");
         assert!(past(&[over.clone(), saturated]), "both past it");
-        assert!(!past(&[over.clone(), roomy]), "one has room");
-        let mut unheard = over;
+        assert!(!past(&[over.clone(), roomy.clone()]), "one has room");
+        assert!(room(&[over.clone(), roomy]), "and takes it");
+        let mut unheard = over.clone();
         unheard.room.as_mut().expect("a room").said_at = "2026-10-28T06:00:00Z".to_owned();
-        assert!(!past(&[unheard]), "nothing heard lately says so");
-        assert!(!past(&[]), "placed nowhere");
+        assert!(
+            !past(std::slice::from_ref(&unheard)),
+            "nothing heard lately says so"
+        );
+        assert!(
+            !room(std::slice::from_ref(&unheard)),
+            "nor that it has room"
+        );
+        assert!(
+            past(&[over.clone(), unheard]),
+            "one heard past its room goes before one silent"
+        );
+        assert!(!room(&[over]), "over its room");
+        assert!(!past(&[]) && !room(&[]), "placed nowhere");
     }
 
     #[test]
