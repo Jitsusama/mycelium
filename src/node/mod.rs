@@ -154,12 +154,15 @@ const CARRIES_UNREAD: &str = ", as its carries can't be read";
 
 /// The words a machine, named after the first, answers a start of a
 /// session another start holds, and how each of its other refusals of
-/// one session coming back, parked or never there ends, as
-/// [`starts::UNLESS_RUNNING`] does too: each said once, so an asker can
-/// tell a refusal of one session from one of every start
-/// ([`refused_for_one_session`]).
+/// one session coming back or parked ends, as [`starts::UNLESS_RUNNING`]
+/// does too: each said once, so an asker can tell a refusal of one
+/// session from one of every start ([`refused_for_one_session`]).
 const BEING_REOPENED: &str = " is being reopened on ";
 const NOT_REOPENED: &str = ", so it isn't reopened";
+
+/// How a machine, named before it, ends its refusal of a reopening of a
+/// session that never ended there, which began nothing and leaves no log
+/// there to open twice ([`began_nothing_here`]).
 const NOTHING_REOPENED: &str = ", so nothing is reopened here";
 const STEER_IT: &str = ": steer it rather than starting it again";
 
@@ -835,8 +838,10 @@ fn past_quoted(quoted: &str) -> Option<&str> {
 /// `folder`, was raised before anything began: placed elsewhere or not
 /// taken now ([`Shared::here`]), or unable to begin it, lacking a
 /// launcher for its fence, a starter, a home, its folder or leave to
-/// begin at home ([`start::begins_strictly`]). Each is matched whole
-/// from its start, so words a refusal only quotes never match.
+/// begin at home ([`start::begins_strictly`]), or a reopening of a
+/// session that never ended there ([`Shared::reopened_here`]), so has no
+/// log there. Each is matched whole from its start, so words a refusal
+/// only quotes never match.
 fn began_nothing_here(why: &str, machine: &str, folder: Option<&Path>) -> bool {
     let opens = [
         RELAYED_ELSEWHERE.to_owned(),
@@ -848,8 +853,10 @@ fn began_nothing_here(why: &str, machine: &str, folder: Option<&Path>) -> bool {
         format!("{machine}{NO_HOME_TO_START}"),
         format!("{machine}{}", start::AT_HOME_STRICTLY),
     ];
+    let unended = format!(" ended on {machine}{NOTHING_REOPENED}");
     opens.iter().any(|said| why.starts_with(said.as_str()))
         || whole.iter().any(|said| why == said)
+        || (why.starts_with("no session ") && why.ends_with(&unended))
         || folder.is_some_and(|folder| why == start::no_folder(machine, folder))
 }
 
@@ -916,28 +923,21 @@ enum PassOver<'a> {
 }
 
 /// Whether `answered`, `machine`'s answer to a start past room, refused
-/// it for one session it names alone, alone or wrapped as a relay taken
-/// as an agent's ([`relayed_why`]): held by another start, or live,
-/// parked, held, coming back or never ended there. It stands, since the
-/// start may go nowhere else without a second log of that session, but
-/// says nothing of the machine's other starts, so passes it over for
-/// none. Only its ending is read, as the session it names leads it;
-/// only the held one's ending names the machine, and a node says the
-/// others only of its own.
+/// it for one session it names alone: held by another start, or live,
+/// parked, held or coming back there. It stands, since the start may go
+/// nowhere else without a second log of that session, but says nothing
+/// of the machine's other starts, so passes it over for none. Only its
+/// ending is read, as the session it names leads it and a relay taken as
+/// an agent's ([`relay_refused`]) leaves it last; only the held one's
+/// ending names the machine, and a node says the others only of its own.
 fn refused_for_one_session(answered: &Result<Reply, Unsent>, machine: &str) -> bool {
     let Ok(Err(said)) = answered else {
         return false;
     };
-    let why = relayed_why(said, machine).unwrap_or(said);
-    why.ends_with(&format!("{BEING_REOPENED}{machine} already"))
-        || [
-            NOT_REOPENED,
-            NOTHING_REOPENED,
-            STEER_IT,
-            starts::UNLESS_RUNNING,
-        ]
-        .iter()
-        .any(|ending| why.ends_with(ending))
+    said.ends_with(&format!("{BEING_REOPENED}{machine} already"))
+        || [NOT_REOPENED, STEER_IT, starts::UNLESS_RUNNING]
+            .iter()
+            .any(|ending| said.ends_with(ending))
 }
 
 /// Whether a cloud machine whose refusal past room stood when `refused`
@@ -8692,7 +8692,8 @@ impl<S: Store> Shared<S> {
             PassOver::Left(why) => {
                 let said = why.escape_debug();
                 eprintln!(
-                    "{machine} isn't passed over past room, as it refused one session: {said}"
+                    "{machine}'s pass-over past room is left as it is, as it refused one \
+                     session: {said}"
                 );
             }
             PassOver::For(why) => {
@@ -25778,6 +25779,28 @@ esac
                 "one session held there",
             ),
             (
+                said("no session s-1 ended on wren, so nothing is reopened here".to_owned()),
+                None,
+                true,
+                "a session that never ended there, with no log there",
+            ),
+            (
+                said("no session s-1 ended on tern, so nothing is reopened here".to_owned()),
+                None,
+                false,
+                "never ended on another",
+            ),
+            (
+                said(
+                    "couldn't hold pi: no session s-1 ended on wren, so nothing is reopened \
+                     here"
+                        .to_owned(),
+                ),
+                None,
+                false,
+                "words only quoting that",
+            ),
+            (
                 said("its program failed".to_owned()),
                 Some(folder),
                 false,
@@ -25955,8 +25978,8 @@ esac
             ),
             (
                 "no session s-1 ended on wren, so nothing is reopened here",
-                true,
-                "never ended there",
+                false,
+                "never ended there, which began nothing instead",
             ),
             (
                 "s-1 is still live on tern, so it isn't reopened",

@@ -2635,18 +2635,18 @@ since one made holds none of the person's checkouts and making one
 outlasts the asker's wait; one made by naming `cloud` serves those
 after it. Where none is chosen, or the one chosen began nothing (no
 link took the ask, or it refused it before anything began, as the
-limits above, the person's stop or a relay refused there do), it goes
-where placement chose, as before; any other answer, a lost one among
-them, stands, and that machine is passed over past room for ten
-minutes, for starts asked as that one was, by the person or by an
-agent, so no agent's passes it over for the person's; a lost answer
-does so only where it had 30 seconds or more, a refusal of the one
-session it names (being reopened, live, parked, held or coming back
-there, or never ended there) does so for none, and a start already
-asked of it then and taken ends it. A refusal there of every start
-naming a session, as its carries can't be read, stands, since that
-machine couldn't tell whether the session is its own. The cloud is
-asked within what
+limits above, the person's stop, a relay refused there or a reopening
+of a session that never ended there do), it goes where placement
+chose, as before; any other answer, a lost one among them, stands, and
+that machine is passed over past room for ten minutes, for starts
+asked as that one was, by the person or by an agent, so no agent's
+passes it over for the person's; a lost answer does so only where it
+had 30 seconds or more, a refusal of the one session it names (being
+reopened, live, parked, held or coming back there) does so for none,
+and a start already asked of it then and taken, or lost with less,
+ends it. A refusal there of every start naming a session, as its
+carries can't be read, stands, since that machine couldn't tell
+whether the session is its own. The cloud is asked within what
 leaves the start 30 seconds for the machine placement chose, and not
 at all where no more is left.
 Beside its first words the
