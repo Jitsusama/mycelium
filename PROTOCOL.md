@@ -401,8 +401,10 @@ same code, each line a JSON value:
     save what it holds and what is killed past them two more to go.
 19. `{"Lend": {"ask", "lend"}}`: answer a model call through the other
     end's lender, as a `"Lend"` request says it (Borrowing a Lend).
-    The other end takes it only where this end is its worker, known by
-    the link alone, and its node was started with `--lend`; otherwise
+    The other end takes it only where this end is its worker, or a
+    machine it made for the person and dialled through the provider
+    that releases it, known by the link alone, and its node was started
+    with `--lend`; otherwise
     it refuses 403, saying why. Its lender names the borrowing machine
     by the link's other end, never by what the lend says. It answers
     `{"Lent": {"ask", "lent"}}` a line for each `Lent`, the last its
@@ -2115,8 +2117,10 @@ meets none), and carries no `never` taint the work doesn't tolerate.
 Those rank in four tiers, each after the one before: heard and neither
 over nor saturated; heard and over; heard and saturated; then unheard.
 Heard, its `room` was said within three minutes either way (three of
-the minutes a link carries it in); an unheard room earns no processor
-or memory headroom. Over, it carries a `memory-pressure` or
+the minutes a link carries it in); a cloud machine saying no `room`,
+as one whose node keeps no queue does, is heard while its facts were
+measured within three minutes, its `cpu`'s `busy` standing for its
+processor; an unheard room earns no processor or memory headroom. Over, it carries a `memory-pressure` or
 `cpu-pressure` the work doesn't tolerate. Saturated, it carries a
 `cpu-saturated` the work doesn't tolerate, so work starts where it runs
 at once, and still goes to the roomiest where every machine is
@@ -2139,8 +2143,9 @@ still does, and a start placed on it heard is past room, as the cloud's
 paragraph below says, so the person's start goes to a cloud machine
 with room before it. Work tolerating `kept-lively` ranks it as any
 machine. A ceiling in another shape spoils only itself, and a node
-older than the field ranks it as any machine. Within a tier, the most
-preferences met goes first,
+older than the field ranks it as any machine. Within a tier, a cloud
+machine goes first, since it is paid for by being up, then the most
+preferences met,
 then the most headroom, then by name; of the first and each as good but
 for headroom within 0.05 of it (`NEAR_BEST`), one is chosen at random,
 so asks alike spread rather than herd. Headroom is one sum, its weights
@@ -2448,10 +2453,14 @@ where the variable is missing too, as it is from a node older than it,
 though `offers`, `link` and `release` never carry it. A machine made
 is booked, before it is dialled, for the asker its make was told: once
 it links, a start or run is placed there only when that asker asks, so
-another agent's work goes elsewhere or waits, and a machine whose book
-line names no asker takes only the person's. The person's own starts
+another agent's work goes elsewhere or waits, where that asker is an
+agent; a machine booked for the person, or whose book line names no
+asker, is the person's, and takes every agent's start as well as the
+person's, as the person asked on 26 November. The person's own starts
 go only to a machine booked for the person or for no asker, never to
-one an agent's make booked, whose worker home that agent wrote. A
+one an agent's make booked, whose worker home that agent wrote. An agent's start there
+leaves the person the last session it holds, as a granted session's
+does below. A
 preview is held to it as its run would be, and an ordered carry there
 of another's session is refused; only a start pinned to the machine
 made for it is not held to it. The booking is the making node's, kept
@@ -2474,8 +2483,8 @@ it is over a limit. The node marks each one `"held_for": "agents"` as it
 places, from its own file, and every other as booked, never from what
 the machine says, and a link keeps nothing a machine says of it. A
 session the person granted is booked as the person but isn't one: its
-starts go to a machine booked for the person or for no asker, and not
-named in the file, only where they name it, never to one an agent's
+starts go to a machine booked for the person or for no asker, as
+every agent's do, never to one an agent's
 make booked, and even then that machine is full one session short of
 the most it holds, kept for the person, where it says or was promised
 a most. A start of its that no machine takes goes on to a make. A

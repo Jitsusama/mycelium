@@ -392,11 +392,21 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         ..read.cpu
     };
     // The queue says the last ten seconds' pressure; the last minute's is
-    // the kernel's own, which no queue's record carries.
+    // the kernel's own, which no queue's record carries. A machine that
+    // keeps no queue, as a cloud machine made for sessions, says the room
+    // its kernel feels, so placement hears it as it hears one with a
+    // queue rather than ranking it last, as unheard.
     let room = sources
         .queue
         .as_deref()
         .and_then(|queue| room::read(queue, now.as_second()))
+        .or_else(|| {
+            sources
+                .queue
+                .is_none()
+                .then(|| room::felt(&sources.procs, &now.to_string()))
+                .flatten()
+        })
         .map(|room| Room {
             cpu_minute: room::cpu_minute(&sources.procs),
             ..room
