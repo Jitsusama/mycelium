@@ -373,9 +373,10 @@ pub(crate) fn within(text: &str, room: usize) -> &str {
     // only in the cases `starts_afresh` names, or where measured apart it
     // counts more cells than whole, as a Khmer letter past a coeng and a
     // selector does, where settling overcounts, so a cut keeps less,
-    // never more; so the cells up to any other are settled and only the run since is measured again: a cut
-    // costs what it walks, even into a pipe, where the room is the whole
-    // text, which may be a peer's message of 256 KiB. A character narrows
+    // never more; so the cells up to any other are settled and only the
+    // run since is measured again: a cut costs what it walks, even into
+    // a pipe, where the room is the whole text, which may be a peer's
+    // message of 256 KiB. A character narrows
     // the start it ends by at most a cell, by those rules: a text
     // selector after an emoji, or the letter that closes a Tifinagh,
     // Lisu or Kirat Rai ligature. So a start two cells past the room
