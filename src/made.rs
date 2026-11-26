@@ -12,6 +12,7 @@
 //! ([`Book`]), so what was made, for how long and at what rate can always
 //! be read back and summed.
 
+use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -140,6 +141,10 @@ pub async fn make(offer: &Offer, lasting: Duration, asker: &str) -> Result<Made,
 /// The file beside the book that holds the person's grants.
 pub const GRANTS: &str = "grants.json";
 
+/// The file beside the book that names the machines made for agents to
+/// share ([`Book::agent_rooms`]).
+pub const AGENT_ROOMS: &str = "agent-rooms";
+
 /// The person's word that a session may have machines made and placed for
 /// it as though the person asked, until `until`: its makes are told to
 /// the provider as [`PERSON`] and booked for the person, so the person's
@@ -209,6 +214,23 @@ impl Book {
         grants
             .into_iter()
             .find(|grant| grant.address.eq_ignore_ascii_case(address) && now < grant.until)
+    }
+
+    /// The machines made for agents to share, each already up and paid
+    /// for by being so, which agents' work may go to though it names
+    /// none of them: `agent-rooms` beside the book, a machine's name a
+    /// line, blank lines and those starting `#` passed over. A machine it
+    /// doesn't name stays as booked, so the person's own are theirs. A
+    /// file that isn't there or can't be read names none.
+    #[must_use]
+    pub fn agent_rooms(&self) -> BTreeSet<String> {
+        std::fs::read_to_string(self.path.with_file_name(AGENT_ROOMS))
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(str::to_owned)
+            .collect()
     }
 
     /// Keeps that `made` was made.
@@ -406,6 +428,23 @@ mod tests {
             ),
             (&json!("0.12"), &json!("its work was done")),
             "each make and release is kept, a line each, in order"
+        );
+    }
+
+    #[test]
+    fn the_rooms_made_for_agents_are_named_a_line_each_beside_the_book() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let book = Book::at(dir.path().join("made.jsonl"));
+        assert!(book.agent_rooms().is_empty(), "no file names none");
+        fs::write(
+            dir.path().join(AGENT_ROOMS),
+            "# rooms for agents\nwren\n\n  tern  \n",
+        )
+        .expect("written");
+        assert_eq!(
+            book.agent_rooms(),
+            BTreeSet::from(["tern".to_owned(), "wren".to_owned()]),
+            "each name a line, trimmed, past blanks and comments"
         );
     }
 
