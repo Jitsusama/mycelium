@@ -1478,6 +1478,25 @@ fn a_cut_keeps_the_longest_start_that_fits_as_measured_whole() {
     );
 }
 
+/// How long a cut may take: far under the minutes one measuring its
+/// whole text again costs, and far over a fair cut's cost on a loaded
+/// machine: 30 s unoptimised, and 5 s as the gate builds it, optimised,
+/// where a cut that walked its text again would fail.
+const BUDGET: std::time::Duration =
+    std::time::Duration::from_secs(if cfg!(debug_assertions) { 30 } else { 5 });
+
+/// Whether `cut` came out right, or that it ran past [`BUDGET`]. Each
+/// runs on a thread of its own, so one that costs what its text does
+/// fails at the budget rather than holding the run for hours; the test's
+/// process ends what it leaves running.
+fn within_budget(cut: fn() -> bool) -> Result<bool, std::sync::mpsc::RecvTimeoutError> {
+    let (sent, heard) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sent.send(cut());
+    });
+    heard.recv_timeout(BUDGET)
+}
+
 #[test]
 fn a_long_run_settles_anywhere_but_between_a_selector_and_what_it_selects() {
     assert!(
@@ -1500,27 +1519,13 @@ fn a_long_run_settles_anywhere_but_between_a_selector_and_what_it_selects() {
 
 #[test]
 fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut() {
-    use std::{sync::mpsc, thread, time::Duration};
+    use std::sync::mpsc;
     /// A cut by what it is, and whether it came out right.
     type Cut = (&'static str, fn() -> bool);
     // A peer's message may be 256 KiB on one line; measured to its end
     // at each start, cutting it takes minutes and wrapping it longer.
     // Into a pipe the room is the whole text, so neither its room nor a
     // cap on steps bounds it there.
-    // The budget is far under that and far over a fair cut's cost on a
-    // loaded machine: 30 s unoptimised, and 5 s as the gate builds it,
-    // optimised, where a cut that walked its text again would fail.
-    let budget = Duration::from_secs(if cfg!(debug_assertions) { 30 } else { 5 });
-    // Each cut runs on a thread of its own, so one that costs what its
-    // text does fails at the budget rather than holding the run for
-    // hours; the test's process ends what it leaves running.
-    let within_budget = |cut: fn() -> bool| {
-        let (sent, heard) = mpsc::channel();
-        thread::spawn(move || {
-            let _ = sent.send(cut());
-        });
-        heard.recv_timeout(budget)
-    };
     let cases: [Cut; 8] = [
         ("Han cut to 80", || {
             drawn_width(&fit(&"港".repeat(60_000), 80)) <= 80
@@ -1571,7 +1576,7 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
             // timed against it too: the rest aren't timed.
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 slow.push(format!(
-                    "{what}: still cutting after {budget:?}, so the rest weren't timed"
+                    "{what}: still cutting after {BUDGET:?}, so the rest weren't timed"
                 ));
                 break;
             }
@@ -1651,13 +1656,13 @@ fn a_run_of_escapes_costs_what_it_walks_cut_whole() {
     // No peer's text keeps an escape, but painted text may be cut whole,
     // and a run of escapes starts nothing afresh. Measured again at each
     // step, these take minutes; settled at each, milliseconds.
-    let painted = format!("{}ab", "\u{1b}[m".repeat(100_000));
-    let began = std::time::Instant::now();
-    assert_eq!(within(&painted, WHOLE), painted, "a run of escapes was cut");
-    assert!(
-        began.elapsed() < std::time::Duration::from_secs(5),
-        "a run of escapes cost {:?} to cut",
-        began.elapsed()
+    assert_eq!(
+        within_budget(|| {
+            let painted = format!("{}ab", "\u{1b}[m".repeat(100_000));
+            within(&painted, WHOLE) == painted
+        }),
+        Ok(true),
+        "a run of escapes was cut wrong, or still cutting after {BUDGET:?}"
     );
 }
 
