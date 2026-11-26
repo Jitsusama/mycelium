@@ -1373,7 +1373,9 @@ pub fn chosen(records: Vec<Value>, named: Option<&str>) -> Vec<Value> {
 /// can. Each is judged by what is left once direction marks and controls
 /// are gone, in one pass, so no mark beside it can vouch for it. A run of
 /// emoji keeps at most [`MOST_JOINED`] joiners, so a name chained from
-/// dozens can't count as the two cells one emoji takes.
+/// dozens can't count as the two cells one emoji takes, and a run of
+/// Khmer at most [`MOST_SUBSCRIPTS`] coengs, as one chained from dozens
+/// can't count as one letter's cell.
 pub(crate) fn one_line(text: &str) -> String {
     let plain: Vec<char> = text
         .chars()
@@ -1395,7 +1397,10 @@ pub(crate) fn one_line(text: &str) -> String {
     // one extending a grapheme), nor can any regional indicator, paired
     // as a flag or not, a flag's second half following its first rather
     // than a joiner. A non-joiner is never counted, as it joins no emoji.
+    // Khmer's coengs are counted alike in a run of their own, which a
+    // character taking a cell and following no coeng ends.
     let mut joined = 0;
+    let mut subscripts = 0;
     for (at, &each) in plain.iter().enumerate() {
         let before = kept.last().copied();
         let keep = match each {
@@ -1405,19 +1410,27 @@ pub(crate) fn one_line(text: &str) -> String {
                     && (each == '\u{200C}' || joined < MOST_JOINED)
             }
             each if selects(each) => before.is_some_and(spells),
+            COENG => subscripts < MOST_SUBSCRIPTS,
             each => !unseen(each),
         };
         if keep {
             kept.push(each);
+            let takes_a_cell =
+                unicode_width::UnicodeWidthChar::width(each).is_some_and(|cells| cells > 0);
             if each == '\u{200D}' {
                 joined += 1;
             } else if before != Some('\u{200D}')
                 && !selects(each)
                 && !modifies(each)
                 && !matches!(each, '\u{1F1E6}'..='\u{1F1FF}')
-                && unicode_width::UnicodeWidthChar::width(each).is_some_and(|cells| cells > 0)
+                && takes_a_cell
             {
                 joined = 0;
+            }
+            if each == COENG {
+                subscripts += 1;
+            } else if before != Some(COENG) && takes_a_cell {
+                subscripts = 0;
             }
         }
     }
@@ -1430,10 +1443,19 @@ pub(crate) fn one_line(text: &str) -> String {
 /// joined run of any length as two cells. This bounds that, not closes
 /// it: four emoji joined as no sequence is still count two cells and draw
 /// eight, so a chain of them draws at most four times what it counts.
-/// A chain of Khmer subscripts (coeng, U+17D2) isn't capped: Unicode's
-/// widths count it as one cell, which a terminal drawing per code point
-/// draws wider; capping it as emoji chains are is still to do.
 const MOST_JOINED: usize = 3;
+
+/// Khmer's coeng, U+17D2, which sets the letter after it as a subscript
+/// under the one before.
+const COENG: char = '\u{17D2}';
+
+/// The most coengs in one run of Khmer, as a syllable stacks at most two
+/// subscripts, as ស្ត្រី (woman) stacks t and r under s. Unicode's widths count a chain of any
+/// length as its first letter's one cell, though a terminal drawing per
+/// code point draws each letter. This bounds that, not closes it: a run
+/// of three letters still counts one cell and may draw three, so a chain
+/// draws at most three times what it counts.
+const MOST_SUBSCRIPTS: usize = 2;
 
 /// Whether `each` is an emoji modifier, a skin tone, which is drawn as
 /// part of the emoji before it.
@@ -3724,6 +3746,50 @@ mod tests {
             one_line(&joined(7)),
             format!("{}{}", joined(4), joined(3)),
             "a joiner past three in a run was kept"
+        );
+    }
+
+    #[test]
+    fn a_khmer_chain_keeps_no_more_subscripts_than_a_syllable_stacks() {
+        use unicode_width::UnicodeWidthStr;
+        // Woman, its two subscripts stacked under its first letter, and
+        // two such words apart, each keep all they spell.
+        let woman = "\u{179F}\u{17D2}\u{178F}\u{17D2}\u{179A}\u{17B8}";
+        for whole in [
+            woman,
+            &format!("{woman} {woman}"),
+            &format!("{woman}{woman}"),
+        ] {
+            assert_eq!(
+                one_line(whole),
+                whole,
+                "a word Khmer spells lost a subscript"
+            );
+        }
+        // Nine letters chained by eight coengs count one cell; past two in
+        // a run each is dropped, so its letter is drawn and counted as
+        // one of its own and starts a run afresh.
+        let ka = "\u{1780}";
+        let chained = |count: usize| vec![ka; count].join("\u{17D2}");
+        assert_eq!(
+            chained(9).width(),
+            1,
+            "unicode-width no longer counts a chain as one"
+        );
+        let kept = one_line(&chained(9));
+        assert_eq!(
+            kept,
+            format!("{}{}{}", chained(3), chained(3), chained(3)),
+            "a subscript past two in a run was kept"
+        );
+        assert_eq!(kept.width(), 3, "a capped chain is counted as its runs");
+        // A vowel sign taking a cell starts a run afresh, as a letter does,
+        // so a ladder of them keeps each subscript.
+        let ladder = format!("{ka}\u{17D2}{ka}\u{17B6}\u{17D2}{ka}\u{17B6}\u{17D2}{ka}");
+        assert_eq!(
+            one_line(&ladder),
+            ladder,
+            "a subscript after a vowel was dropped"
         );
     }
 

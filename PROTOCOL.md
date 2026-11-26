@@ -3656,8 +3656,10 @@ to U+1F1FF, paired as a flag or not), given a cell by unicode-width 0.2.3's
 per-character width (most spacing marks are, though none extending a
 grapheme, such as U+09BE; no nonspacing mark, conjoining jamo vowel or
 final, or selector is) and following no zero-width joiner kept, to the
-next, the rest dropped, a non-joiner (U+200C) never counted, each
-judged against what is kept so far; and then is trimmed of such
+next, the rest dropped, a non-joiner (U+200C) never counted; at most
+two Khmer coengs (U+17D2) likewise, counted from the start or from one
+character given a cell and following no coeng kept; each judged
+against what is kept so far; and then is trimmed of such
 spaces and braille blanks (U+2800), and cut to its first 120 characters,
 then cleaned again, so it ends in no space and no joiner left joining
 nothing; `folder` is 1 to 1024 bytes. A
