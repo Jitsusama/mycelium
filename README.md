@@ -209,7 +209,10 @@ The harness mesh's messages and presence, carried between machines:
   a team, which its lead hears, or to one session;
   `mycelium swarm pause|resume <NAME>` pauses or resumes every session
   of a team and the teams within it, or one session, and says back who
-  was told.
+  was told. `<NAME>` is read, in order, as a living session's address,
+  a team's address, a team's short name, then words of a team's title
+  and else a living session's; several it fits alike are each offered,
+  and none is told.
 - `mycelium web <QUEST> say|tie|settle` speaks in a quest's web, the
   murmurs and ties its sessions share: each machine appends to its own
   file in the quest's `web` scratch folder, which a share carries like
