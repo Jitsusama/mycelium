@@ -144,10 +144,16 @@ fn reaches_aquifer(said: &Declared) -> bool {
     said.reach.iter().any(|network| network == "aquifer")
 }
 
-/// Why nothing is carried to `to`, a worker that takes no carries.
+/// Why nothing is carried to `to`, a worker that takes no carries, with
+/// what makes a machine one, so a machine of the person's own refused as
+/// one is told what to change rather than only to declare it takes
+/// carries.
 #[must_use]
 pub fn takes_none(to: &str) -> String {
-    format!("{to} is a worker that doesn't declare it takes carries, so nothing is carried there")
+    format!(
+        "{to} is a worker that doesn't declare it takes carries, so nothing is carried there \
+         (a worker is lent by a provider's link, reaches aquifer, or leaves within 30 days)"
+    )
 }
 
 /// Whether `there`, where it is a worker, takes a carry of a session
@@ -771,7 +777,8 @@ mod tests {
                 firm(Some(kind), Some(&here), "tern", Some(&worker(false))),
                 Err(
                     "tern is a worker that doesn't declare it takes carries, so nothing is \
-                     carried there"
+                     carried there (a worker is lent by a provider's link, reaches aquifer, or \
+                     leaves within 30 days)"
                         .to_owned()
                 ),
                 "a worker saying nothing takes no {kind} session"
@@ -802,11 +809,7 @@ mod tests {
         };
         assert_eq!(
             worker_takes(Some(Kind::Fence), "tern", &lent),
-            Err(
-                "tern is a worker that doesn't declare it takes carries, so nothing is \
-                 carried there"
-                    .to_owned()
-            ),
+            Err(takes_none("tern")),
             "a machine that reaches what only a lent one does is a worker, whatever its link \
              says"
         );
@@ -885,6 +888,23 @@ mod tests {
             Lent::TakesNone,
             "and one that leaves within the month, since a carried session lasts"
         );
+        let leaving_in = |days: i64| {
+            let mut one = cloud.clone();
+            one.declared.as_mut().expect("declared").leaves_at =
+                Some(now + jiff::SignedDuration::from_hours(24 * days));
+            Lent::at(&one, now)
+        };
+        assert_eq!(
+            leaving_in(29),
+            Lent::TakesNone,
+            "29 days is within the month"
+        );
+        assert_eq!(
+            leaving_in(30),
+            Lent::TakesNone,
+            "30 days to the minute is within it too"
+        );
+        assert_eq!(leaving_in(31), Lent::Not, "31 days stays the month");
         let mut staying = cloud;
         staying.declared.as_mut().expect("declared").leaves_at = None;
         assert_eq!(

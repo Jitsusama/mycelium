@@ -670,7 +670,7 @@ mod tests {
         put_brought, refusals, refused, short_host, unstarted, untaken,
     };
     use crate::carry::cell::Brought;
-    use crate::carry::{Refused, Untaken};
+    use crate::carry::{Refused, Untaken, ground};
     use crate::placement::Placement;
     use crate::wire::{Request, Response, Taking};
 
@@ -1040,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_is_given_a_quest_whose_handover_names_no_secret() {
+    fn a_worker_is_given_a_quest_free_of_secrets_and_the_persons_own_any_quest() {
         use super::{Hands, Places, Through};
         use crate::declared::Declared;
         use crate::facts;
@@ -1100,11 +1100,7 @@ mod tests {
         );
         assert_eq!(
             hands.share(quest, "wren"),
-            Err(
-                "wren is a worker that doesn't declare it takes carries, so nothing is carried \
-                 there"
-                    .to_owned()
-            ),
+            Err(ground::takes_none("wren")),
             "a worker taking none is given nothing"
         );
         hands.share(quest, "tern").expect("given");
@@ -1125,6 +1121,11 @@ mod tests {
             "a handover holding a login is refused, naming it"
         );
         assert!(!places.given("tern", quest), "and nothing is given");
+        assert_eq!(
+            (hands.share(quest, "osprey"), hands.share(quest, "kestrel")),
+            (Ok(()), Ok(())),
+            "while the person's own share it, login and all, in the cloud as on the desk"
+        );
     }
 
     #[test]
