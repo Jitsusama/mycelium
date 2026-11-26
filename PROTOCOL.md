@@ -2308,17 +2308,56 @@ that shape, whether or not it says it carries, is taken only for a
 session that ended on this machine, and otherwise refused as `no
 session <id> ended on <machine>, so nothing is reopened here`, whoever
 asked. Nor is one taken for a session that comes back by itself: one
-still live (`<id> is still live on <machine>`), parked for its holder
-to wake as its `standing` says (one it doesn't has nothing to wake
-it, so is reopened as any ended session), held by a holder there,
-carried away or waiting for its turn, each refused with why, nor
+still live (`<id> is still live on <machine>`), parked with a holder
+there to wake it, as a running holder's park or a park marker of this
+boot names one, the marker where the presence says parked or the
+holder's own record says its program is (a park with none has nothing
+to wake it, and a marker outlasting its park counts for nothing, so
+either is reopened as any ended session), held by a holder there,
+carried away or waiting for its turn, each refused with why. One that
+never ended there is refused as held or coming back where a holder
+resumes that very id, in whatever words or script it names it, or it
+was carried away from there or waits its turn there, and otherwise as
+never
+ended there, whatever ids it begins; nor
 while the carries can't be read. Once taken, the session is
 held as being reopened while its start runs, and another reopening of
 it meanwhile is refused as `<id> is being reopened on <machine>
-already`; a start whose asker hung up holds it at most two minutes. A
-reopening let through without its asker's fence is asked only of a
-node whose link says `reopens`, since one older would take it as any
-relayed start, so one asked of an older node is refused as
+already`. The hold ends when the start here answers, which it does
+within seconds, since a holder silent for ten is killed, whether or
+not its asker still waits; one stuck before it answers holds it at
+most eleven minutes, a minute past the longest an asker waits on one.
+A carry's arrival from the machine relaying it, word for word as a
+carry writes it, which starts pi only once `pi-carry arrive` has taken
+the carry, is judged by the carry, but its session is still held
+while its start runs, and refused as being reopened where another
+start holds it, or holds a word as written that begins it. Any other
+start relayed here is held, in the same words, to each session it
+names by `--session` or `--session-id`, alone or with `=`, under any
+program or in the script given right after the `-c`, alone or among
+other letters, of `sh`, `bash`, `zsh`, `dash`, `ksh` or `mksh`, where
+every word between the shell and the `-c` is a flag, reading only
+`$N` and `${N}` as its positional parameters, and to each id a log's
+path may end in, what follows each `_` of its name.
+Each word it names as written is held, too, to each session here that
+word begins, and to each another start holds that it begins, since pi
+opens one so; it is refused where another start holds, as written, a
+shorter word that begins it. A holder whose command names a word
+beginning a session, which no session there has as its id, holds
+that session too. Each is refused where one comes back by itself or
+is being reopened, or while the carries can't be read, as `no start
+naming a session is taken on <machine>, as its carries can't be
+read`, and held while its start runs, though it need not have ended
+here, since its asker fenced it. A start only shaped as a
+carry is held so too. A refusal of a session a word begins names the
+word as asked, and a log path's tail begins nothing. An id a script
+works out as it runs, a script in any other shape or shell, as after
+`-o pipefail` or `--` or reading `$@`, or a resume naming none, as
+`pi --continue`, is not judged. A reopening
+let through without its asker's fence is asked only of a node whose
+link says `reopens`, since one older
+would take it as any relayed start, so one asked of an older node is
+refused as
 `<machine>'s mycelium is too old to judge a reopening`, and one no
 link reaches as `no link reaches <machine> now to judge a
 reopening`. The person's, one held to its asker's ground, and one on
@@ -2617,13 +2656,18 @@ since one made holds none of the person's checkouts and making one
 outlasts the asker's wait; one made by naming `cloud` serves those
 after it. Where none is chosen, or the one chosen began nothing (no
 link took the ask, or it refused it before anything began, as the
-limits above, the person's stop or a relay refused there do), it goes
-where placement chose, as before; any other answer, a lost one among
-them, stands, and that machine is passed over past room for ten
-minutes, for starts asked as that one was, by the person or by an
-agent, so no agent's passes it over for the person's; a lost answer
-does so only where it had 30 seconds or more, and a start already
-asked of it then and taken ends it. The cloud is asked within what
+limits above, the person's stop, a relay refused there or a reopening
+of a session that never ended there do), it goes where placement
+chose, as before; any other answer, a lost one among them, stands, and
+that machine is passed over past room for ten minutes, for starts
+asked as that one was, by the person or by an agent, so no agent's
+passes it over for the person's; a lost answer does so only where it
+had 30 seconds or more, a refusal of the one session it names (being
+reopened, live, parked, held or coming back there) does so for none,
+and a start already asked of it then and taken, or lost with less,
+ends it. A refusal there of every start naming a session, as its
+carries can't be read, stands, since that machine couldn't tell
+whether the session is its own. The cloud is asked within what
 leaves the start 30 seconds for the machine placement chose, and not
 at all where no more is left.
 Beside its first words the
@@ -2759,9 +2803,13 @@ inbox as it wakes, so what is said is there before it is woken. The node
 there then wakes it, when it parked this boot, by writing its holder's
 `<id>.wake`: the holder's it knows, else the one the session's presence
 names as `wake`, taken only as a holder's in a realm's `.held` folder
-beside its own. A talk's file, `<ADDRESS>/replies/<id>.jsonl`, is opened
-on the asking machine first, and the lines its session writes are
-carried back to it, so a talk reads the same wherever its session runs.
+beside its own. An ended session whose presence never said parked
+counts too where a park marker of this boot names a running holder
+whose own record says its program is parked, and is woken through it;
+one live in a pi of its own is never woken through a marker. A talk's
+file, `<ADDRESS>/replies/<id>.jsonl`, is opened on the asking machine
+first, and the lines its session writes are carried back to it, so a
+talk reads the same wherever its session runs.
 An `act` of `wake`, alone, as the launcher's Wake asks, puts nothing in
 the inbox, since the harness has no such act, and only wakes the session
 there, so the launcher wakes one without starting a program to write its

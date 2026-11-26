@@ -58,6 +58,11 @@ pub const STOPPED_FOR_AN_AGENT: &str =
 pub const PACED_FOR_AN_AGENT: &str =
     "It paces agents and isn't the person's to lift: tell your orchestrator, as a finding";
 
+/// How a refusal of a start of one session coming back already ends,
+/// telling its asker when to ask again, so an asker can tell it from a
+/// refusal of every start.
+pub const UNLESS_RUNNING: &str = " only if it isn't running";
+
 /// How a refusal of an agent's start opens where whether the person's
 /// stop stands can't be told, so it is held before anything begins.
 pub const UNTOLD_FOR_AN_AGENT: &str =
@@ -597,7 +602,7 @@ impl Starts {
         if book.going.iter().any(|(_, going)| its(going)) {
             return Some(format!(
                 "{id} is coming back already, from a start of it still going; \
-                 ask again once it has gone only if it isn't running"
+                 ask again once it has gone{UNLESS_RUNNING}"
             ));
         }
         let let_go = book.kept.iter().any(|one| {
@@ -610,7 +615,7 @@ impl Starts {
         let_go.then(|| {
             format!(
                 "{id} is coming back already, from a start asked in the last {} seconds; \
-                 ask again after that only if it isn't running",
+                 ask again after that{UNLESS_RUNNING}",
                 COMING_BACK / 1000
             )
         })
