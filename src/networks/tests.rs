@@ -2054,7 +2054,7 @@ fn a_wide_team_short_keeps_what_follows_in_line() {
     let mycelium = Mycelium::of("work", &teams, &sessions, &machines);
     let shown = overview(&mycelium, &look(), false, true);
     // Measured by Unicode's widths directly, not by the code under test,
-    // as nothing here is coloured.
+    // as this draw has no colour.
     let cells = <str as unicode_width::UnicodeWidthStr>::width;
     let line = |start: &str| {
         shown
