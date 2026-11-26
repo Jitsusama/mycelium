@@ -2815,12 +2815,12 @@ impl Drop for Reading<'_> {
 }
 
 /// The sessions being reopened here by a relayed start, each held while
-/// its start runs, and at most [`REOPENING_HELD`] where that start was
-/// dropped before it answered, as when its asker hung up. Each hold is
-/// told by its own number, so a start outliving its while lets go only
-/// its own hold, never a later ask's that took the session since. Each
-/// says, too, whether it is a word a start names as written, which its
-/// pi may take for the start of a longer id, or an id it opens as it is.
+/// its start runs, and at most [`REOPENING_HELD`] where that start is
+/// stuck before it answers. Each hold is told by its own number, so a
+/// start outliving its while lets go only its own hold, never a later
+/// ask's that took the session since. Each says, too, whether it is a
+/// word a start names as written, which its pi may take for the start of
+/// a longer id, or an id it opens as it is.
 #[derive(Default)]
 struct Reopening {
     held: HashMap<String, (std::time::Instant, u64, bool)>,
