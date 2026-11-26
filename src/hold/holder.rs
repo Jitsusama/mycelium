@@ -24,7 +24,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinSet;
 
 use super::environment::{Environment, keeping_path};
-use super::journal::{Ended, How, Journal, named};
+use super::journal::{Ended, How, Journal, escaped_name};
 use super::modes::Modes;
 use super::steering::{Heard, Steers, Watching};
 use super::title::Title;
@@ -1242,10 +1242,10 @@ enum Took<'a> {
 /// What the node's log says of `id`'s [`STARTING_LINE`] going after it
 /// `stood`, as `why`, quoting the start of what was `shown` with its
 /// escapes as bytes, since a program wrote it, or saying it quotes none
-/// where nothing is, as once keys were typed. The id is [`named`], as
+/// where nothing is, as once keys were typed. The id is [`escaped_name`], as
 /// `holder --id` takes any words.
 fn starting_line_went(id: &str, stood: Duration, why: &str, shown: Option<&[u8]>) -> String {
-    let id = named(id);
+    let id = escaped_name(id);
     match shown {
         Some(shown) => format!(
             "mycelium: {id}'s starting line went after {stood:?}, as {why}: \"{}\"",
@@ -1268,22 +1268,22 @@ fn logs(line: &str) {
 /// What the node's log says when `id`'s program exited [`GONE`] but the
 /// gone file, which `said` held, doesn't say `pid` saw its pi host go.
 /// What the file held is quoted with its escapes, since a program wrote
-/// it, and the id [`named`] as every holder line names it.
+/// it, and the id [`escaped_name`] as every holder line names it.
 fn gone_unheard(id: &str, said: &str, pid: u32) -> String {
     format!(
         "mycelium: {} exited {GONE}, but its gone file ({said:?}) doesn't say {pid} saw \
          its pi host go, so its window ends",
-        named(id)
+        escaped_name(id)
     )
 }
 
 /// What the node's log says when a window of `id` fell `missed` pieces
-/// of output behind, a stall worth finding, its id [`named`].
+/// of output behind, a stall worth finding, its id [`escaped_name`].
 fn fell_behind(id: &str, missed: u64) -> String {
     format!(
         "mycelium: a window of {} fell {missed} pieces of output behind, so its program \
          draws it whole again",
-        named(id)
+        escaped_name(id)
     )
 }
 
@@ -3269,17 +3269,17 @@ mod tests {
 
     #[test]
     fn the_holders_own_line_is_quoted_even_once_a_key_was_typed() {
-        let said = self::shown();
+        let said = shown();
         said.says_start();
         said.keeps_typed(b"secret");
         said.says(PARKED_LINE);
         let mut logged = said_on_the_log();
-        let stood = self::shown();
+        let stood = shown();
         stood.says_start();
         stood.keeps_typed(b"secret");
         stood.stands(PARKED_LINE);
         logged.extend(said_on_the_log());
-        let ended = self::shown();
+        let ended = shown();
         ended.says_start();
         ended.keeps_typed(b"secret");
         ended.ends();
@@ -3343,7 +3343,7 @@ mod tests {
     fn the_starting_lines_log_is_written_once_every_lock_is_let_go() {
         let shown = Arc::new(Shown {
             log: logged_unlocked,
-            ..self::shown()
+            ..shown()
         });
         WATCHED.with(|watched| *watched.borrow_mut() = Some(Arc::clone(&shown)));
         shown.says_start();

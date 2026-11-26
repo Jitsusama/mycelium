@@ -69,7 +69,7 @@ pub struct Ended {
 }
 
 impl Ended {
-    /// What it says, in a line, each name [`named`], so none can end its
+    /// What it says, in a line, each name [`escaped_name`], so none can end its
     /// entry's `MESSAGE` and start a field of its own, or reach whoever
     /// reads it with a control.
     #[must_use]
@@ -85,9 +85,9 @@ impl Ended {
         };
         format!(
             "held {} in {}: {} (pid {}) {how}",
-            named(&self.id),
-            named(&self.realm),
-            named(&self.program),
+            escaped_name(&self.id),
+            escaped_name(&self.realm),
+            escaped_name(&self.program),
             self.pid
         )
     }
@@ -112,9 +112,9 @@ impl Ended {
             ("MESSAGE", self.line()),
             ("PRIORITY", priority.to_string()),
             ("SYSLOG_IDENTIFIER", "mycelium".to_owned()),
-            ("MYCELIUM_HELD", named(&self.id)),
-            ("MYCELIUM_REALM", named(&self.realm)),
-            ("MYCELIUM_PROGRAM", named(&self.program)),
+            ("MYCELIUM_HELD", escaped_name(&self.id)),
+            ("MYCELIUM_REALM", escaped_name(&self.realm)),
+            ("MYCELIUM_PROGRAM", escaped_name(&self.program)),
             ("MYCELIUM_PROGRAM_PID", self.pid.to_string()),
             ("EXIT_CODE", code.to_owned()),
             ("EXIT_STATUS", status),
@@ -132,7 +132,7 @@ impl Ended {
 /// other letter, quotes included, as itself. The holder's quotes of a
 /// program's output are escaped as bytes instead, as those needn't be
 /// text.
-pub(super) fn named(text: &str) -> String {
+pub(super) fn escaped_name(text: &str) -> String {
     text.chars()
         .fold(String::with_capacity(text.len()), |mut kept, letter| {
             if matches!(letter, '\'' | '"') {
@@ -323,14 +323,18 @@ mod tests {
 
     #[test]
     fn a_name_is_written_one_way_with_nothing_in_it_turning_the_text() {
-        assert_eq!(named("trial1"), "trial1", "a plain name is as it was given");
         assert_eq!(
-            named("ana's \"pi\" \u{e9}"),
+            escaped_name("trial1"),
+            "trial1",
+            "a plain name is as it was given"
+        );
+        assert_eq!(
+            escaped_name("ana's \"pi\" \u{e9}"),
             "ana's \"pi\" \u{e9}",
             "quotes and letters as themselves"
         );
         assert_eq!(
-            named("a\\b\nc\rd\x1b\u{202e}e"),
+            escaped_name("a\\b\nc\rd\x1b\u{202e}e"),
             "a\\\\b\\nc\\rd\\u{1b}\\u{202e}e",
             "a backslash, line breaks, a control and a right-to-left override escaped"
         );
