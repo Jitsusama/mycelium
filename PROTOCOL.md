@@ -2294,12 +2294,12 @@ session that ended on this machine, and otherwise refused as `no
 session <id> ended on <machine>, so nothing is reopened here`, whoever
 asked. Nor is one taken for a session that comes back by itself: one
 still live (`<id> is still live on <machine>`), parked with a holder
-there that a steer would wake, as a running holder's park or a park
-marker of this boot names one (a park with none has nothing to wake
-it, and a marker outlasting its park counts for nothing, so either is
-reopened as any ended session), held by a holder there,
-carried away or waiting for its turn, each refused with why, nor
-while the carries can't be read. Once taken, the session is
+there to wake it, as a running holder's park or a park marker of this
+boot names one, the marker whatever the presence says, since a
+message wakes through it (a park with none has nothing to wake it, so
+is reopened as any ended session), held by a holder there, carried
+away or waiting for its turn, each refused with why, nor while the
+carries can't be read. Once taken, the session is
 held as being reopened while its start runs, and another reopening of
 it meanwhile is refused as `<id> is being reopened on <machine>
 already`; a start whose asker hung up holds it at most two minutes.
@@ -2311,8 +2311,10 @@ start holds it, or holds a word as written that begins it. Any other
 start relayed here is held, in the same words, to each session it
 names by `--session` or `--session-id`, alone or with `=`, under any
 program or in the script given right after the `-c`, alone or among
-other short flags, of `sh`, `bash`, `zsh`, `dash`, `ksh` or `mksh`,
-with its positional parameters, and to the id a log's path ends in.
+other letters, of `sh`, `bash`, `zsh`, `dash`, `ksh` or `mksh`, where
+every word between the shell and the `-c` is a flag, reading only
+`$N` and `${N}` as its positional parameters, and to the id a log's
+path ends in.
 Each word it names as written is held, too, to each session here that
 word begins, and to each another start holds that it begins, since pi
 opens one so; it is refused where another start holds, as written, a
@@ -2325,8 +2327,9 @@ read`, and held while its start runs, though it need not have ended
 here, since its asker fenced it. A start only shaped as a
 carry is held so too. A refusal of a session a word begins names the
 word as asked, and a log path's tail begins nothing. An id a script
-works out as it runs, a script in any other shape or shell, or a
-resume naming none, as `pi --continue`, is not judged. A reopening
+works out as it runs, a script in any other shape or shell, as after
+`-o pipefail` or `--` or reading `$@`, or a resume naming none, as
+`pi --continue`, is not judged. A reopening
 let through without its asker's fence is asked only of a node whose
 link says `reopens`, since one older
 would take it as any relayed start, so one asked of an older node is

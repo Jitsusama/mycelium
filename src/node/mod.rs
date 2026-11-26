@@ -7618,15 +7618,15 @@ impl<S: Store> Shared<S> {
     /// has gone, has nothing to wake it and comes back by a start, as a
     /// restarted machine's wave does. A start bringing back one already
     /// coming back is refused by [`starts::Starts::admit`]. A park marker
-    /// of this boot whose wake file a running holder reads counts too
-    /// where the presence says parked, as [`Self::steer_here`] wakes
-    /// through one, since a message waking parked sessions writes the
-    /// marker's own wake file ([`crate::wake::wake_for`]); a marker
-    /// outlasting its park counts for nothing.
+    /// of this boot whose wake file a running holder reads counts too,
+    /// whatever the presence says, since a message waking parked
+    /// sessions writes the marker's own wake file
+    /// ([`crate::wake::wake_for`]) without reading the presence, though
+    /// [`Self::steer_here`] wakes through one only where it says parked.
     fn parked_here(&self, session: &Session) -> bool {
         session.machine == self.machine
             && (steer::wake_for(session, self.boot.id.as_deref(), &self.held).is_some()
-                || (parked_presence(session) && self.marked_wake(&session.id).is_some()))
+                || self.marked_wake(&session.id).is_some())
     }
 
     /// The wake file of a park marker this boot wrote for `session`,
@@ -7938,10 +7938,10 @@ impl<S: Store> Shared<S> {
         ended_here: bool,
     ) -> Result<Vec<(String, u64)>, String> {
         // Where the carries can't be read, which session is away can't be
-        // told, so no start naming one is taken, a reopening or another
-        // (round council-20261126T004831741-000002). Why is said on this node's stderr,
-        // since it names this machine's files and errors, which are
-        // nothing to the asker (followup 109).
+        // told, so no start naming one is taken, a reopening or another.
+        // Why is said on this node's stderr, since it names this
+        // machine's files and errors, which are nothing to the asker
+        // (followup 109).
         let away = self.carried_away().map_err(|why| {
             if self.unreadable.first(&why) {
                 eprintln!("{why}");
@@ -21396,10 +21396,11 @@ esac
 
     // A session ended unparked, though a marker of this boot naming a
     // running holder outlasted its park: a steer wakes nothing through
-    // it, so neither does it hold a reopening back (round
-    // council-20261126T004831741-000002).
+    // it, but a message still writes its wake file, so it holds a
+    // reopening back all the same, lest the holder's pi and the start's
+    // both open the session.
     #[tokio::test]
-    async fn a_marker_outlasting_its_park_holds_no_reopening_back() {
+    async fn a_marker_outlasting_its_park_still_holds_a_reopening_back() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
@@ -21426,8 +21427,11 @@ esac
                 reopening(&["pi", "--session", "s-closed"], false)
             )
             .await,
-            Err("skiff's node starts no sessions".to_owned()),
-            "a marker its session's presence doesn't back holds nothing back"
+            Err(
+                "s-closed is parked on skiff, and its holder wakes it, so it isn't reopened"
+                    .to_owned()
+            ),
+            "a message wakes its holder through the marker whatever the presence says"
         );
         let mut client = Speaking::greeted(&socket).await;
         let rouse = json!({"id": 1, "ask": "steer", "address": "CLOSED",
@@ -21436,7 +21440,7 @@ esac
         assert_eq!(
             client.next().await["error"]["message"],
             json!("CLOSED isn't parked with a holder to wake it this boot"),
-            "as a steer wakes nothing through it"
+            "though a steer wakes nothing through it"
         );
     }
 
