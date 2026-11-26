@@ -296,11 +296,12 @@ function pass_string(    c) {
   open_end = 1
 }
 # Passes the name at `pos`, as a string's suffix, up to the whitespace
-# past ASCII that ends it.
+# past ASCII that ends it, keeping where it ends in `name_ends`.
 function pass_name() {
   while (pos <= bytes && wordy(rust[pos]) && !space_at(pos)) {
     pos++
   }
+  name_ends = pos
 }
 # Passes a raw string from its `r`, saying whether one stood there.
 function pass_raw_string(    hashes, from, k, closes) {
@@ -327,29 +328,55 @@ function pass_raw_string(    hashes, from, k, closes) {
   return 1
 }
 # Passes a character from its opening quote, and its suffix, saying
-# whether one stood there rather than a lifetime. An escaped one closes
-# past what's escaped, which may itself be a quote, and is read only where
-# that's one byte, as Rust slices it.
-function pass_character(    from) {
-  if (byte_at(pos + 1) == "\\") {
-    if (pos + 2 > bytes || width(rust[pos + 2]) > 1) {
-      return 0
-    }
-    for (from = pos + 3; from <= bytes; from++) {
-      if (rust[from] == "\047") {
-        pos = from + 1
-        pass_name()
-        return 1
-      }
-    }
-    return 0
-  }
-  if (pos + 1 <= bytes && byte_at(pos + 1 + width(rust[pos + 1])) == "\047") {
+# whether one stood there rather than a lifetime, as rustc's
+# lifetime_or_char tells them apart. A quote before a letter, digit or `_`,
+# or any character past ASCII, opens a lifetime unless a quote follows
+# that one character or the name it opens, which closes a character. A
+# byte character's quote, after a `b` no name runs into and ending no
+# suffix or raw name, opens no lifetime. Any other is read as rustc's
+# single_quoted_string reads it, each escape and what it escapes as one,
+# to its close; one left open at a `/`, at a line's end no quote follows,
+# or at the file's end is an open end, read on from there.
+function pass_character(    at) {
+  if (pos + 1 <= bytes && rust[pos + 1] != "\\" \
+    && byte_at(pos + 1 + width(rust[pos + 1])) == "\047") {
     pos += width(rust[pos + 1]) + 2
     pass_name()
     return 1
   }
-  return 0
+  if (pos + 1 <= bytes && wordy(rust[pos + 1]) && !opens_byte(pos)) {
+    at = pos + 1 + width(rust[pos + 1])
+    while (at <= bytes && wordy(rust[at]) && !space_at(at)) {
+      at++
+    }
+    if (byte_at(at) != "\047") {
+      return 0
+    }
+    pos = at + 1
+    return 1
+  }
+  for (at = pos + 1; at <= bytes; at++) {
+    if (rust[at] == "\047") {
+      pos = at + 1
+      pass_name()
+      return 1
+    }
+    if (rust[at] == "/" || rust[at] == "\n" && byte_at(at + 1) != "\047") {
+      break
+    }
+    if (rust[at] == "\\") {
+      at++
+    }
+  }
+  pos = at
+  open_end = 1
+  return 1
+}
+# Whether the quote at `at` opens a byte character: a `b` no name runs
+# into stands right before it, as rustc's c_or_byte_string reads one, and
+# ends no suffix or raw name, which rustc has read whole.
+function opens_byte(at) {
+  return name_ends != at && byte_at(at - 1) == "b" && !ends_a_name(at - 2)
 }
 # Whether byte `c` may be part of a name: an ASCII letter, digit or
 # underscore, or any byte of a wider character.
@@ -369,6 +396,7 @@ function pass_raw_name() {
   for (pos += 2; pos <= bytes && wordy(rust[pos]) && !space_at(pos); pos++) {
     raw_name = raw_name rust[pos]
   }
+  name_ends = pos
   return 1
 }
 # Whether the `r` at `at` may open a raw string: no name or lifetime runs
@@ -507,8 +535,9 @@ function in_code(start) {
 }
 # Each line of the Rust file held turning a lint off, as `suppression
 # PATH LINE`, from those opening in code; or, where a comment, string or
-# raw string is left open at its end, `unread PATH`, since the walk has
-# read it otherwise than rustc would. A first line opening `#!`, past a
+# raw string is left open at its end, or a character where rustc stops
+# it, `unread PATH`, since the walk may have read it otherwise than rustc
+# would. A first line opening `#!`, past a
 # byte-order mark, is a shebang rustc drops, unless what follows past
 # whitespace and plain comments is a `[`. A comment left open there is
 # no open end, since rustc reads on from line 2.
@@ -517,6 +546,7 @@ function rust_ended(    start, line) {
   line = 1
   scan = 1
   open_end = 0
+  name_ends = 0
   pos = (rust[1] rust[2] rust[3]) == "\357\273\277" ? 4 : 1
   if (byte_at(pos) == "#" && byte_at(pos + 1) == "!") {
     pos += 2
@@ -658,7 +688,7 @@ ${measure}" "${code[@]}")"
 fi
 unread="$(sed -n 's/^unread //p' <<< "${measured}")"
 if [[ -n ${unread} ]]; then
-  echo "These leave a comment or string open at their end, so their lint-offs can't be" \
+  echo "These leave a comment, string or character open, so their lint-offs can't be" \
     "read as rustc reads them:" >&2
   echo "${unread}" >&2
   exit 1
