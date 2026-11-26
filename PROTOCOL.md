@@ -1923,7 +1923,11 @@ Where given, `needs_in` says what work sprouted here needs wherever
 placement sends it, as `[{"folders": ["src/inner"], "words":
 ["forge.example"], "needs": [{"reach": "inner"}]}]`: a sprout begun
 in one of `folders` or below, each within home unless whole, or whose
-words hold one of `words` in any case, needs each of `needs`. Only a
+words hold one of `words` in any case, needs each of `needs`. Folders
+are judged within home as it is on disk too, through any link home is
+reached by, and home itself names no work. A rule not in the
+shape this build reads is left out, and the node's log says which and
+why. Only a
 sprout placement chooses for gains them; one naming a machine, asking
 needs of its own or staying here is started as asked. A need met only
 by a probe is met as the probe last answered, so while no machine's

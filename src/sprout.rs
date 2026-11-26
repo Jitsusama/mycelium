@@ -779,15 +779,19 @@ pub fn needs_as_declared(
         return;
     }
     let said: Vec<String> = words.iter().map(|word| word.to_lowercase()).collect();
-    // Both read within home, so a folder named whole on either side is the
-    // same folder as one named within it.
-    let begun = start.folder.clone().map(|folder| within_home(folder, home));
+    // Both read within home, as it's named or as it is on disk where it's
+    // reached through a link, so a folder named whole on either side is
+    // the same folder as one named within it, and home itself, resolved,
+    // still names no work.
+    let seen = disk.resolved(home);
+    let inside = |folder: PathBuf| within_home(within_home(folder, &seen), home);
+    let begun = start.folder.clone().map(inside);
     let begun_in = |rule: &NeedsIn| {
         begun.as_ref().is_some_and(|folder| {
             rule.folders
                 .iter()
                 .filter(|one| !one.as_os_str().is_empty())
-                .map(|one| within_home(disk.resolved(&home.join(one)), home))
+                .map(|one| inside(disk.resolved(&home.join(one))))
                 // Home itself, or an empty folder, would name every one,
                 // so it names none.
                 .filter(|one| !one.as_os_str().is_empty())
@@ -1616,6 +1620,72 @@ pub(crate) mod tests {
             );
             assert_eq!(start.work.needs, Vec::new(), "{home} names nothing");
         }
+    }
+
+    #[test]
+    fn home_reached_through_a_link_is_judged_as_it_is_on_disk() {
+        // Home is a link, so the sprout's folder comes resolved where it
+        // leads, and a rule's folder resolves there too.
+        let disk = Held::default().linking("/home/kestrel", "/data/kestrel");
+        let named = |folder: &str, begun: &str| {
+            let rules = [NeedsIn {
+                folders: vec![PathBuf::from(folder)],
+                words: Vec::new(),
+                needs: vec![Need::Cloud],
+            }];
+            let mut start = placed_in(begun);
+            needs_as_declared(
+                &mut start,
+                &["tidy".to_owned()],
+                Path::new("/home/kestrel"),
+                &rules,
+                &disk,
+            );
+            start.work.needs
+        };
+        for home in [".", "/home/kestrel", "/data/kestrel"] {
+            assert_eq!(
+                named(home, "/data/kestrel/src/rows"),
+                Vec::new(),
+                "{home}, home itself, names nothing"
+            );
+        }
+        assert_eq!(
+            named("zone", "/data/kestrel/zone/src"),
+            [Need::Cloud],
+            "a folder within home is within it where home leads"
+        );
+        assert_eq!(
+            named("zone", "/data/kestrel/src/rows"),
+            Vec::new(),
+            "and work outside it isn't"
+        );
+    }
+
+    #[test]
+    fn every_rule_that_names_the_work_gives_its_needs() {
+        let rules = [
+            zoned(),
+            vec![NeedsIn {
+                folders: Vec::new(),
+                words: vec!["gpu".to_owned()],
+                needs: vec![Need::Cloud],
+            }],
+        ]
+        .concat();
+        let mut start = placed_in("zone");
+        needs_as_declared(
+            &mut start,
+            &["train".to_owned(), "gpu".to_owned()],
+            Path::new("/home/kestrel"),
+            &rules,
+            &Held::default(),
+        );
+        assert_eq!(
+            start.work.needs,
+            [Need::Reach("inner".to_owned()), Need::Cloud],
+            "the first rule's needs and the second's"
+        );
     }
 
     #[test]
