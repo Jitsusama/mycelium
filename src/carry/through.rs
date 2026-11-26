@@ -1118,6 +1118,51 @@ mod tests {
         assert!(!places.given("tern", quest), "and nothing is given");
     }
 
+    #[test]
+    fn a_room_its_node_names_is_given_the_quest_its_carry_shares() {
+        use super::{Hands, Places, Through};
+        use crate::declared::Declared;
+        use crate::facts;
+        let dir = tempfile::tempdir().expect("places");
+        let places = Places {
+            quests: dir.path().join("quests"),
+            scratch: dir.path().join("scratch"),
+            home: dir.path().join("home"),
+            state: dir.path().join("state"),
+        };
+        let quest = "QEST-20261115-HARBOR";
+        fs::create_dir_all(places.record(quest)).expect("its record");
+        let notes = places.scratch.join(quest).join("handover").join("skiff");
+        fs::create_dir_all(&notes).expect("a handover");
+        fs::write(notes.join("s-busy01.done.json"), "{}").expect("a done file");
+        // Lent by a provider's link, as a room is, and named by its node.
+        let room = facts::Machine {
+            worker: true,
+            held_for: facts::HeldFor::Agents,
+            declared: Some(Declared {
+                costs_money: true,
+                ..Declared::default()
+            }),
+            ..facts::measure("osprey", &facts::Sources::nowhere())
+        };
+        let machines = vec![facts::measure("skiff", &facts::Sources::nowhere()), room];
+        let mut hands = Through::new(
+            dir.path().join("work.sock"),
+            places.clone(),
+            quest,
+            Duration::from_secs(1),
+        )
+        .asking(Box::new(move |request| match request {
+            Request::Machines => Ok(Response::Machines(machines.clone())),
+            other => Err(format!("asked {other:?}")),
+        }));
+        hands.share(quest, "osprey").expect("shared to the room");
+        assert!(
+            places.given("osprey", quest),
+            "its link serves a worker only what it was given, so the room is given it"
+        );
+    }
+
     // 8855BD77's council (23 November): hands made once the session was
     // told passed over a refusal it wrote before they were made.
     #[test]
