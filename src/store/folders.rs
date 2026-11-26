@@ -1356,21 +1356,32 @@ mod tests {
         let again = opened_until(&heard, &presence.join("second-mark"));
         assert!(again.is_empty(), "unchanged, yet opened: {again:?}");
 
-        // A mode changed moves the file's change time, so it is opened again
-        // and, unreadable, is no presence.
         let one = presence.join("s-one.json");
-        let mut mode = fs::metadata(&one).expect("its mode").permissions();
+        fs::write(
+            &one,
+            json!({"session": "s-one", "title": "again"}).to_string(),
+        )
+        .expect("written in place");
+        // The write's own open is heard before this mark, so only what
+        // the reading opens comes after it.
+        opened_until(&heard, &presence.join("written-mark"));
+        assert_eq!(folders.presence_bodies().len(), 2, "both read once more");
+        let third = opened_until(&heard, &presence.join("third-mark"));
+        assert_eq!(third, [one], "only the changed file is opened");
+
+        // A mode changed moves only the file's change time, yet it is tried
+        // again and, unreadable, is no presence. Root reads past a mode, so
+        // only another account loses the file.
+        let two = presence.join("s-two.json");
+        let mut mode = fs::metadata(&two).expect("its mode").permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o000);
-        fs::set_permissions(&one, mode).expect("made unreadable");
-        // Root reads past a mode, so only another account loses the file.
+        fs::set_permissions(&two, mode).expect("made unreadable");
         let root = rustix::process::geteuid().is_root();
         assert_eq!(
             folders.presence_bodies().len(),
             if root { 2 } else { 1 },
-            "a file made unreadable is read again"
+            "a file made unreadable is tried again"
         );
-        let third = opened_until(&heard, &presence.join("third-mark"));
-        assert_eq!(third, [one], "only the changed file is opened");
     }
 
     #[test]
