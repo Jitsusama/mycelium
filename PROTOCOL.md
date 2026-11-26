@@ -2863,8 +2863,11 @@ there then wakes it, when it parked this boot, by writing its holder's
 names as `wake`, taken only as a holder's in a realm's `.held` folder
 beside its own. An ended session whose presence never said parked
 counts too where a park marker of this boot names a running holder
-whose own record says its program is parked, and is woken through it;
-one live in a pi of its own is never woken through a marker. A talk's
+whose own record says its program is parked, and is woken through it.
+So is one whose presence said parked but names no such file, where a
+park marker of this boot names a running holder, whatever its record
+says. One live in a pi of its own is never woken through a marker. A
+talk's
 file, `<ADDRESS>/replies/<id>.jsonl`, is opened on the asking machine
 first, and the lines its session writes are carried back to it, so a
 talk reads the same wherever its session runs.
