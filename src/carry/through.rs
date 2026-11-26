@@ -1055,11 +1055,17 @@ mod tests {
             }),
             ..facts::measure(name, &facts::Sources::nowhere())
         };
+        let mut cloud = machine("kestrel", None);
+        cloud.declared = Some(Declared {
+            costs_money: true,
+            ..Declared::default()
+        });
         let machines = vec![
             machine("skiff", None),
             machine("tern", Some(true)),
             machine("wren", Some(false)),
             machine("osprey", None),
+            cloud,
         ];
         let mut hands = Through::new(
             dir.path().join("work.sock"),
@@ -1075,6 +1081,13 @@ mod tests {
         assert!(
             !places.given("osprey", quest),
             "one of the person's own is given nothing"
+        );
+        hands
+            .share(quest, "kestrel")
+            .expect("shared to one of the person's own in the cloud");
+        assert!(
+            !places.given("kestrel", quest),
+            "which, paid for but lent by no provider, is shared as any of theirs"
         );
         assert_eq!(
             hands.share(quest, "wren"),

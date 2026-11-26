@@ -1845,6 +1845,21 @@ const ENDED_LET_GO_AFTER: jiff::SignedDuration = jiff::SignedDuration::from_mins
 /// its name is no longer taken for that machine's.
 const UNNAMED_LOOKED_FOR: jiff::SignedDuration = jiff::SignedDuration::from_hours(7 * 24);
 
+/// `machine` as leaving no later than the make that made it ends, where
+/// `ends` holds one: its provider ends it then whatever it declares, so
+/// a machine made to live an hour that declares no leaving never reads
+/// to a carry as staying. A machine no make booked, or one that declares
+/// nothing, is as it said.
+fn leaving_as_made(
+    mut machine: facts::Machine,
+    ends: &BTreeMap<String, jiff::Timestamp>,
+) -> facts::Machine {
+    if let (Some(end), Some(said)) = (ends.get(&machine.name), machine.declared.as_mut()) {
+        said.leaves_at = Some(said.leaves_at.map_or(*end, |leaves| leaves.min(*end)));
+    }
+    machine
+}
+
 /// Lets go of each machine `book` says was made and stands, though its
 /// time was up [`ENDED_LET_GO_AFTER`] before `now`, where no link reaches
 /// it. Its provider ended it at its time whatever else happened, so one
@@ -2834,6 +2849,10 @@ struct Inner {
     /// promised it holds at most, where it promised any, weighed while
     /// the machine's own configuration says none ([`placement::full`]).
     promised: BTreeMap<String, u32>,
+    /// When each booked machine's make ends, whatever the machine says,
+    /// so a machine made to live an hour never reads as staying because
+    /// it declares no leaving of its own ([`leaving_as_made`]).
+    ends: BTreeMap<String, jiff::Timestamp>,
     /// The sessions a relayed start is reopening here now, and since
     /// when, kept only while the node runs (see [`Reopening`]).
     reopening: Reopening,
@@ -4949,6 +4968,19 @@ impl<S: Store> Shared<S> {
             .collect()
     }
 
+    /// `machines` as a carry reads them: each this node made leaving no
+    /// later than its make ends ([`leaving_as_made`]), since a carried
+    /// session lasts. Only carries read them so: a make lives as long as
+    /// the work it was made for, so placement reading its end as a
+    /// leaving would refuse that very work once the machine links.
+    fn as_carried(&self, machines: Vec<facts::Machine>) -> Vec<facts::Machine> {
+        let ends = self.lock().ends.clone();
+        machines
+            .into_iter()
+            .map(|one| leaving_as_made(one, &ends))
+            .collect()
+    }
+
     /// Waits, up to [`REDIAL_AWAITED_MOST`], for the machine `work` names
     /// to link again where its link dropped within
     /// [`REDIAL_AWAITED_SINCE`] ([`redial_awaited`]) and being out of
@@ -5240,7 +5272,9 @@ impl<S: Store> Shared<S> {
         match request {
             Request::Sessions => Ok(Response::Sessions(self.lock().state.sessions())),
             Request::Machine => Ok(Response::Machine(Box::new(self.measure()))),
-            Request::Machines => Ok(Response::Machines(self.machines())),
+            // A carry's hands read the realm through this, so it answers
+            // each machine as a carry reads it.
+            Request::Machines => Ok(Response::Machines(self.as_carried(self.machines()))),
             Request::Builders => Ok(Response::Builders(self.builders.builders())),
             Request::StartedBy(held) => {
                 let sessions = self.lock().state.sessions();
@@ -6306,7 +6340,7 @@ impl<S: Store> Shared<S> {
             Processes::Folder(procs) => room::felt(procs, &now.to_string()),
             Processes::Listed | Processes::Unattended(_) => None,
         };
-        let machines = easing::felt_here(self.machines(), &self.machine, felt);
+        let machines = easing::felt_here(self.as_carried(self.machines()), &self.machine, felt);
         let (sessions, loads) = {
             let mut inner = self.lock();
             let inner = &mut *inner;
@@ -7090,7 +7124,10 @@ impl<S: Store> Shared<S> {
             .await?
             .max(self.fences.strictest(session)?);
         let kind = ground::as_shown(claimed, shown, &address)?;
-        let there = self.others().into_iter().find(|machine| machine.name == to);
+        let there = self
+            .as_carried(self.others())
+            .into_iter()
+            .find(|machine| machine.name == to);
         ground::firm(
             kind,
             crate::declared::read(&self.declared).as_ref(),
@@ -7693,7 +7730,7 @@ impl<S: Store> Shared<S> {
         let Some(arriving) = arriving else {
             return;
         };
-        let worker = self.others().into_iter().any(|one| {
+        let worker = self.as_carried(self.others()).into_iter().any(|one| {
             one.name == started.machine && crate::carry::Lent::of(&one) != crate::carry::Lent::Not
         });
         if worker {
@@ -9629,6 +9666,7 @@ impl<S: Store> Shared<S> {
         {
             inner.booked.remove(&made.machine);
             inner.promised.remove(&made.machine);
+            inner.ends.remove(&made.machine);
         }
     }
 
@@ -9646,6 +9684,7 @@ impl<S: Store> Shared<S> {
             Some(most) => inner.promised.insert(made.machine.clone(), most),
             None => inner.promised.remove(&made.machine),
         };
+        inner.ends.insert(made.machine.clone(), made.until);
         drop(inner);
         Arc::new(Program {
             program: made.provider.clone(),
@@ -24710,11 +24749,82 @@ esac
                 .store
                 .put_machine(&cloud)
                 .expect("the made machine is kept");
-            let mut made = made_by("/usr/bin/lend", name, jiff::Timestamp::now());
+            let mut made = made_by("/usr/bin/lend", name, a_day_out());
             made.asker = Some((*asker).to_owned());
             shared.book_for(&made);
         }
         shared
+    }
+
+    #[test]
+    fn a_machine_made_for_the_person_leaves_to_a_carry_when_its_make_ends() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let kept: jiff::Timestamp = "9999-01-01T00:00:00Z".parse().expect("a time");
+        for (name, until) in [("tern", soon), ("wren", kept)] {
+            let mut cloud = placement::tests::machine(name, "linux", 32, &["basin"]);
+            cloud.declared.as_mut().expect("declared").costs_money = true;
+            shared
+                .store
+                .put_machine(&cloud)
+                .expect("the made machine is kept");
+            let mut made = made_by("/usr/bin/lend", name, until);
+            made.asker = Some(made::PERSON.to_owned());
+            shared.book_for(&made);
+        }
+        let others = shared.as_carried(shared.others());
+        let seen = |name: &str| {
+            others
+                .iter()
+                .find(|one| one.name == name)
+                .expect("the machine is known")
+                .clone()
+        };
+        let tern = seen("tern");
+        assert_eq!(
+            tern.declared.as_ref().and_then(|said| said.leaves_at),
+            Some(soon),
+            "its make's end stands for the leaving it doesn't declare"
+        );
+        assert_ne!(
+            ground::Lent::of(&tern),
+            ground::Lent::Not,
+            "made to live an hour, it is no full place for a carried session"
+        );
+        assert_eq!(
+            ground::Lent::of(&seen("wren")),
+            ground::Lent::Not,
+            "kept for good, it is one of the person's own"
+        );
+        // A make lives as long as its work, so the start it was made for,
+        // placed again once it links, must find it there still.
+        let mut pinned = work(vec![Need::Machine("tern".to_owned())]);
+        pinned.lasts = Some(jiff::SignedDuration::from_hours(1));
+        assert!(
+            matches!(
+                shared.place(
+                    &pinned,
+                    Counts::Always,
+                    None,
+                    Screen::Ground,
+                    &Admits::Asker(made::PERSON.to_owned()),
+                ),
+                Placement::Placed { .. }
+            ),
+            "placement reads the machine as it says, so the start it was made for lands"
+        );
+        shared.unbook(&made_by("/usr/bin/lend", "tern", soon));
+        assert_eq!(
+            shared
+                .as_carried(shared.others())
+                .iter()
+                .find(|one| one.name == "tern")
+                .and_then(|one| one.declared.as_ref())
+                .and_then(|said| said.leaves_at),
+            None,
+            "unbooked, it is as it says"
+        );
     }
 
     #[tokio::test]
@@ -24772,7 +24882,7 @@ esac
             (None, Some("osprey")),
             "its last session is kept for the person"
         );
-        let mut unasked = made_by("/usr/bin/lend", "osprey", jiff::Timestamp::now());
+        let mut unasked = made_by("/usr/bin/lend", "osprey", a_day_out());
         unasked.asker = None;
         shared.book_for(&unasked);
         shared.lock().promised.insert("osprey".to_owned(), 1);
@@ -24867,7 +24977,7 @@ esac
                 &["basin"],
             ))
             .expect("the made machine is kept");
-        let mut made = made_by("/usr/bin/lend", "osprey", jiff::Timestamp::now());
+        let mut made = made_by("/usr/bin/lend", "osprey", a_day_out());
         made.asker = Some("P9R1KI".to_owned());
         shared.book_for(&made);
         let basin = work(vec![Need::Reach("basin".to_owned())]);
@@ -25635,6 +25745,12 @@ esac
             Admits::All,
             "no asker is read while no machine is booked"
         );
+    }
+
+    /// A day from now: when a make placed on ends, since one past its end
+    /// has left.
+    fn a_day_out() -> jiff::Timestamp {
+        jiff::Timestamp::now() + jiff::SignedDuration::from_hours(24)
     }
 
     fn made_by(provider: &str, machine: &str, until: jiff::Timestamp) -> Made {
