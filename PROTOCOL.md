@@ -2423,8 +2423,8 @@ and renames it into place, so a placement never reads one half
 written. A file that isn't there names none, and so does one that
 can't be read or isn't a plain file, said in the node's journal once
 each time that changes; only its first 64 KiB is read. A start relayed
-from another machine's node makes nothing, since it is pinned to this machine by name, which no
-offer meets. The program writes one JSON line,
+from another machine's node makes nothing, since it is pinned to this
+machine by name, which no offer meets. The program writes one JSON line,
 `{"place", "machine", "until"}`:
 where it is, as `--via` names it, the name its node will say for
 itself, and when its provider ends it whatever else happens. The node
