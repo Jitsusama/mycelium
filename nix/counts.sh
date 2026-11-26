@@ -10,7 +10,23 @@
 # the repository's root; scripts/merge-gate.sh runs main's copy over each
 # head it merges, with whatever bash and awk the machine has, so this keeps
 # to what a Mac's bash 3.2 and its awk do too.
+#
+#   counts.sh [--name-lines]
+#
+# With --name-lines it compares nothing and says each line it reads as
+# turning a linter off, as `PATH LINE`, so the gate can see which lines a
+# new reader counts that main's doesn't.
 set -euo pipefail
+
+naming=0
+case ${1:-} in
+  "") ;;
+  --name-lines) naming=1 ;;
+  *)
+    echo "counts.sh: say nothing, or --name-lines, not $1" >&2
+    exit 64
+    ;;
+esac
 
 # Bytes, whatever the machine's locale, so every awk reads a file alike
 # and none stops at a byte its locale can't read. Rust's characters are
@@ -143,7 +159,7 @@ function last(text,    at) {
 AWK
 
 # Each code file past 800 lines that doesn't say why, as `long PATH`, and
-# each line turning a linter off, as `suppression PATH`, one for each.
+# each line turning a linter off, as `suppression PATH LINE`.
 # A mark opens a comment only where no quote before it is left open, and
 # the next is looked for past the whole of this one, as Rust's
 # match_indices steps.
@@ -233,7 +249,7 @@ FNR == 1 {
     said = 1
   }
   if (suppresses(file, $0)) {
-    print "suppression " file
+    print "suppression " file " " FNR
   }
 }
 END {
@@ -244,6 +260,10 @@ measured=""
 if ((${#code[@]} > 0)); then
   measured="$(awk "${characters}
 ${measure}" "${code[@]}")"
+fi
+if ((naming)); then
+  sed -n 's/^suppression //p' <<< "${measured}" | sort -k 1,1 -k 2,2n
+  exit 0
 fi
 
 # Each folder of more than 40 entries, the files and folders right in it
@@ -328,7 +348,7 @@ long_found="$(
       <<< "${crowded}" | sed -n 's/^crowded //p' || true
   } | sed '/^$/d' | sort -u
 )"
-suppression_found="$(awk 'sub(/^suppression /, "") { found[$0]++ }
+suppression_found="$(awk 'sub(/^suppression /, "") { sub(/ [0-9]+$/, ""); found[$0]++ }
   END { for (file in found) print file, found[file] }' <<< "${measured}" | sort)"
 
 # A list's lines but its comments and blanks.

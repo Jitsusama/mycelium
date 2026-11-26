@@ -8,7 +8,8 @@ How the repository is built and checked, read by `flake.nix`:
 - `counts.sh`: long files, crowded folders and lints turned off, counted
   as core.nix's code-health counts them, which only fall; those there
   before it wait in `long-files-waiting.txt` and
-  `suppressions-waiting.txt`, lists that only shrink
+  `suppressions-waiting.txt`, lists that only shrink; with `--name-lines`
+  it names each line it counts as turning a lint off, for the merge gate
 - `cargo-for-agents.nix` and `cargo-for-agents.sh`: the dev shell's cargo,
   which sends an agent's whole suite to a lent builder through
   `nix-offload`, and `cargo-for-agents-test.sh`, its cases
