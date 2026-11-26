@@ -24987,12 +24987,6 @@ esac
             (None, Some("reef")),
             "so it reaches the room the person's own login never runs in"
         );
-        assert_eq!(
-            placed(&naming(&["wren"]), &Admits::Rooms),
-            None,
-            "nor anywhere else but where it names: wren is booked for the person, yet it \
-             takes only the one machine named"
-        );
         for (by, work, why) in [
             (
                 By::Person,
@@ -25018,6 +25012,11 @@ esac
             shared.as_a_room_takes(By::Person, &reef, person()),
             (By::Person, person()),
             "an agent's machine that is no room stays out of the person's reach"
+        );
+        assert_eq!(
+            placed(&reef, &Admits::Rooms),
+            None,
+            "and the rooms-only admits never take it, though it is named"
         );
     }
 
