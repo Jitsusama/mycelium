@@ -531,13 +531,14 @@ async fn pull(
 /// machine's sessions waited behind them for many minutes, and the
 /// starts there were given up on although they ran. Shares keep their
 /// own order, and every other frame its place behind them. And where
-/// facts are taken, the newest waiting before any handover are taken in
-/// their place and the older left out: facts are said whole every time,
-/// so a link whose node fell behind, as one did by 49 minutes on
-/// 2026-11-21, catches up on what its machine is now rather than on what
-/// it was. Facts said after a handover wait for it, since facts change
-/// how shares are heard and the handover lets the machine go once the
-/// shares before it are.
+/// facts are taken, the newest waiting before the next share or
+/// handover are taken in their place and the older left out: facts are
+/// said whole every time, so a link whose node fell behind, as one did
+/// by 49 minutes on 2026-11-21, catches up on what its machine is now
+/// rather than on what it was. Facts said after a share or a handover
+/// wait for it, since what a machine declares decides which shares are
+/// heard, and the handover lets the machine go once the shares before
+/// it are.
 fn next_waiting(queued: &mut VecDeque<io::Result<Frame>>) -> Option<io::Result<Frame>> {
     let unshared = queued
         .iter()
@@ -550,23 +551,23 @@ fn next_waiting(queued: &mut VecDeque<io::Result<Frame>>) -> Option<io::Result<F
     if !matches!(next, Ok(Frame::Machine(_))) {
         return Some(next);
     }
-    let handover = queued
+    let waited_on = queued
         .iter()
-        .position(|frame| matches!(frame, Ok(Frame::HandedOver)))
+        .position(|frame| matches!(frame, Ok(Frame::Share(_) | Frame::HandedOver)))
         .unwrap_or(queued.len());
     let newest = queued
-        .range(..handover)
+        .range(..waited_on)
         .rposition(|frame| matches!(frame, Ok(Frame::Machine(_))));
     let next = match newest {
         Some(newest) => queued.remove(newest).unwrap_or(next),
         None => next,
     };
-    // The handover moved up a place where the newest was taken from
-    // before it; the older facts before it go, those after it wait.
-    let before_handover = handover - usize::from(newest.is_some());
+    // The older facts before what is waited on go, and those after it
+    // wait. Where the newest was taken, what is waited on moved up a
+    // place, and it is no facts, so the bound needs no moving.
     let mut at = 0;
     queued.retain(|frame| {
-        let kept = at >= before_handover || !matches!(frame, Ok(Frame::Machine(_)));
+        let kept = at >= waited_on || !matches!(frame, Ok(Frame::Machine(_)));
         at += 1;
         kept
     });
@@ -3259,7 +3260,7 @@ mod tests {
         }
         let mut queued = VecDeque::new();
         let mut heard = Vec::new();
-        for _ in 0..8 {
+        for _ in 0..9 {
             heard.push(
                 pull(&mut queued, &mut frames)
                     .await
@@ -3271,17 +3272,17 @@ mod tests {
             heard,
             [
                 share("one"),
-                facts(2),
+                facts(1),
                 started,
                 share("two"),
+                facts(2),
                 unrun,
                 Frame::HandedOver,
                 ended,
                 taken,
             ],
             "an answer goes ahead of the shares it came behind, which keep their order; \
-             facts, an ask and a handover never go ahead of them, and only the newest \
-             facts are taken"
+             facts, an ask and a handover never go ahead of them"
         );
         // A frame said while shares still wait goes ahead of them too.
         sender.send(Ok(share("four"))).expect("sent");
@@ -3341,26 +3342,39 @@ mod tests {
     }
 
     #[test]
-    fn facts_said_after_a_handover_wait_for_it() {
+    fn facts_wait_for_a_handover_or_share_said_before_them() {
         let tern = facts::measure("tern", &facts::Sources::nowhere());
         let facts = |cores: u32| {
             let mut machine = tern.clone();
             machine.cpu.cores = Some(cores);
             Frame::Machine(Box::new(machine))
         };
-        let mut queued: VecDeque<io::Result<Frame>> =
-            [facts(1), facts(2), Frame::HandedOver, facts(3), facts(4)]
-                .into_iter()
-                .map(Ok)
-                .collect();
+        let share = Frame::Share(Say::Want {
+            quest: "QEST-20261126-SKIFF1".to_owned(),
+            file: "one".to_owned(),
+            at: None,
+        });
+        let mut queued: VecDeque<io::Result<Frame>> = [
+            facts(1),
+            facts(2),
+            Frame::HandedOver,
+            facts(3),
+            share.clone(),
+            facts(4),
+            facts(5),
+        ]
+        .into_iter()
+        .map(Ok)
+        .collect();
         let mut heard = Vec::new();
         while let Some(next) = next_waiting(&mut queued) {
             heard.push(next.expect("read"));
         }
         assert_eq!(
             heard,
-            [facts(2), Frame::HandedOver, facts(4)],
-            "the newest before the handover, then it, then the newest after it"
+            [facts(2), Frame::HandedOver, facts(3), share, facts(5)],
+            "the newest before the handover, then it; facts after it are never taken ahead \
+             of a share said before them, nor left out for facts said after it"
         );
     }
 

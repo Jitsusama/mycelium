@@ -260,8 +260,8 @@ same code, each line a JSON value:
    it names the sending machine, as ready while the link stands and as
    unreachable, with what it last said, once the link drops. An end
    fallen behind what it hears keeps, of the `Machine` frames waiting
-   before any `HandedOver`, only the newest, since each says the
-   machine whole. It takes every other frame in the order it came, but
+   before the next `Share` or `HandedOver`, only the newest, since each
+   says the machine whole. It takes every other frame in the order it came, but
    that one waiting only behind `Share` frames goes ahead of them where
    it is a `Message`, `Presence`, `Ended`, `Replies`, `Ran`, `Taken`,
    `Lent` or `Started`: what the sending end says of its sessions and
