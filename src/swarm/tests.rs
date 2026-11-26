@@ -1136,8 +1136,15 @@ fn a_noncharacter_in_a_chain_parts_no_run_of_joiners() {
     // character left. A direction mark, gone before, as a noncharacter
     // is, parts nothing. A space past ASCII is a space, as PROTOCOL says
     // of White_Space, so a joiner after one goes, and one at an end is
-    // trimmed.
+    // trimmed. What draws nothing and what selects are PROTOCOL's own
+    // lists: a Mongolian selector and an annotation control draw nothing,
+    // and a non-joiner, as a joiner, stands only between two.
     for (said, cleaned) in [
+        ("\u{1820}\u{180B}", "\u{1820}"),
+        ("\u{1820}\u{FE00}", "\u{1820}\u{FE00}"),
+        ("\u{6E2F}\u{FFF9}\u{6E7E}", "\u{6E2F}\u{6E7E}"),
+        ("\u{6E2F}\u{200C}\u{6E7E}", "\u{6E2F}\u{200C}\u{6E7E}"),
+        ("\u{6E2F}\u{200C}a", "\u{6E2F}a"),
         (
             "\u{6E2F}\u{3000}\u{200D}\u{6E7E}",
             "\u{6E2F}\u{3000}\u{6E7E}",

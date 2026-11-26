@@ -3637,11 +3637,16 @@ in case are one folder. `for` and `folder` are drawn on one line: each
 control character and line or paragraph separator in them is read as
 a space and each mark turning text's direction is dropped. From what
 is left, `for` also drops each of Unicode's 66 noncharacters first,
-then each character that draws nothing, keeping one selector only
-after a character drawn as part of a word past ASCII (none a space,
-here any character Unicode gives White_Space, such as U+00A0 or
-U+3000, nor a braille blank), and a joiner only between two, the first perhaps
-followed by its selector and the second the very next character left,
+then each character that draws nothing (U+00AD, U+034F, U+115F,
+U+1160, U+17B4, U+17B5, U+180B to U+180F, U+200B to U+200D, U+2060
+to U+2065, U+206A to U+206F, U+3164, U+FE00 to U+FE0F, U+FEFF,
+U+FFA0, U+FFF0 to U+FFFB, U+1BCA0 to U+1BCA3, U+1D173 to U+1D17A and
+U+E0000 to U+E0FFF), keeping one selector (U+FE00 to U+FE0F or
+U+E0100 to U+E01EF, so no Mongolian one) only after a character
+drawn as part of a word past ASCII (none a space, here any character
+Unicode gives White_Space, such as U+00A0 or U+3000, nor a braille
+blank), and a joiner (U+200C or U+200D) only between two, the first
+perhaps followed by its selector and the second the very next character left,
 so one dropped in this pass after a joiner parts it, though a
 direction mark or noncharacter, gone before, doesn't; and at most
 three zero-width joiners (U+200D) from the start or from one
