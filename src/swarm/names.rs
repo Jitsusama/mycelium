@@ -59,10 +59,14 @@ pub(super) fn one_word(name: &str) -> bool {
 /// drew it, `reef pause` would pause Reef, and `pause` reach no team.
 /// A short's words may be typed apart, so each part between hyphens
 /// counts as a word too: `reef-pause`, typed as `reef pause`, would pause
-/// Reef.
+/// Reef. A word led by a hyphen may be typed as a flag, and so may one
+/// after two hyphens: `kelp --names`, held as `kelp---names`, typed
+/// apart would be read as `--names`.
 fn acts_for(name: &str) -> bool {
     let drawn = unmarked(name).to_lowercase();
-    let flagged = drawn.split(blank).any(|word| word.starts_with('-'));
+    let flagged = drawn
+        .split(blank)
+        .any(|word| word.starts_with('-') || word.contains("--"));
     flagged
         || drawn
             .split(|each: char| blank(each) || each == '-')
