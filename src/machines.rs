@@ -500,7 +500,7 @@ mod tests {
         .concat();
         let long: Vec<&str> = drawn
             .lines()
-            .filter(|line| line.chars().count() > 40)
+            .filter(|line| drawn_width(line) > 40)
             .collect();
         assert!(long.is_empty(), "lines past 40 columns: {long:?}");
     }
@@ -717,7 +717,7 @@ mod tests {
         .concat();
         let long: Vec<&str> = drawn
             .lines()
-            .filter(|line| line.chars().count() > 20)
+            .filter(|line| drawn_width(line) > 20)
             .collect();
         assert!(long.is_empty(), "lines past 20 columns: {long:?}");
         assert!(

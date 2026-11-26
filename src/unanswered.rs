@@ -988,7 +988,7 @@ mod tests {
                 .expect("the question's line");
             assert!(
                 heading.ends_with(", 25 min so far  [c0cd280e]")
-                    && heading.chars().count() <= width
+                    && crate::swarm::drawn_width(heading) <= width
                     && !heading.contains("deadbeef"),
                 "the wait or the id was lost at {width}:\n{drawn}"
             );
