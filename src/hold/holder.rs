@@ -3285,23 +3285,27 @@ mod tests {
             matches!(said.as_slice(), [one] if quoted(one)),
             "what came with nothing typed is quoted: {said:?}"
         );
+        // Each case's log is read before the next, since a new Shown
+        // clears it.
         // An echo read wrong: a terminal that drew before echoing.
         let shown = self::shown();
         shown.says_start();
         shown.keeps_typed(b"secret");
         shown.show(b"\x1b[Hsecret");
+        let mut said = said_on_the_log();
         // Its program drawing a key again once its echo came back.
         let again = self::shown();
         again.says_start();
         again.keeps_typed(b"secret");
         again.show(b"secret");
         again.show(b"\x1b[Hsecret");
+        said.extend(said_on_the_log());
         // Even a key that left only a literal-next key to come back.
         let literal = self::shown();
         literal.says_start();
         literal.keeps_typed(b"\x16");
         literal.show(b"drew");
-        let said = said_on_the_log();
+        said.extend(said_on_the_log());
         assert_eq!(said.len(), 3, "each said once: {said:?}");
         let cases = ["echo read wrong", "a key drawn again", "a literal-next key"];
         for (said, case) in said.iter().zip(cases) {
