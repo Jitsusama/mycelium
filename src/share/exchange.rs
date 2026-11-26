@@ -1207,8 +1207,8 @@ impl Exchange {
             // idle look reads no file's size and time.
             let scans = record || !walk.is_empty();
             let found = quest.clones()?;
-            let holds = scans || clones_from(&looked, &walk, &found) != looked.clones;
-            let (ledger, scanned) = if holds {
+            let writes = scans || clones_from(&looked, &walk, &found) != looked.clones;
+            let (ledger, scanned) = if writes {
                 Self::scan_held(
                     &ledgers,
                     &id,
