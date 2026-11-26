@@ -4744,7 +4744,9 @@ mod tests {
             .find(|(key, _)| key.ends_with("x.jsonl"))
             .expect("the file is held");
         assert_eq!(
-            entry.version.against(&Version::default().changed_on(person)),
+            entry
+                .version
+                .against(&Version::default().changed_on(person)),
             super::super::version::Standing::Newer,
             "the person's own count is kept beside the made machine's: {:?}",
             entry.version
