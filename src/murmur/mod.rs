@@ -384,12 +384,14 @@ async fn keep(mut webs: Webs, held: Arc<Mutex<Arc<Seen>>>, tell: watch::Sender<u
             tell.send_modify(|changes| *changes += 1);
         }
         if let Some(watcher) = &mut watcher {
-            for gone in watching.difference(&folders) {
-                let _ = watcher.unwatch(gone);
-            }
-            for come in folders.difference(&watching) {
-                let _ = watcher.watch(come, notify::RecursiveMode::NonRecursive);
-            }
+            // In one batch, so macOS's stream starts once a round, not
+            // once a folder.
+            let gone: Vec<PathBuf> = watching.difference(&folders).cloned().collect();
+            let come: Vec<(PathBuf, notify::RecursiveMode)> = folders
+                .difference(&watching)
+                .map(|come| (come.clone(), notify::RecursiveMode::NonRecursive))
+                .collect();
+            crate::watching::watch_all(watcher, &gone, &come);
         }
         // A folder newly watched may have changed before its watch began,
         // so it is read again at once, until what is watched holds still.

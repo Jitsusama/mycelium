@@ -5,6 +5,12 @@
 //! A record or folder that can't be watched, one newly named, and every one
 //! after the watch fails or overflows, is walked anyway, so a watch that
 //! misses something costs a walk, never a change.
+//!
+//! A quest's record and folders are watched in one batch as it's looked
+//! at, and only those there to watch, so macOS's watcher, which starts its
+//! stream again for each change, starts it once a quest newly looked at
+//! rather than once a path, and not at all at a look that starts nothing
+//! (see [`crate::watching`]).
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -14,7 +20,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use notify::event::ModifyKind;
-use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{EventKind, RecursiveMode, Watcher};
 
 use super::tree::{Place, Shared, crosses};
 
@@ -29,11 +35,18 @@ pub struct Watch {
     records: Root,
     /// The watcher, unless one couldn't be made, when every record and
     /// folder is walked at every look.
-    watcher: Option<RecommendedWatcher>,
+    watcher: Option<Box<dyn Watcher + Send>>,
     /// The folders watched.
     watched: BTreeSet<Folder>,
     /// The records watched, by their quests' ids.
     records_watched: BTreeSet<String>,
+    /// The folders the watcher may hold though they aren't watched: one
+    /// heard gone or made anew, or one a batch failed to start. Each is
+    /// given back before it's watched again, as macOS's watcher would
+    /// otherwise hold its path twice.
+    stale: BTreeSet<Folder>,
+    /// The records it may hold though they aren't watched, likewise.
+    records_stale: BTreeSet<String>,
     /// What the watcher heard, not yet taken.
     heard: mpsc::Receiver<Heard>,
     /// What was taken from `heard` early, by a wait, to be taken again.
@@ -92,32 +105,33 @@ impl Watch {
     /// records in `records`, watching none until a look names them.
     #[must_use]
     pub fn new(scratch: PathBuf, records: PathBuf) -> Self {
+        Self::watched_by(scratch, records, |hears| {
+            let watcher: Box<dyn Watcher + Send> = Box::new(crate::watching::watcher(hears)?);
+            Ok(watcher)
+        })
+    }
+
+    /// A watch of `scratch` and `records` by the watcher `make` makes,
+    /// telling what it hears to `hears`.
+    fn watched_by(
+        scratch: PathBuf,
+        records: PathBuf,
+        make: impl FnOnce(Hears) -> notify::Result<Box<dyn Watcher + Send>>,
+    ) -> Self {
         let (sender, heard) = mpsc::channel();
-        let watcher = crate::watching::watcher(move |event: notify::Result<notify::Event>| {
-            let heard = match event {
-                Err(_) => vec![Heard::Anything],
-                Ok(event) if event.need_rescan() => vec![Heard::Anything],
-                // A file opened or read holds nothing new; a look's own
-                // reads would otherwise bring another look.
-                Ok(event) if !alters(event.kind) => Vec::new(),
-                Ok(event) => event.paths.into_iter().map(Heard::At).collect(),
-            };
-            for heard in heard {
-                // Nobody hears once the link has gone; the watcher goes
-                // with it.
-                let _ = sender.send(heard);
-            }
-        })
-        .inspect_err(|error| {
-            eprintln!("shared scratch folders are walked at every look, unwatched: {error}");
-        })
-        .ok();
+        let watcher = make(Hears(sender))
+            .inspect_err(|error| {
+                eprintln!("shared scratch folders are walked at every look, unwatched: {error}");
+            })
+            .ok();
         Self {
             scratch: Root::new(scratch),
             records: Root::new(records),
             watcher,
             watched: BTreeSet::new(),
             records_watched: BTreeSet::new(),
+            stale: BTreeSet::new(),
+            records_stale: BTreeSet::new(),
             heard,
             early: Vec::new(),
             changed: BTreeSet::new(),
@@ -125,70 +139,76 @@ impl Watch {
         }
     }
 
-    /// Whether quest `id`'s record is to be walked at this look: when it
-    /// changed since the last, or isn't watched yet, which it is from now
-    /// on where it can be.
-    pub fn record_to_walk(&mut self, id: &str) -> bool {
-        self.take_heard();
-        let changed = self.records_changed.remove(id);
-        if self.records_watched.contains(id) {
-            return changed;
-        }
-        self.records.resolve();
-        let at = self.records.path.join(id);
-        let watched = self
-            .watcher
-            .as_mut()
-            .is_some_and(|watcher| watcher.watch(&at, RecursiveMode::Recursive).is_ok());
-        if watched {
-            self.records_watched.insert(id.to_owned());
-        }
-        true
+    /// What of quest `id` to walk at this look: the folders among
+    /// `folders`, those it shares, that changed since the last or aren't
+    /// watched yet, and whether its record did or isn't. Those not watched
+    /// yet are watched from now on, in one batch, where they can be.
+    pub fn to_look_at(&mut self, id: &str, folders: &BTreeSet<String>) -> (BTreeSet<String>, bool) {
+        self.look(id, folders, true)
     }
 
-    /// The folders among `folders`, those of quest `id` it shares, to walk
-    /// at this look: those that changed since the last, and those not
-    /// watched yet, which are watched from now on where they can be.
+    /// Whether quest `id`'s record is to be walked, as
+    /// [`Self::to_look_at`] says, for a test of the record alone.
+    #[cfg(test)]
+    pub fn record_to_walk(&mut self, id: &str) -> bool {
+        self.look(id, &BTreeSet::new(), true).1
+    }
+
+    /// The folders of quest `id` to walk, as [`Self::to_look_at`] says,
+    /// for a test of its folders alone.
+    #[cfg(test)]
     pub fn to_walk(&mut self, id: &str, folders: &BTreeSet<String>) -> BTreeSet<String> {
+        self.look(id, folders, false).0
+    }
+
+    /// What of quest `id` to walk, its record too when `with_record`.
+    fn look(
+        &mut self,
+        id: &str,
+        folders: &BTreeSet<String>,
+        with_record: bool,
+    ) -> (BTreeSet<String>, bool) {
         self.take_heard();
         let mut walk = BTreeSet::new();
+        let mut new = Vec::new();
         for folder in folders {
             let named = (id.to_owned(), folder.clone());
             if self.changed.remove(&named) {
                 walk.insert(folder.clone());
             }
             if !self.watched.contains(&named) {
-                if self.start(&named) {
-                    self.watched.insert(named);
-                }
+                new.push(named);
                 walk.insert(folder.clone());
             }
         }
-        walk
+        let unwatched = with_record && !self.records_watched.contains(id);
+        let record = with_record && (self.records_changed.remove(id) || unwatched);
+        self.start(&new, unwatched.then_some(id));
+        (walk, record)
     }
 
-    /// Stops watching quest `id`'s folders, once it is shared no longer.
+    /// Stops watching quest `id`'s record and folders, once it is shared
+    /// no longer.
     pub fn forget(&mut self, id: &str) {
-        let gone: Vec<Folder> = self
+        let ours = |(quest, _): &Folder| quest == id;
+        let mut gone: Vec<PathBuf> = self
             .watched
             .iter()
-            .filter(|(quest, _)| quest == id)
-            .cloned()
+            .chain(&self.stale)
+            .filter(|folder| ours(folder))
+            .map(|folder| self.folder_path(folder))
             .collect();
-        for folder in gone {
-            if let Some(watcher) = self.watcher.as_mut() {
-                // A folder already gone is no longer watched anyway.
-                let _ = watcher.unwatch(&self.scratch.path.join(&folder.0).join(&folder.1));
-            }
-            self.watched.remove(&folder);
+        let held = self.records_watched.remove(id);
+        if self.records_stale.remove(id) || held {
+            gone.push(self.records.path.join(id));
         }
-        self.changed.retain(|(quest, _)| quest != id);
-        if self.records_watched.remove(id)
-            && let Some(watcher) = self.watcher.as_mut()
-        {
-            // A record already gone is no longer watched anyway.
-            let _ = watcher.unwatch(&self.records.path.join(id));
+        if let Some(watcher) = self.watcher.as_mut() {
+            // What's already gone is no longer watched anyway.
+            crate::watching::watch_all(watcher.as_mut(), &gone, &[]);
         }
+        self.watched.retain(|folder| !ours(folder));
+        self.stale.retain(|folder| !ours(folder));
+        self.changed.retain(|folder| !ours(folder));
         self.records_changed.remove(id);
     }
 
@@ -236,20 +256,68 @@ impl Watch {
         }
     }
 
-    /// Starts watching `folder`, answering whether it is watched.
-    fn start(&mut self, (id, folder): &Folder) -> bool {
-        let at = self.scratch.path.join(id).join(folder);
+    /// Where `folder` is.
+    fn folder_path(&self, (id, folder): &Folder) -> PathBuf {
+        self.scratch.path.join(id).join(folder)
+    }
+
+    /// Starts watching each of `folders`, and quest `record`'s record if
+    /// named, in one batch, where they can be.
+    fn start(&mut self, folders: &[Folder], record: Option<&str>) {
+        if !folders.is_empty() {
+            self.scratch.resolve();
+        }
+        if record.is_some() {
+            self.records.resolve();
+        }
         // A folder that is a git clone crosses as its remote, and walking it
         // only finds its `.git`, where watching it whole could spend the
-        // watches a machine has on a large clone's every folder.
-        if at.join(".git").exists() {
-            return false;
+        // watches a machine has on a large clone's every folder. One not
+        // there yet is walked until it is, then watched.
+        let folders: Vec<&Folder> = folders
+            .iter()
+            .filter(|folder| {
+                let at = self.folder_path(folder);
+                at.exists() && !at.join(".git").exists()
+            })
+            .collect();
+        let record = record.filter(|id| self.records.path.join(id).exists());
+        let mut gone: Vec<PathBuf> = folders
+            .iter()
+            .filter(|folder| self.stale.contains(**folder))
+            .map(|folder| self.folder_path(folder))
+            .collect();
+        let mut new: Vec<(PathBuf, RecursiveMode)> = folders
+            .iter()
+            .map(|folder| (self.folder_path(folder), RecursiveMode::Recursive))
+            .collect();
+        if let Some(id) = record {
+            let at = self.records.path.join(id);
+            if self.records_stale.contains(id) {
+                gone.push(at.clone());
+            }
+            new.push((at, RecursiveMode::Recursive));
         }
-        self.scratch.resolve();
-        self.watcher.as_mut().is_some_and(|watcher| {
-            // A folder not there yet is walked until it is, then watched.
-            watcher.watch(&at, RecursiveMode::Recursive).is_ok()
-        })
+        let Some(watcher) = self.watcher.as_mut() else {
+            return;
+        };
+        let mut watched = crate::watching::watch_all(watcher.as_mut(), &gone, &new).into_iter();
+        for (folder, watched) in folders.into_iter().zip(watched.by_ref()) {
+            if watched {
+                self.stale.remove(folder);
+                self.watched.insert(folder.clone());
+            } else {
+                self.stale.insert(folder.clone());
+            }
+        }
+        if let (Some(id), Some(watched)) = (record, watched.next()) {
+            if watched {
+                self.records_stale.remove(id);
+                self.records_watched.insert(id.to_owned());
+            } else {
+                self.records_stale.insert(id.to_owned());
+            }
+        }
     }
 
     /// Takes what the watcher heard into the folders changed. A folder
@@ -273,8 +341,8 @@ impl Watch {
                         .names_of(&path)
                         .and_then(|names| folder_of(&names))
                     {
-                        if whole {
-                            self.watched.remove(&folder);
+                        if whole && self.watched.remove(&folder) {
+                            self.stale.insert(folder.clone());
                         }
                         self.changed.insert(folder);
                     } else if let Some((id, whole)) = self
@@ -282,13 +350,34 @@ impl Watch {
                         .names_of(&path)
                         .and_then(|names| record_of(&names))
                     {
-                        if whole {
-                            self.records_watched.remove(&id);
+                        if whole && self.records_watched.remove(&id) {
+                            self.records_stale.insert(id.clone());
                         }
                         self.records_changed.insert(id);
                     }
                 }
             }
+        }
+    }
+}
+
+/// What a watcher tells a [`Watch`].
+struct Hears(mpsc::Sender<Heard>);
+
+impl notify::EventHandler for Hears {
+    fn handle_event(&mut self, event: notify::Result<notify::Event>) {
+        let heard = match event {
+            Err(_) => vec![Heard::Anything],
+            Ok(event) if event.need_rescan() => vec![Heard::Anything],
+            // A file opened or read holds nothing new; a look's own reads
+            // would otherwise bring another look.
+            Ok(event) if !alters(event.kind) => Vec::new(),
+            Ok(event) => event.paths.into_iter().map(Heard::At).collect(),
+        };
+        for heard in heard {
+            // Nobody hears once the link has gone; the watcher goes with
+            // it.
+            let _ = self.0.send(heard);
         }
     }
 }
@@ -497,5 +586,57 @@ mod tests {
             watch.to_walk(QUEST, &notes).is_empty(),
             "and then watched instead"
         );
+    }
+
+    #[test]
+    fn a_quest_newly_looked_at_starts_the_stream_once_and_a_look_after_none() {
+        use std::sync::atomic::Ordering;
+
+        use crate::watching::counting::Counting;
+
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (scratch, records) = (dir.path().join("scratch"), dir.path().join("records"));
+        for folder in ["notes", "bench", "logs"] {
+            fs::create_dir_all(scratch.join(QUEST).join(folder)).expect("made");
+        }
+        fs::create_dir_all(records.join(QUEST)).expect("made");
+        let (counting, starts) = Counting::made();
+        let mut watch = Watch::watched_by(scratch.clone(), records, |_| {
+            let watcher: Box<dyn Watcher + Send> = Box::new(counting);
+            Ok(watcher)
+        });
+        let all = shared(&["notes", "bench", "logs", "not-yet"]);
+        let (walk, record) = watch.to_look_at(QUEST, &all);
+        assert_eq!((walk.len(), record), (4, true), "{walk:?}");
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            1,
+            "three folders and a record start it once"
+        );
+        for look in 0..3 {
+            assert_eq!(
+                watch.to_look_at(QUEST, &all),
+                (BTreeSet::from([named("not-yet")]), false),
+                "look {look}"
+            );
+        }
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            1,
+            "a folder not there yet is walked, never started again and again"
+        );
+
+        // A folder made anew is watched again, its old path given back in
+        // the same batch.
+        watch
+            .early
+            .push(Heard::At(scratch.join(QUEST).join("notes")));
+        let (walk, _) = watch.to_look_at(QUEST, &all);
+        assert_eq!(walk, BTreeSet::from([named("not-yet"), named("notes")]));
+        assert_eq!(starts.load(Ordering::SeqCst), 2);
+        assert!(watch.stale.is_empty(), "{:?}", watch.stale);
+
+        watch.forget(QUEST);
+        assert_eq!(starts.load(Ordering::SeqCst), 3, "and given back at once");
     }
 }

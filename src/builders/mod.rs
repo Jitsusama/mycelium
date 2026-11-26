@@ -520,10 +520,16 @@ fn watching(
     let mut folders: Vec<&Path> = files.iter().filter_map(|file| file.path.parent()).collect();
     folders.sort();
     folders.dedup();
-    for folder in folders {
-        if let Err(error) = watcher.watch(folder, notify::RecursiveMode::NonRecursive) {
+    // In one batch, so macOS's stream starts once, not once a folder.
+    let new: Vec<(PathBuf, notify::RecursiveMode)> = folders
+        .iter()
+        .map(|folder| (folder.to_path_buf(), notify::RecursiveMode::NonRecursive))
+        .collect();
+    let watched = crate::watching::watch_all(&mut watcher, &[], &new);
+    for (folder, watched) in folders.into_iter().zip(watched) {
+        if !watched {
             eprintln!(
-                "{} isn't watched, so its builders are read each minute: {error}",
+                "{} isn't watched, so its builders are read each minute",
                 folder.display()
             );
         }
