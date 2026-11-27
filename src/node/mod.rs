@@ -10469,12 +10469,14 @@ impl<S: Store> Shared<S> {
     /// never fenced, never runs in the worker home that agent wrote. So
     /// does a room this node never booked that its link reached as a
     /// worker, since bookings are each node's own and only one booked for
-    /// the person here is known to be theirs. One that is no worker, as
-    /// the person's own machines aren't, stays theirs: any session may
-    /// write the rooms' file, but none can make a machine a worker by it.
-    /// One machine named twice is still one. This node's own machine,
-    /// which it never books, stays the person's whatever the file says.
-    /// Any other run is held to who asks it.
+    /// the person here is known to be theirs: one whose booking names no
+    /// asker, as one written before makes told theirs, is an agent's, as
+    /// its worker mark reads it ([`Shared::with_makes_marked`]). One that
+    /// is no worker, as the person's own machines aren't, stays theirs:
+    /// any session may write the rooms' file, but none can make a machine
+    /// a worker by it. One machine named twice is still one. This node's
+    /// own machine, which it never books, stays the person's whatever the
+    /// file says. Any other run is held to who asks it.
     fn as_a_room_takes(&self, by: By, work: &Work, admits: Admits) -> (By, Admits) {
         taken_as(self.recasts(by, work), by, admits)
     }
@@ -10493,11 +10495,11 @@ impl<S: Store> Shared<S> {
         if *room == self.machine || named.any(|other| other != room) {
             return None;
         }
-        let booked = self.lock().booked.get(room).map(|(_, booked)| {
-            booked
-                .as_deref()
-                .is_some_and(|booked| booked != made::PERSON)
-        });
+        let booked = self
+            .lock()
+            .booked
+            .get(room)
+            .map(|(_, booked)| booked.as_deref() != Some(made::PERSON));
         let recast = match booked {
             Some(true) => Recast::AnAgentsBooking,
             Some(false) => return None,
@@ -11307,7 +11309,8 @@ fn shell_for(asked_by: Option<By>, home: &Path) -> run::Shell<'_> {
 /// ([`Shared::recasts`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Recast {
-    /// An agent's make booked the room here.
+    /// An agent's make booked the room here, or one whose booking names
+    /// no asker, which the worker mark reads as an agent's too.
     AnAgentsBooking,
     /// No booking here names the room, which this node's link reached
     /// as a worker: one another node made, or one this node's booking
@@ -26936,9 +26939,6 @@ esac
             Some("tern"),
             "so the person's run recast for tern reaches tern"
         );
-        let mut unasked = made_by("/usr/bin/lend", "tern", a_day_out());
-        unasked.asker = None;
-        shared.book_for(&unasked);
         fs::write(
             dir.path().join(made::AGENT_ROOMS),
             "reef\nwren\ntern\nskiff\n",
@@ -26949,11 +26949,6 @@ esac
                 By::Person,
                 naming(&["wren"]),
                 "a room the person's make booked",
-            ),
-            (
-                By::Person,
-                naming(&["tern"]),
-                "a room made at no asker's word",
             ),
             (
                 By::Person,
@@ -27006,6 +27001,45 @@ esac
             ),
             (By::Person, person()),
             "this node's own machine, which no booking here names, is held to who asks"
+        );
+    }
+
+    // Followup 552: a booking that names no asker, as one written before
+    // makes told theirs, is read as an agent's both where the node marks
+    // the machine a worker and where it recasts the person's run.
+    #[tokio::test]
+    async fn a_room_booked_at_no_askers_word_is_an_agents_where_listed_and_recast() {
+        use crate::declared::Kind;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        fs::write(dir.path().join(made::AGENT_ROOMS), "osprey\n").expect("named");
+        // No link has said it is a worker, so only its booking marks it.
+        let osprey = placement::tests::machine("osprey", "linux", 32, &["basin"]);
+        shared.store.put_machine(&osprey).expect("kept");
+        let mut unasked = made_by("/usr/bin/lend", "osprey", a_day_out());
+        unasked.asker = None;
+        shared.book_for(&unasked);
+        let Ok(Response::Machines(machines)) = shared.answer(Request::Machines) else {
+            panic!("the node says its machines");
+        };
+        assert_eq!(
+            machines
+                .iter()
+                .find(|one| one.name == "osprey")
+                .map(|one| one.worker),
+            Some(true),
+            "the node lists it a worker, as it lists an agent's make"
+        );
+        let naming = work(vec![Need::Machine("osprey".to_owned())]);
+        assert_eq!(
+            shared.recasts(By::Person, &naming),
+            Some(Recast::AnAgentsBooking),
+            "so the person's run naming it is recast as for an agent's booking"
+        );
+        assert_eq!(
+            shared.as_a_room_takes(By::Person, &naming, Admits::Asker(made::PERSON.to_owned())),
+            (By::Agent(Kind::Fence), Admits::Rooms),
+            "and runs there as an agent's, never through the person's own login"
         );
     }
 

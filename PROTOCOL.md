@@ -2623,12 +2623,13 @@ its booking says who pays for it and may let it go,
 not who may use it; the person's own go there only where it is booked
 for the person or for no asker, never into a worker home an agent's
 make wrote. Any run the person asks naming one machine alone, a room
-not booked here for the person or for no asker (an agent's make booked
-it, or this node never booked it but its link reached it as a worker,
-since each node keeps its own bookings), runs there as an agent's, in
-the agent fence. So the person's safe word reaches every room though
-no session asks it, and the person's own login still never runs in a
-worker home an agent wrote. Such a run is placed as an agent's run is,
+not booked here for the person (an agent's make booked it, or its book
+line names no asker, read as an agent's as its worker mark is, or this
+node never booked it but its link reached it as a worker, since each
+node keeps its own bookings), runs there as an agent's, in the agent
+fence. So the person's safe word reaches every room though no session
+asks it, and the person's own login still never runs in a worker home
+an agent wrote. Such a run is placed as an agent's run is,
 and a `"Place"` the person asks of it the same way, so where it is told
 the run would go is where it runs: the asking machine must declare the
 agent fence and the room must say it runs commands in it, or the run is
