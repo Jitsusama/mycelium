@@ -8555,6 +8555,94 @@ impl<S: Store> Shared<S> {
         self.starts.admit(asked)
     }
 
+    /// Starts what `from` relayed here as an agent's start, its asker
+    /// judged `by` under `claims` and charged to `charged`'s cell, since
+    /// that asker relays nothing as the person's ([`Self::relayed_start`]).
+    async fn relayed_as_an_agents(
+        &self,
+        (from, proven): (&str, bool),
+        (by, claims, charged): (By, &[String], Option<String>),
+        asked: Start,
+    ) -> Reply {
+        let unattended = self.processes.is_unattended();
+        if asked.carries && !unattended {
+            // Said here too, since the person reads the carry's
+            // failure on the machine it left.
+            let unclaimed = asker::unclaimed_because(self.client, &self.processes);
+            let why = judged_as(by, claims, unclaimed);
+            eprintln!("a carry relayed from {from:?} is refused: {why}");
+            // Where the node couldn't read the link's end, running it
+            // elsewhere changes nothing; reading it does.
+            let when =
+                if claims.is_empty() && [asker::UNNAMED, asker::UNTOLD].contains(&unclaimed) {
+                    "its node can read the process at this machine's end of the link"
+                } else {
+                    "this machine's end of the link runs outside every agent's session"
+                };
+            return Err(format!(
+                "{} takes no carry from {from:?} here, so the carried session couldn't \
+                 stand as its cell: {why}. Its files stay in the handover, so the carry \
+                 can be taken again once {when}",
+                self.machine
+            ));
+        }
+        let persons_carry = asked.carries;
+        let judged = judged_as(
+            by,
+            claims,
+            asker::unclaimed_because(self.client, &self.processes),
+        );
+        let why = if unattended {
+            "no person works on this machine, so its link's end can't be told from an \
+             agent's login"
+                .to_owned()
+        } else {
+            format!("this asker is judged {by}, so it relays nothing as the person's")
+        };
+        // Quoted, since an agent may have put anything in `from`.
+        eprintln!("a start relayed from {from:?} is taken as an agent's: {why}");
+        // A fence declared on another machine was weighed there, by the
+        // asker it judged; here the asker is the link's end, so the
+        // declaration is not kept. It still raises the judgement, as
+        // every declaration does, so a strict session sent here starts
+        // strict, never in the agent fence alone. On a room that opens
+        // nothing of the person's, over a link its key proved, the fence
+        // declared is kept (`relayed_to_a_room`).
+        let room = unattended && proven && self.opens_nothing();
+        let by = asker::relayed_to_a_room(by, asked.work.fence, room);
+        let looser = room && by == By::Agent(crate::declared::Kind::Fence);
+        let (program, once) = (asked.command.first().cloned(), asked.once.clone());
+        let pinned = Start {
+            carries: false,
+            may_cost: false,
+            work: Work {
+                fence: None,
+                ..asked.work
+            },
+            ..asked
+        };
+        let counted = self.counted((by, charged), pinned, 0, Whither::Here, Some(from));
+        let started = counted.await;
+        if looser && let Ok(Response::Started(started)) = &started {
+            // Kept so each start a room takes looser than strict can be
+            // read back: which machine relayed it, under what name, and
+            // the session it holds, which that machine's book of starts
+            // names the asking cell of.
+            eprintln!(
+                "a start relayed from {from:?} runs in the agent fence it declares, as {} \
+                 opens no forge and no secret to it: {program:?}, named {once:?}, held {}",
+                self.machine, started.held
+            );
+        }
+        started.map_err(|why| {
+            if persons_carry {
+                self.carry_refused(&why)
+            } else {
+                relay_refused(&self.machine, unattended, &judged, &why)
+            }
+        })
+    }
+
     /// Whether this machine fences its held starts and the agent fence it
     /// declares opens no forge and no secret, so a session in it holds
     /// nothing of the person's. One that can't read what it declares, or
@@ -8938,83 +9026,9 @@ impl<S: Store> Shared<S> {
     async fn relayed_start(&self, (from, proven): (&str, bool), asked: Start) -> Reply {
         let (by, claims, charged) = self.judged_charging().await?;
         if !asker::relays(self.client, by) {
-            let unattended = self.processes.is_unattended();
-            if asked.carries && !unattended {
-                // Said here too, since the person reads the carry's
-                // failure on the machine it left.
-                let unclaimed = asker::unclaimed_because(self.client, &self.processes);
-                let why = judged_as(by, &claims, unclaimed);
-                eprintln!("a carry relayed from {from:?} is refused: {why}");
-                // Where the node couldn't read the link's end, running it
-                // elsewhere changes nothing; reading it does.
-                let when =
-                    if claims.is_empty() && [asker::UNNAMED, asker::UNTOLD].contains(&unclaimed) {
-                        "its node can read the process at this machine's end of the link"
-                    } else {
-                        "this machine's end of the link runs outside every agent's session"
-                    };
-                return Err(format!(
-                    "{} takes no carry from {from:?} here, so the carried session couldn't \
-                     stand as its cell: {why}. Its files stay in the handover, so the carry \
-                     can be taken again once {when}",
-                    self.machine
-                ));
-            }
-            let persons_carry = asked.carries;
-            let judged = judged_as(
-                by,
-                &claims,
-                asker::unclaimed_because(self.client, &self.processes),
-            );
-            let why = if unattended {
-                "no person works on this machine, so its link's end can't be told from an \
-                 agent's login"
-                    .to_owned()
-            } else {
-                format!("this asker is judged {by}, so it relays nothing as the person's")
-            };
-            // Quoted, since an agent may have put anything in `from`.
-            eprintln!("a start relayed from {from:?} is taken as an agent's: {why}");
-            // A fence declared on another machine was weighed there, by
-            // the asker it judged; here the asker is the link's end, so
-            // the declaration is not kept. It still raises the judgement,
-            // as every declaration does, so a strict session sent here
-            // starts strict, never in the agent fence alone. On a room
-            // that opens nothing of the person's, over a link its key
-            // proved, the fence declared is kept (`relayed_to_a_room`).
-            let room = unattended && proven && self.opens_nothing();
-            let by = asker::relayed_to_a_room(by, asked.work.fence, room);
-            let looser = room && by == By::Agent(crate::declared::Kind::Fence);
-            let (program, once) = (asked.command.first().cloned(), asked.once.clone());
-            let pinned = Start {
-                carries: false,
-                may_cost: false,
-                work: Work {
-                    fence: None,
-                    ..asked.work
-                },
-                ..asked
-            };
-            let counted = self.counted((by, charged), pinned, 0, Whither::Here, Some(from));
-            let started = counted.await;
-            if looser && let Ok(Response::Started(started)) = &started {
-                // Kept so each start a room takes looser than strict can
-                // be read back: which machine relayed it, under what name,
-                // and the session it holds, which that machine's book of
-                // starts names the asking cell of.
-                eprintln!(
-                    "a start relayed from {from:?} runs in the agent fence it declares, as {} \
-                     opens no forge and no secret to it: {program:?}, named {once:?}, held {}",
-                    self.machine, started.held
-                );
-            }
-            return started.map_err(|why| {
-                if persons_carry {
-                    self.carry_refused(&why)
-                } else {
-                    relay_refused(&self.machine, unattended, &judged, &why)
-                }
-            });
+            return self
+                .relayed_as_an_agents((from, proven), (by, &claims, charged), asked)
+                .await;
         }
         let carried = crate::carry::arrives(&asked.command)
             .filter(|arrives| asked.carries && arrives.from.eq_ignore_ascii_case(from))
