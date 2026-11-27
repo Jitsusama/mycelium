@@ -1411,8 +1411,12 @@ fn past_lively(lively: &Lively, room: &Room) -> Option<String> {
     {
         return Some(format!(
             "it is kept lively, at memory pressure {most} at most, and is at {:.1} over a minute",
-            // Rounded up to a tenth, as the processor's is to a whole.
-            (full * 10.0).ceil() / 10.0
+            // Rounded up to a tenth, as the processor's is to a whole, less
+            // a hair first, since tenths in binary land just above
+            // themselves (1.1 times 10 is past 11) and would read a tenth
+            // high; the kernel says hundredths, so the hair never reaches
+            // the ceiling.
+            ((full * 10.0) - 1e-9).ceil() / 10.0
         ));
     }
     // Over the last minute alone too: disk stalls that hold every task at
@@ -1422,7 +1426,8 @@ fn past_lively(lively: &Lively, room: &Room) -> Option<String> {
     {
         return Some(format!(
             "it is kept lively, at disk pressure {most} at most, and is at {:.1} over a minute",
-            (full * 10.0).ceil() / 10.0
+            // Rounded as memory's is, a hair less first.
+            ((full * 10.0) - 1e-9).ceil() / 10.0
         ));
     }
     lively
@@ -2847,6 +2852,12 @@ pub(crate) mod tests {
             "kestrel would rather not: it is kept lively, at memory pressure 3 at most, \
              and is at 3.1 over a minute",
             "and says which it read"
+        );
+        assert_eq!(
+            said_of(&stalled(Some(1), Some(1.1))),
+            "kestrel would rather not: it is kept lively, at memory pressure 1 at most, \
+             and is at 1.1 over a minute",
+            "a tenth the kernel said reads as itself, never a tenth high"
         );
         for (most, full, why) in [
             (

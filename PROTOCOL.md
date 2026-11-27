@@ -2183,7 +2183,11 @@ still does, and a start placed on it heard is past room, as the cloud's
 paragraph below says, so the person's start goes to a cloud machine
 with room before it. Work tolerating `kept-lively` ranks it as any
 machine. A ceiling in another shape spoils only itself, and a node
-older than the field ranks it as any machine. Within a tier, the most
+older than the field ranks it as any machine. A `memory_full` or
+`io_full` not a whole percent spoils only itself, holding the machine
+to the rest of its ceiling; so does a node placing work that is older
+than the part, so in a realm of mixed builds each part holds only for
+work begun on a node that reads it. Within a tier, the most
 preferences met goes first,
 then the most headroom, then by name; of the first and each as good but
 for headroom within 0.05 of it (`NEAR_BEST`), one is chosen at random,

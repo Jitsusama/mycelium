@@ -869,7 +869,9 @@ mod here {
             fn the_mach_host_counts_every_core_it_has() {
                 let cores = super::cores().expect("the host says its cores' ticks");
                 let had = std::thread::available_parallelism().expect("a core count");
-                assert_eq!(cores.len(), had.get(), "one count for each core");
+                // At least as many as this process may use, since a process
+                // held to fewer cores than the host has still sees them all.
+                assert!(cores.len() >= had.get(), "a count for each core");
                 assert!(
                     cores.iter().any(|&[user, system, idle, nice]| {
                         u64::from(user) + u64::from(system) + u64::from(idle) + u64::from(nice) > 0
@@ -1508,6 +1510,18 @@ mod tests {
              full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
         )
         .expect("its kernel says its processors' pressure");
+        std::fs::write(
+            procs.join("pressure").join("memory"),
+            "some avg10=9.00 avg60=7.00 avg300=2.00 total=1\n\
+             full avg10=4.00 avg60=3.20 avg300=1.00 total=1\n",
+        )
+        .expect("its kernel says its memory's pressure");
+        std::fs::write(
+            procs.join("pressure").join("io"),
+            "some avg10=30.00 avg60=20.00 avg300=9.00 total=1\n\
+             full avg10=12.00 avg60=8.70 avg300=4.00 total=1\n",
+        )
+        .expect("its kernel says its disks' pressure");
         let sources = Sources {
             queue: Some(queue),
             procs: procs.clone(),
@@ -1528,12 +1542,25 @@ mod tests {
             Some(31.0),
             "and the last minute, as its own kernel says"
         );
-        std::fs::remove_file(procs.join("pressure").join("cpu")).expect("removed");
         assert_eq!(
-            roomed().cpu_minute,
-            None,
+            room.memory_full_minute,
+            Some(3.2),
+            "and the last minute all its work waited on memory at once"
+        );
+        assert_eq!(room.io_full_minute, Some(8.7), "and on its disks at once");
+        std::fs::remove_file(procs.join("pressure").join("cpu")).expect("removed");
+        std::fs::remove_file(procs.join("pressure").join("memory")).expect("removed");
+        std::fs::remove_file(procs.join("pressure").join("io")).expect("removed");
+        let unsaid = roomed();
+        assert_eq!(
+            unsaid.cpu_minute, None,
             "a kernel saying no pressure, as a Mac's, says no minute"
         );
+        assert_eq!(
+            unsaid.memory_full_minute, None,
+            "of its processors or its memory"
+        );
+        assert_eq!(unsaid.io_full_minute, None, "or its disks");
     }
 
     #[test]

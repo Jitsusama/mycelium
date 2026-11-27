@@ -124,8 +124,8 @@ pub struct Declared {
 }
 
 /// The ceiling a machine kept lively ([`Declared::kept_lively`]) holds its
-/// load to: past any part, it counts as past its room, so work goes
-/// to any other machine heard lately before it.
+/// load to: past any part, it counts as past its room, so work goes to
+/// any other machine heard lately before it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lively {
     /// The processor pressure it stays at or under, in percent of the
@@ -139,16 +139,27 @@ pub struct Lively {
     pub memory_available: Option<u64>,
     /// The memory pressure it stays at or under, in percent of the last
     /// minute in which all work at once waited on memory, machine-wide
-    /// (its room's `memory_full_minute`); none where it holds to no such
-    /// ceiling. A room that says no such minute is never past it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// (its room's `memory_full_minute`), as a whole percent; none where
+    /// it holds to no such ceiling, and where it isn't a whole percent,
+    /// which holds it to the rest of its ceiling rather than to none. A
+    /// room that says no such minute is never past it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "whole_or_none"
+    )]
     pub memory_full: Option<u32>,
     /// The disk pressure it stays at or under, in percent of the last
     /// minute in which all work at once waited on its disks, machine-wide
-    /// or in the groups of `io_full_from` (its room's `io_full_minute`);
-    /// none where it holds to no such ceiling. A room that says no such
-    /// minute is never past it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// or in the groups of `io_full_from` (its room's `io_full_minute`),
+    /// as a whole percent; none where it holds to no such ceiling, and
+    /// where it isn't a whole percent, as [`Lively::memory_full`] is. A
+    /// room that says no such minute is never past it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "whole_or_none"
+    )]
     pub io_full: Option<u32>,
     /// The control groups, each a path below the kernel's root of them,
     /// as `agents.slice`, whose disk pressure its node reads in place of
@@ -269,6 +280,15 @@ fn groups_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Vec<Strin
     Ok(Option::<serde_json::Value>::deserialize(said)?
         .and_then(|groups| serde_json::from_value(groups).ok())
         .unwrap_or_default())
+}
+
+/// A part of a ceiling as declared, or none where it isn't a whole
+/// percent, which spoils only that part: a fraction such as 0.5 is easy to
+/// write for a share the kernel says in hundredths, and dropping the whole
+/// ceiling for it would rank the machine as any machine, ahead of others.
+fn whole_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Option<u32>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(said)?
+        .and_then(|part| serde_json::from_value(part).ok()))
 }
 
 /// The rules of what work needs as declared, each one not in the shape
@@ -1491,8 +1511,6 @@ mod tests {
             r#"{"cpu": -1}"#,
             r#"{"cpu": 28, "memory_available": "16G"}"#,
             r#"{"memory_available": 1024}"#,
-            r#"{"cpu": 28, "memory_full": 3.5}"#,
-            r#"{"cpu": 28, "io_full": 1.4}"#,
         ] {
             fs::write(&file, with(misshapen)).expect("written");
             let spoiled = read(&file).expect("a misshapen ceiling spoils only itself");
@@ -1531,6 +1549,39 @@ mod tests {
                 (28, Some(1), 0),
                 "groups of {groups} read its disks machine-wide, the rest standing"
             );
+        }
+    }
+
+    #[test]
+    fn a_pressure_ceiling_not_a_whole_percent_spoils_only_itself() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let file = folder.path().join("declared.json");
+        for (name, kept) in [("memory_full", "io_full"), ("io_full", "memory_full")] {
+            for part in ["0.5", "3.5", r#""3""#, "-1", "null"] {
+                fs::write(
+                    &file,
+                    format!(
+                        r#"{{"reach": ["internet"], "outlives": [], "costs_money": false,
+                            "taints": [], "kept_lively": {{"cpu": 28,
+                            "memory_available": 1024, "{kept}": 2, "{name}": {part}}}}}"#
+                    ),
+                )
+                .expect("written");
+                let lively = read(&file)
+                    .expect("it reads")
+                    .kept_lively
+                    .expect("still kept lively");
+                let (spoiled, other) = if name == "memory_full" {
+                    (lively.memory_full, lively.io_full)
+                } else {
+                    (lively.io_full, lively.memory_full)
+                };
+                assert_eq!(
+                    (lively.cpu, lively.memory_available, spoiled, other),
+                    (28, Some(1024), None, Some(2)),
+                    "a {name} of {part} holds it to the rest of its ceiling"
+                );
+            }
         }
     }
 
