@@ -5137,26 +5137,17 @@ impl<S: Store> Shared<S> {
     /// over, as [`redial_standing`] passes it, since nothing ever releases
     /// it and it may be another realm's. Another machine whose end has
     /// passed is gone, as one past its own leaving is. Where the book
-    /// can't be read, no other machine that costs money is carried to,
-    /// since none can be told apart from one made to live an hour. This
+    /// can't be read whole, no other machine that costs money is carried
+    /// to unless an end is known for it, since one whose make was lost
+    /// can't be told apart from one kept for good. The book is read again
+    /// only once it changes ([`made::Book::ends`]). This
     /// machine is always kept, first where it was, since every reader
     /// takes the head of the answer for here.
     fn as_carried(&self, machines: Vec<facts::Machine>) -> Vec<facts::Machine> {
-        let mut ends = BTreeMap::new();
-        let readable = match self.book.standing() {
-            Ok(standing) => {
-                for made in standing.made {
-                    ends.insert(made.machine, made.until);
-                }
-                true
-            }
-            Err(error) => {
-                eprintln!(
-                    "the book of machines made can't be read, so no paid machine is carried to: {error}"
-                );
-                false
-            }
-        };
+        let made::Ends {
+            until: mut ends,
+            unsure,
+        } = self.book.ends();
         ends.extend(self.lock().ends.clone());
         let now = jiff::Timestamp::now();
         machines
@@ -5164,8 +5155,9 @@ impl<S: Store> Shared<S> {
             .map(|one| leaving_as_made(one, &ends))
             .filter(|one| {
                 let said = one.declared.as_ref();
+                let end_known = unsure.is_none() || ends.contains_key(&one.name);
                 one.name == self.machine
-                    || (readable || !said.is_some_and(|said| said.costs_money))
+                    || (end_known || !said.is_some_and(|said| said.costs_money))
                         && !said.is_some_and(|said| said.has_left(now))
             })
             .collect()

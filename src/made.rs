@@ -15,6 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -369,7 +370,51 @@ impl Book {
     /// time that changes.
     #[must_use]
     pub fn ends(&self) -> Ends {
-        Ends::default()
+        // Taken before the book is read, so a line kept meanwhile is read
+        // at the next ask rather than missed for good.
+        let stamp = std::fs::metadata(&self.path)
+            .ok()
+            .and_then(|file| Some((file.ino(), file.len(), file.modified().ok()?)));
+        let mut last = self
+            .ends_read
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let (Some(now), Some((Some(then), ends))) = (stamp, last.as_ref())
+            && now == *then
+        {
+            return ends.clone();
+        }
+        let ends = match self.standing() {
+            Ok(standing) => Ends {
+                until: standing
+                    .made
+                    .into_iter()
+                    .map(|made| (made.machine, made.until))
+                    .collect(),
+                unsure: (standing.unread > 0)
+                    .then(|| format!("{} of its lines can't be read", standing.unread)),
+            },
+            Err(error) => Ends {
+                until: BTreeMap::new(),
+                unsure: Some(format!("it can't be read: {error}")),
+            },
+        };
+        let before = last.as_ref().and_then(|(_, ends)| ends.unsure.as_ref());
+        if before != ends.unsure.as_ref() {
+            match &ends.unsure {
+                Some(why) => eprintln!(
+                    "{} can't say when every machine made ends, as {why}, so no paid machine \
+                     whose end it can't say is carried to",
+                    self.path.display()
+                ),
+                None => eprintln!(
+                    "{} says when every machine made ends again",
+                    self.path.display()
+                ),
+            }
+        }
+        *last = Some((stamp, ends.clone()));
+        ends
     }
 
     /// Keeps `line`, naming this book's realm where it has one.
