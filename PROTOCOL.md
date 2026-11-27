@@ -3810,8 +3810,11 @@ cell says adds about 33 bytes to that peak, so the 30 MB holds about six
 a cell on the whole, and every cell saying 24 took about 36 MB. A
 subject costs about a byte for each of its bytes, so one of 120
 characters outside ASCII may cost up to about 480 bytes, and the
-cap counts characters, not bytes: by that count, ten thousand cells
-each saying 24 such subjects would hold about 115 MB more.
+cap counts characters, not bytes: ten thousand cells each saying 24
+such subjects would spend about 115 MB on them, some 107 MB more than
+the same count of 30-character subjects. The `hub` kind holds each
+different subject again in records of its own, which these figures
+leave out.
 
 The `tie` kind holds who talked with whom in the last day, made from the
 messages the node holds: never what a message said, nor its id, only
@@ -3856,13 +3859,13 @@ hub. A hub is made by the node's own count and grants nothing: it is
 where a need is sent first, never a cell that may do more. A cell's
 subjects are its own word, checked by nobody, so a cell heard least,
 new or silent, is among the first made a hub or named a fit of each
-subject it says: a router following hubs should send a hub no more of
-a need than it would send any cell. Each node names hubs from the
-messages and sessions it holds, so two nodes may name different hubs for a while, and nodes
-of two versions may keep different subjects for one cell and name
-different hubs for one subject. The kind
-is told as the sessions change, so a busy hour of talk moves the hubs
-with the next change, not a message at a time.
+subject it says: a router following hubs should trust a hub with no
+more of a need than it would trust any cell. Each node names hubs from
+the messages and sessions it holds, so two nodes may name different
+hubs for a while, and nodes of two versions may keep different
+subjects for one cell and name different hubs for one subject. The
+kind is told as the sessions change, so a busy hour of talk moves the
+hubs with the next change, not a message at a time.
 
 The `ended` kind holds each session of this machine's whose work
 stopped while its quest goes on, keyed `ended:<session>`, so whoever
