@@ -6707,7 +6707,7 @@ mod tests {
         .await;
 
         let now = jiff::Timestamp::now();
-        crate::store::left(&skiff, "tern", now);
+        store::left(&skiff, "tern", now);
         // Said with no leaving, and costing money, so the store shows when
         // it is heard.
         let mut tern = tern_undeclared();
