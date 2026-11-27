@@ -26549,7 +26549,12 @@ esac
         said["fence"]["none"] = said["fence"]["strict"].clone();
         fs::write(&node.declared, said.to_string()).expect("declared again");
         let strict = node
-            .launcher(By::Agent(crate::declared::Kind::Strict), None, "tern", &mut started)
+            .launcher(
+                By::Agent(crate::declared::Kind::Strict),
+                None,
+                "tern",
+                &mut started,
+            )
             .expect("a strict run has its launcher");
         assert_eq!(
             node.launcher(By::Person, None, "tern", &mut started),
