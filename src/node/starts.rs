@@ -12,8 +12,9 @@
 //! start: `{"at", "by", "started_by", "folder", "program"}`, `"resumes"`
 //! with the session's id when it brings one back uncounted, `"reopens"`
 //! with it when it brings one back counted or not, then where it
-//! started (`"machine"` and `"held"`), or why it didn't (`"failed"`), or
-//! why it was refused (`"refused"`). The person's stop is the file
+//! started (`"machine"` and `"held"`, with `"room"` where that machine
+//! is a room made for agents to share), or why it didn't (`"failed"`),
+//! or why it was refused (`"refused"`). The person's stop is the file
 //! `starts.stopped` beside it, there for as long as starts are stopped.
 
 use std::collections::{BTreeMap, VecDeque};
@@ -40,7 +41,8 @@ const PIS_FOLDERS: [&str; 2] = ["/run/current-system/sw/bin/", "/etc/profiles/pe
 /// look like a session brought back.
 const RESUMING: [&str; 1] = ["--session"];
 
-/// The most sessions one cell may start in an hour.
+/// The most sessions one cell may start in an hour, rooms made for
+/// agents to share aside ([`Kept::room`]).
 pub const CELL_AN_HOUR: usize = 8;
 
 /// The most sessions agents together may start through one node in an
@@ -154,6 +156,14 @@ pub struct Kept {
     /// Its held id there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<String>,
+    /// Whether the machine it started on is a room made for agents to
+    /// share, as the node's rooms named it then: already up and paid for
+    /// by being so, and kept off the person's own machines, so a cell's
+    /// start there counts toward agents' number through the node but not
+    /// toward its own, and a cell may move its work into the rooms as
+    /// fast as the node lets it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub room: bool,
     /// Why it was asked but didn't start: the node's own reason, naming no
     /// argument.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -333,6 +343,15 @@ pub fn reopens(command: &[String]) -> Option<&str> {
 pub struct Admitted {
     id: u64,
     asked: Kept,
+}
+
+impl Admitted {
+    /// The same start, landed on a room made for agents to share
+    /// ([`Kept::room`]), so it no longer counts toward its cell's number.
+    pub fn on_a_room(mut self) -> Self {
+        self.asked.room = true;
+        self
+    }
 }
 
 /// Who started each session a node's book of starts names, as
@@ -723,7 +742,7 @@ impl Starts {
             .collect();
         let begun: Vec<i64> = counted
             .iter()
-            .filter(|one| one.started_by == asked.started_by)
+            .filter(|one| one.started_by == asked.started_by && !one.room)
             .map(|one| one.at)
             .collect();
         let all: Vec<i64> = counted.iter().map(|one| one.at).collect();
@@ -1139,6 +1158,7 @@ mod tests {
             carried: None,
             machine: None,
             held: None,
+            room: false,
             failed: None,
             refused: None,
             once: None,
@@ -1859,6 +1879,30 @@ mod tests {
         assert!(refused.contains("OSPREY started 8"), "{refused}");
         started(&starts, agent("SKIFFS", NOW + 100), "h");
         started(&starts, agent("OSPREY", NOW + HOUR + 10), "h");
+    }
+
+    // A start that landed on a room made for agents counts toward no
+    // cell's number, so a cell moves its work into the rooms as fast as
+    // the node lets it; the node's own number still counts it.
+    #[test]
+    fn a_start_landed_on_a_room_counts_toward_the_node_but_not_its_cell() {
+        let (dir, starts) = book();
+        for one in 0..NODE_AN_HOUR {
+            let asked = agent("OSPREY", NOW + i64::try_from(one).expect("few"));
+            let admitted = starts.admit(asked).expect("rooms spend no cell's number");
+            starts.keep(
+                admitted.on_a_room(),
+                Ok(("kestrel".to_owned(), "h".to_owned())),
+                0,
+            );
+        }
+        let book = std::fs::read_to_string(dir.path().join("starts.jsonl")).expect("kept");
+        let line = book.lines().last().expect("its line");
+        assert!(line.contains(r#""room":true"#), "{line}");
+        let refused = starts
+            .admit(agent("SKIFFS", NOW + 100))
+            .expect_err("the rooms' starts still count toward the node's");
+        assert!(refused.contains("through this node"), "{refused}");
     }
 
     #[test]

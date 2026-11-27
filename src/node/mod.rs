@@ -7670,6 +7670,7 @@ impl<S: Store> Shared<S> {
             carried,
             machine: None,
             held: None,
+            room: false,
             failed: None,
             refused: None,
             once,
@@ -8589,6 +8590,20 @@ impl<S: Store> Shared<S> {
         }
     }
 
+    /// `admitted`, marked as landed on a room made for agents to share
+    /// where `started` started it on one of `rooms`, so it counts toward
+    /// no cell's number ([`starts::Kept::room`]).
+    fn landed_on_a_room(
+        admitted: starts::Admitted,
+        started: &Result<Started, String>,
+        rooms: &std::collections::BTreeSet<String>,
+    ) -> starts::Admitted {
+        match started {
+            Ok(started) if rooms.contains(&started.machine) => admitted.on_a_room(),
+            _ => admitted,
+        }
+    }
+
     /// Keeps `admitted`, joined `joined` times, as `started` ended: as
     /// refused where it was to start here (`here`, naming `folder`) and
     /// was refused before anything began
@@ -8610,7 +8625,7 @@ impl<S: Store> Shared<S> {
                 self.starts.keep_unbegun(admitted, why, joined);
             }
             _ => self.starts.keep(
-                admitted,
+                Self::landed_on_a_room(admitted, started, &self.book.agent_rooms()),
                 started
                     .as_ref()
                     .map(|started| (started.machine.clone(), started.held.clone()))
@@ -8780,6 +8795,7 @@ impl<S: Store> Shared<S> {
             carried,
             machine: None,
             held: None,
+            room: false,
             failed: None,
             refused: None,
             once: None,
