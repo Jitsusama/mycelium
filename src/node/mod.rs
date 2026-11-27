@@ -25390,6 +25390,49 @@ esac
     }
 
     #[test]
+    fn while_a_line_of_the_book_is_unread_only_paid_machines_of_known_end_are_carried_to() {
+        use std::collections::BTreeSet;
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        for (name, paid) in [("tern", true), ("wren", true), ("osprey", false)] {
+            let mut other = placement::tests::machine(name, "linux", 32, &["basin"]);
+            other.declared.as_mut().expect("declared").costs_money = paid;
+            shared
+                .store
+                .put_machine(&other)
+                .expect("the machine is kept");
+        }
+        shared
+            .book
+            .made(&made_by("/usr/bin/lend", "tern", soon))
+            .expect("the make is kept");
+        // wren's make, say, cut short by a crash.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("made.jsonl"))
+            .expect("the book opens")
+            .write_all(b"{\"at\": \"cut sh\n")
+            .expect("a line cut short is written");
+        let carried = shared.as_carried(shared.others());
+        let names: BTreeSet<&str> = carried.iter().map(|one| one.name.as_str()).collect();
+        assert_eq!(
+            names,
+            BTreeSet::from(["tern", "osprey"]),
+            "a paid machine whose end the book may have lost isn't carried to"
+        );
+        assert_eq!(
+            carried
+                .iter()
+                .find(|one| one.name == "tern")
+                .and_then(|tern| tern.declared.as_ref()?.leaves_at),
+            Some(soon),
+            "one whose end it read leaves then"
+        );
+    }
+
+    #[test]
     fn this_machine_heads_the_carried_machines_while_the_book_cant_be_read() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let shared = made_for(dir.path(), &[]);

@@ -12,7 +12,7 @@
 //! ([`Book`]), so what was made, for how long and at what rate can always
 //! be read back and summed.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -174,6 +174,25 @@ pub struct Book {
     /// Why the rooms file last couldn't be read, if it couldn't, so the
     /// journal says so once each time that changes, not on every read.
     rooms_unread: Arc<Mutex<Option<String>>>,
+    /// The ends last read, with the file as it was then, so the book is
+    /// read again only once it changes, and the journal says once each
+    /// time that changes why the book can't say every end.
+    ends_read: Arc<Mutex<Option<(Option<Stamp>, Ends)>>>,
+}
+
+/// A file as its metadata tells it apart from itself once changed: its
+/// inode, its length and when it was last written.
+type Stamp = (u64, u64, std::time::SystemTime);
+
+/// When each machine this realm's node made ends, as the book stands by
+/// it, and why the book may not say every end.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Ends {
+    /// Each machine's end, its newest make's.
+    pub until: BTreeMap<String, jiff::Timestamp>,
+    /// Why some make may be missing from them: the book can't be read,
+    /// or holds lines it couldn't read, each maybe a make cut short.
+    pub unsure: Option<String>,
 }
 
 /// The most of the rooms file read, far past any list of machines, so a
@@ -201,6 +220,7 @@ impl Book {
             path,
             realm: None,
             rooms_unread: Arc::default(),
+            ends_read: Arc::default(),
         }
     }
 
@@ -339,6 +359,17 @@ impl Book {
             }
         }
         Ok(standing)
+    }
+
+    /// When each machine this realm's node made and hasn't released
+    /// ends, by its newest make as [`Book::standing`] reads them, and why
+    /// the book may not say every end. Read again only once the book
+    /// changes, so a reader asking often costs no reading of the whole
+    /// book each time, and the journal says why it is unsure once each
+    /// time that changes.
+    #[must_use]
+    pub fn ends(&self) -> Ends {
+        Ends::default()
     }
 
     /// Keeps `line`, naming this book's realm where it has one.
@@ -639,6 +670,76 @@ mod tests {
             vec![kept],
             "a release naming no realm lets go the make naming none of its \
              machine at its place, and a realm's release never does"
+        );
+    }
+
+    #[test]
+    fn the_ends_are_read_again_once_the_book_changes() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let book = Book::at(dir.path().join("made.jsonl")).of_realm("work");
+        assert_eq!(book.ends(), Ends::default(), "a book never kept ends none");
+        let now = jiff::Timestamp::now();
+        let (soon, later) = (
+            now + jiff::SignedDuration::from_hours(1),
+            now + jiff::SignedDuration::from_hours(2),
+        );
+        let (tern, wren) = (made_at("tern", "p1", soon), made_at("wren", "p2", soon));
+        book.made(&tern).expect("a make is kept");
+        assert_eq!(
+            book.ends().until,
+            BTreeMap::from([("tern".to_owned(), soon)]),
+            "a make kept is read"
+        );
+        book.made(&wren).expect("a make is kept");
+        book.made(&made_at("tern", "p3", later))
+            .expect("a make is kept");
+        book.released(&wren, "its time was up")
+            .expect("a release is kept");
+        assert_eq!(
+            book.ends(),
+            Ends {
+                until: BTreeMap::from([("tern".to_owned(), later)]),
+                unsure: None,
+            },
+            "read again once the book changes: the newest make of a name \
+             ends it, and one released ends nothing"
+        );
+    }
+
+    #[test]
+    fn a_book_it_cant_read_whole_is_unsure_of_its_ends() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("made.jsonl");
+        let book = Book::at(path.clone()).of_realm("work");
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        book.made(&made_at("tern", "p1", soon))
+            .expect("a make is kept");
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("the book opens")
+            .write_all(b"{\"at\": \"cut sh\n")
+            .expect("a line cut short is written");
+        let torn = book.ends();
+        assert_eq!(
+            torn.until,
+            BTreeMap::from([("tern".to_owned(), soon)]),
+            "the ends it can read still stand"
+        );
+        assert_eq!(
+            torn.unsure.as_deref(),
+            Some("1 of its lines can't be read"),
+            "a line it can't read may be a make cut short"
+        );
+        let gone = tempfile::tempdir().expect("a temporary folder");
+        fs::create_dir(gone.path().join("made.jsonl")).expect("the book is a folder");
+        let folder = Book::at(gone.path().join("made.jsonl")).ends();
+        assert!(folder.until.is_empty(), "a book it can't read ends none");
+        assert!(
+            folder
+                .unsure
+                .is_some_and(|why| why.starts_with("it can't be read")),
+            "and says why"
         );
     }
 
