@@ -259,9 +259,19 @@ same code, each line a JSON value:
    its sessions, and again each minute. The other end keeps it only if
    it names the sending machine, as ready while the link stands and as
    unreachable, with what it last said, once the link drops. An end
-   fallen behind what it hears keeps, of the `Machine` frames waiting,
-   only the newest, and takes every other frame in the order it came,
-   since each says the machine whole. Between
+   fallen behind what it hears keeps, of the `Machine` frames waiting
+   before the next `Share` or `HandedOver`, only the newest, since each
+   says the machine whole. It takes every other frame in the order it
+   came, but that one waiting only behind `Share` and `Machine` frames
+   goes ahead of them where it is a `Message`, `Presence`, `Ended`,
+   `Replies`, `Ran`, `Taken`, `Lent` or `Started`: what the sending end
+   says of its sessions and its answers, none of which a share or facts
+   before it wait for. Shares and `Machine` frames keep their order
+   between them, since what a machine declares decides which shares
+   are heard. Every other frame keeps its place behind both: an ask,
+   since a carried start must find the shares said before it;
+   `HandedOver`, since it lets the machine go once those shares are;
+   and a line that isn't a frame, so a link ends where it broke. Between
    two ends that both say `facts`, an end that has heard nothing at all
    for three minutes by the wall clock ends the link, so one left from
    before its machine slept gives way to its dialler's new one. Any end
@@ -391,10 +401,12 @@ same code, each line a JSON value:
     save what it holds and what is killed past them two more to go.
 19. `{"Lend": {"ask", "lend"}}`: answer a model call through the other
     end's lender, as a `"Lend"` request says it (Borrowing a Lend).
-    The other end takes it only where this end is its worker, known by
-    the link alone, and its node was started with `--lend`; otherwise
-    it refuses 403, saying why. Its lender names the borrowing machine
-    by the link's other end, never by what the lend says. It answers
+    The other end takes it only where this end is its worker, or a
+    machine its node made, such as one made for the person, which its
+    way in releases, each known by the link alone, and its node was
+    started with `--lend`; otherwise it refuses 403, saying why. Its
+    lender names the borrowing machine by the link's other end, never
+    by what the lend says. It answers
     `{"Lent": {"ask", "lent"}}` a line for each `Lent`, the last its
     `"Done"` or `"Refused"`, at most four ahead of `{"Taken": {"ask"}}`,
     which the asking end sends as its asker takes each, as for a run.
@@ -1747,7 +1759,13 @@ how full that disk is as the machine's disk guard bands it (`healthy`,
 `filling`, `nearly-full` or `critically-full`, from the guard's
 `status.json` while its heartbeat is under two minutes old, and absent
 otherwise; the guard's earlier `pressure`, `urgent` and `critical` are
-read as those three, and a band a node doesn't know is read as absent),
+read as those three, and a band a node doesn't know is read as absent;
+a disk the guard calls critically full is `nearly-full` where the
+guard says all three of its `free` bytes above its `nix_floor` and
+`exhausted` false, since the guard may band it so by forecast hours
+before it fills, and `critically-full` otherwise, a guard saying less,
+or a figure in another shape, being taken at its word; no other band
+is changed),
 `accelerators` (each a `kind`, `gpu` or
 `npu`, and its `driver`), and `power`: `on_battery`, true only with a
 battery of its own and nothing plugged in, and `charge`, its own
@@ -1870,7 +1888,12 @@ answer within five seconds measures for itself and says none, so it is
 judged by the line. A node with no room to read, or told its host's
 verdict, forgets its own, and one restarted starts with none held. It
 is left out of a room a node too old to judge says, and placement then
-judges the pressure by the line of 80 alone. The room is `null` where
+judges the pressure by the line of 80 alone. Its `cpu_minute` is the
+share of the last minute some work waited on a processor, machine-wide,
+in percent, as its own kernel says it (`some avg60` of
+`/proc/pressure/cpu`), which no queue's record carries; it is left out
+where the kernel says none, as a Mac's, or by a node too old to read
+it. The room is `null` where
 no harness keeps a queue, or where the queue's record is of another
 shape or unwritten for two minutes. A machine keeps no reserve of
 mycelium's: its own slices keep its person's share.
@@ -1919,6 +1942,17 @@ than every cell in it: lower-case letters, digits and hyphens, at most
 63, read as no basin in any other shape, which spoils nothing else
 declared. It is the cell's own word and only ever drawn, never weighed
 in placement.
+Where given, `needs_in` says what work sprouted here needs wherever
+placement sends it, as `[{"folders": ["src/inner"], "words":
+["forge.example"], "needs": [{"reach": "inner"}]}]`: a sprout begun
+in one of `folders` or below, each within home unless whole, or whose
+words hold one of `words` in any case, needs each of `needs`. Only a
+sprout placement chooses for gains them; one naming a machine, asking
+needs of its own or staying here is started as asked. A need met only
+by a probe is met as the probe last answered, so while no machine's
+probe answers, such work is refused, saying why each machine missed,
+rather than started where it can't work. A `Start` gains nothing,
+since its asker says its work whole.
 Where true, `takes_carries` says a worker takes carried sessions, as
 one made to take load off the person's machines does: a carry to a
 worker that doesn't say so is refused (Carrying a Quest), and one of
@@ -2098,12 +2132,16 @@ saturated, never refused; an unheard room is never saturated, nor
 passed for it. A machine whose `declared` says `kept_lively`, as
 `{"cpu": 28, "memory_available": bytes}` (the second may be left out),
 is one the person works at that the others take new work from first:
-within its ceiling (processor pressure, `some` over ten seconds
-machine-wide, at or under `cpu`, and as much memory available as it
-keeps), over a limit of its queue's or not, it ranks after every other
-heard machine neither saturated nor unheard, and before those
-saturated; past it, it carries `kept-lively`, `prefer_not`, ranks over,
-and goes after every other heard machine. Unheard, it ranks with the
+within its ceiling (processor pressure machine-wide at or under `cpu`,
+as its `cpu_minute` says it, or over ten seconds where its room says
+none, and as much memory available as it keeps) and its queue's
+limits, it ranks after every other heard machine with room and before
+those over a limit, since a machine over is swamped while one within
+its ceiling is light by the ceiling's own measure; within its ceiling
+but over a limit of its queue's, after those over too and before those
+saturated; saturated, or past its ceiling, where it carries
+`kept-lively`, `prefer_not`, and ranks over, it goes after every other
+heard machine. Unheard, it ranks with the
 unheard. It refuses no work, so where nothing else takes a start it
 still does, and a start placed on it heard is past room, as the cloud's
 paragraph below says, so the person's start goes to a cloud machine
@@ -2316,12 +2354,12 @@ to wake it, and a marker outlasting its park counts for nothing, so
 either is reopened as any ended session), held by a holder there,
 carried away or waiting for its turn, each refused with why. One that
 never ended there is refused as held or coming back where a holder
-resumes that very id, in whatever words or script it names it, or it
-was carried away from there or waits its turn there, and otherwise as
-never
-ended there, whatever ids it begins; nor
-while the carries can't be read. Once taken, the session is
-held as being reopened while its start runs, and another reopening of
+resumes it, as it names it in the words and scripts read below (an
+id or log path ending in `_` and then the id counts too), or it was
+carried away from there or waits its turn there, and otherwise as
+never ended there, whatever ids it begins; nor while the carries
+can't be read. Once taken, the session is held as being reopened
+while its start runs, and another reopening of
 it meanwhile is refused as `<id> is being reopened on <machine>
 already`. The hold ends when the start here answers, which it does
 within seconds, since a holder silent for ten is killed, whether or
@@ -2353,8 +2391,13 @@ carry is held so too. A refusal of a session a word begins names the
 word as asked, and a log path's tail begins nothing. An id a script
 works out as it runs, a script in any other shape or shell, as after
 `-o pipefail` or `--` or reading `$@`, or a resume naming none, as
-`pi --continue`, is not judged. A reopening
-let through without its asker's fence is asked only of a node whose
+`pi --continue`, is not judged. A start asked of the node itself and
+placed on its own machine takes the same holds while it starts there,
+never as it waits for room or a machine, and is not judged by them: it
+is refused where another start, relayed or asked here, holds one of
+them, as a relayed start is, and the two refuse each other only while
+both start. A reopening let through without its asker's fence is
+asked only of a node whose
 link says `reopens`, since one older
 would take it as any relayed start, so one asked of an older node is
 refused as
@@ -2428,9 +2471,41 @@ made for it is not held to it. The booking is the making node's, kept
 while it runs and made again as it redials its book. Like the judging
 of a run, this fences habit, not an agent set on passing as another,
 which runs as the same account; an agent's process left with no agent
-above it is judged the person's. A start relayed from another machine's
-node makes nothing, since it is pinned to this machine by name, which no
-offer meets. The program writes one JSON line,
+above it is judged the person's. A machine named in `agent-rooms`,
+beside the node's book of makes, a name a line, past blank lines and
+what follows a `#` on any line, is a room made for agents to share:
+already up and
+paid for by being so. Every agent's start or run may be placed there,
+a granted session's and one from no one known included, whoever it is
+booked for, since its booking says who pays for it and may let it go,
+not who may use it; the person's own go there only where it is booked
+for the person or for no asker, never into a worker home an agent's
+make wrote. A run the person asks naming one machine alone, a room an
+agent's make booked, runs there as an agent's, in the agent fence, so
+the person's safe word reaches every room though no session asks it,
+and the person's own login still never runs in that worker home.
+Work that names none of the workers may go to it though it
+costs money, ranked by its room as any machine is, so before a machine
+kept lively while it has room, and after one within its ceiling once
+it is over a limit. The node marks each one `"held_for": "agents"` as it
+places, from its own file, and every other as booked, never from what
+the machine says, and a link keeps nothing a machine says of it. A
+session the person granted is booked as the person but isn't one: its
+starts go to a machine booked for the person or for no asker, and not
+named in the file, only where they name it, never to one an agent's
+make booked, and even then that machine is full one session short of
+the most it holds, kept for the person, where it says or was promised
+a most. A start of its that no machine takes goes on to a make. A
+carry takes no account of rooms, since it asks as its session, which
+never says whether it is the person's. The file is written by whatever
+keeps the rooms, and any session on the node can write it, so it
+fences habit as the booking does; a writer puts a new file beside it
+and renames it into place, so a placement never reads one half
+written. A file that isn't there names none, and so does one that
+can't be read or isn't a plain file, said in the node's journal once
+each time that changes; only its first 64 KiB is read. A start relayed
+from another machine's node makes nothing, since it is pinned to this
+machine by name, which no offer meets. The program writes one JSON line,
 `{"place", "machine", "until"}`:
 where it is, as `--via` names it, the name its node will say for
 itself, and when its provider ends it whatever else happens. The node
@@ -2805,9 +2880,11 @@ there then wakes it, when it parked this boot, by writing its holder's
 names as `wake`, taken only as a holder's in a realm's `.held` folder
 beside its own. An ended session whose presence never said parked
 counts too where a park marker of this boot names a running holder
-whose own record says its program is parked, and is woken through it;
-one live in a pi of its own is never woken through a marker. A talk's
-file, `<ADDRESS>/replies/<id>.jsonl`, is opened on the asking machine
+whose own record says its program is parked, and is woken through it.
+So is one whose presence said parked but names no such file, where a
+park marker of this boot names a running holder, whatever its record
+says. One live in a pi of its own is never woken through a marker.
+A talk's file, `<ADDRESS>/replies/<id>.jsonl`, is opened on the asking machine
 first, and the lines its session writes are carried back to it, so a
 talk reads the same wherever its session runs.
 An `act` of `wake`, alone, as the launcher's Wake asks, puts nothing in
@@ -3526,8 +3603,10 @@ each message's `at` in UTC to the millisecond, as
 `2026-11-16T17:00:00.000Z`, whatever offset or precision it came with,
 so the order of the words is the order sent; an `at` that is no time
 is held as when the node heard it. The `team` kind
-holds each orchestrator's team, keyed by its address: the living
-sessions answering to it as `members`, its `lead` working on its quest,
+holds each orchestrator's team, keyed by its address in upper case,
+as is `within`, so a client matches a session's `orchestrated_by`
+without regard to case: the living sessions answering to it as
+`members`, its `lead` working on its quest,
 its `title` as a served `quest` names it (else its lead's), the name it
 goes by in the swarm as `swarm` where that quest gives one, the team it
 sits `within` by its lead's orchestrator, and `counts` of its members
@@ -3575,13 +3654,37 @@ as `quest:<id>`, so its short name is never a group's, as no group's
 name holds a colon; it is read in lower case, so keys differing only
 in case are one folder. `for` and `folder` are drawn on one line: each
 control character and line or paragraph separator in them is read as
-a space and each mark turning text's direction is dropped, and then
-`for` is trimmed, cut to its first 120 characters and trimmed again,
-and `folder` is 1 to 1024 bytes. A `for` said as null or as anything
-but text is unsaid, and one unsaid, empty or cleaned to nothing is
-left out of the cell record. A cell's first 16 shares are read, those
-past these bounds are passed over, and a key said twice is its first;
-each is among that cell record's `shares`. A group a presence names
+a space and each mark turning text's direction is dropped. From what
+is left, `for` also drops each of Unicode's 66 noncharacters first,
+then each character that draws nothing (U+00AD, U+034F, U+115F,
+U+1160, U+17B4, U+17B5, U+180B to U+180F, U+200B to U+200D, U+2060
+to U+2065, U+206A to U+206F, U+3164, U+FE00 to U+FE0F, U+FEFF,
+U+FFA0, U+FFF0 to U+FFFB, U+1BCA0 to U+1BCA3, U+1D173 to U+1D17A and
+U+E0000 to U+E0FFF), keeping one selector (U+FE00 to U+FE0F or
+U+E0100 to U+E01EF, so no Mongolian one) only where the last
+character kept is itself past ASCII and drawn as part of a word (none
+a space, here any character Unicode gives White_Space, such as U+00A0
+or U+3000, nor a braille blank), so what this pass drops between them
+parts nothing, and a joiner (U+200C or U+200D) only between two such,
+the first perhaps followed by its selector and the second the very
+next character left, so one dropped in this pass after a joiner parts
+it, though a direction mark or noncharacter, gone before, doesn't; and at most
+three zero-width joiners (U+200D) from the start or from one
+character, other than a skin tone or any regional indicator (U+1F1E6
+to U+1F1FF, paired as a flag or not), given a cell by unicode-width 0.2.3's
+per-character width (most spacing marks are, though none extending a
+grapheme, such as U+09BE; no nonspacing mark, conjoining jamo vowel or
+final, or selector is) and following no zero-width joiner kept, to the
+next, the rest dropped, a non-joiner (U+200C) never counted, each
+judged against what is kept so far; and then is trimmed of such
+spaces and braille blanks (U+2800), and cut to its first 120 characters,
+then cleaned again, so it ends in no space and no joiner left joining
+nothing; `folder` is 1 to 1024 bytes. A
+`for` said as null or as anything but text is unsaid, and one unsaid,
+empty or cleaned to nothing is left out of the cell record. A cell's
+first 16 shares are read, those past these bounds are passed over,
+and a key said twice is its first; each is among that cell record's
+`shares`. A group a presence names
 holding a colon joins none, as a folder's name does, so one called
 `files`, or under it with no colon, is a group still. Its heading is
 `folders`, as a session says it works in one, and nothing asks whether

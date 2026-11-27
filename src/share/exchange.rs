@@ -1208,8 +1208,8 @@ impl Exchange {
             if !carried.readme_alone {
                 whole.insert(id.clone());
             }
-            let walk = self.watch.to_walk(&id, &looked.scratch);
-            let record = self.watch.record_to_walk(&id) || anew;
+            let (walk, record) = self.watch.to_look_at(&id, &looked.scratch);
+            let record = record || anew;
             // A record waiting to move aside is none of the shared quest's,
             // so only its scratch is walked.
             let quest = carried.clone().walking(&walk).record_waits(looked.aside);

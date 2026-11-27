@@ -15,6 +15,7 @@ use std::hash::BuildHasher;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
+use crate::declared::NeedsIn;
 use crate::flow::{Code, Refusal};
 use crate::placement::{Need, Work};
 use crate::places::{self, Kind, Place, Unfound};
@@ -759,6 +760,69 @@ fn placed_by_needs(work: &mut Work, asked: &Sprout) {
     work.needs.extend(asked.needs.iter().cloned());
 }
 
+/// `start` needing what this machine declares work like it needs
+/// ([`NeedsIn`]): where it begins in one of a rule's folders or below,
+/// each within home as `disk` resolves it, through its links, as the
+/// sprout's own folder is, or its `words` name one of the rule's words in
+/// any case, standing on its own rather than inside a longer word. Only
+/// a start placement chooses for is touched: one that names a machine,
+/// stays here or asks needs of its own already says where it may go, and
+/// is left as asked.
+pub fn needs_as_declared(
+    start: &mut Start,
+    words: &[String],
+    home: &Path,
+    rules: &[NeedsIn],
+    disk: &impl Disk,
+) {
+    if !start.work.needs.is_empty() {
+        return;
+    }
+    let said: Vec<String> = words.iter().map(|word| word.to_lowercase()).collect();
+    // Both read within home, so a folder named whole on either side is the
+    // same folder as one named within it.
+    let begun = start.folder.clone().map(|folder| within_home(folder, home));
+    let begun_in = |rule: &NeedsIn| {
+        begun.as_ref().is_some_and(|folder| {
+            rule.folders
+                .iter()
+                .filter(|one| !one.as_os_str().is_empty())
+                .map(|one| within_home(disk.resolved(&home.join(one)), home))
+                // Home itself, or an empty folder, would name every one,
+                // so it names none.
+                .filter(|one| !one.as_os_str().is_empty())
+                .any(|one| folder.starts_with(one))
+        })
+    };
+    let named = |rule: &NeedsIn| {
+        rule.words.iter().any(|word| {
+            let word = word.to_lowercase();
+            !word.is_empty() && said.iter().any(|one| names(one, &word))
+        })
+    };
+    let needs: Vec<Need> = rules
+        .iter()
+        .filter(|rule| begun_in(rule) || named(rule))
+        .flat_map(|rule| rule.needs.iter().cloned())
+        .collect();
+    for need in needs {
+        if !start.work.needs.contains(&need) {
+            start.work.needs.push(need);
+        }
+    }
+}
+
+/// Whether `word` stands in `said` on its own: not run on from a letter
+/// or digit either side, so `forge.example` is named in
+/// `https://forge.example/pr/1` but not in `myforge.example` or
+/// `forge.examples`.
+fn names(said: &str, word: &str) -> bool {
+    let joins = |at: Option<char>| at.is_some_and(char::is_alphanumeric);
+    said.match_indices(word).any(|(at, _)| {
+        !joins(said[..at].chars().next_back()) && !joins(said[at + word.len()..].chars().next())
+    })
+}
+
 /// `folder` as a path within `home` where it's there, so the machine it
 /// starts on finds it in its own home, and as it is where it isn't.
 #[must_use]
@@ -1384,6 +1448,234 @@ pub(crate) mod tests {
             needs: Vec::new(),
             cwd: None,
         }
+    }
+
+    /// A rule giving work in `~/zone` or naming `forge.example` the need
+    /// to reach `inner`.
+    fn zoned() -> Vec<NeedsIn> {
+        vec![NeedsIn {
+            folders: vec![PathBuf::from("zone")],
+            words: vec!["Forge.Example".to_owned()],
+            needs: vec![Need::Reach("inner".to_owned())],
+        }]
+    }
+
+    /// What `start` needs once this machine's [`zoned`] rule is applied,
+    /// asked in `words` by someone whose home is `/home/kestrel`.
+    fn needs_once_declared(mut start: Start, words: &str) -> Vec<Need> {
+        let words: Vec<String> = words.split_whitespace().map(str::to_owned).collect();
+        needs_as_declared(
+            &mut start,
+            &words,
+            Path::new("/home/kestrel"),
+            &zoned(),
+            &Held::default(),
+        );
+        start.work.needs
+    }
+
+    /// The start placement chooses for, begun in `folder`.
+    fn placed_in(folder: &str) -> Start {
+        let seed = Seed::of(&["tidy".to_owned()]);
+        start(
+            None,
+            Some(PathBuf::from(folder)),
+            &seed,
+            (None, None),
+            "sprout-1",
+        )
+        .start
+    }
+
+    #[test]
+    fn work_begun_within_a_declared_folder_needs_what_it_declares() {
+        let inner = vec![Need::Reach("inner".to_owned())];
+        assert_eq!(needs_once_declared(placed_in("zone"), "tidy"), inner);
+        assert_eq!(
+            needs_once_declared(placed_in("zone/trees/rows/src"), "tidy"),
+            inner,
+            "anywhere below it"
+        );
+        assert_eq!(
+            needs_once_declared(placed_in("/home/kestrel/zone/src"), "tidy"),
+            inner,
+            "named whole, it is still within home"
+        );
+        assert_eq!(
+            needs_once_declared(placed_in("zones/rows"), "tidy"),
+            Vec::new(),
+            "a folder whose name only begins the same is another"
+        );
+        assert_eq!(
+            needs_once_declared(placed_in("/srv/zone"), "tidy"),
+            Vec::new(),
+            "one outside home is another"
+        );
+    }
+
+    #[test]
+    fn work_whose_words_name_a_declared_word_needs_what_it_declares() {
+        assert_eq!(
+            needs_once_declared(placed_in("src/rows"), "see https://FORGE.example/pr/1"),
+            [Need::Reach("inner".to_owned())],
+            "found in any case, within a link"
+        );
+        assert_eq!(
+            needs_once_declared(placed_in("src/rows"), "(forge.example)"),
+            [Need::Reach("inner".to_owned())],
+            "or set off by marks"
+        );
+        for other in [
+            "forge example",
+            "myforge.example",
+            "forge.examples",
+            "forge.example2",
+        ] {
+            assert_eq!(
+                needs_once_declared(placed_in("src/rows"), other),
+                Vec::new(),
+                "{other} doesn't name it"
+            );
+        }
+        assert_eq!(
+            needs_once_declared(placed_in("src/rows"), "myforge.example then forge.example"),
+            [Need::Reach("inner".to_owned())],
+            "standing on its own anywhere it's said"
+        );
+    }
+
+    #[test]
+    fn a_declared_folder_is_judged_through_its_links_as_the_start_is() {
+        // The sprout's folder comes resolved through its links, so a rule
+        // naming a link names where it leads.
+        let disk = Held::default().linking("/home/kestrel/zone", "/home/kestrel/trees/zone");
+        let mut start = placed_in("trees/zone/src");
+        needs_as_declared(
+            &mut start,
+            &["tidy".to_owned()],
+            Path::new("/home/kestrel"),
+            &zoned(),
+            &disk,
+        );
+        assert_eq!(
+            start.work.needs,
+            [Need::Reach("inner".to_owned())],
+            "begun where the link leads, it's begun within the rule's folder"
+        );
+        let leaving = Held::default().linking("/home/kestrel/zone", "/srv/zone");
+        let mut start = placed_in("/srv/zone/src");
+        needs_as_declared(
+            &mut start,
+            &["tidy".to_owned()],
+            Path::new("/home/kestrel"),
+            &zoned(),
+            &leaving,
+        );
+        assert_eq!(
+            start.work.needs,
+            [Need::Reach("inner".to_owned())],
+            "and where it leads out of home"
+        );
+    }
+
+    #[test]
+    fn a_declared_folder_named_whole_is_the_one_within_home() {
+        let rules = [NeedsIn {
+            folders: vec![PathBuf::from("/home/kestrel/zone")],
+            words: Vec::new(),
+            needs: vec![Need::Cloud],
+        }];
+        for begun in ["zone/src", "/home/kestrel/zone/src"] {
+            let mut start = placed_in(begun);
+            needs_as_declared(
+                &mut start,
+                &["tidy".to_owned()],
+                Path::new("/home/kestrel"),
+                &rules,
+                &Held::default(),
+            );
+            assert_eq!(start.work.needs, [Need::Cloud], "{begun} is within it");
+        }
+    }
+
+    #[test]
+    fn a_rule_naming_home_itself_names_no_work() {
+        for home in [".", "/home/kestrel", "src/.."] {
+            let rules = [NeedsIn {
+                folders: vec![PathBuf::from(home)],
+                words: Vec::new(),
+                needs: vec![Need::Cloud],
+            }];
+            let mut start = placed_in("src/rows");
+            needs_as_declared(
+                &mut start,
+                &["tidy".to_owned()],
+                Path::new("/home/kestrel"),
+                &rules,
+                &Held::default(),
+            );
+            assert_eq!(start.work.needs, Vec::new(), "{home} names nothing");
+        }
+    }
+
+    #[test]
+    fn work_that_already_says_where_it_goes_is_left_as_asked() {
+        let seed = Seed::of(&["tidy".to_owned()]);
+        let on_tern = start(
+            Some("tern"),
+            Some(PathBuf::from("zone")),
+            &seed,
+            (None, None),
+            "sprout-1",
+        );
+        assert_eq!(
+            needs_once_declared(on_tern.start, "forge.example"),
+            [Need::Machine("tern".to_owned())],
+            "named or kept here, it starts there"
+        );
+        let mut cloud = placed_in("zone");
+        cloud.work.needs = vec![Need::Cloud];
+        assert_eq!(
+            needs_once_declared(cloud, "forge.example"),
+            [Need::Cloud],
+            "its own needs stand as asked"
+        );
+    }
+
+    #[test]
+    fn a_rule_with_an_empty_folder_or_word_names_no_work() {
+        let rules = [NeedsIn {
+            folders: vec![PathBuf::new()],
+            words: vec![String::new()],
+            needs: vec![Need::Cloud],
+        }];
+        let mut start = placed_in("src/rows");
+        needs_as_declared(
+            &mut start,
+            &["tidy".to_owned()],
+            Path::new("/home/kestrel"),
+            &rules,
+            &Held::default(),
+        );
+        assert_eq!(
+            start.work.needs,
+            Vec::new(),
+            "an empty folder or word names nothing"
+        );
+    }
+
+    #[test]
+    fn a_need_two_rules_give_is_needed_once() {
+        let rules = [zoned(), zoned()].concat();
+        let mut start = placed_in("zone");
+        needs_as_declared(
+            &mut start,
+            &["forge.example".to_owned()],
+            Path::new("/home/kestrel"),
+            &rules,
+            &Held::default(),
+        );
+        assert_eq!(start.work.needs, [Need::Reach("inner".to_owned())]);
     }
 
     #[test]
