@@ -315,7 +315,8 @@ pub struct Run {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<PathBuf>,
     /// The command and its arguments, run through the login shell there,
-    /// with nothing on its standard input.
+    /// or the plain one where `asked_by` says so, with nothing on its
+    /// standard input.
     pub command: Vec<String>,
     /// Who asks it, as the machine it was asked of judged them. A node
     /// takes what is said here only as stricter than what it judges, and

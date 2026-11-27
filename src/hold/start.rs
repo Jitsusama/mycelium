@@ -635,10 +635,22 @@ mod tests {
         );
     }
 
+    /// The `sh` on this test's own path, by where it is, since a `PATH`
+    /// a test gives its child is where a bare `sh` would be looked for.
+    fn the_shell() -> PathBuf {
+        std::env::split_paths(&std::env::var_os("PATH").expect("a PATH"))
+            .map(|folder| folder.join("sh"))
+            .find(|sh| sh.is_file())
+            .expect("sh is on the PATH")
+    }
+
     /// What `program`, given to `sh -c`, prints when run through `words`
     /// by `sh` standing for the person's shell, with `profile`'s
     /// variables standing for what a profile sets before the script runs.
+    /// Both shells are named by where they are, so a `PATH` the profile
+    /// gives, which may hold no `sh`, finds neither.
     fn run_through(words: &[String], program: &str, profile: &[(&str, &str)]) -> String {
+        let sh = the_shell();
         // A login shell's flags first, since a Mac's yielding words hold
         // a `-c` of their own before them.
         let script = words
@@ -646,10 +658,11 @@ mod tests {
             .position(|word| word == "-lic" || word == "-lc")
             .or_else(|| words.iter().position(|word| word == "-c"))
             .expect("the words run a shell");
-        let said = Command::new("sh")
+        let said = Command::new(&sh)
             .arg("-c")
             .args(&words[script + 1..])
-            .args(["sh", "-c", program])
+            .arg(&sh)
+            .args(["-c", program])
             // Whatever this test runs in, only the profile says an agent.
             .env_remove("MYCELIUM_AGENT")
             .envs(profile.iter().copied())
@@ -691,10 +704,7 @@ mod tests {
         let kit = tempfile::tempdir().expect("a temporary kit");
         let bin = kit.path().join("bin");
         fs::create_dir(&bin).expect("the kit's bin");
-        let sh = std::env::split_paths(&std::env::var_os("PATH").expect("a PATH"))
-            .map(|folder| folder.join("sh"))
-            .find(|sh| sh.is_file())
-            .expect("sh is on the PATH");
+        let sh = the_shell();
         // The kit holds the shell the run starts, since nothing else is on
         // an empty path.
         std::os::unix::fs::symlink(&sh, bin.join("sh")).expect("the kit's shell");

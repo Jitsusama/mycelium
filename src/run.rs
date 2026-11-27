@@ -238,8 +238,8 @@ pub async fn here(
 /// which a fence's launcher reads to know whose work trees the run may
 /// stand in, is `session` alone, never the node's own. An agent's run
 /// signs over ssh as a held session does, through the agents' proxy
-/// ([`crate::hold::holder::agents`]), named again after the login
-/// shell's profile [`words`] puts it through, whether or not its session
+/// ([`crate::hold::holder::agents`]), named again after any profile the
+/// shell [`words`] puts it through reads, whether or not its session
 /// was proved and wherever it was asked from; only a person's run keeps
 /// the person's agent.
 fn command(
