@@ -223,6 +223,7 @@ mod tests {
                     load: Some(load),
                     over: false,
                     past: Vec::new(),
+                    lively: None,
                     room: true,
                     busy: 0,
                     idle: 0,

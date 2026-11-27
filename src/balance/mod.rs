@@ -137,6 +137,11 @@ pub struct Load {
     /// before it was said has none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub past: Vec<Limit>,
+    /// Why it is past the ceiling it is kept lively to, where it is:
+    /// such a machine is over though its queue is past no limit, since
+    /// the person at it feels it before the queue does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lively: Option<String>,
     /// Whether it has room for more: not over, stalling under
     /// [`ROOM_STALL`] and using under [`ROOM_MEMORY`] of its memory.
     pub room: bool,
@@ -287,6 +292,7 @@ fn load(machine: &Machine, sessions: &[Session], now: jiff::Timestamp) -> Load {
         load,
         over,
         past,
+        lively: None,
         room: has_room,
         busy,
         idle: count(State::Idle),
@@ -411,6 +417,7 @@ pub fn keep_latest(folder: &Path, reading: &Reading) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::declared::Lively;
     use crate::facts::{self, Sources};
     use crate::room::{Pressure, Room, Takes};
     use serde_json::json;
@@ -506,6 +513,56 @@ mod tests {
         assert!(
             older.over && older.past.is_empty(),
             "kept before it was said"
+        );
+    }
+
+    #[test]
+    fn a_machine_past_the_ceiling_it_is_kept_lively_to_is_over_while_another_has_room() {
+        let lively = |name: &str, cpu: f64| {
+            let mut one = machine(name, 16, 64, 40, cpu, 20);
+            one.declared
+                .get_or_insert_with(Default::default)
+                .kept_lively = Some(Lively {
+                cpu: 30,
+                memory_available: None,
+                memory_full: None,
+            });
+            one
+        };
+        let realm = [
+            machine("kestrel", 16, 64, 40, 4.6, 20),
+            lively("tern", 45.0),
+            lively("wren", 20.0),
+        ];
+        let reading = read(&realm, &[], now());
+        let tern = of(&reading, "tern");
+        assert!(
+            tern.over && !tern.room,
+            "pressure 45 is past a lively ceiling of 30, though under the queue's line"
+        );
+        assert!(
+            tern.lively
+                .as_deref()
+                .is_some_and(|why| why.contains("processor pressure 30 at most")),
+            "it says the ceiling it is past: {:?}",
+            tern.lively
+        );
+        assert!(
+            tern.past.is_empty(),
+            "its queue is past no limit of its own"
+        );
+        assert!(
+            reading.flags.contains(&Flag::HotWhileCool {
+                hot: "tern".to_owned(),
+                cool: "kestrel".to_owned(),
+            }),
+            "so it is over while another has room: {:?}",
+            reading.flags
+        );
+        let wren = of(&reading, "wren");
+        assert!(
+            !wren.over && wren.lively.is_none(),
+            "pressure 20 is within its ceiling"
         );
     }
 
