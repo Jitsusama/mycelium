@@ -1555,6 +1555,8 @@ mod tests {
         /// The sessions, by id, listed once started under another
         /// session's id there, as a session the node there mistook.
         misnamed: BTreeSet<String>,
+        /// Words each start's attach ends with, past its held id.
+        attach_also: Vec<String>,
         /// How many looks at the sessions pass after a start before the
         /// sessions started run there.
         slow: usize,
@@ -1876,7 +1878,10 @@ mod tests {
                 machine: "tern".to_owned(),
                 held: held.clone(),
                 folder: "/home/joel".into(),
-                attach: vec!["mycelium".to_owned(), "attach".to_owned(), held],
+                attach: ["mycelium".to_owned(), "attach".to_owned(), held]
+                    .into_iter()
+                    .chain(self.attach_also.iter().cloned())
+                    .collect(),
             })
         }
         fn takes(&mut self, taking: &Taking) -> Result<(), Untaken> {
@@ -2724,6 +2729,44 @@ mod tests {
         assert!(
             said.contains("mycelium attach h1"),
             "with how to join its start, to see why: {said}"
+        );
+    }
+
+    #[test]
+    fn a_start_that_never_runs_is_joined_by_words_a_shell_reads_whole() {
+        let mut realm = Realm {
+            silent: ["s-naps02"].map(str::to_owned).into(),
+            attach_also: ["--realm", "the home realm", "it's"]
+                .map(str::to_owned)
+                .into(),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        assert_eq!(done, Err(Failed { step: Step::Answer }));
+        let said = last_said(&lines);
+        assert!(
+            said.contains(r"`mycelium attach h1 --realm 'the home realm' 'it'\''s'`"),
+            "each word quoted for a shell, so the line pasted joins the start: {said}"
+        );
+        assert!(
+            said.contains("tern's node log"),
+            "and where to look once its start has gone, as an arrival that exits takes it: \
+             {said}"
+        );
+    }
+
+    #[test]
+    fn a_session_that_ended_there_points_at_the_node_log_not_its_start() {
+        let mut realm = Realm {
+            ended_there: ["s-naps02"].map(str::to_owned).into(),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        assert_eq!(done, Err(Failed { step: Step::Answer }));
+        let said = last_said(&lines);
+        assert!(
+            !said.contains("attach") && said.contains("tern's node log"),
+            "its start went as its pi ended there, so only the log there says why: {said}"
         );
     }
 
