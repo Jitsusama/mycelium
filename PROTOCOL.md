@@ -1319,8 +1319,8 @@ or a password prompt waits inside its turn, so it stays as one in a
 turn. What a session is part
 way through is told only once its presence says `"leases":
 {"background": true}`, its harness keeping a lease for each background
-run. After a carry it would carry none for half an hour, and it would
-carry at most six in a day. A session moved by anyone stays put for a
+run. After a carry it would carry none for five minutes, and it would
+carry at most 48 in a day. A session moved by anyone stays put for a
 day, by the carries kept here, and nothing goes to a machine a session
 came from within the hour, nor to a Mac whose node doesn't say
 `fences_held` but a session shown unfenced (see The Socket). A strict
@@ -1374,7 +1374,7 @@ saying the node chose it by its own machine's reading, and that
 why: one refused for ground no firmer, a machine not the realm's,
 or a session no longer here is neither kept nor told, and one whose
 inbox refused it stays kept. A refused carry still counts as one
-made, toward the half hour and the six a day. It still puts no
+made, toward the five minutes and the 48 a day. It still puts no
 session to sleep, so the sleep it would have made only delays a
 carry by the minutes it waits to see whether sleeping eased it.
 An orchestrator's order after the node's carry still stands, as
@@ -1483,7 +1483,7 @@ kept whenever that why comes, changes or clears, though nothing else
 changed, until the day's file is full. A node with no quests' record
 served therefore never eases.
 
-The six a day are counted twice, and the larger counts. One count is
+The 48 a day are counted twice, and the larger counts. One count is
 what the node remembers: what it did since it began, and from when it
 began, each carry its own lines in `eases` say it made, or would have,
 within the day, and each carry the record of carries keeps `by`
@@ -1505,7 +1505,7 @@ from here within the day, read at each look. That
 record is the person's file to edit, so one cut short lifts no limit,
 even across a restart while the node's own lines stand; one that can't
 be read stops every carry, saying why. A carry kept by
-`node@<machine>`, or said in its own lines, also starts the half hour
+`node@<machine>`, or said in its own lines, also starts the five minutes
 after a carry and pins its session, across a restart. A line dated
 ahead counts until a day past its time, which can only hold carries
 back.

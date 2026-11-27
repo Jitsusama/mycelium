@@ -61,9 +61,10 @@ pub const COOL_FOR: SignedDuration = SignedDuration::from_mins(5);
 /// say the machine is over before it carries one.
 pub const SETTLE: SignedDuration = SignedDuration::from_mins(5);
 
-/// How long after carrying a session it carries none again: stricter than
-/// three an hour.
-pub const COOLDOWN: SignedDuration = SignedDuration::from_mins(30);
+/// How long after carrying a session it carries none again: twelve an
+/// hour at most, so a machine short of memory for its many sessions
+/// sheds them over a night, as the velocity cell ruled on 26 November.
+pub const COOLDOWN: SignedDuration = SignedDuration::from_mins(5);
 
 /// How long after a session came here from a machine nothing goes there.
 pub const NO_RETURN: SignedDuration = SignedDuration::from_hours(1);
@@ -72,8 +73,9 @@ pub const NO_RETURN: SignedDuration = SignedDuration::from_hours(1);
 pub const PIN: SignedDuration = SignedDuration::from_hours(24);
 
 /// How many sessions a machine carries away to ease itself within a
-/// [`DAY`], at most, beside [`COOLDOWN`].
-pub const DAILY: usize = 6;
+/// [`DAY`], at most, beside [`COOLDOWN`]: four hours of carrying at its
+/// pace.
+pub const DAILY: usize = 48;
 
 /// The span [`DAILY`] counts over.
 pub const DAY: SignedDuration = SignedDuration::from_hours(24);
@@ -1717,8 +1719,9 @@ pub(super) mod tests {
             sleeps(
                 &["s2"],
                 Some(&format!(
-                    "it carried s9 at {}, and carries none again within 30 minutes",
-                    ago(1)
+                    "it carried s9 at {}, and carries none again within {} minutes",
+                    ago(1),
+                    COOLDOWN.as_mins()
                 ))
             )
         );
@@ -1966,7 +1969,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn none_is_carried_within_half_an_hour_of_the_last() {
+    fn none_is_carried_within_its_cooldown_of_the_last() {
         let realm = realm();
         let eased = |mins| {
             let mut history = hot_for(&realm, 60);
@@ -1979,45 +1982,54 @@ pub(super) mod tests {
             });
             chose(&realm, &[cell("s1")], &history)
         };
+        let cooldown = COOLDOWN.as_mins();
         assert!(
-            why_not(&eased(29)).ends_with("carries none again within 30 minutes"),
-            "29 minutes after the last"
+            why_not(&eased(cooldown - 1))
+                .ends_with(&format!("carries none again within {cooldown} minutes")),
+            "a minute short of the cooldown after the last"
         );
-        assert!(carries(&eased(30)).is_some(), "30 minutes after the last");
+        assert!(
+            carries(&eased(cooldown)).is_some(),
+            "the cooldown after the last"
+        );
     }
 
     #[test]
-    fn a_machine_carries_at_most_six_sessions_a_day() {
+    fn a_machine_carries_at_most_its_daily_sessions_a_day() {
         let realm = realm();
-        // `remembered` carries the node made, the last two hours ago, and
-        // `kept` the record of carries says it made.
+        let daily = i64::try_from(DAILY).expect("a day's carries are counted in an i64");
+        let full = format!(
+            "it carried {DAILY} sessions within the day, and carries at most {DAILY} a day"
+        );
+        // `remembered` carries the node made, twenty minutes apart and the
+        // last two hours ago, and `kept` the record of carries says it made.
         let eased = |remembered: i64, kept: Result<usize, String>| {
             let mut history = hot_for(&realm, 11);
-            for hour in 0..remembered {
+            for each in 0..remembered {
                 history.moved(Moved {
-                    session: format!("s-{hour}"),
+                    session: format!("s-{each}"),
                     from: "skiff".to_owned(),
                     to: "tern".to_owned(),
-                    at: ago((hour + 2) * 60),
+                    at: ago(each * 20 + 120),
                     eases: true,
                 });
             }
             history.kept_eases(kept);
             chose(&realm, &[cell("s1")], &history)
         };
-        assert!(carries(&eased(5, Ok(5))).is_some(), "five, so a sixth");
+        assert!(
+            carries(&eased(daily - 1, Ok(DAILY - 1))).is_some(),
+            "one short of the day's, so one more"
+        );
+        assert_eq!(why_not(&eased(daily, Ok(DAILY))), full);
         assert_eq!(
-            why_not(&eased(6, Ok(6))),
-            "it carried 6 sessions within the day, and carries at most 6 a day"
+            why_not(&eased(daily, Ok(0))),
+            full,
+            "a record of carries cut short still stops the next"
         );
         assert_eq!(
-            why_not(&eased(6, Ok(0))),
-            "it carried 6 sessions within the day, and carries at most 6 a day",
-            "a record of carries cut short still stops the seventh"
-        );
-        assert_eq!(
-            why_not(&eased(0, Ok(6))),
-            "it carried 6 sessions within the day, and carries at most 6 a day",
+            why_not(&eased(0, Ok(DAILY))),
+            full,
             "carries the record holds count though the node forgot them"
         );
         assert_eq!(
@@ -2032,49 +2044,58 @@ pub(super) mod tests {
                 .starts_with("the carries kept here haven't been read"),
             "a node that hasn't read the record carries nothing"
         );
-        // Five within the day, and a sixth `at` ago from `from`.
-        let with_sixth = |at: Timestamp, from: &str| {
+        // One short of the day's within it, and the last `at` ago from
+        // `from`.
+        let with_last = |at: Timestamp, from: &str| {
             let mut history = hot_for(&realm, 11);
-            for (hour, from) in (0..5).map(|hour| (hour, "skiff")).chain([(5, from)]) {
+            let last = daily - 1;
+            for (each, from) in (0..last)
+                .map(|each| (each, "skiff"))
+                .chain([(last, from)])
+            {
                 history.moved(Moved {
-                    session: format!("s-{hour}"),
+                    session: format!("s-{each}"),
                     from: from.to_owned(),
                     to: "osprey".to_owned(),
-                    at: if hour == 5 { at } else { ago((hour + 2) * 60) },
+                    at: if each == last {
+                        at
+                    } else {
+                        ago(each * 20 + 120)
+                    },
                     eases: true,
                 });
             }
             chose(&realm, &[cell("s1")], &history)
         };
         assert!(
-            carries(&with_sixth(now() - DAY, "skiff")).is_some(),
+            carries(&with_last(now() - DAY, "skiff")).is_some(),
             "a carry a day old counts no longer"
         );
         assert_eq!(
-            why_not(&with_sixth(
+            why_not(&with_last(
                 now() - DAY + SignedDuration::from_secs(1),
                 "skiff"
             )),
-            "it carried 6 sessions within the day, and carries at most 6 a day",
+            full,
             "a second short of a day it still counts"
         );
         assert!(
-            carries(&with_sixth(ago(60), "tern")).is_some(),
+            carries(&with_last(ago(60), "tern")).is_some(),
             "another machine's easing counts for none of skiff's"
         );
         let mut others = hot_for(&realm, 11);
-        for hour in 0..6 {
+        for each in 0..daily {
             others.moved(Moved {
-                session: format!("s-{hour}"),
+                session: format!("s-{each}"),
                 from: "skiff".to_owned(),
                 to: "osprey".to_owned(),
-                at: ago((hour + 2) * 60),
+                at: ago(each * 20 + 120),
                 eases: false,
             });
         }
         assert!(
             carries(&chose(&realm, &[cell("s1")], &others)).is_some(),
-            "six carried off skiff by others count for none of its node's six"
+            "a day's carries off skiff by others count for none of its node's"
         );
     }
 

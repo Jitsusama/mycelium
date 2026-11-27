@@ -2026,7 +2026,7 @@ mod tests {
     }
 
     #[test]
-    fn its_own_lines_seed_the_half_hour_and_pin_their_session() {
+    fn its_own_lines_seed_the_cooldown_and_pin_their_session() {
         let moved = |session: &str, mins: i64| Moved {
             session: session.to_owned(),
             from: "skiff".to_owned(),
@@ -2041,8 +2041,8 @@ mod tests {
         };
         assert!(carried(Vec::new()), "with nothing seeded, s1 is carried");
         assert!(
-            !carried(vec![moved("s0", 10)]),
-            "a carry its lines say ten minutes ago holds the half hour"
+            !carried(vec![moved("s0", within_cooldown())]),
+            "a carry its lines say a minute short of the cooldown ago holds it"
         );
         assert!(
             !carried(vec![moved("s1", 3 * 60)]),
@@ -2052,32 +2052,34 @@ mod tests {
 
     #[test]
     fn a_carry_the_record_holds_and_another_only_its_own_lines_say_both_count() {
-        let carry = |session: &str, hours: i64| Moved {
-            session: session.to_owned(),
+        let carry = |each: i64| Moved {
+            session: format!("s-{each}"),
             from: "skiff".to_owned(),
             to: "osprey".to_owned(),
-            at: ago(hours * 60),
+            at: ago(apart(each)),
             eases: true,
         };
-        let kept: Vec<Kept> = (2..7)
-            .map(|hour| Kept {
-                id: format!("s-{hour}:then"),
-                at: ago(hour * 60),
-                line: json!({"by": "node@skiff", "session": format!("s-{hour}"),
+        let kept: Vec<Kept> = (0..daily() - 1)
+            .map(|each| Kept {
+                id: format!("s-{each}:then"),
+                at: ago(apart(each)),
+                line: json!({"by": "node@skiff", "session": format!("s-{each}"),
                              "from": "skiff", "to": "osprey"}),
             })
             .collect();
-        let eased: Vec<Moved> = (2..8)
-            .map(|hour| carry(&format!("s-{hour}"), hour))
-            .collect();
-        let lines = looks_kept(&mut Easing::after(&kept, eased), &[cell("s1")], &Ok(5));
+        let eased: Vec<Moved> = (0..daily()).map(carry).collect();
+        let lines = looks_kept(
+            &mut Easing::after(&kept, eased),
+            &[cell("s1")],
+            &Ok(ease::DAILY - 1),
+        );
         assert_eq!(
             lines.last().expect("a line")["why"],
-            json!("it carried 6 sessions within the day, and carries at most 6 a day"),
-            "five in both and one in its lines alone are six"
+            json!(full_day()),
+            "one short of the day's in both and one in its lines alone are the day's"
         );
 
-        // The same five, recorded as another machine's node's, hide none.
+        // The same, recorded as another machine's node's, hide none.
         let elsewhere: Vec<Kept> = kept
             .iter()
             .map(|one| {
@@ -2090,17 +2092,15 @@ mod tests {
                 }
             })
             .collect();
-        let eased: Vec<Moved> = (2..8)
-            .map(|hour| carry(&format!("s-{hour}"), hour))
-            .collect();
+        let eased: Vec<Moved> = (0..daily()).map(carry).collect();
         let lines = looks_kept(&mut Easing::after(&elsewhere, eased), &[cell("s1")], &Ok(0));
         assert_eq!(
             lines.last().expect("a line")["why"],
-            json!("it carried 6 sessions within the day, and carries at most 6 a day"),
-            "tern's node's carries of the same sessions leave skiff's six"
+            json!(full_day()),
+            "tern's node's carries of the same sessions leave skiff's day"
         );
 
-        // The same five, each with no `to`, are none the record remembers,
+        // The same, each with no `to`, are none the record remembers,
         // so they hide none of its own lines either.
         let unsaid: Vec<Kept> = kept
             .iter()
@@ -2113,14 +2113,12 @@ mod tests {
                 }
             })
             .collect();
-        let eased: Vec<Moved> = (2..8)
-            .map(|hour| carry(&format!("s-{hour}"), hour))
-            .collect();
+        let eased: Vec<Moved> = (0..daily()).map(carry).collect();
         let lines = looks_kept(&mut Easing::after(&unsaid, eased), &[cell("s1")], &Ok(0));
         assert_eq!(
             lines.last().expect("a line")["why"],
-            json!("it carried 6 sessions within the day, and carries at most 6 a day"),
-            "record lines saying no `to` leave its own six"
+            json!(full_day()),
+            "record lines saying no `to` leave its own day"
         );
     }
 
@@ -2196,33 +2194,30 @@ mod tests {
     }
 
     #[test]
-    fn a_restart_with_the_record_of_carries_cut_short_still_stops_the_seventh() {
-        let eased: Vec<Moved> = (0..6)
-            .map(|hour| Moved {
-                session: format!("s-{hour}"),
+    fn a_restart_with_the_record_of_carries_cut_short_still_stops_the_next() {
+        let eased: Vec<Moved> = (0..daily())
+            .map(|each| Moved {
+                session: format!("s-{each}"),
                 from: "skiff".to_owned(),
                 to: "osprey".to_owned(),
-                at: ago((hour + 2) * 60),
+                at: ago(apart(each)),
                 eases: true,
             })
             .collect();
         let lines = looks_kept(&mut Easing::after(&[], eased), &[cell("s1")], &Ok(0));
         assert!(
             lines.iter().all(|line| line["choice"] != "carry"),
-            "its own lines remember six though the record holds none: {lines:?}"
+            "its own lines remember the day's though the record holds none: {lines:?}"
         );
-        assert_eq!(
-            lines.last().expect("a line")["why"],
-            json!("it carried 6 sessions within the day, and carries at most 6 a day")
-        );
+        assert_eq!(lines.last().expect("a line")["why"], json!(full_day()));
     }
 
     #[test]
-    fn a_carry_kept_by_its_node_holds_the_half_hour_across_a_restart() {
+    fn a_carry_kept_by_its_node_holds_the_cooldown_across_a_restart() {
         let kept = |by: &str| {
             [Kept {
                 id: "s0:then".to_owned(),
-                at: ago(10),
+                at: ago(within_cooldown()),
                 line: json!({"by": by, "session": "s0", "from": "skiff", "to": "osprey"}),
             }]
         };
@@ -2230,11 +2225,11 @@ mod tests {
             let lines = looks(&mut Easing::after(&kept(by), Vec::new()), &[cell("s1")]);
             lines.iter().any(|line| line["choice"] == "carry")
         };
-        assert!(!carried("node@skiff"), "its node's carry ten minutes ago");
         assert!(
-            carried("WCJQSG"),
-            "an orchestrator's carry starts no half hour"
+            !carried("node@skiff"),
+            "its node's carry a minute short of the cooldown ago"
         );
+        assert!(carried("WCJQSG"), "an orchestrator's carry starts no cooldown");
     }
 
     #[test]
@@ -2262,25 +2257,22 @@ mod tests {
     }
 
     #[test]
-    fn a_record_of_carries_cut_short_still_stops_the_seventh() {
-        let kept: Vec<Kept> = (0..6)
-            .map(|hour| Kept {
-                id: format!("s-{hour}:then"),
-                at: ago((hour + 2) * 60),
-                line: json!({"by": "node@skiff", "session": format!("s-{hour}"),
+    fn a_record_of_carries_cut_short_still_stops_the_next() {
+        let kept: Vec<Kept> = (0..daily())
+            .map(|each| Kept {
+                id: format!("s-{each}:then"),
+                at: ago(apart(each)),
+                line: json!({"by": "node@skiff", "session": format!("s-{each}"),
                              "from": "skiff", "to": "osprey"}),
             })
             .collect();
         let lines = looks_kept(&mut Easing::after(&kept, Vec::new()), &[cell("s1")], &Ok(0));
         assert!(
             lines.iter().all(|line| line["choice"] != "carry"),
-            "six carries remembered stop a seventh though the record holds none now: \
+            "a day's carries remembered stop the next though the record holds none now: \
              {lines:?}"
         );
-        assert_eq!(
-            lines.last().expect("a line")["why"],
-            json!("it carried 6 sessions within the day, and carries at most 6 a day")
-        );
+        assert_eq!(lines.last().expect("a line")["why"], json!(full_day()));
     }
 
     #[test]
@@ -2342,6 +2334,29 @@ mod tests {
                 && sampler.counted.is_empty(),
             "a process no longer asked of is forgotten"
         );
+    }
+
+    /// How many carries a day stops at, to count them by.
+    fn daily() -> i64 {
+        i64::try_from(ease::DAILY).expect("a day's carries are counted in an i64")
+    }
+
+    /// What a look says once a day's carries are made.
+    fn full_day() -> String {
+        let daily = ease::DAILY;
+        format!("it carried {daily} sessions within the day, and carries at most {daily} a day")
+    }
+
+    /// How many minutes ago the `each`th of a day's carries was made:
+    /// twenty minutes apart, the latest two hours ago, so a day's fit
+    /// within it and none holds the cooldown.
+    fn apart(each: i64) -> i64 {
+        each * 20 + 120
+    }
+
+    /// A minute short of the cooldown, in minutes.
+    fn within_cooldown() -> i64 {
+        ease::COOLDOWN.as_mins() - 1
     }
 
     /// Each line `easing` would keep at skiff, looking each minute from 20
