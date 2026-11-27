@@ -2884,6 +2884,7 @@ struct Seen<'a> {
 /// name, each once ([`Shared::looked`]). Read in that order, a holder that
 /// parks between the two is seen parked, so no marker is judged against a
 /// record older than it.
+#[derive(Default)]
 struct Looked {
     /// The park markers, each with what its holder's records said of it.
     marked: Vec<Marked>,
@@ -7908,7 +7909,7 @@ impl<S: Store> Shared<S> {
         let parked = brought
             .filter(|session| by != By::Person && session.machine == self.machine)
             .filter(|session| {
-                self.parked_here(session, &self.looked(std::slice::from_ref(session)))
+                self.parked_here(session, &self.looked(std::slice::from_ref(*session)))
             })
             .map(|session| session.id.clone());
         Judged {
@@ -8019,7 +8020,10 @@ impl<S: Store> Shared<S> {
         let parks = crate::wake::parked(&self.parked, self.boot.began);
         let mut folders = HashMap::from([(self.held.clone(), hold::held(&self.held))]);
         for session in sessions.iter().filter(|one| one.machine == self.machine) {
-            let named = session.presence.get("wake").and_then(Value::as_str);
+            let named = session
+                .presence
+                .get("wake")
+                .and_then(serde_json::Value::as_str);
             if let Some((folder, _)) =
                 named.and_then(|it| steer::holder_of(Path::new(it), &self.held))
             {
@@ -8449,12 +8453,11 @@ impl<S: Store> Shared<S> {
             let coming_back = ended::coming_back(away, inner.turns.waiting());
             // What begins a word is found whether or not it is parked, so
             // no marker is read.
-            let unread = HashMap::new();
+            let unread = Looked::default();
             let seen = Seen {
                 held: &held,
                 coming_back: &coming_back,
-                marked: &[],
-                folders: &unread,
+                looked: &unread,
             };
             let now = std::time::Instant::now();
             let mut begun = Vec::new();
