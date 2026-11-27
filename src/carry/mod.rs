@@ -538,11 +538,11 @@ fn handed_said(told: &[&str], to: &str) -> String {
 /// this machine's node does, since the session can't end while the
 /// command that asked runs below it: waits for `session` to carry, then
 /// carries the rest where it is `whole`, the quest's only session here,
-/// shares, starts it on `to` as carried by `ordered`, and waits for it to
-/// end here. Only its own work starts there, and the quest's where it
-/// was whole, never what an earlier carry left. An orchestrator's carry of
-/// several of a quest's sessions, told in a row, is carried on as one,
-/// `sessions` holding each.
+/// shares, starts it on `to` as carried by `ordered`, waits for it to
+/// end here, and then for it to run on `to`. Only its own work starts
+/// there, and the quest's where it was whole, never what an earlier
+/// carry left. An orchestrator's carry of several of a quest's sessions,
+/// told in a row, is carried on as one, `sessions` holding each.
 ///
 /// # Errors
 ///
@@ -572,9 +572,10 @@ pub fn carry_told(
 }
 
 /// A carry's steps once its `sessions` were told: waits until each has
-/// carried, carries the rest where `whole`, shares, starts each on `to`
-/// and waits until they have ended here. Where `own`, only the told
-/// sessions' work starts, and the quest's where `whole`.
+/// carried, carries the rest where `whole`, shares, starts each on `to`,
+/// waits until they have ended here, and then until each started runs
+/// on `to`. Where `own`, only the told sessions' work starts, and the
+/// quest's where `whole`.
 fn rest<F: FnMut(&Value)>(
     hands: &mut impl Hands,
     (quest, here, to): (&str, &str, &str),
