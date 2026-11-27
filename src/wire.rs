@@ -713,6 +713,33 @@ mod tests {
         );
     }
 
+    /// Who asked a run a node recast is said as PROTOCOL.md writes it, and
+    /// a run that says nothing of it is written as before it was said.
+    #[test]
+    fn who_asked_a_recast_run_is_said_as_the_protocol_writes_it() {
+        let said = r#"{"work":{},"command":["true"],"by":{"Agent":"fence"},"from":"tern","asked_by":"Person"}"#;
+        let run = serde_json::from_str::<Run>(said).expect("a recast run reads");
+        assert_eq!(run.asked_by, Some(By::Person), "{said}");
+        assert_eq!(run.by, Some(By::Agent(Kind::Fence)), "{said}");
+        let written = serde_json::to_string(&run).expect("a recast run writes");
+        assert!(written.contains(r#""asked_by":"Person""#), "{written}");
+        assert_eq!(
+            serde_json::from_str::<Run>(&written).expect("it reads again"),
+            run,
+            "it writes as it reads"
+        );
+        let plain = Run {
+            asked_by: None,
+            ..run
+        };
+        assert!(
+            !serde_json::to_string(&plain)
+                .expect("a run writes")
+                .contains("asked_by"),
+            "a run no node recast says nothing of it"
+        );
+    }
+
     #[test]
     fn a_sprout_saying_more_than_this_node_knows_is_refused() {
         let cloud = r#"{"Sprout":{"words":["fix it"],"needs":["cloud"]}}"#;

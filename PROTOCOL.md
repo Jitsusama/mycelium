@@ -2533,9 +2533,11 @@ runs it through `/bin/sh -c`, never the login
 shell, so no profile of the home the agent wrote runs before it, and
 takes every folder of that home off its path, by name or by where it
 leads, before the kit's tools go first, so nothing the home holds
-shadows its command: one found only there isn't found. Each folder
-kept is named by where it leads, one that can't be entered goes, and
-a path left with nothing is `/usr/bin:/bin`, never empty. The home is
+shadows its command: one found only there isn't found, and the run
+says so on its error output, naming the path it had, and ends 127, as
+the shell would. Each folder kept is named by where it leads, one that
+can't be entered goes, and a path left with nothing is
+`/usr/bin:/bin`, never empty. The home is
 the one the node runs it in, and the `HOME` its launcher gives it
 too, so a launcher that takes `HOME` away or points it elsewhere
 leaves neither on the path. `HOME` still names that home, so a
