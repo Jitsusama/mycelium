@@ -895,6 +895,37 @@ mod tests {
     }
 
     #[test]
+    fn a_wide_opening_is_cut_at_two_lines_by_its_cells() {
+        // A question in a wide script takes two cells a letter, and its
+        // cut tail is measured the same way, as it is where the script
+        // puts no space between its words, and one is broken across lines.
+        let spaced = "港湾のビルドをマージしていいですか ".repeat(20);
+        let unspaced = spaced.replace(' ', "");
+        for (asked, width) in [&spaced, &unspaced]
+            .into_iter()
+            .flat_map(|asked| [40, 60, 80].map(|width| (asked, width)))
+        {
+            let drawn = drawn(&records(asked), &look(), Some(width));
+            let long: Vec<&str> = drawn
+                .lines()
+                .filter(|line| crate::swarm::drawn_width(line) > width)
+                .collect();
+            assert!(
+                long.is_empty(),
+                "lines past {width} columns: {long:?}\n{drawn}"
+            );
+            let said: Vec<&str> = drawn
+                .lines()
+                .filter(|line| line.starts_with("    "))
+                .collect();
+            assert!(
+                said.len() == 3 && said[1].ends_with('\u{2026}'),
+                "the wide question isn't cut at two lines, then the hold's one, at {width}:\n{drawn}"
+            );
+        }
+    }
+
+    #[test]
     fn no_line_passes_the_terminal_and_a_long_opening_is_cut_at_two_lines() {
         for width in [40, 60, 80] {
             let drawn = drawn(&records(ASKED), &look(), Some(width));
@@ -988,7 +1019,7 @@ mod tests {
                 .expect("the question's line");
             assert!(
                 heading.ends_with(", 25 min so far  [c0cd280e]")
-                    && heading.chars().count() <= width
+                    && crate::swarm::drawn_width(heading) <= width
                     && !heading.contains("deadbeef"),
                 "the wait or the id was lost at {width}:\n{drawn}"
             );

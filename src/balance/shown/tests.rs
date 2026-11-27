@@ -488,6 +488,39 @@ fn a_wide_name_keeps_the_columns_in_line_and_within_the_edge() {
 }
 
 #[test]
+fn a_wide_name_in_a_flag_s_sentence_wraps_within_the_edge() {
+    // Six characters, each two cells wide: counted as characters, each
+    // naming would leave the line six cells longer than it was judged.
+    let wide = "港湾港湾港湾";
+    let flagged = reading(
+        vec![
+            machine(wide, 0.9, 28, 1.75),
+            machine("osprey", 0.4, 13, 1.08),
+        ],
+        None,
+        vec![
+            Flag::HotWhileCool {
+                hot: wide.to_owned(),
+                cool: "osprey".to_owned(),
+            },
+            Flag::Stranded {
+                machine: wide.to_owned(),
+                spent: "memory".to_owned(),
+            },
+        ],
+    );
+    let cells = <str as unicode_width::UnicodeWidthStr>::width;
+    for width in [40, 60, 80] {
+        let shown = said(&flagged, "work", width, false);
+        let long: Vec<&str> = shown.lines().filter(|line| cells(line) > width).collect();
+        assert!(
+            long.is_empty() && shown.contains(&format!("{wide}'s memory")),
+            "lines past {width} cells, or the sentence lost its name: {long:?}\n{shown}"
+        );
+    }
+}
+
+#[test]
 fn a_figure_wider_than_its_header_widens_its_column() {
     let mut many = machine("kestrel", 0.9, 12_345, 1.75);
     many.idle = 7;
