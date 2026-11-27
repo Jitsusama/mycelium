@@ -508,6 +508,16 @@ fn a_figure_wider_than_its_header_widens_its_column() {
     );
 }
 
+/// The row `shown` draws for `name`, failing with the whole table where
+/// it draws none.
+fn row<'a>(shown: &'a str, name: &str) -> &'a str {
+    let named = format!("  {name} ");
+    shown
+        .lines()
+        .find(|line| line.starts_with(&named))
+        .unwrap_or_else(|| panic!("no row for {name}:\n{shown}"))
+}
+
 #[test]
 fn a_machine_over_by_its_lively_ceiling_alone_says_so_and_why() {
     let mut queued = machine("kestrel", 0.9, 28, 1.75);
@@ -519,21 +529,27 @@ fn a_machine_over_by_its_lively_ceiling_alone_says_so_and_why() {
         "it is kept lively, at processor pressure 30 at most, and is at 45 over ten seconds"
             .to_owned(),
     );
+    // Kept lively and stalled on its processors, so past its queue's
+    // limit and its ceiling both.
+    let mut both = machine("skiff", 0.95, 30, 1.9);
+    both.over = true;
+    both.past = vec![crate::room::Limit::Cpu];
+    both.lively = Some(
+        "it is kept lively, at processor pressure 30 at most, and is at 86 over ten seconds"
+            .to_owned(),
+    );
+    let mut machines = vec![queued, lively, both];
     let shown = said(
-        &reading(vec![queued, lively], None, vec![]),
+        &reading(machines.clone(), None, vec![]),
         "work",
         crate::swarm::WHOLE,
         false,
     );
-    let lines: Vec<&str> = shown.lines().collect();
     assert!(
-        lines[3].starts_with("  kestrel  over ") && lines[4].starts_with("  tern     lively "),
-        "past its queue's limit it stands over, past its ceiling alone lively:\n{shown}"
-    );
-    assert_eq!(
-        lines[3].find('%'),
-        lines[4].find('%'),
-        "the column stays as wide as its longest word:\n{shown}"
+        row(&shown, "kestrel").starts_with("  kestrel  over ")
+            && row(&shown, "skiff").starts_with("  skiff    over ")
+            && row(&shown, "tern").starts_with("  tern     lively "),
+        "past its queue's limit it stands over, whatever its ceiling:\n{shown}"
     );
     assert!(
         shown.contains(
@@ -543,7 +559,30 @@ fn a_machine_over_by_its_lively_ceiling_alone_says_so_and_why() {
         "the line under the table says why:\n{shown}"
     );
     assert!(
-        !shown.contains("lively: kestrel"),
+        !shown.contains("lively: kestrel") && !shown.contains("lively: skiff"),
         "one past its queue's limit needs no word on its ceiling:\n{shown}"
+    );
+    // One not ready stands by the column's longest word: were the column
+    // as wide as the words it holds, the loads after it would move.
+    let mut resting = machine("osprey", 0.3, 2, 0.5);
+    resting.ready = false;
+    machines.push(resting);
+    let unready = said(
+        &reading(machines, None, vec![]),
+        "work",
+        crate::swarm::WHOLE,
+        false,
+    );
+    let load = |table: &str, name: &str| row(table, name).find('%');
+    assert!(
+        ["kestrel", "skiff", "tern", "osprey"]
+            .into_iter()
+            .all(|name| load(&unready, name) == load(&unready, "kestrel")),
+        "every load sits in one column, beside a machine not ready too:\n{unready}"
+    );
+    assert_eq!(
+        load(&shown, "kestrel"),
+        load(&unready, "kestrel"),
+        "the column is as wide as its longest word, though none stands so:\n{shown}\n{unready}"
     );
 }
