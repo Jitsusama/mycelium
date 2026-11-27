@@ -25628,6 +25628,8 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         fs::create_dir_all(dir.path().join("skiff")).expect("the machine's folder");
+        fs::set_permissions(dir.path().join("skiff"), fs::Permissions::from_mode(0o700))
+            .expect("the machine's folder is its own");
         fs::write(socket.with_file_name("realm"), "work").expect("the realm is named");
         let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
         asks_below(&socket, 7001);
