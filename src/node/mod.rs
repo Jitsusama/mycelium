@@ -26544,7 +26544,7 @@ esac
                 && refused.contains("as its unfenced sessions run"),
             "it runs nothing as the node's account: {refused}"
         );
-        let mut said: serde_json::Value =
+        let mut said: Value =
             serde_json::from_slice(&fs::read(&node.declared).expect("declared")).expect("JSON");
         said["fence"]["none"] = said["fence"]["strict"].clone();
         fs::write(&node.declared, said.to_string()).expect("declared again");
