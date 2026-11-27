@@ -393,7 +393,7 @@ pub fn subjects(declared: &Value) -> Vec<String> {
                 && !subject.chars().any(|each| {
                     each.is_control()
                         || crate::forage::turns_direction(each)
-                        || unseen(each)
+                        || crate::forage::unseen(each)
                         || matches!(each, '\u{2028}' | '\u{2029}')
                 })
         })
@@ -412,32 +412,6 @@ pub fn subjects(declared: &Value) -> Vec<String> {
 #[must_use]
 pub fn subject_key(subject: &str) -> String {
     subject.to_lowercase()
-}
-
-/// Whether `each` draws as nothing: a soft hyphen, a zero-width space or
-/// joiner, a word joiner or invisible operator, a grapheme joiner, a
-/// Hangul or Khmer filler, a variation selector, Mongolian or not, a byte order mark, or a
-/// tag, any of which hides
-/// text from the person or smuggles it past them.
-fn unseen(each: char) -> bool {
-    matches!(
-        each,
-        '\u{00AD}'
-            | '\u{034F}'
-            | '\u{115F}'
-            | '\u{1160}'
-            | '\u{17B4}'
-            | '\u{17B5}'
-            | '\u{180B}'..='\u{180F}'
-            | '\u{200B}'..='\u{200D}'
-            | '\u{2060}'..='\u{2065}'
-            | '\u{3164}'
-            | '\u{FE00}'..='\u{FE0F}'
-            | '\u{FEFF}'
-            | '\u{FFA0}'
-            | '\u{E0100}'..='\u{E01EF}'
-            | '\u{E0000}'..='\u{E007F}'
-    )
 }
 
 /// Which of the networks' asks is for the node's receptors.
@@ -761,7 +735,7 @@ fn joined(
             shared.then(|| network_of(name, shape, cells))
         })
         .collect();
-    titled_by_teams(&mut networks, teams, quests);
+    titled_by_teams(&mut networks, teams, sessions, quests);
     titled_by_quests(&mut networks, quests);
     titled_by_repos(&mut networks, sessions);
     networks.extend(shared_trees(sessions, formed));
@@ -912,9 +886,21 @@ fn owned_network(name: &str, renamed: &BTreeMap<String, String>) -> Option<Strin
 /// hear its group while none answers to it, is still a network: titled
 /// as its quest is among `quests`, and short-named as a team of that
 /// title would be where that takes no real team's short name. A team's
-/// own short name is the swarm's, which a network with no leader never
-/// changes, so the name typed to steer it is the one shown.
-fn titled_by_teams(networks: &mut [Network], teams: &[Value], quests: &BTreeMap<String, String>) {
+/// own short name is the swarm's, kept beside the living `sessions` as
+/// its pages keep it, which a network with no leader never changes, so
+/// the name typed to steer it is the one shown and reaches it.
+fn titled_by_teams(
+    networks: &mut [Network],
+    teams: &[Value],
+    sessions: &[Cell],
+    quests: &BTreeMap<String, String>,
+) {
+    let living = || {
+        sessions
+            .iter()
+            .filter(|cell| matches!(cell.is, Is::Session))
+            .map(|cell| (cell.name.as_str(), cell.id.as_deref()))
+    };
     let leaderless: Vec<Value> = networks
         .iter()
         .filter(|each| each.shape == Shape::Orchestration)
@@ -931,10 +917,10 @@ fn titled_by_teams(networks: &mut [Network], teams: &[Value], quests: &BTreeMap<
             }))
         })
         .collect();
-    let mut shorts = swarm::short_names(teams);
+    let mut shorts = swarm::shorts_beside(teams, living());
     let taken: BTreeSet<String> = shorts.values().cloned().collect();
     let all: Vec<Value> = teams.iter().chain(&leaderless).cloned().collect();
-    let mut beside = swarm::short_names(&all);
+    let mut beside = swarm::shorts_beside(&all, living());
     for stand_in in &leaderless {
         let address = swarm::address(stand_in);
         if let Some(short) = beside

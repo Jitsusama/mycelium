@@ -137,6 +137,7 @@ mod tests {
                     over: false,
                     unheard: false,
                     saturated: false,
+                    kept_lively: false,
                     preferred: 0,
                     headroom: 2.25,
                     chance: 1.0,

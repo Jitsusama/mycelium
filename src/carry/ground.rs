@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 
 use crate::declared::{Accepted, Declared, Doors, Effect, Kind, Taint, Unrunnable};
-use crate::facts::{Machine, Readiness};
+use crate::facts::{HeldFor, Machine, Readiness};
 use crate::placement::{Because, LIFTS_FENCE, LOOSER_GROUND, Miss, RUNS_NOTHING};
 
 /// The fence the session `address` is judged to run in: the one its
@@ -69,10 +69,12 @@ pub fn firm(
 
 /// What a machine a carry would go to is: one of the person's own, or a
 /// worker, which its link marks it or its own word says it is, that
-/// declares it takes carries or takes none.
+/// declares it takes carries or takes none. One of the person's own in
+/// the cloud is paid for, and a room its node names for agents is lent,
+/// but a carry takes either as it takes any of theirs ([`Lent::at`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lent {
-    /// One of the person's own machines.
+    /// One of the person's own machines, in the cloud or not.
     Not,
     /// A worker that declares it takes carried sessions.
     TakesCarries,
@@ -84,8 +86,17 @@ impl Lent {
     /// What `machine` is, as the realm last knew it.
     #[must_use]
     pub fn of(machine: &Machine) -> Self {
+        Self::at(machine, jiff::Timestamp::now())
+    }
+
+    /// What `machine` is at `now`, as the realm last knew it.
+    #[must_use]
+    pub fn at(machine: &Machine, now: jiff::Timestamp) -> Self {
         let declared = machine.declared.as_ref();
-        if !(machine.worker || declared.is_some_and(Declared::is_worker)) {
+        if !(machine.worker || declared.is_some_and(Declared::is_worker))
+            || declared
+                .is_some_and(|said| in_the_cloud(machine, said, now) || a_room(machine, said))
+        {
             Self::Not
         } else if declared.is_some_and(|said| said.takes_carries) {
             Self::TakesCarries
@@ -95,17 +106,80 @@ impl Lent {
     }
 }
 
-/// Why nothing is carried to `to`, a worker that takes no carries.
+/// How long a machine in the cloud must yet stay for a carry to take it
+/// as one of the person's own, since a carried session lasts.
+pub(crate) const STAYS_FOR: jiff::SignedDuration = jiff::SignedDuration::from_hours(24 * 30);
+
+/// Whether `machine`, as it `said` itself, is one of the person's own in
+/// the cloud at `now`: paid for, perhaps, but linked as one of theirs
+/// rather than lent by a provider's link, reaching no network only a
+/// lent machine reaches, and staying a month at least. The person ruled
+/// on 26 November that such a machine is a full place for sessions, as
+/// the Mac is, with no word of its own needed; it is held to the same
+/// realm, reach and fences as any of theirs.
+fn in_the_cloud(machine: &Machine, said: &Declared, now: jiff::Timestamp) -> bool {
+    !machine.worker
+        && !reaches_aquifer(machine, said)
+        && said
+            .leaves_at
+            .is_none_or(|leaves| now.checked_add(STAYS_FOR).is_ok_and(|month| leaves > month))
+}
+
+/// Whether `machine`, as it `said` itself, is a room its node names for
+/// agents to share ([`crate::made::Book::agent_rooms`]) and reaches no
+/// network only a lent machine reaches. The person ruled on 26 November
+/// that carries go to the cloud machines made for sessions with no word
+/// of their own, so the node's naming is enough, and the machine's own
+/// word is never asked, since the node sets the mark both ways. It is
+/// held to the same realm, reach and fences as any of the person's, and
+/// a carry ordered there goes though the room leaves sooner than a month,
+/// as its maker chose; an ease or a placement still weighs its leaving.
+fn a_room(machine: &Machine, said: &Declared) -> bool {
+    machine.held_for == HeldFor::Agents && !reaches_aquifer(machine, said)
+}
+
+/// Whether `machine`, as it `said` itself, reaches Aquifer, whose cells
+/// are lent for its own work alone and keep the worker's rules, since
+/// Aquifer's security stands: always, by a probe, or as its node last
+/// reached it. Each is the machine's own word where a provider's link
+/// lent it, so a room that hides its reach passes, which only a mark the
+/// node holds itself would close.
+fn reaches_aquifer(machine: &Machine, said: &Declared) -> bool {
+    const AQUIFER: &str = "aquifer";
+    said.reach.iter().any(|network| network == AQUIFER)
+        || said.probes.contains_key(AQUIFER)
+        || machine.reached.get(AQUIFER) == Some(&true)
+}
+
+/// Whether a carry to `machine` is kept in the log of the person's own
+/// node: one a provider's link lent, a room included, though a carry
+/// counts a room as the person's own, or one a carry counts a worker.
+#[must_use]
+pub fn kept_as_lent(machine: &Machine) -> bool {
+    machine.worker || Lent::of(machine) != Lent::Not
+}
+
+/// Why nothing is carried to `to`, a worker that takes no carries, with
+/// what makes a machine one, so a machine of the person's own refused as
+/// one is told what to change rather than only to declare it takes
+/// carries.
 #[must_use]
 pub fn takes_none(to: &str) -> String {
-    format!("{to} is a worker that doesn't declare it takes carries, so nothing is carried there")
+    format!(
+        "{to} is a worker that doesn't declare it takes carries, so nothing is carried there \
+         (a worker is lent by a provider's link, reaches aquifer, or leaves within 30 days)"
+    )
 }
 
 /// Whether `there`, where it is a worker, takes a carry of a session
 /// running in `kind`: only one that declares it takes carries does, and
 /// never of a strict session from a node, since a worker's strict fence
 /// is its own word, which no node holds it to. One of the person's own
-/// machines takes any, as far as this says.
+/// machines takes any, as far as this says, and so does a room its node
+/// names ([`a_room`]), strict sessions too, though its fence is as much
+/// its own word: the person ruled on 26 November that the cloud machines
+/// made for sessions take them with no opt-in, and strict starts already
+/// land there by name, so a carry there is no looser than a start.
 ///
 /// # Errors
 ///
@@ -722,7 +796,8 @@ mod tests {
                 firm(Some(kind), Some(&here), "tern", Some(&worker(false))),
                 Err(
                     "tern is a worker that doesn't declare it takes carries, so nothing is \
-                     carried there"
+                     carried there (a worker is lent by a provider's link, reaches aquifer, or \
+                     leaves within 30 days)"
                         .to_owned()
                 ),
                 "a worker saying nothing takes no {kind} session"
@@ -746,24 +821,231 @@ mod tests {
             worker: false,
             declared: Some(Declared {
                 costs_money: true,
+                reach: vec!["aquifer".to_owned()],
                 ..declaring(None)
             }),
             ..tern(None, Readiness::Ready)
         };
         assert_eq!(
             worker_takes(Some(Kind::Fence), "tern", &lent),
-            Err(
-                "tern is a worker that doesn't declare it takes carries, so nothing is \
-                 carried there"
-                    .to_owned()
-            ),
-            "a machine that says it is lent is a worker, whatever its link says"
+            Err(takes_none("tern")),
+            "a machine that reaches what only a lent one does is a worker, whatever its link \
+             says"
         );
         assert_eq!(
             worker_takes(Some(Kind::Strict), "tern", &tern(None, Readiness::Ready)),
             Ok(()),
             "one of the person's own machines is no worker"
         );
+    }
+
+    /// One of the person's own machines in the cloud: paid for, and saying
+    /// it lasts as long as time can, as a provider's machine made to stay
+    /// does, with the same fences as `here`.
+    fn in_the_cloud(fence: BTreeMap<Kind, Doors>) -> Machine {
+        Machine {
+            worker: false,
+            declared: Some(Declared {
+                costs_money: true,
+                leaves_at: Some("9999-01-01T00:00:00Z".parse().expect("a time")),
+                ..declaring(Some(fence))
+            }),
+            ..tern(None, Readiness::Ready)
+        }
+    }
+
+    #[test]
+    fn a_machine_of_the_persons_in_the_cloud_takes_any_carry_on_ground_as_firm() {
+        let fences = BTreeMap::from([
+            (Kind::None, doors(&[], &[], &[])),
+            (Kind::Fence, doors(&[], &[], &[])),
+            (Kind::Strict, doors(&[], &[], &[])),
+        ]);
+        let here = declaring(Some(fences.clone()));
+        let cloud = in_the_cloud(fences.clone());
+        let now: jiff::Timestamp = "2026-11-26T15:00:00Z".parse().expect("a time");
+        assert_eq!(
+            Lent::at(&cloud, now),
+            Lent::Not,
+            "paid for, but no provider lent it"
+        );
+        for kind in [Kind::None, Kind::Fence, Kind::Strict] {
+            assert_eq!(
+                firm(Some(kind), Some(&here), "tern", Some(&cloud)),
+                Ok(()),
+                "a {kind:?} session lands there under its own fence, as on any of the \
+                 person's machines"
+            );
+        }
+        assert!(
+            firm(None, Some(&here), "tern", Some(&cloud)).is_err(),
+            "one that doesn't say its fence is refused, as it is everywhere"
+        );
+        let looser = in_the_cloud(BTreeMap::from([(Kind::Fence, doors(&[], &[], &[]))]));
+        assert!(
+            firm(Some(Kind::Strict), Some(&here), "tern", Some(&looser)).is_err(),
+            "but never onto looser ground"
+        );
+        let mut gone = cloud.clone();
+        gone.state = Readiness::Unreachable;
+        assert!(
+            firm(Some(Kind::Fence), Some(&here), "tern", Some(&gone)).is_err(),
+            "nor out of reach"
+        );
+        let mut lent = cloud.clone();
+        lent.worker = true;
+        assert_eq!(
+            Lent::at(&lent, now),
+            Lent::TakesNone,
+            "one a provider's link lent is a worker still"
+        );
+        let mut leaving = cloud.clone();
+        leaving.declared.as_mut().expect("declared").leaves_at =
+            Some(now + jiff::SignedDuration::from_hours(24));
+        assert_eq!(
+            Lent::at(&leaving, now),
+            Lent::TakesNone,
+            "and one that leaves within the month, since a carried session lasts"
+        );
+        let leaving_in = |days: i64| {
+            let mut one = cloud.clone();
+            one.declared.as_mut().expect("declared").leaves_at =
+                Some(now + jiff::SignedDuration::from_hours(24 * days));
+            Lent::at(&one, now)
+        };
+        assert_eq!(
+            leaving_in(29),
+            Lent::TakesNone,
+            "29 days is within the month"
+        );
+        assert_eq!(
+            leaving_in(30),
+            Lent::TakesNone,
+            "30 days to the minute is within it too"
+        );
+        assert_eq!(leaving_in(31), Lent::Not, "31 days stays the month");
+        let mut staying = cloud;
+        staying.declared.as_mut().expect("declared").leaves_at = None;
+        assert_eq!(
+            Lent::at(&staying, now),
+            Lent::Not,
+            "one that names no time it leaves stays"
+        );
+    }
+
+    #[test]
+    fn a_room_its_node_names_for_agents_takes_any_carry_on_ground_as_firm() {
+        let fences = BTreeMap::from([
+            (Kind::None, doors(&[], &[], &[])),
+            (Kind::Fence, doors(&[], &[], &[])),
+            (Kind::Strict, doors(&[], &[], &[])),
+        ]);
+        let here = declaring(Some(fences.clone()));
+        let now: jiff::Timestamp = "2026-11-26T17:00:00Z".parse().expect("a time");
+        // Lent by a provider's link, leaving within the day, and named a
+        // room by its node.
+        let mut room = in_the_cloud(fences);
+        room.worker = true;
+        let said = room.declared.as_mut().expect("declared");
+        said.leaves_at = Some(now + jiff::SignedDuration::from_hours(12));
+        said.reach = vec!["experiments".to_owned(), "basin".to_owned()];
+        assert_eq!(
+            Lent::at(&room, now),
+            Lent::TakesNone,
+            "unnamed, it is a worker that takes no carries"
+        );
+        room.held_for = HeldFor::Agents;
+        assert_eq!(
+            Lent::at(&room, now),
+            Lent::Not,
+            "named, it is a full place for sessions, with no word of its own"
+        );
+        for kind in [Kind::None, Kind::Fence, Kind::Strict] {
+            assert_eq!(
+                firm(Some(kind), Some(&here), "tern", Some(&room)),
+                Ok(()),
+                "a {kind:?} session lands there under its own fence"
+            );
+        }
+        let mut cell = room.clone();
+        cell.declared.as_mut().expect("declared").reach = vec!["aquifer".to_owned()];
+        assert_eq!(
+            Lent::at(&cell, now),
+            Lent::TakesNone,
+            "but one reaching Aquifer stays a worker, whatever its node names it"
+        );
+    }
+
+    // #501's council (26 November): a room reaching Aquifer only by a
+    // probe, or as its node last reached, passed as the person's own.
+    #[test]
+    fn a_room_reaching_aquifer_by_a_probe_or_as_last_reached_stays_a_worker() {
+        let now: jiff::Timestamp = "2026-11-26T17:00:00Z".parse().expect("a time");
+        let mut room = in_the_cloud(BTreeMap::new());
+        room.worker = true;
+        room.held_for = HeldFor::Agents;
+        assert_eq!(Lent::at(&room, now), Lent::Not, "a room, reaching nothing");
+        let mut probed = room.clone();
+        probed.declared.as_mut().expect("declared").probes = BTreeMap::from([(
+            "aquifer".to_owned(),
+            crate::declared::Probe::Connect("192.0.2.7:443".to_owned()),
+        )]);
+        assert_eq!(
+            Lent::at(&probed, now),
+            Lent::TakesNone,
+            "one that probes for Aquifer stays a worker"
+        );
+        let mut reached = room.clone();
+        reached.reached = BTreeMap::from([("aquifer".to_owned(), true)]);
+        assert_eq!(
+            Lent::at(&reached, now),
+            Lent::TakesNone,
+            "and so does one its node last reached Aquifer from"
+        );
+        let mut unreached = room;
+        unreached.reached = BTreeMap::from([("aquifer".to_owned(), false)]);
+        assert_eq!(
+            Lent::at(&unreached, now),
+            Lent::Not,
+            "while one that tried and failed to reach it, declaring no probe, is a room"
+        );
+    }
+
+    #[test]
+    fn a_room_that_declares_nothing_is_a_worker_taking_none_until_it_does() {
+        let now: jiff::Timestamp = "2026-11-26T17:00:00Z".parse().expect("a time");
+        let mut room = in_the_cloud(BTreeMap::new());
+        room.worker = true;
+        room.held_for = HeldFor::Agents;
+        room.declared = None;
+        assert_eq!(
+            Lent::at(&room, now),
+            Lent::TakesNone,
+            "whether it reaches Aquifer can't be told, so it keeps the worker's rules"
+        );
+    }
+
+    #[test]
+    fn a_carry_is_kept_in_the_log_wherever_a_providers_link_lent_the_machine() {
+        let now: jiff::Timestamp = "2026-11-26T17:00:00Z".parse().expect("a time");
+        let ours = in_the_cloud(BTreeMap::new());
+        assert_eq!(Lent::at(&ours, now), Lent::Not, "the person's own");
+        assert!(!kept_as_lent(&ours), "keeps no line");
+        let mut room = ours.clone();
+        room.worker = true;
+        room.held_for = HeldFor::Agents;
+        assert_eq!(
+            Lent::at(&room, now),
+            Lent::Not,
+            "a room, as a carry counts it"
+        );
+        assert!(
+            kept_as_lent(&room),
+            "keeps one, since a provider's link lent it"
+        );
+        let mut worker = room;
+        worker.held_for = HeldFor::AsBooked;
+        assert!(kept_as_lent(&worker), "as a worker does");
     }
 
     #[test]

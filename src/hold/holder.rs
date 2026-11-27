@@ -8,6 +8,7 @@
 use std::fs;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::atomic::AtomicU32;
@@ -24,7 +25,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinSet;
 
 use super::environment::{Environment, keeping_path};
-use super::journal::{Ended, How, Journal};
+use super::journal::{Ended, How, Journal, TooOften};
 use super::modes::Modes;
 use super::steering::{Heard, Steers, Watching};
 use super::title::Title;
@@ -50,6 +51,36 @@ const FIRST_SIZE: Size = Size { rows: 24, cols: 80 };
 /// `EX_TEMPFAIL`, as it stops only until it is woken. An `i32`, as the
 /// holder reads it from a child's `ExitStatus::code`.
 pub const PARKED: i32 = 75;
+
+/// The exit code a held program ends with when it quit though nobody
+/// asked it to, as a pi whose own code gave up does: just past sysexits'
+/// range, where few tools exit. Its holder starts it again at once, as
+/// for a restart, rather than ending its hold and taking its window with
+/// it, up to [`UNASKED_MOST`] times within [`UNASKED_WITHIN`], then parks
+/// it.
+pub const UNASKED: i32 = 79;
+
+/// The signal a held pi dies by when it quit though nobody asked it to
+/// while a name lookup it can't cut short held its exit, so it is ended
+/// as [`UNASKED`] is, started again at once.
+pub const UNASKED_SIGNAL: i32 = rustix::process::Signal::USR2.as_raw();
+
+/// Whether a run that ended as `status` quit though nobody asked it to:
+/// with [`UNASKED`], or killed by [`UNASKED_SIGNAL`].
+fn ended_unasked(status: ExitStatus) -> bool {
+    status.code() == Some(UNASKED) || status.signal() == Some(UNASKED_SIGNAL)
+}
+
+/// How many unasked quits within [`UNASKED_WITHIN`] of the newest are
+/// started again, whatever ran between them; one more parks it, so a
+/// program that quits as it starts can't start forever, and a key that
+/// wakes it gives it as many again. One that runs longer than a third
+/// of [`UNASKED_WITHIN`] each time is started again for as long as it
+/// lasts, since it isn't spinning.
+const UNASKED_MOST: usize = 3;
+
+/// How close together unasked quits count toward [`UNASKED_MOST`].
+const UNASKED_WITHIN: Duration = Duration::from_secs(60);
 
 /// The exit code `mycelium attach --host` ends with when its host let the
 /// conversation go back to plain pi, as a release does, rather than 0 for
@@ -489,7 +520,9 @@ fn on_end(
 /// started again on the same terminal when woken, with the command named
 /// for it from outside if any was (see [`super::name_next`]), else with
 /// the one it named itself; one that wrote its wake file before it went is restarting,
-/// and starts again at once, never shown as parked. One exiting with
+/// and starts again at once, never shown as parked, as does one exiting
+/// with [`UNASKED`] or killed by [`UNASKED_SIGNAL`], until it has quit
+/// so too often. One exiting with
 /// [`GONE`] having written its gone file, its pi host away, is kept as a
 /// parked one is and also starts
 /// again by itself after [`gone_pause`]. How each run ended, parked or
@@ -563,7 +596,12 @@ pub async fn hold(
         said: Mutex::new(None),
         standing: Mutex::new(None),
         typed: Mutex::new(Vec::new()),
+        literal: Mutex::new(false),
+        keyed: Mutex::new(false),
         echo: Mutex::new(Vec::new()),
+        id: holding.id.to_owned(),
+        saying: Mutex::new(None),
+        log: logs,
     });
     // Said before the program's output is read, so it comes first.
     if first.is_some() {
@@ -595,6 +633,8 @@ pub async fn hold(
         // when the latest began, which comes with each child started.
         let mut gone_runs = 0u32;
         let mut began = Instant::now();
+        // When each recent run that quit unasked ended.
+        let mut unasked = Vec::new();
         let status = 'held: loop {
             let pid = child.id().unwrap_or_default();
             let run = told.before(child.wait());
@@ -621,29 +661,51 @@ pub async fn hold(
                 // Said on the node's log, since the window ends as on any
                 // exit: a wrapper that runs attach without exec passes its
                 // 69 on with another pid's file. What the file held is
-                // quoted with its escapes, since a program wrote it.
-                eprintln!(
+                // quoted with its escapes, since a program wrote it, and
+                // the id escaped as every holder line names it.
+                logs(&format!(
                     "mycelium: {} exited {GONE}, but its gone file ({said:?}) doesn't say \
                      {pid} saw its pi host go, so its window ends",
-                    holding.id,
-                );
+                    holding.id.as_bytes().escape_ascii(),
+                ));
             }
             let gone = how.is_some();
             // A quit to park that hung is ended by a signal, which says no
             // code, so the program's word that it parked keeps it so.
             let said_parked = fs::remove_file(&files.parked).is_ok();
             let parking = said_parked || status.code() == Some(PARKED);
+            let quit_unasked = !gone && !parking && ended_unasked(status);
             // Told to end, a program that parked as it saved stays down.
-            if telling || (!gone && !parking) {
+            if telling || (!gone && !parking && !quit_unasked) {
                 break status;
             }
+            // One quitting as it starts is parked, saying why, rather than
+            // started again forever; its window stays, so the person sees
+            // it and a key tries again.
+            let too_often = quit_unasked && quits_too_often(&mut unasked, Instant::now());
             gone_runs = gone_runs_after(gone_runs, gone, began.elapsed());
-            let mut restarting = !gone && restarting(&files.waking);
+            // Its wake file is taken either way, so none is left to read a
+            // later park as a restart; but one left beside a quit too often
+            // doesn't start it, or a program writing its own would spin.
+            let wakes_itself = !gone && restarting(&files.waking);
+            let mut restarting = !gone && !too_often && (wakes_itself || quit_unasked);
             // Parked before any window is told so, so a key typed the
             // moment it is told wakes it rather than going to no program.
             let mut parked = (!restarting).then(|| terminal.parks());
             if let Some(how) = how {
                 away(&record, &shown, how);
+            } else if too_often {
+                // Said in the journal too, since no window may be joined to
+                // see it, and a terminal's holder has no other log; one
+                // joining later is shown it as one is a host away.
+                holding.journal.too_often(&TooOften {
+                    id: holding.id.to_owned(),
+                    realm: holding.realm.to_owned(),
+                    program: command.join(" "),
+                    quits: UNASKED_MOST + 1,
+                    within: UNASKED_WITHIN,
+                });
+                stands_parked(&record, &shown, UNASKED_LINE);
             } else if !restarting {
                 parks(&record, &shown, PARKED_LINE);
             }
@@ -754,6 +816,21 @@ fn gone_runs_after(runs: u32, gone: bool, lasted: Duration) -> u32 {
     }
 }
 
+/// Whether a program quitting unasked `now` has quit so more than
+/// [`UNASKED_MOST`] times within [`UNASKED_WITHIN`], counting `before`,
+/// when each recent unasked quit ended. If so, it is parked, and `before`
+/// is emptied, so it starts afresh once woken; else `now` is kept among
+/// them, and those too old to count are let go.
+fn quits_too_often(before: &mut Vec<Instant>, now: Instant) -> bool {
+    before.retain(|at| now.saturating_duration_since(*at) < UNASKED_WITHIN);
+    if before.len() >= UNASKED_MOST {
+        before.clear();
+        return true;
+    }
+    before.push(now);
+    false
+}
+
 /// More doublings than any pause needs to reach [`GONE_AGAIN_MOST`], so
 /// the shift stays far inside a `u32`.
 const GONE_DOUBLINGS: u32 = 8;
@@ -764,12 +841,22 @@ const GONE_DOUBLINGS: u32 = 8;
 /// record parked. It stands over whatever the ended run's last output shows after
 /// it, as attach saying why it left can be read only once this is said.
 fn away(record: &Record, shown: &Shown, how: Gone) {
+    stands_parked(
+        record,
+        shown,
+        match how {
+            Gone::Away => GONE_LINE,
+            Gone::Unseen => UNSEEN_LINE,
+        },
+    );
+}
+
+/// Parks the program in its record, with `line` standing in every
+/// joined window and each joining until it starts again.
+fn stands_parked(record: &Record, shown: &Shown, line: &'static [u8]) {
     record.parks();
     shown.show(FOCUS_ON);
-    shown.stands(match how {
-        Gone::Away => GONE_LINE,
-        Gone::Unseen => UNSEEN_LINE,
-    });
+    shown.stands(line);
 }
 
 /// Waits as [`woken`] does, or until `after` has passed, if given: a
@@ -866,41 +953,99 @@ const ERASES: &[u8] = b"\x7f\x15\x17";
 /// How a terminal's echo takes back a character erased.
 const ERASED: &[u8] = b"\x08 \x08";
 
+/// Where an erasing key was typed, in what [`as_echoed`] keeps: a run of
+/// [`ERASED`] there is its echo, and none, as erasing an empty line
+/// echoes nothing. Never kept for a byte typed, as the one key it is,
+/// delete, is an erasing key.
+const ERASING: u8 = 0x7f;
+
+/// The keys a terminal takes without echoing them, as a pty starts it:
+/// end of file, and stop and start under flow control.
+const UNECHOED: &[u8] = b"\x04\x11\x13";
+
+/// The key that has a terminal take the next one as itself, echoed as
+/// `^` and a backspace, which that next key's echo draws over.
+const LITERAL_NEXT: u8 = 0x16;
+
 /// What `given` is echoed as by a terminal as a pty starts it: a line
 /// end as one `\n`, which [`echoed`] matches with or without its `\r`,
-/// another control key as `^` and its letter, and the erasing keys as
-/// nothing but [`ERASED`].
-fn as_echoed(given: &[u8]) -> Vec<u8> {
+/// another control key as `^` and its letter, an erasing key as
+/// [`ERASING`], one of [`UNECHOED`] as nothing, and one after
+/// [`LITERAL_NEXT`] as itself. A window gives each key a person presses
+/// on its own, so a literal-next key can end one `given` and its key
+/// begin the next: `literal` says, as this begins, whether the last key
+/// before `given` was one, and is left saying whether its own last is.
+/// Only near what Linux's line
+/// discipline does: a tab erased echoes plain backspaces, macOS says a
+/// status line for ^T, and may echo ^D. Where it's wrong, the echo reads
+/// as drawing and the line goes early, with nothing lost.
+fn as_echoed(given: &[u8], literal: &mut bool) -> Vec<u8> {
     let mut echo = Vec::with_capacity(given.len());
     for &byte in given {
+        if std::mem::take(literal) {
+            echoes_as_itself(&mut echo, byte);
+            continue;
+        }
         match byte {
             b'\r' | b'\n' => echo.push(b'\n'),
-            _ if ERASES.contains(&byte) => {}
-            // A tab is echoed as itself.
-            0..=0x08 | 0x0a..=0x1f => echo.extend_from_slice(&[b'^', byte + 0x40]),
-            _ => echo.push(byte),
+            LITERAL_NEXT => {
+                echo.extend_from_slice(b"^\x08");
+                *literal = true;
+            }
+            _ if ERASES.contains(&byte) => echo.push(ERASING),
+            _ if UNECHOED.contains(&byte) => {}
+            _ => echoes_as_itself(&mut echo, byte),
         }
     }
     echo
 }
 
+/// Adds to `echo` how a terminal echoes `byte` taken as itself: a tab as
+/// itself, another control key as `^` and its letter, delete as `^?`.
+fn echoes_as_itself(echo: &mut Vec<u8>, byte: u8) {
+    match byte {
+        b'\t' => echo.push(byte),
+        0..=0x1f => echo.extend_from_slice(&[b'^', byte + 0x40]),
+        0x7f => echo.extend_from_slice(b"^?"),
+        _ => echo.push(byte),
+    }
+}
+
 /// How much of `output` begins as the terminal's echo of `typed`, kept as
-/// [`as_echoed`] makes it, with any erasures between, and what is left of
-/// `typed` after it. What follows, from the first byte that isn't an
-/// echo of what is still to come back, is the program drawing.
+/// [`as_echoed`] makes it, with erasures only where an erasing key was
+/// typed, and what is left of `typed` after it. What follows, from the
+/// first byte that isn't an echo of what is still to come back, is the
+/// program drawing: erasures nothing typed asked for are its own.
 fn echoed(typed: &[u8], output: &[u8]) -> (Vec<u8>, usize) {
     let mut left = typed;
     let mut at = 0;
     while let Some(&byte) = output.get(at) {
-        if output[at..].starts_with(ERASED) {
-            at += ERASED.len();
-            continue;
-        }
         let Some((&next, rest)) = left.split_first() else {
             break;
         };
+        if next == ERASING {
+            // Kept while its erasures come, as a run may span reads.
+            let tail = &output[at..];
+            if tail.starts_with(ERASED) {
+                at += ERASED.len();
+            } else if ERASED.starts_with(tail) {
+                // An erasure the read's end cut: what's left of it comes
+                // first in the next, with the erasing key's place after.
+                let mut kept = ERASED[tail.len()..].to_vec();
+                kept.extend_from_slice(left);
+                return (kept, output.len());
+            } else {
+                left = rest;
+            }
+            continue;
+        }
         if next == b'\n' && output[at..].starts_with(b"\r\n") {
             at += 2;
+        } else if next == b'\n' && &output[at..] == b"\r" {
+            // A line end the read's end cut: its `\n` comes first in the
+            // next, and is still to come back.
+            at += 1;
+            continue;
         } else if next == byte {
             at += 1;
         } else {
@@ -915,6 +1060,12 @@ fn echoed(typed: &[u8], output: &[u8]) -> (Vec<u8>, usize) {
 fn unstarted(error: &io::Error) -> Vec<u8> {
     format!("\r\nIt couldn't start again: {error}. {PARKED_WAKES}\r\n").into_bytes()
 }
+
+/// What every window, joined or joining, is told while a program that
+/// quit unasked too often is parked rather than started again: one more
+/// than [`UNASKED_MOST`] within [`UNASKED_WITHIN`], as a test holds it.
+const UNASKED_LINE: &[u8] =
+    b"\r\nIt quit unasked 4 times within 60 s, so it's parked. A key starts it again.\r\n";
 
 /// Says the program is parked, in its record and with `line` in every
 /// joined window, each asked to say when it comes in front, which wakes
@@ -1139,12 +1290,67 @@ struct Shown {
     /// terminal's echo hasn't shown back yet, so an echo isn't taken for
     /// the program drawing. Only ever taken while `modes` is held.
     typed: Mutex<Vec<u8>>,
+    /// Whether the last key typed into `typed` was [`LITERAL_NEXT`], so
+    /// the key given after it is kept as itself. Only ever taken while
+    /// `modes` is held.
+    literal: Mutex<bool>,
+    /// Whether a window gave the program any key while [`STARTING_LINE`]
+    /// stood, one a terminal echoes as nothing too, so the log quotes
+    /// none of what came: a program reading keys itself may draw any of
+    /// them. Only ever taken while `modes` is held.
+    keyed: Mutex<bool>,
     /// The echo of what was typed, held back while [`STARTING_LINE`]
     /// stands and passed on just after [`STARTING_CLEARED`], so no echoed
     /// line end scrolls the line from where the cursor goes back to, and
     /// the screen ends as it would have with no line. Only ever taken
     /// while `modes` is held.
     echo: Mutex<Vec<u8>>,
+    /// The hold's id, as the node's log names what it says of it.
+    id: String,
+    /// When [`STARTING_LINE`] was said, so the log says how long it stood.
+    /// Only ever taken while `modes` is held.
+    saying: Mutex<Option<Instant>>,
+    /// Where what the holder says of the starting line goes: [`logs`], the
+    /// node's log, but for a test, which reads what was said.
+    log: fn(&str),
+}
+
+/// The most of what took [`STARTING_LINE`] away that the log quotes.
+const SHOWN_LOGGED: usize = 48;
+
+/// What the node's log says of `id`'s [`STARTING_LINE`] going after it
+/// `stood`, as `why`, quoting the start of what was `shown` with its
+/// escapes, since a program wrote it, or saying it quotes none where
+/// nothing is, as once keys were typed. The id is escaped too, as
+/// `holder --id` takes any words.
+fn starting_line_went(id: &str, stood: Duration, why: &str, shown: Option<&[u8]>) -> String {
+    let id = id.as_bytes().escape_ascii();
+    match shown {
+        Some(shown) => format!(
+            "mycelium: {id}'s starting line went after {stood:?}, as {why}: \"{}\"",
+            shown[..shown.len().min(SHOWN_LOGGED)].escape_ascii()
+        ),
+        None => format!(
+            "mycelium: {id}'s starting line went after {stood:?}, as {why}, \
+             unquoted as keys were typed"
+        ),
+    }
+}
+
+/// Says `line` on the node's log, the holder's stderr, as `main`'s
+/// `tell!` does: in one write, so another holder's line can't split it,
+/// and never panicking, as a hold outlives whatever read the log.
+fn logs(line: &str) {
+    logs_to(&mut io::stderr().lock(), line);
+}
+
+/// Says `line` to `out` as [`logs`] says it to the node's log: with its
+/// line end, in one write, and a failed write let go.
+fn logs_to(out: &mut impl io::Write, line: &str) {
+    let mut whole = String::with_capacity(line.len() + 1);
+    whole.push_str(line);
+    whole.push('\n');
+    let _ = out.write_all(whole.as_bytes());
 }
 
 impl Shown {
@@ -1152,7 +1358,7 @@ impl Shown {
     /// given what's left of it and let go.
     fn ends(&self) {
         // One ending before it drew leaves nothing saying it starts.
-        self.unsays_start();
+        self.unsays_start("it ended", Some(b""));
         self.over.send_replace(true);
     }
 
@@ -1163,10 +1369,16 @@ impl Shown {
     /// screen and focus reporting would otherwise hide it from a window
     /// already joined, and leave a focus there waking nothing.
     fn show(&self, bytes: &[u8]) {
-        let echo = self.holds_echo(bytes);
+        // Past the bound, what came is the echo of what was typed, which
+        // `unsays_start` never quotes, as a key was typed to be echoed:
+        // it alone decides what the log quotes.
+        let (echo, why) = match self.holds_echo(bytes) {
+            Some(echo) => (echo, "its program drew"),
+            None => (0, "more echo came than it holds"),
+        };
         // A read that is only echo leaves the line standing.
         if echo == 0 || echo < bytes.len() {
-            self.unsays_start();
+            self.unsays_start(why, Some(&bytes[echo..]));
             self.passes(&bytes[echo..], None);
         }
         let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1181,26 +1393,27 @@ impl Shown {
     /// Holds back as much of `bytes`, the program's output, as begins as
     /// the echo of what was typed while [`STARTING_LINE`] stands
     /// ([`echoed`]), as a key typed into a window still blank is, and
-    /// says how much. Held under the lock the line is taken away under,
-    /// so none is held once the line is gone.
-    fn holds_echo(&self, bytes: &[u8]) -> usize {
+    /// says how much, or nothing where more echo came than it holds.
+    /// Held under the lock the line is taken away under, so none is held
+    /// once the line is gone.
+    fn holds_echo(&self, bytes: &[u8]) -> Option<usize> {
         let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         let said = *self.said.lock().unwrap_or_else(PoisonError::into_inner);
         if said != Some(STARTING_LINE) {
-            return 0;
+            return Some(0);
         }
         let mut typed = self.typed.lock().unwrap_or_else(PoisonError::into_inner);
         let mut echo = self.echo.lock().unwrap_or_else(PoisonError::into_inner);
         let (left, length) = echoed(&typed, bytes);
         if echo.len() + length > ECHO_HELD {
-            return 0;
+            return None;
         }
         *typed = left;
         echo.extend_from_slice(&bytes[..length]);
         drop(echo);
         drop(typed);
         drop(modes);
-        length
+        Some(length)
     }
 
     /// Keeps what a window gave the program while [`STARTING_LINE`]
@@ -1210,8 +1423,12 @@ impl Shown {
         let said = *self.said.lock().unwrap_or_else(PoisonError::into_inner);
         if said == Some(STARTING_LINE) {
             let mut typed = self.typed.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut literal = self.literal.lock().unwrap_or_else(PoisonError::into_inner);
             let room = TYPED_KEPT.saturating_sub(typed.len());
-            typed.extend(as_echoed(given).into_iter().take(room));
+            typed.extend(as_echoed(given, &mut literal).into_iter().take(room));
+            if !given.is_empty() {
+                *self.keyed.lock().unwrap_or_else(PoisonError::into_inner) = true;
+            }
         }
         drop(modes);
     }
@@ -1220,18 +1437,37 @@ impl Shown {
     /// stands, and passes on the echo held back behind it. The check, the
     /// claim and the sending are one step under the lock a window joins
     /// under, so it is taken away once however many ask, and no window
-    /// joins between them to be told it.
-    fn unsays_start(&self) {
+    /// joins between them to be told it. Said on the node's log, with
+    /// `why` and the start of what was `shown`, as a line gone too soon,
+    /// say as a login shell's dotfiles set a title, is otherwise silent.
+    /// Once a key was typed while the line stood, nothing `shown` is
+    /// quoted: where the echo is read wrong, or its program draws a key
+    /// again, what came holds a key the person pressed, and the log keeps
+    /// none of them. The log is written once the locks are let go, so no
+    /// lock is held across a write that may wait.
+    fn unsays_start(&self, why: &str, shown: Option<&[u8]>) {
         let mut modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         let mut said = self.said.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut went = None;
         if *said == Some(STARTING_LINE) {
             *said = None;
+            let stood = self
+                .saying
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+                .map_or(Duration::ZERO, |at| at.elapsed());
             self.typed
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .clear();
+            *self.literal.lock().unwrap_or_else(PoisonError::into_inner) = false;
             let echo =
                 std::mem::take(&mut *self.echo.lock().unwrap_or_else(PoisonError::into_inner));
+            let keyed =
+                std::mem::take(&mut *self.keyed.lock().unwrap_or_else(PoisonError::into_inner));
+            let quoted = shown.filter(|_| !keyed);
+            went = Some(starting_line_went(&self.id, stood, why, quoted));
             // Neither a mode nor a title, so it needn't be read as `passes` does.
             let _ = self.output.send(Arc::from(STARTING_CLEARED));
             if !echo.is_empty() {
@@ -1245,6 +1481,9 @@ impl Shown {
         }
         drop(said);
         drop(modes);
+        if let Some(line) = went {
+            (self.log)(&line);
+        }
     }
 
     /// Passes [`STARTING_LINE`] to every joined terminal, and to each
@@ -1254,6 +1493,7 @@ impl Shown {
     fn says_start(&self) {
         let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         *self.said.lock().unwrap_or_else(PoisonError::into_inner) = Some(STARTING_LINE);
+        *self.saying.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
         let _ = self.output.send(Arc::from(STARTING_LINE));
         drop(modes);
     }
@@ -1261,14 +1501,14 @@ impl Shown {
     /// Passes the holder's own `line` to every joined terminal, and to
     /// each joining until anything else is shown.
     fn says(&self, line: &'static [u8]) {
-        self.unsays_start();
+        self.unsays_start("the holder said another line", Some(line));
         self.passes(line, Some(line));
     }
 
     /// Passes the holder's own `line` to every joined terminal, and to
     /// each joining until the program starts again.
     fn stands(&self, line: &'static [u8]) {
-        self.unsays_start();
+        self.unsays_start("the holder said a line that stands", Some(line));
         let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         *self.standing.lock().unwrap_or_else(PoisonError::into_inner) = Some(line);
         drop(modes);
@@ -1392,12 +1632,15 @@ async fn serve(
                 }
                 Err(broadcast::error::RecvError::Lagged(missed)) => {
                     // Said on the node's log, as a window that fell behind
-                    // is a stall worth finding, never a silent gap.
-                    eprintln!(
+                    // is a stall worth finding, never a silent gap. The id
+                    // is copied out first, so the record isn't held while
+                    // the log is written.
+                    let id = record.kept().held.id.clone();
+                    logs(&format!(
                         "mycelium: a window of {} fell {missed} pieces of output behind, \
                          so its program draws it whole again",
-                        record.kept().held.id
-                    );
+                        id.as_bytes().escape_ascii()
+                    ));
                     // What is still waiting is older than the redraw to
                     // come, so it is let go with what was missed.
                     let (modes, caught) = shown.join();
@@ -1508,10 +1751,10 @@ impl Reading {
         self.watched = None;
         self.watched = watching(&self.parent)
             .inspect_err(|error| {
-                eprintln!(
+                logs(&format!(
                     "mycelium: a holder can't watch its terminal, so what this start \
                      shows goes unseen: {error}"
-                );
+                ));
             })
             .ok();
     }
@@ -1850,8 +2093,10 @@ impl Drop for Joined<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::path::PathBuf;
 
+    use rustix::process::Signal;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
     use tokio::sync::{mpsc, oneshot};
     use tokio::task::JoinHandle;
@@ -2328,6 +2573,41 @@ mod tests {
         again.sees("\u{1b}]2;pi --session far\u{7}").await;
     }
 
+    // A held pi copies by asking the terminal to (OSC 52), and only the
+    // person's own terminal, wherever it joins from, holds their
+    // clipboard: so the ask reaches every joined window as it was sent.
+    #[tokio::test]
+    async fn a_programs_copy_reaches_every_joined_window_as_it_asked() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, _holder) = holding_sh(root.path()).await;
+        let (_listing, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let kitty = |id: &str| {
+            Some(Window {
+                terminal: "kitty".to_owned(),
+                id: id.to_owned(),
+                within: None,
+                app_id: None,
+            })
+        };
+        let mut typing = Joined::join(socket(&dir, &held.id), WINDOW, kitty("21"));
+        let mut watching = Joined::join(socket(&dir, &held.id), WINDOW, kitty("22"));
+        // Joining replays nothing, so the copy waits for both to be joined.
+        let both = tokio::time::timeout(PATIENCE, async {
+            while listed(&dir).first().map_or(0, |one| one.windows.len()) < 2 {
+                changes.recv().await;
+            }
+        })
+        .await;
+        assert!(both.is_ok(), "both windows are joined");
+        // Spelt out as typed, so only the program's own output asks it.
+        typing
+            .types("printf '\\033]52;c;%s\\007' \"$(printf copied | base64)\"\r")
+            .await;
+        let asked = "\u{1b}]52;c;Y29waWVk\u{7}";
+        typing.sees(asked).await;
+        watching.sees(asked).await;
+    }
+
     #[tokio::test]
     async fn a_window_is_listed_only_while_it_is_joined() {
         let root = tempfile::tempdir().expect("a temporary folder");
@@ -2476,6 +2756,164 @@ mod tests {
             Some(69),
             "a 69 its program never said was its pi host ends the holder"
         );
+    }
+
+    // 85PKB2 and KP0L6A (2026-11-25): a pi that quit though nobody asked
+    // it to took its window with it, and the person found it closed.
+    /// Waits until what is listed in `dir` runs a process other than
+    /// `before`, unparked, answering its pid: typed sooner, a key would
+    /// go into the gap between runs, which a Mac's terminal may drop.
+    async fn runs_anew(dir: &Path, changes: &mut mpsc::UnboundedReceiver<()>, before: u32) -> u32 {
+        let found = tokio::time::timeout(PATIENCE, async {
+            loop {
+                let anew = listed(dir)
+                    .into_iter()
+                    .find(|one| !one.parked && one.pid != 0 && one.pid != before);
+                if let Some(one) = anew {
+                    return one.pid;
+                }
+                changes.recv().await;
+            }
+        })
+        .await;
+        found.unwrap_or_else(|_| panic!("nothing ran again after {before}"))
+    }
+
+    #[tokio::test]
+    async fn a_program_quitting_unasked_starts_again_in_its_window() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, _holder) = holding_sh(root.path()).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        window.types("echo first $((40 + 2)); exit 79\r").await;
+        window.sees("first 42").await;
+        let second = runs_anew(&dir, &mut changes, held.pid).await;
+        // As a pi whose name lookup held its exit dies, by its own signal.
+        window.types("echo then $((60 + 6)); kill -USR2 $$\r").await;
+        window.sees("then 66").await;
+        runs_anew(&dir, &mut changes, second).await;
+        window.types("echo again $((50 + 5))\r").await;
+        window.sees("again 55").await;
+        assert!(
+            !window.seen.contains("Parked") && !window.seen.contains("parked"),
+            "it is never shown as parked: {:?}",
+            window.seen
+        );
+    }
+
+    #[tokio::test]
+    async fn a_program_quitting_unasked_too_often_is_parked_saying_why() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, holder) = holding_sh(root.path()).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        let mut pid = held.pid;
+        for run in 1..=UNASKED_MOST {
+            window
+                .types(&format!("echo run $(({run} * 11)); exit 79\r"))
+                .await;
+            window.sees(&format!("run {}", run * 11)).await;
+            pid = runs_anew(&dir, &mut changes, pid).await;
+        }
+        window.types("echo last $((4 * 11)); exit 79\r").await;
+        window.sees("last 44").await;
+        window
+            .sees("quit unasked 4 times within 60 s, so it's parked")
+            .await;
+        let parked = listed_parked(&dir, &mut changes, true).await;
+        assert_eq!(parked.pid, 0, "one more quit within a minute parks it");
+        // One joining later is told why too, as the person coming back is.
+        let mut late = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        late.sees("so it's parked. A key starts it again.").await;
+        drop(late);
+
+        // Its window stayed, so a key starts it again, as any park's,
+        // and with as many unasked quits as at first.
+        window.types("x").await;
+        pid = runs_anew(&dir, &mut changes, pid).await;
+        window.types("echo woke $((5 * 7)); exit 79\r").await;
+        window.sees("woke 35").await;
+        runs_anew(&dir, &mut changes, pid).await;
+        window.types("echo woken $((6 * 7)); exit 3\r").await;
+        window.sees("woken 42").await;
+        assert_eq!(exited(holder).await, Some(3), "a release still ends it");
+    }
+
+    #[test]
+    fn the_too_often_line_says_the_bound_it_keeps() {
+        let line = String::from_utf8_lossy(UNASKED_LINE);
+        let said = format!(
+            "It quit unasked {} times within {} s",
+            UNASKED_MOST + 1,
+            UNASKED_WITHIN.as_secs()
+        );
+        assert!(line.contains(&said), "{line:?} says {said:?}");
+    }
+
+    #[test]
+    fn only_its_own_code_or_signal_says_a_program_quit_unasked() {
+        let exited = |code: i32| ExitStatus::from_raw(code << 8);
+        assert!(ended_unasked(exited(UNASKED)), "its code");
+        assert!(
+            ended_unasked(ExitStatus::from_raw(UNASKED_SIGNAL)),
+            "its signal"
+        );
+        for meant in [0, 1, PARKED, i32::from(GONE)] {
+            assert!(!ended_unasked(exited(meant)), "exit {meant} was meant");
+        }
+        for signal in [Signal::TERM, Signal::KILL, Signal::HUP, Signal::USR1] {
+            let signal = signal.as_raw();
+            assert!(
+                !ended_unasked(ExitStatus::from_raw(signal)),
+                "signal {signal}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_unasked_quits_close_together_count_as_too_often() {
+        let start = Instant::now();
+        let mut quits = Vec::new();
+        for after in 0..UNASKED_MOST {
+            let at = start + Duration::from_secs(u64::try_from(after).expect("a few"));
+            assert!(
+                !quits_too_often(&mut quits, at),
+                "quit {after} starts again"
+            );
+        }
+        assert!(
+            quits_too_often(&mut quits, start + Duration::from_secs(10)),
+            "one more within a minute is too often"
+        );
+        assert!(
+            quits.is_empty(),
+            "it is parked, so once woken it starts afresh"
+        );
+        for after in 0..UNASKED_MOST {
+            let at = start + Duration::from_secs(u64::try_from(after).expect("a few"));
+            quits_too_often(&mut quits, at);
+        }
+        // The first, a whole minute before, counts no more, so with only
+        // two others this one starts again.
+        assert!(
+            !quits_too_often(&mut quits, start + UNASKED_WITHIN),
+            "a quit a whole minute after the first counts it no more"
+        );
+        assert_eq!(quits.len(), UNASKED_MOST, "the first is let go: {quits:?}");
+        // Those at one and two seconds, and the minute's, are all still
+        // within a minute of the next.
+        assert!(
+            quits_too_often(
+                &mut quits,
+                start + UNASKED_WITHIN + Duration::from_millis(500)
+            ),
+            "three within the minute before make one more too often"
+        );
+        assert!(
+            !quits_too_often(&mut quits, start + UNASKED_WITHIN * 3),
+            "and a quit after the park is the first again"
+        );
+        assert_eq!(quits.len(), 1, "only it is counted");
     }
 
     #[test]
@@ -2647,8 +3085,10 @@ mod tests {
         );
     }
 
-    /// What is shown, as a holder makes it, with nobody joined yet.
+    /// What is shown, as a holder makes it, with nobody joined yet, and
+    /// nothing said on this thread's log by a test before it.
     fn shown() -> Shown {
+        LOGGED.with(|said| said.borrow_mut().clear());
         let (output, _) = broadcast::channel(OUTPUT_BACKLOG);
         Shown {
             modes: Mutex::new(Modes::default()),
@@ -2658,8 +3098,28 @@ mod tests {
             said: Mutex::new(None),
             standing: Mutex::new(None),
             typed: Mutex::new(Vec::new()),
+            literal: Mutex::new(false),
+            keyed: Mutex::new(false),
             echo: Mutex::new(Vec::new()),
+            id: "HELD".to_owned(),
+            saying: Mutex::new(None),
+            log: logged,
         }
+    }
+
+    std::thread_local! {
+        /// What a test's holder has said on its log, on the test's thread.
+        static LOGGED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Keeps `line` as said on the log, for [`said_on_the_log`].
+    fn logged(line: &str) {
+        LOGGED.with(|said| said.borrow_mut().push(line.to_owned()));
+    }
+
+    /// What this test's holder has said on its log so far, taken away.
+    fn said_on_the_log() -> Vec<String> {
+        LOGGED.with(|said| std::mem::take(&mut *said.borrow_mut()))
     }
 
     /// Whether `bytes` hold `line` anywhere.
@@ -2980,12 +3440,240 @@ mod tests {
         );
     }
 
+    /// What `given` alone is echoed as, typed after no literal-next key.
+    fn echo_of(given: &[u8]) -> Vec<u8> {
+        as_echoed(given, &mut false)
+    }
+
     #[test]
     fn what_is_typed_is_kept_as_a_terminal_echoes_it() {
         assert_eq!(
-            as_echoed(b"a\r\tb\n\x1b[A\x03\x7f\x15\x17"),
-            b"a\n\tb\n^[[A^C".to_vec(),
-            "line ends as one, control keys by their letter, erasing keys as nothing"
+            echo_of(b"a\r\tb\n\x1b[A\x03\x7f\x15\x17"),
+            b"a\n\tb\n^[[A^C\x7f\x7f\x7f".to_vec(),
+            "line ends as one, control keys by their letter, erasing keys as where they were"
+        );
+        assert_eq!(
+            echo_of(b"\x04a\x11b\x13"),
+            b"ab".to_vec(),
+            "end of file, stop and start, as a terminal never echoes them"
+        );
+        assert_eq!(
+            echo_of(b"\x16\x04\x16\x7f\x16\r\x16a"),
+            b"^\x08^D^\x08^?^\x08^M^\x08a".to_vec(),
+            "a key after the literal-next key, as itself"
+        );
+        let mut literal = false;
+        let keys: Vec<Vec<u8>> = [b"\x16", b"\x04", b"\x16", b"\x7f", b"\x04"]
+            .iter()
+            .map(|key| as_echoed(&key[..], &mut literal))
+            .collect();
+        assert_eq!(
+            keys.concat(),
+            b"^\x08^D^\x08^?".to_vec(),
+            "a key given apart from the literal-next key before it, as itself, and none after"
+        );
+    }
+
+    #[test]
+    fn the_log_says_why_the_starting_line_went_quoting_the_start_of_what_came() {
+        // A quote, a backslash and a right-to-left override, each of which
+        // could end or turn the log's own quote, and controls.
+        let drawn = [
+            b"\x1b]0;\"\\\xe2\x80\xae\x07\n".as_slice(),
+            &[b'x'; SHOWN_LOGGED],
+        ]
+        .concat();
+        let stood = Duration::from_millis(5);
+        let said = starting_line_went("HELD", stood, "its program drew", Some(&drawn));
+        assert_eq!(
+            starting_line_went("HELD", stood, "its program drew", None),
+            "mycelium: HELD's starting line went after 5ms, as its program drew, \
+             unquoted as keys were typed",
+            "one quoting nothing says why, never as though nothing came"
+        );
+        assert_eq!(
+            said,
+            format!(
+                "mycelium: HELD's starting line went after 5ms, as its program drew: \
+                 \"\\x1b]0;\\\"\\\\\\xe2\\x80\\xae\\x07\\n{}\"",
+                "x".repeat(SHOWN_LOGGED - 11)
+            ),
+            "escaped, so nothing a program writes ends the quote or reaches whoever reads the \
+             log, and cut to its bound"
+        );
+        let split = [[b'y'; SHOWN_LOGGED - 1].as_slice(), "\u{e9}".as_bytes()].concat();
+        assert!(
+            starting_line_went("HELD", stood, "its program drew", Some(&split))
+                .ends_with(&format!("{}\\xc3\"", "y".repeat(SHOWN_LOGGED - 1))),
+            "cut by bytes before it's escaped, so a character the cut splits is half escaped"
+        );
+        assert!(
+            starting_line_went("HELD", stood, "its program drew", Some(&[0x07; 60]))
+                .ends_with(&format!(": \"{}\"", "\\x07".repeat(SHOWN_LOGGED))),
+            "all controls, it's cut at its bound, each escaped"
+        );
+        assert!(
+            starting_line_went("H\x1b\n", stood, "its program drew", None)
+                .starts_with("mycelium: H\\x1b\\n's starting line went"),
+            "an id given with controls is escaped too"
+        );
+    }
+
+    /// A log that takes nothing, as a stderr whose reader went.
+    struct Refusing;
+
+    impl io::Write for Refusing {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A log that counts the writes it takes.
+    #[derive(Default)]
+    struct Counting {
+        writes: usize,
+        said: Vec<u8>,
+    }
+
+    impl io::Write for Counting {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            self.said.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_log_takes_a_line_in_one_write_and_lets_a_failed_one_go() {
+        let mut counting = Counting::default();
+        logs_to(&mut counting, "mycelium: HELD said");
+        assert_eq!(
+            (counting.writes, counting.said.as_slice()),
+            (1, b"mycelium: HELD said\n".as_slice()),
+            "its line end with it, in one write, so another holder's can't split it"
+        );
+        // A panic here would take the hold down with its log.
+        logs_to(&mut Refusing, "mycelium: HELD said");
+    }
+
+    #[test]
+    fn the_log_quotes_no_key_typed_while_the_starting_line_stood() {
+        let shown = shown();
+        shown.says_start();
+        shown.show(b"\x1b]0;title\x07");
+        let said = said_on_the_log();
+        let quoted = |one: &String| {
+            one.starts_with("mycelium: HELD's starting line went after ")
+                && one.ends_with(", as its program drew: \"\\x1b]0;title\\x07\"")
+        };
+        assert!(
+            matches!(said.as_slice(), [one] if quoted(one)),
+            "what came with nothing typed is quoted: {said:?}"
+        );
+        // Each case's log is read before the next, since a new Shown
+        // clears it.
+        // An echo read wrong: a terminal that drew before echoing.
+        let shown = self::shown();
+        shown.says_start();
+        shown.keeps_typed(b"secret");
+        shown.show(b"\x1b[Hsecret");
+        let mut said = said_on_the_log();
+        // Its program drawing a key again once its echo came back.
+        let again = self::shown();
+        again.says_start();
+        again.keeps_typed(b"secret");
+        again.show(b"secret");
+        again.show(b"\x1b[Hsecret");
+        said.extend(said_on_the_log());
+        // Even a key that left only a literal-next key to come back.
+        let literal = self::shown();
+        literal.says_start();
+        literal.keeps_typed(b"\x16");
+        literal.show(b"drew");
+        said.extend(said_on_the_log());
+        // A key a terminal echoes as nothing, drawn by a program that
+        // reads its keys itself.
+        let unechoed = self::shown();
+        unechoed.says_start();
+        unechoed.keeps_typed(b"\x04");
+        unechoed.show(b"^Dsecret");
+        said.extend(said_on_the_log());
+        assert_eq!(said.len(), 4, "each said once: {said:?}");
+        let cases = [
+            "echo read wrong",
+            "a key drawn again",
+            "a literal-next key",
+            "a key echoed as nothing",
+        ];
+        for (said, case) in said.iter().zip(cases) {
+            // "drew" is the log's own word, so what it quotes is found by
+            // its quotes.
+            assert!(
+                !said.contains("secret") && !said.contains('"'),
+                "{case}: no key quoted: {said}"
+            );
+            assert!(
+                said.ends_with("as its program drew, unquoted as keys were typed"),
+                "{case}: says why it quotes nothing: {said}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_line_end_or_an_erasure_a_read_cuts_leaves_the_starting_line_standing() {
+        let cleared = std::str::from_utf8(STARTING_CLEARED).expect("plain bytes");
+        let cases: [(&[u8], &[u8]); 3] = [
+            (b"hi\r", b"hi\r\n"),
+            (b"ab\x15", b"ab\x08 \x08\x08 \x08"),
+            (b"ab\x15c", b"ab\x08 \x08\x08 \x08c"),
+        ];
+        for (typed, echo) in cases {
+            for cut in 1..echo.len() {
+                let shown = shown();
+                shown.says_start();
+                let (_, mut joined) = shown.join();
+                shown.keeps_typed(typed);
+                shown.show(&echo[..cut]);
+                shown.show(&echo[cut..]);
+                let typed = typed.escape_ascii();
+                assert_eq!(
+                    sent(&mut joined),
+                    "",
+                    "{typed} echoed, cut at {cut}: held, the line standing"
+                );
+                shown.show(b"drawn");
+                assert_eq!(
+                    sent(&mut joined),
+                    format!("{cleared}{}drawn", String::from_utf8_lossy(echo)),
+                    "{typed} echoed, cut at {cut}: the line goes as its program draws"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_held_line_end_drawn_after_goes_once_in_order() {
+        let cleared = std::str::from_utf8(STARTING_CLEARED).expect("plain bytes");
+        let shown = shown();
+        shown.says_start();
+        let (_, mut joined) = shown.join();
+        shown.keeps_typed(b"hi\r");
+        // Its `\r` held for the `\n` to come, the program draws instead.
+        shown.show(b"hi\r");
+        assert_eq!(sent(&mut joined), "", "held, the line standing");
+        shown.show(b"drawn");
+        assert_eq!(
+            sent(&mut joined),
+            format!("{cleared}hi\rdrawn"),
+            "the held echo goes once, after the line and before the drawing"
         );
     }
 
@@ -2998,9 +3686,54 @@ mod tests {
         );
         assert_eq!(echoed(b"now", b"no"), (b"w".to_vec(), 2), "echoed in part");
         assert_eq!(
-            echoed(b"ab", b"a\x08 \x08b"),
+            echoed(b"now\n", b"now\r"),
+            (b"\n".to_vec(), 4),
+            "a line end the read cut is kept to be finished"
+        );
+        assert_eq!(
+            echoed(&echo_of(b"a\x7fb"), b"a\x08 \x08b"),
             (Vec::new(), 5),
             "a key erased between"
+        );
+        assert_eq!(
+            echoed(&echo_of(b"ab\x15c"), b"ab\x08 \x08\x08 \x08c"),
+            (Vec::new(), 9),
+            "a line killed, erasing each key"
+        );
+        assert_eq!(
+            echoed(&echo_of(b"ab\x15"), b"ab\x08 \x08"),
+            (vec![ERASING], 5),
+            "a kill is kept through its erasures, as the next read may bring more"
+        );
+        assert_eq!(
+            echoed(&echo_of(b"ab\x15"), b"ab\x08 \x08\x08"),
+            (b" \x08\x7f".to_vec(), 6),
+            "an erasure the read cut is kept to be finished, before the kill's place"
+        );
+        assert_eq!(
+            echoed(b" \x08\x7f", b" \x08\x08 \x08"),
+            (vec![ERASING], 5),
+            "and finished by the next read"
+        );
+        assert_eq!(
+            echoed(&echo_of(b"\x7fa"), b"a"),
+            (Vec::new(), 1),
+            "an erasing key on an empty line, echoed as nothing"
+        );
+        assert_eq!(
+            echoed(b"", b"\x08 \x08drew"),
+            (Vec::new(), 0),
+            "erasures nobody typed are the program's own"
+        );
+        assert_eq!(
+            echoed(b"ab", b"a\x08 \x08b"),
+            (b"b".to_vec(), 1),
+            "as are those after a key with no erasing key typed"
+        );
+        assert_eq!(
+            echoed(&echo_of(b"\x04\x13now"), b"now"),
+            (Vec::new(), 3),
+            "keys a terminal never echoes leave the echo after them to be found"
         );
         assert_eq!(
             echoed(b"", b"drew"),
@@ -3090,10 +3823,48 @@ mod tests {
     }
 
     #[test]
-    fn what_is_typed_and_echoed_while_it_starts_is_kept_to_a_bound() {
+    fn a_key_typed_after_the_literal_next_key_on_its_own_is_echoed_as_itself() {
         let shown = shown();
         shown.says_start();
-        shown.keeps_typed(&[b'a'; TYPED_KEPT + 9]);
+        let (_, mut joined) = shown.join();
+        shown.keeps_typed(b"\x16");
+        shown.keeps_typed(b"\x04");
+        shown.show(b"^\x08^D");
+        assert_eq!(sent(&mut joined), "", "its echo is held, the line standing");
+        shown.keeps_typed(b"\x04");
+        shown.keeps_typed(b"\x16");
+        shown.show(b"^D");
+        let cleared = std::str::from_utf8(STARTING_CLEARED).expect("plain bytes");
+        assert_eq!(
+            sent(&mut joined),
+            format!("{cleared}^\x08^D^D"),
+            "a ^D on its own is never echoed, and the literal-next key after it waits on \
+             its own echo, so a ^D that came was drawn"
+        );
+        // Said again, the line takes a ^D as unechoed, never as the
+        // literal-next key's, which went with the line before.
+        shown.says_start();
+        shown.keeps_typed(b"\x04");
+        shown.show(b"^D");
+        let line = std::str::from_utf8(STARTING_LINE).expect("plain bytes");
+        assert_eq!(
+            sent(&mut joined),
+            format!("{line}{cleared}^D"),
+            "no literal-next key is kept once the line has gone, so a ^D drawn takes the \
+             next line away"
+        );
+    }
+
+    #[test]
+    fn what_is_typed_and_echoed_while_it_starts_is_kept_to_a_bound() {
+        // Keys, a kill erasing each and keys after, so their echo fills
+        // its bound exactly with keys still to be echoed past it.
+        let erased = (ECHO_HELD - 1) / (1 + ERASED.len());
+        let after = ECHO_HELD - erased * (1 + ERASED.len());
+        let typed = [vec![b'a'; erased], vec![0x15], vec![b'a'; TYPED_KEPT + 9]].concat();
+        let shown = shown();
+        shown.says_start();
+        shown.keeps_typed(&typed);
         assert_eq!(
             shown
                 .typed
@@ -3104,28 +3875,46 @@ mod tests {
             "typed is kept to its bound"
         );
         let (_, mut joined) = shown.join();
-        shown.show(&ERASED.repeat(ECHO_HELD / ERASED.len()));
-        assert_eq!(sent(&mut joined), "", "an echo up to its bound is held");
-        shown.show(b"\x08 \x08\x08 \x08");
+        let held = [vec![b'a'; erased], ERASED.repeat(erased), vec![b'a'; after]].concat();
+        assert_eq!(held.len(), ECHO_HELD, "the echo fills the bound");
+        shown.show(&held);
+        assert_eq!(sent(&mut joined), "", "an echo filling its bound is held");
+        shown.show(b"a");
         let cleared = std::str::from_utf8(STARTING_CLEARED).expect("plain bytes");
+        let held = std::str::from_utf8(&held).expect("plain bytes");
+        assert_eq!(
+            sent(&mut joined),
+            format!("{cleared}{held}a"),
+            "past it, the line goes, and what it held follows"
+        );
+        let said = said_on_the_log();
         assert!(
-            sent(&mut joined).starts_with(cleared),
-            "past it, the line goes"
+            matches!(said.as_slice(), [one] if one.ends_with(
+                ", as more echo came than it holds, unquoted as keys were typed"
+            )),
+            "and the log quotes none of it: {said:?}"
         );
     }
 
     #[test]
     fn the_starting_line_goes_before_the_holders_next_words_or_an_end() {
+        // Each holds an echo, which follows the line's going at once.
+        let echoing = |starting: &Shown| {
+            starting.keeps_typed(b"x");
+            starting.show(b"x");
+        };
+        let next = |joined: &mut broadcast::Receiver<Arc<[u8]>>| joined.try_recv().ok();
         let said = shown();
         said.says_start();
         let (_, mut joined) = said.join();
+        echoing(&said);
         said.says(PARKED_LINE);
-        let next = |joined: &mut broadcast::Receiver<Arc<[u8]>>| joined.try_recv().ok();
         assert_eq!(
             next(&mut joined).as_deref(),
             Some(STARTING_CLEARED),
             "first"
         );
+        assert_eq!(next(&mut joined).as_deref(), Some(&b"x"[..]), "its echo");
         assert_eq!(
             next(&mut joined).as_deref(),
             Some(PARKED_LINE),
@@ -3134,20 +3923,32 @@ mod tests {
         let ended = shown();
         ended.says_start();
         let (_, mut joined) = ended.join();
+        echoing(&ended);
         ended.ends();
         assert_eq!(
-            joined.try_recv().ok().as_deref(),
+            next(&mut joined).as_deref(),
             Some(STARTING_CLEARED),
             "a program ending before it drew leaves no line saying it starts"
+        );
+        assert_eq!(
+            next(&mut joined).as_deref(),
+            Some(&b"x"[..]),
+            "and its echo is shown"
         );
         let away = shown();
         away.says_start();
         let (_, mut joined) = away.join();
+        echoing(&away);
         away.stands(GONE_LINE);
         assert_eq!(
-            joined.try_recv().ok().as_deref(),
+            next(&mut joined).as_deref(),
             Some(STARTING_CLEARED),
             "a line that stands takes it away first"
+        );
+        assert_eq!(
+            next(&mut joined).as_deref(),
+            Some(&b"x"[..]),
+            "then the echo it held"
         );
         // A program parking before it drew is shown its parked words, with
         // a key typed and never echoed meanwhile.
@@ -3833,8 +4634,7 @@ mod tests {
 
         // Told as its service manager tells it, which tells only the
         // holder here, this test's own process.
-        kill_process(rustix::process::getpid(), rustix::process::Signal::TERM)
-            .expect("the holder is told to end");
+        kill_process(rustix::process::getpid(), Signal::TERM).expect("the holder is told to end");
         joined.sees("saved").await;
         let ended = tokio::time::timeout(PATIENCE, holder)
             .await

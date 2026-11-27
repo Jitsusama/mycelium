@@ -450,6 +450,8 @@ mod tests {
                 Vec::new()
             }),
             saturated: None,
+            cpu_minute: None,
+            memory_full_minute: None,
         });
         machine
     }

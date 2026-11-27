@@ -58,6 +58,11 @@ pub const STOPPED_FOR_AN_AGENT: &str =
 pub const PACED_FOR_AN_AGENT: &str =
     "It paces agents and isn't the person's to lift: tell your orchestrator, as a finding";
 
+/// How a refusal of a start of one session coming back already ends,
+/// telling its asker when to ask again, so an asker can tell it from a
+/// refusal of every start.
+pub const UNLESS_RUNNING: &str = " only if it isn't running";
+
 /// How a refusal of an agent's start opens where whether the person's
 /// stop stands can't be told, so it is held before anything begins.
 pub const UNTOLD_FOR_AN_AGENT: &str =
@@ -597,7 +602,7 @@ impl Starts {
         if book.going.iter().any(|(_, going)| its(going)) {
             return Some(format!(
                 "{id} is coming back already, from a start of it still going; \
-                 ask again once it has gone only if it isn't running"
+                 ask again once it has gone{UNLESS_RUNNING}"
             ));
         }
         let let_go = book.kept.iter().any(|one| {
@@ -610,7 +615,7 @@ impl Starts {
         let_go.then(|| {
             format!(
                 "{id} is coming back already, from a start asked in the last {} seconds; \
-                 ask again after that only if it isn't running",
+                 ask again after that{UNLESS_RUNNING}",
                 COMING_BACK / 1000
             )
         })
@@ -859,6 +864,20 @@ impl Starts {
             };
         }
         Starters(starters)
+    }
+
+    /// The machine the newest start the book keeps as `held` landed on,
+    /// if it keeps one: the book is kept on disk, so a node started
+    /// again still knows where it started each hold, as far back as
+    /// [`KEPT_MOST`] starts.
+    #[must_use]
+    pub fn landed_on(&self, held: &str) -> Option<String> {
+        self.lock()
+            .kept
+            .iter()
+            .rev()
+            .find(|one| one.held.as_deref() == Some(held))
+            .and_then(|one| one.machine.clone())
     }
 
     /// Counts one more ask under the name `once`, by `by` for the cell
@@ -1996,6 +2015,28 @@ mod tests {
             .admit(agent("OSPREY", NOW + 3))
             .expect_err("and read back so after a restart");
         started(&again, agent("SKIFFS", NOW + 3), "h");
+    }
+
+    // The node ends a hold no presence shows where its book says it
+    // started it, so the book must say so after the node starts again,
+    // the newest start under the id winning.
+    #[test]
+    fn the_book_says_where_a_hold_landed_after_it_is_read_again() {
+        let (dir, starts) = book();
+        let person = || asked(By::Person, None, NOW);
+        let admitted = starts.admit(person()).expect("the person may start");
+        starts.keep(admitted, Ok(("osprey".to_owned(), "h-1".to_owned())), 0);
+        let admitted = starts.admit(person()).expect("the person may start");
+        starts.keep(admitted, Err("it didn't start".to_owned()), 0);
+        started(&starts, agent("OSPREY", NOW), "h-2");
+        let admitted = starts.admit(person()).expect("the person may start");
+        starts.keep(admitted, Ok(("tern".to_owned(), "h-1".to_owned())), 0);
+        let again = Starts::at(dir.path().join("starts.jsonl"));
+        for read in [&starts, &again] {
+            assert_eq!(read.landed_on("h-1").as_deref(), Some("tern"), "the newest");
+            assert_eq!(read.landed_on("h-2").as_deref(), Some("kestrel"));
+            assert_eq!(read.landed_on("h-3"), None, "no start landed as it");
+        }
     }
 
     #[test]

@@ -295,10 +295,11 @@ fn judged_by<'r>(
 /// machine with room it could have gone to carried less beyond the dead
 /// band.
 fn regret(one: &Placed, reading: &Reading, load: f64) -> Option<Regret> {
-    // A machine the work couldn't have gone to is no better choice.
+    // A machine the work couldn't have gone to is no better choice, nor
+    // one kept lively, which placement passes on purpose.
     let could = |machine: &str| {
         one.judgement(machine)
-            .is_none_or(|judged| one.could_go_to(judged))
+            .is_none_or(|judged| one.could_go_to(judged) && !judged.kept_lively)
     };
     let better = reading
         .machines
@@ -360,7 +361,8 @@ fn herds(placed: &[Placed]) -> Vec<Herd> {
 }
 
 /// A machine the work `one` placed could have gone to with more headroom
-/// than the one it did, beyond the dead band.
+/// than the one it did, beyond the dead band, and wasn't kept lively,
+/// since placement passes one kept lively on purpose.
 fn roomier<'a>(one: &Placed<'a>) -> Option<&'a str> {
     let chosen = one.judgement(one.machine)?.headroom;
     one.record
@@ -368,7 +370,13 @@ fn roomier<'a>(one: &Placed<'a>) -> Option<&'a str> {
         .judged
         .iter()
         .filter(|other| other.machine != one.machine)
-        .filter(|other| one.could_go_to(other) && !other.over && !other.unheard && !other.saturated)
+        .filter(|other| {
+            one.could_go_to(other)
+                && !other.over
+                && !other.unheard
+                && !other.saturated
+                && !other.kept_lively
+        })
         .find(|other| other.headroom > chosen + NEAR_BEST)
         .map(|other| other.machine.as_str())
 }
@@ -408,6 +416,7 @@ mod tests {
                         over: false,
                         unheard: false,
                         saturated: false,
+                        kept_lively: false,
                         preferred: 0,
                         headroom,
                         chance: 0.0,
@@ -535,6 +544,38 @@ mod tests {
             judge(&records, &[]).herds,
             [],
             "a saturated machine's room is no room placement passed over"
+        );
+    }
+
+    #[test]
+    fn placements_kept_off_a_machine_kept_lively_are_no_herd_nor_regret() {
+        let records: Vec<Record> = ["03:00:00", "03:00:20", "03:00:50"]
+            .iter()
+            .map(|at| {
+                let mut record = placed(
+                    &format!("2026-11-16T{at}Z"),
+                    "kestrel",
+                    &[("kestrel", 1.0), ("skiff", 2.0)],
+                );
+                record.decision.judged[1].kept_lively = true;
+                record
+            })
+            .collect();
+        let readings = [reading(
+            "2026-11-16T03:01:10Z",
+            &[("kestrel", 0.9), ("skiff", 0.1)],
+        )];
+        let hindsight = judge(&records, &readings);
+        assert_eq!(
+            hindsight.herds,
+            [],
+            "the room of a machine kept lively is room placement passes on purpose"
+        );
+        assert_eq!(hindsight.judged, 1, "the first is judged");
+        assert_eq!(
+            hindsight.regrets,
+            [],
+            "and its passing the lively one is no regret"
         );
     }
 

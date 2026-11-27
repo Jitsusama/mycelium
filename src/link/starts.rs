@@ -184,8 +184,8 @@ impl From<Unsent> for String {
 impl Asks {
     /// Asks `machine` to start `start`, through the link reaching it,
     /// answering as its node does, with words that join it from here, or
-    /// why no answer came. It goes without the tools it would rather have,
-    /// as [`Work::asked_there`] says.
+    /// why no answer came. It goes without the tools it would rather have
+    /// and without the cloud, as [`Work::asked_there`] says.
     ///
     /// # Errors
     ///
@@ -331,15 +331,25 @@ impl Asks {
 
     /// Asks `machine` to end the session held there as `held` for good,
     /// for `by`, as this machine's node judged who asks, through the link
-    /// reaching it, answering how it ended. An end gives the session a
-    /// grace to save what it holds, so it is waited on for as long as the
-    /// link stands.
+    /// reaching it, answering how it ended. An end gives the session
+    /// [`crate::hold::end::GRACE`] to save what it holds before it is
+    /// killed, so it is waited on that long past the `ANSWERED_WITHIN`
+    /// a run or a steer has, and no longer: a machine that says nothing by then
+    /// may still end it, but the person isn't kept waiting on it.
     pub async fn end(&self, machine: &str, held: &str, by: Asker) -> Reply {
         let asked = Asked::End {
             held: held.to_owned(),
             by,
         };
-        self.send(machine, asked, None).await?
+        let within = crate::hold::end::GRACE + ANSWERED_WITHIN;
+        match self.send(machine, asked, Some(within)).await {
+            Ok(reply) => reply,
+            // Once sent, the end may still be under way there.
+            Err(Unsent { why, sent: true }) => Err(format!(
+                "{why}; it went to the link, so it may still end there"
+            )),
+            Err(unsent) => Err(unsent.into()),
+        }
     }
 
     /// Sends `asked` to `machine` through the link reaching it, and waits
@@ -605,13 +615,13 @@ mod tests {
     use super::*;
     use crate::placement::Work;
 
-    /// Work that needs and would rather have `gcloud`, and would rather
-    /// run on Linux.
+    /// Work that needs and would rather have `gcloud` and the cloud, and
+    /// would rather run on Linux.
     fn wanting_gcloud() -> Work {
         let gcloud = Need::Tool("gcloud".to_owned());
         Work {
-            needs: vec![gcloud.clone()],
-            prefers: vec![gcloud, Need::System("linux".to_owned())],
+            needs: vec![gcloud.clone(), Need::Cloud],
+            prefers: vec![gcloud, Need::Cloud, Need::System("linux".to_owned())],
             tolerates: Vec::new(),
             may_wait: false,
             lasts: None,
@@ -638,7 +648,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_start_or_a_run_asked_of_another_machine_prefers_no_tool_but_still_needs_one() {
+    async fn a_start_or_a_run_asked_of_another_machine_wants_no_cloud_and_needs_only_its_tool() {
         let start = Start {
             work: wanting_gcloud(),
             folder: None,
@@ -667,12 +677,13 @@ mod tests {
             assert_eq!(
                 work.prefers,
                 [Need::System("linux".to_owned())],
-                "a node too old to read a tool may have been preferred for a {asked}"
+                "a node too old to read a tool or the cloud may have been preferred for a {asked}"
             );
             assert_eq!(
                 work.needs,
                 [Need::Tool("gcloud".to_owned())],
-                "only a node naming its kit can meet a {asked}'s need for a tool"
+                "only a node naming its kit can meet a {asked}'s need for a tool, and a made \
+                 machine's may be too old to read a need for the cloud met here"
             );
         }
     }
@@ -720,6 +731,31 @@ mod tests {
             ],
             "a start relayed to kestrel is kestrel's or none, so no other machine's \
              session is booked on its word"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_end_waits_out_the_holds_grace_and_then_says_it_may_still_end() {
+        let asks = Asks::default();
+        let there: There = Arc::new(|_: &str, words: &[String]| words.to_vec());
+        let (mut asked, _reaching) = asks.reach("kestrel", there);
+        let asked_at = tokio::time::Instant::now();
+        let (ended, kept) = tokio::join!(asks.end("kestrel", "h-1", Asker::Person), async {
+            // Kestrel takes the end and says nothing, as one still saving.
+            asked.recv().await.expect("kestrel is asked")
+        });
+        let waited = asked_at.elapsed();
+        drop(kept);
+        let within = crate::hold::end::GRACE + ANSWERED_WITHIN;
+        assert!(
+            waited >= within && waited < within + Duration::from_secs(1),
+            "an end is waited on past the grace its session has to save, and no longer: \
+             {waited:?}"
+        );
+        let why = ended.expect_err("a silent machine's end isn't said to have ended");
+        assert!(
+            why.ends_with("; it went to the link, so it may still end there"),
+            "the person is told it may still end, not that it failed: {why}"
         );
     }
 }

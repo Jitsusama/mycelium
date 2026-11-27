@@ -1,14 +1,17 @@
 //! A reading of the realm's balance as a person reads it: a line saying
 //! the realm, a row for each machine, and a sentence for each thing wrong
 //! saying what it means and what follows.
+//!
+//! Long because its tests sit beside it, drawing the table at each width
+//! it keeps to, until they move to a file of their own.
 
 use std::fmt::Write as _;
 
 use super::{Flag, IMBALANCE, Load, Reading};
-use crate::swarm::{BOLD, FAINT, RESET};
+use crate::swarm::{BOLD, FAINT, RESET, drawn_width, padded, unmarked};
 
 /// The table's columns after the machine's name and how it stands, each
-/// as wide as its header.
+/// as wide as its header or its widest figure.
 const COLUMNS: [&str; 8] = [
     "load",
     "memory",
@@ -38,53 +41,85 @@ pub fn said(reading: &Reading, realm: &str, width: usize, colour: bool) -> Strin
             text.to_owned()
         }
     };
-    let mut out = String::new();
+    let mut head = String::new();
     let count = reading.machines.len();
     let noun = if count == 1 { "machine" } else { "machines" };
-    let _ = write!(out, "{realm} · {count} {noun}");
+    let _ = write!(head, "{realm} · {count} {noun}");
     let ready = reading.machines.iter().filter(|one| one.ready).count();
     if ready < count {
-        let _ = write!(out, ", {ready} ready");
+        let _ = write!(head, ", {ready} ready");
     }
     match reading.imbalance {
         Some(spread) if spread > IMBALANCE => {
-            let _ = write!(out, " · loads spread {spread:.2}, past {IMBALANCE:.2}");
+            let _ = write!(head, " · loads spread {spread:.2}, past {IMBALANCE:.2}");
         }
         Some(spread) => {
-            let _ = write!(out, " · loads spread {spread:.2}");
+            let _ = write!(head, " · loads spread {spread:.2}");
         }
         None => {}
     }
-    out.push_str("\n\n");
-    let named = reading
+    // The head keeps to the width as the table under it does, its later
+    // lines hung under the first.
+    let mut out = crate::swarm::wrapped(&head, "", "  ", width);
+    out.push('\n');
+    // A machine's name is its own to say, so it is held to one line and
+    // counted as it is drawn.
+    let rows: Vec<(&Load, String, [String; 8])> = reading
         .machines
         .iter()
-        .map(|one| one.machine.chars().count())
+        .map(|one| (one, unmarked(&one.machine), figures(one)))
+        .collect();
+    let named = rows
+        .iter()
+        .map(|(_, name, _)| drawn_width(name))
         .max()
         .unwrap_or(0);
+    let wides: Vec<usize> = COLUMNS
+        .iter()
+        .enumerate()
+        .map(|(at, column)| {
+            rows.iter()
+                .map(|(_, _, figures)| drawn_width(&figures[at]))
+                .chain([column.len()])
+                .max()
+                .unwrap_or_default()
+        })
+        .collect();
+    // As many columns as fit whole, in their order, as the machines' table
+    // gives way, and a line naming the rest so none goes unsaid; a pipe
+    // has every one.
+    let mut reach = 2 + named + 2 + STANDS;
+    let shown = wides
+        .iter()
+        .take_while(|wide| {
+            reach += 2 + **wide;
+            reach <= width
+        })
+        .count();
     let mut header = format!("  {:named$}  {:STANDS$}", "", "");
-    for column in COLUMNS {
-        let _ = write!(header, "  {column}");
+    for (column, wide) in COLUMNS.iter().zip(&wides).take(shown) {
+        let _ = write!(header, "  {column:>wide$}");
     }
-    let _ = writeln!(out, "{}", paint(FAINT, header.trim_end()));
-    for one in &reading.machines {
-        let figures = [
-            percent(one.load),
-            percent(one.memory),
-            percent(one.processor),
-            percent(one.stall),
-            one.busy.to_string(),
-            one.idle.to_string(),
-            one.busy_per_core
-                .map_or_else(|| "-".to_owned(), |each| format!("{each:.2}")),
-            one.age.map_or_else(|| "-".to_owned(), aged),
-        ];
-        let mut row = format!("  {:named$}  {:STANDS$}", one.machine, stands(one));
-        for (column, figure) in COLUMNS.iter().zip(figures) {
-            let wide = column.len();
+    // With no column fitting, the header would be a blank line.
+    if shown > 0 {
+        let _ = writeln!(out, "{}", paint(FAINT, header.trim_end()));
+    }
+    for (one, name, figures) in &rows {
+        // Padded by the cells it takes, which a format's width doesn't
+        // count, so a wide name keeps the columns after it in line.
+        let mut row = format!("  {}  {:STANDS$}", padded(name, named), stands(one));
+        for (figure, wide) in figures.iter().zip(&wides).take(shown) {
             let _ = write!(row, "  {figure:>wide$}");
         }
         let _ = writeln!(out, "{}", row.trim_end());
+    }
+    if shown < COLUMNS.len() {
+        // Wrapped as the sentences are, so the line saying what didn't fit
+        // fits itself.
+        let label = "  left out to fit";
+        for line in wrapped(label, label, &COLUMNS[shown..].join(", "), width).lines() {
+            let _ = writeln!(out, "{}", paint(FAINT, line));
+        }
     }
     out.push('\n');
     let sentences: Vec<(&str, String)> = if reading.flags.is_empty() {
@@ -110,6 +145,21 @@ pub fn said(reading: &Reading, realm: &str, width: usize, colour: bool) -> Strin
         out.push_str(&wrapped(&paint(BOLD, "held"), "held", &rest, width));
     }
     out
+}
+
+/// One machine's figures, in the order of [`COLUMNS`].
+fn figures(one: &Load) -> [String; 8] {
+    [
+        percent(one.load),
+        percent(one.memory),
+        percent(one.processor),
+        percent(one.stall),
+        one.busy.to_string(),
+        one.idle.to_string(),
+        one.busy_per_core
+            .map_or_else(|| "-".to_owned(), |each| format!("{each:.2}")),
+        one.age.map_or_else(|| "-".to_owned(), aged),
+    ]
 }
 
 /// A share from 0 to 1 as a whole percent, or a dash where unknown.
@@ -148,21 +198,25 @@ fn sentence(flag: &Flag, reading: &Reading) -> (&'static str, String) {
             "hot while cool",
             format!(
                 "{hot} is over while {cool} has room; new work should go to {cool}, \
-                 and each minute of this counts against place's weights"
+                 and each minute of this counts against place's weights",
+                hot = unmarked(hot),
+                cool = unmarked(cool),
             ),
         ),
         Flag::Stranded { machine, spent } if spent == "memory" => (
             "stranded",
             format!(
                 "{machine}'s memory is nearly all used while its processors idle; \
-                 work there waits on memory while the processors go unused"
+                 work there waits on memory while the processors go unused",
+                machine = unmarked(machine),
             ),
         ),
         Flag::Stranded { machine, .. } => (
             "stranded",
             format!(
                 "{machine}'s processors are spent while half its memory or more is \
-                 free; work there waits on processors while the memory goes unused"
+                 free; work there waits on processors while the memory goes unused",
+                machine = unmarked(machine),
             ),
         ),
         Flag::Stale { machine } => {
@@ -173,7 +227,8 @@ fn sentence(flag: &Flag, reading: &Reading) -> (&'static str, String) {
                 "stale",
                 format!(
                     "{machine}'s facts are {old} old, too old to place by; its link may \
-                     be slow or down, and placing there is placing blind"
+                     be slow or down, and placing there is placing blind",
+                    machine = unmarked(machine),
                 ),
             )
         }
@@ -201,22 +256,24 @@ fn imbalanced(reading: &Reading) -> String {
     format!(
         "{} carries {}{}, {} {}{}; place weighs headroom, so new work leans to {} \
          until the two even out",
-        most.machine,
+        unmarked(&most.machine),
         percent(most.load),
         per_core(most, true),
-        least.machine,
+        unmarked(&least.machine),
         percent(least.load),
         per_core(least, false),
-        least.machine,
+        unmarked(&least.machine),
     )
 }
 
 /// A flag in a few words, for the flags held.
 fn short(flag: &Flag) -> String {
     match flag {
-        Flag::HotWhileCool { hot, cool } => format!("{hot} hot while {cool} cool"),
-        Flag::Stranded { machine, .. } => format!("{machine} stranded"),
-        Flag::Stale { machine } => format!("{machine} stale"),
+        Flag::HotWhileCool { hot, cool } => {
+            format!("{} hot while {} cool", unmarked(hot), unmarked(cool))
+        }
+        Flag::Stranded { machine, .. } => format!("{} stranded", unmarked(machine)),
+        Flag::Stale { machine } => format!("{} stale", unmarked(machine)),
         Flag::Imbalanced => "imbalanced".to_owned(),
     }
 }
@@ -224,12 +281,12 @@ fn short(flag: &Flag) -> String {
 /// `word: rest` wrapped to `width`, each later line under the first word
 /// of `rest`; `drawn` is `word` as it is drawn, which may hold escapes.
 fn wrapped(drawn: &str, word: &str, rest: &str, width: usize) -> String {
-    let indent = word.chars().count() + 2;
+    let indent = drawn_width(word) + 2;
     let mut out = format!("{drawn}:");
     let mut column = indent - 1;
     let mut first = true;
     for each in rest.split_whitespace() {
-        let wide = each.chars().count();
+        let wide = drawn_width(each);
         if !first && column + 1 + wide > width {
             let _ = write!(out, "\n{:indent$}{each}", "");
             column = indent + wide;
@@ -247,6 +304,16 @@ fn wrapped(drawn: &str, word: &str, rest: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wide_words_wrap_by_the_cells_they_take() {
+        // Each word takes four cells, so three after `held:` fill twenty,
+        // where counted by character five would.
+        assert_eq!(
+            wrapped("held", "held", &["港湾"; 6].join(" "), 20),
+            "held: 港湾 港湾 港湾\n      港湾 港湾 港湾\n"
+        );
+    }
 
     fn machine(name: &str, load: f64, busy: usize, per_core: f64) -> Load {
         Load {
@@ -419,7 +486,7 @@ mod tests {
             .nth(2)
             .expect("sentences after the table");
         for line in sentences.lines() {
-            assert!(line.chars().count() <= 60, "{line:?} in:\n{shown}");
+            assert!(drawn_width(line) <= 60, "{line:?} in:\n{shown}");
         }
         assert!(
             sentences.lines().nth(1).is_some_and(
@@ -439,5 +506,307 @@ mod tests {
         );
         assert!(shown.contains("\x1b[2m"), "{shown:?}");
         assert!(shown.contains("home · 1 machine"), "{shown}");
+    }
+
+    fn two() -> Reading {
+        reading(
+            vec![
+                machine("kestrel", 0.9, 28, 1.75),
+                machine("osprey", 0.4, 13, 1.08),
+            ],
+            Some(0.03),
+            vec![],
+        )
+    }
+
+    #[test]
+    fn at_eighty_columns_the_table_keeps_whole_columns_and_names_the_rest() {
+        let shown = said(&two(), "work", 80, false);
+        let long: Vec<&str> = shown
+            .lines()
+            .filter(|line| drawn_width(line) > 80)
+            .collect();
+        assert!(long.is_empty(), "lines past 80 columns: {long:?}\n{shown}");
+        let lines: Vec<&str> = shown.lines().collect();
+        assert_eq!(
+            lines[2..5],
+            [
+                "                      load  memory  processors  stall  busy  idle  per core",
+                "  kestrel  no room     90%     50%         90%    10%    28     3      1.75",
+                "  osprey   no room     40%     50%         40%    10%    13     3      1.08",
+            ],
+            "the facts column, which would pass 80, is left out whole:\n{shown}"
+        );
+        assert_eq!(
+            lines[5], "  left out to fit: facts",
+            "and the line under the table says so:\n{shown}"
+        );
+    }
+
+    #[test]
+    fn a_column_is_kept_while_it_reaches_the_edge_and_no_further() {
+        let at = |width| said(&two(), "work", width, false);
+        assert!(
+            at(82)
+                .lines()
+                .nth(2)
+                .is_some_and(|line| line.ends_with("per core  facts"))
+                && !at(82).contains("left out"),
+            "at 82 the facts reach the edge, so they stay:\n{}",
+            at(82)
+        );
+        assert!(
+            at(81)
+                .lines()
+                .any(|line| line == "  left out to fit: facts"),
+            "at 81 they'd pass it, so they're left out:\n{}",
+            at(81)
+        );
+    }
+
+    #[test]
+    fn with_no_column_fitting_no_blank_header_is_drawn() {
+        let long = "a-machine-named-thirty-letters";
+        let shown = said(
+            &reading(vec![machine(long, 0.9, 28, 1.75)], None, vec![]),
+            "work",
+            40,
+            false,
+        );
+        let lines: Vec<&str> = shown.lines().collect();
+        assert!(
+            lines[1].is_empty() && lines[2].starts_with(&format!("  {long}")),
+            "a header with no column drew a blank line under the head:\n{shown}"
+        );
+    }
+
+    #[test]
+    fn a_machine_s_name_reaches_the_table_and_sentences_as_one_line() {
+        // Every sentence and the held line name each machine, so each
+        // place a name is drawn is handed the dirty one.
+        let realm = |hot: &str, cool: &str| {
+            let flags = vec![
+                Flag::HotWhileCool {
+                    hot: hot.to_owned(),
+                    cool: cool.to_owned(),
+                },
+                Flag::Stranded {
+                    machine: hot.to_owned(),
+                    spent: "memory".to_owned(),
+                },
+                Flag::Stranded {
+                    machine: cool.to_owned(),
+                    spent: "processors".to_owned(),
+                },
+                Flag::Stale {
+                    machine: cool.to_owned(),
+                },
+                Flag::Imbalanced,
+            ];
+            let mut realm = reading(
+                vec![machine(hot, 0.9, 28, 1.75), machine(cool, 0.4, 13, 1.08)],
+                Some(0.25),
+                flags.clone(),
+            );
+            realm.held = Some(flags);
+            realm
+        };
+        let pages = |hot: &str, cool: &str| {
+            [40, 80, crate::swarm::WHOLE].map(|width| said(&realm(hot, cool), "work", width, false))
+        };
+        assert_eq!(
+            pages("kes\u{200B}trel\u{fdd0}", "osp\u{200B}rey\u{fdd0}"),
+            pages("kestrel", "osprey"),
+            "what draws nothing, or a mark, in a machine's name moved a column"
+        );
+        let (dirty, cool) = ("kestrel\u{1b}]0;x\u{7}\r\nlater", "osprey\u{1b}[2J");
+        let drawn = pages(dirty, cool);
+        assert!(
+            !drawn
+                .iter()
+                .any(|page| page.contains(['\u{1b}', '\u{7}', '\r'])),
+            "a machine's escape reached the page: {drawn:?}"
+        );
+        assert_eq!(
+            drawn,
+            pages(
+                &crate::forage::one_line(dirty),
+                &crate::forage::one_line(cool)
+            ),
+            "a machine's escape or break drew otherwise than its name on one line"
+        );
+    }
+
+    #[test]
+    fn in_a_narrow_terminal_a_wide_spread_s_head_wraps_within_its_edge() {
+        let shown = said(
+            &reading(
+                vec![
+                    machine("kestrel", 0.9, 28, 1.75),
+                    machine("osprey", 0.4, 13, 1.08),
+                ],
+                Some(0.25),
+                vec![],
+            ),
+            "work",
+            40,
+            false,
+        );
+        let lines: Vec<&str> = shown.lines().collect();
+        assert_eq!(
+            lines[..3],
+            ["work · 2 machines · loads spread 0.25,", "  past 0.20", ""],
+            "the head passed 40 columns, or hung its rest otherwise:\n{shown}"
+        );
+    }
+
+    /// Names that fit: a name is drawn whole, so one past the width
+    /// passes it.
+    #[test]
+    fn in_a_narrow_terminal_no_line_passes_its_edge() {
+        let shown = said(&two(), "work", 40, false);
+        let long: Vec<&str> = shown
+            .lines()
+            .filter(|line| drawn_width(line) > 40)
+            .collect();
+        assert!(long.is_empty(), "lines past 40 columns: {long:?}\n{shown}");
+        let lines: Vec<&str> = shown.lines().collect();
+        let at = lines
+            .iter()
+            .position(|line| line.starts_with("  left out to fit: "))
+            .expect("a line says what was left out");
+        assert_eq!(
+            lines[at..at + 3],
+            [
+                "  left out to fit: processors, stall,",
+                "                   busy, idle, per core,",
+                "                   facts",
+            ],
+            "the columns left out wrap under the first one named:\n{shown}"
+        );
+    }
+
+    #[test]
+    fn drawn_whole_every_column_is_there_and_none_is_said_left_out() {
+        let shown = said(&two(), "work", crate::swarm::WHOLE, false);
+        assert!(
+            shown
+                .lines()
+                .nth(2)
+                .is_some_and(|line| line.ends_with("per core  facts"))
+                && shown
+                    .lines()
+                    .nth(3)
+                    .is_some_and(|line| line.ends_with("1.75   20 s")),
+            "every column, the facts' age under its header:\n{shown}"
+        );
+        assert!(!shown.contains("left out"), "{shown}");
+    }
+
+    #[test]
+    fn drawn_whole_each_sentence_is_one_line() {
+        let flagged = reading(
+            vec![
+                machine("kestrel", 0.9, 28, 1.75),
+                machine("osprey", 0.4, 13, 1.08),
+            ],
+            Some(0.25),
+            vec![
+                Flag::Imbalanced,
+                Flag::HotWhileCool {
+                    hot: "kestrel".to_owned(),
+                    cool: "osprey".to_owned(),
+                },
+                Flag::Stranded {
+                    machine: "kestrel".to_owned(),
+                    spent: "processor".to_owned(),
+                },
+            ],
+        );
+        // The sentences follow the table's blank line, the second.
+        let sentences = |width: usize| -> Vec<String> {
+            said(&flagged, "work", width, false)
+                .split("\n\n")
+                .skip(2)
+                .flat_map(str::lines)
+                .map(str::to_owned)
+                .collect()
+        };
+        assert!(
+            sentences(40).iter().any(|line| line.starts_with(' ')),
+            "at 40 a sentence wraps: {:?}",
+            sentences(40)
+        );
+        let whole = sentences(crate::swarm::WHOLE);
+        assert!(
+            whole.len() == 3 && whole.iter().all(|line| !line.starts_with(' ')),
+            "whole, each of the three sentences is one line: {whole:?}"
+        );
+    }
+
+    #[test]
+    fn a_wide_name_keeps_the_columns_in_line_and_within_the_edge() {
+        // Twelve characters, each two cells wide, as a name in Han takes.
+        let wide = "港湾港湾港湾港湾港湾港湾";
+        let shown = said(
+            &reading(
+                vec![
+                    machine(wide, 0.9, 28, 1.75),
+                    machine("osprey", 0.4, 13, 1.08),
+                ],
+                None,
+                vec![],
+            ),
+            "work",
+            80,
+            false,
+        );
+        // Measured by Unicode's widths directly, not by the code under test,
+        // as nothing here is coloured.
+        let cells = <str as unicode_width::UnicodeWidthStr>::width;
+        let long: Vec<&str> = shown.lines().filter(|line| cells(line) > 80).collect();
+        assert!(long.is_empty(), "lines past 80 cells: {long:?}\n{shown}");
+        let stands = |name: &str| {
+            shown
+                .lines()
+                .find(|line| line.starts_with(&format!("  {name}")))
+                .and_then(|line| line.find("no room").map(|at| cells(&line[..at])))
+        };
+        assert!(
+            stands(wide).is_some() && stands(wide) == stands("osprey"),
+            "a wide name moved the columns after it:\n{shown}"
+        );
+        // The name takes 24 cells, so busy ends at 76 and idle would end
+        // at 82; counted as 12 characters, idle and per core would fit.
+        assert!(
+            shown
+                .lines()
+                .any(|line| line.trim_end().ends_with(" stall  busy"))
+                && shown
+                    .lines()
+                    .any(|line| line == "  left out to fit: idle, per core, facts"),
+            "the columns kept were not those 80 cells hold:\n{shown}"
+        );
+    }
+
+    #[test]
+    fn a_figure_wider_than_its_header_widens_its_column() {
+        let mut many = machine("kestrel", 0.9, 12_345, 1.75);
+        many.idle = 7;
+        let shown = said(
+            &reading(vec![many, machine("osprey", 0.4, 13, 1.08)], None, vec![]),
+            "work",
+            crate::swarm::WHOLE,
+            false,
+        );
+        let lines: Vec<&str> = shown.lines().collect();
+        let busy = |line: &str| line.find("busy").map(|at| at + "busy".len());
+        assert!(
+            lines[2].contains(" busy  idle")
+                && lines[3].contains("12345     7")
+                && lines[4].contains("   13     3")
+                && busy(lines[2]) == lines[3].find("12345").map(|at| at + 5),
+            "busy right-aligned over its widest figure, idle still under its own:\n{shown}"
+        );
     }
 }

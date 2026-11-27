@@ -396,7 +396,7 @@ pub async fn run(
         health: health_of(starting.as_ref()),
         declared: declared_of(starting.as_ref()),
         heard_declared: declared_heard::DeclaredHeard::default(),
-        lender: lender_of(starting.as_ref()),
+        lender: lends_to(starting.as_ref(), worker || releases),
         housed: if matches!(
             starting
                 .as_ref()
@@ -498,66 +498,106 @@ async fn next<T>(asked: &mut Option<mpsc::UnboundedReceiver<T>>) -> Option<T> {
     }
 }
 
-/// How many frames waiting behind a machine's facts are looked through
-/// for newer facts at once, so a long queue still lets the link's other
-/// work in between.
-const FACTS_LOOKED_THROUGH: usize = 256;
+/// How many of the other end's frames waiting are looked through at
+/// once, for newer facts and for frames that go ahead of shares, so a
+/// long queue still lets the link's other work in between.
+const FRAMES_LOOKED_THROUGH: usize = 1024;
 
-/// The other end's next frame: the first of `queued`, else the next of
-/// `frames`, where facts it brings are kept only if no newer facts wait
-/// behind them ([`newest_facts`]). It is cancel safe, as `select!` needs:
-/// nothing is taken from `frames` but in the wait for its next.
+/// The other end's next frame, from `queued` and what waits in `frames`,
+/// taken as [`next_waiting`] takes it. It is cancel safe, as `select!`
+/// needs: nothing is taken from `frames` but in the wait for its next,
+/// and what is taken is kept in `queued` until it is pulled.
 async fn pull(
     queued: &mut VecDeque<io::Result<Frame>>,
     frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>,
 ) -> Option<io::Result<Frame>> {
-    if let Some(frame) = queued.pop_front() {
-        return Some(frame);
+    if queued.is_empty() {
+        queued.push_back(frames.recv().await?);
     }
-    let first = frames.recv().await?;
-    Some(newest_facts(first, frames, queued))
+    while queued.len() < FRAMES_LOOKED_THROUGH
+        && !queued.back().is_some_and(Result::is_err)
+        && let Ok(frame) = frames.try_recv()
+    {
+        queued.push_back(frame);
+    }
+    next_waiting(queued)
 }
 
-/// `first`, or where it is a machine's facts and others wait behind it,
-/// the newest facts waiting, taken in `first`'s place, with the other
-/// frames waiting put in `queued` in the order they came and every older
-/// facts left out. Facts are said whole every time, so older ones held up
-/// behind newer ones say nothing the newest doesn't: a link whose node
-/// fell behind, as one did by 49 minutes on 2026-11-21, catches up on
-/// what its machine is now rather than on what it was. The newest come
-/// first so no frame is judged on facts older than those it came behind.
-fn newest_facts(
-    first: io::Result<Frame>,
-    frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>,
-    queued: &mut VecDeque<io::Result<Frame>>,
-) -> io::Result<Frame> {
-    if !matches!(first, Ok(Frame::Machine(_))) {
-        return first;
-    }
-    let mut waiting = vec![first];
-    while waiting.len() < FACTS_LOOKED_THROUGH {
-        match frames.try_recv() {
-            Ok(frame) => {
-                let failed = frame.is_err();
-                waiting.push(frame);
-                if failed {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    let newest = waiting
+/// The next of the frames `queued`, in the order they came, but for two
+/// things. A frame that waits only behind shares and facts goes ahead of
+/// them, if it [`jumps_shares`]: each share is an act on the disk, which
+/// took seconds apiece on a machine at load 247 on 2026-11-26, and a
+/// cloud machine pulling scratch said hundreds, so a start's answer and
+/// the machine's sessions waited behind them for many minutes, and the
+/// starts there were given up on although they ran. Facts are passed
+/// too, since the other end says them every minute, so an answer would
+/// otherwise wait behind every share said before the latest. Shares and
+/// facts keep their order between them, and every other frame its place
+/// behind them. And where
+/// facts are taken, the newest waiting before the next share or
+/// handover are taken in their place and the older left out: facts are
+/// said whole every time, so a link whose node fell behind, as one did
+/// by 49 minutes on 2026-11-21, catches up on what its machine is now
+/// rather than on what it was. Facts said after a share or a handover
+/// wait for it, since what a machine declares decides which shares are
+/// heard, and the handover lets the machine go once the shares before
+/// it are.
+fn next_waiting(queued: &mut VecDeque<io::Result<Frame>>) -> Option<io::Result<Frame>> {
+    let unshared = queued
         .iter()
-        .rposition(|frame| matches!(frame, Ok(Frame::Machine(_))))
-        .unwrap_or_else(|| unreachable!("the first is facts"));
-    let next = waiting.remove(newest);
-    queued.extend(
-        waiting
-            .into_iter()
-            .filter(|frame| !matches!(frame, Ok(Frame::Machine(_)))),
-    );
-    next
+        .position(|frame| !matches!(frame, Ok(Frame::Share(_) | Frame::Machine(_))));
+    let at = match unshared {
+        Some(at) if queued[at].as_ref().is_ok_and(jumps_shares) => at,
+        _ => 0,
+    };
+    let next = queued.remove(at)?;
+    if !matches!(next, Ok(Frame::Machine(_))) {
+        return Some(next);
+    }
+    let waited_on = queued
+        .iter()
+        .position(|frame| matches!(frame, Ok(Frame::Share(_) | Frame::HandedOver)))
+        .unwrap_or(queued.len());
+    let newest = queued
+        .range(..waited_on)
+        .rposition(|frame| matches!(frame, Ok(Frame::Machine(_))));
+    let next = match newest {
+        Some(newest) => queued.remove(newest).unwrap_or(next),
+        None => next,
+    };
+    // The older facts before what is waited on go, and those after it
+    // wait. Where the newest was taken, what is waited on moved up a
+    // place, and it is no facts, so the bound needs no moving.
+    let mut at = 0;
+    queued.retain(|frame| {
+        let kept = at >= waited_on || !matches!(frame, Ok(Frame::Machine(_)));
+        at += 1;
+        kept
+    });
+    Some(next)
+}
+
+/// Whether `frame` may go ahead of the shares and facts it came behind:
+/// what the other end says of its sessions, and its answers to what this
+/// end asked, none of which a share or the facts said before can be
+/// waiting for. A message may land before a quest file said ahead of
+/// it, which a reader takes as written apart in time, as it is. A new
+/// ask keeps its place, since a carried session's start must find the
+/// shares said before it written, and so does a handover, said once its
+/// shares are, and a frame that couldn't be read, so a link ends where
+/// it broke.
+const fn jumps_shares(frame: &Frame) -> bool {
+    matches!(
+        frame,
+        Frame::Message { .. }
+            | Frame::Presence { .. }
+            | Frame::Ended { .. }
+            | Frame::Replies(_)
+            | Frame::Ran { .. }
+            | Frame::Taken { .. }
+            | Frame::Lent { .. }
+            | Frame::Started { .. }
+    )
 }
 
 /// The task reading a link's frames, stopped when this end of the link is,
@@ -947,8 +987,23 @@ fn health_of(starting: Option<&Starting>) -> OwnHealth {
 
 /// What this machine lends the other end, as `starting` says; none where
 /// the link carries no starts, so every lend it asks is refused.
-fn lender_of(starting: Option<&Starting>) -> Option<Arc<Lender>> {
-    starting.and_then(|starting| starting.lender.clone())
+fn lends_to(starting: Option<&Starting>, borrows: bool) -> Lending {
+    match starting.and_then(|starting| starting.lender.clone()) {
+        _ if !borrows => Lending::NotToIt,
+        Some(lender) => Lending::By(lender),
+        None => Lending::Nothing,
+    }
+}
+
+/// What this end lends the other machine: through its lender, where the
+/// other end is a worker of this machine or one its way in releases, a
+/// machine its node made, such as one made for the person; nothing,
+/// where this machine lends nothing; or nothing to it, where it is
+/// neither.
+enum Lending {
+    By(Arc<Lender>),
+    Nothing,
+    NotToIt,
 }
 
 /// The gates this machine answers its workers, if its node names any.
@@ -1225,8 +1280,11 @@ struct End<S> {
     housed: Housed,
     /// This machine's node's socket, which starts asked of it go to.
     node: Option<PathBuf>,
-    /// What answers the lends a worker asks of this machine, if it lends.
-    lender: Option<Arc<Lender>>,
+    /// What answers the lends the other end asks of this machine: a
+    /// worker, or a machine this end's way in releases
+    /// ([`Connection::releases`]), which a provider's program reaches and
+    /// this machine pays for, though its node made it for the person.
+    lender: Lending,
     /// The gates this machine answers for the workers it names, which
     /// are the one start a worker may ask of it ([`crate::gate`]).
     gates: Option<Arc<Gates>>,
@@ -1892,18 +1950,18 @@ impl<S: Store> End<S> {
     }
 
     /// Hands a lend the other end asks of this machine to its lender, only
-    /// when the other end is a worker of this machine and this machine
-    /// lends. The lender knows the worker by this link's other end.
+    /// when the other end is a worker of this machine or a machine its
+    /// node made, such as one made for the person, and this machine lends.
+    /// The lender knows the machine by this link's other end, and holds it
+    /// to the same budgets as a worker.
     fn lend_here(&mut self, ask: u64, lend: Lend) {
-        let lender = if self.worker {
-            self.lender
-                .clone()
-                .ok_or_else(|| format!("{} lends nothing", self.here))
-        } else {
-            Err(format!(
-                "{} lends only to its workers, and {} isn't one",
+        let lender = match &self.lender {
+            Lending::By(lender) => Ok(lender.clone()),
+            Lending::Nothing => Err(format!("{} lends nothing", self.here)),
+            Lending::NotToIt => Err(format!(
+                "{} lends only to its workers and the machines it made, and {} is neither",
                 self.here, self.other
-            ))
+            )),
         };
         let lender = match lender {
             Ok(lender) => lender,
@@ -2381,6 +2439,8 @@ impl<S: Store> End<S> {
         // Whether it is a worker is this end's to say: a worker saying it
         // isn't one, or a peer saying it is, changes nothing.
         said.worker = self.worker;
+        // So is whom it is held for, by the node placing work.
+        said.held_for = facts::HeldFor::AsBooked;
         // A node restarting, or too slow to answer its end, has it say its
         // machine with nothing declared; what the machine last declared
         // stands for a while, so a carry isn't refused for ground the
@@ -3127,10 +3187,9 @@ mod tests {
     }
 
     // KP0L6A (2026-11-21): a node fell 49 minutes behind the facts a
-    // Mac sent it, so a link takes only the newest of those
-    // waiting, first, and every other frame in the order it came.
-    // Our council on #359: none is judged on facts older than it came
-    // behind.
+    // Mac sent it, so a link takes only the newest of those waiting.
+    // Our council on #482: what is said of sessions needs no facts, so
+    // it goes ahead of them.
     #[tokio::test]
     async fn a_link_behind_takes_only_the_newest_facts() {
         let (sender, mut frames) = mpsc::unbounded_channel();
@@ -3161,9 +3220,10 @@ mod tests {
         }
         assert_eq!(
             heard,
-            [facts(3), ended("a"), ended("b")]
+            [ended("a"), ended("b"), facts(3)]
                 .map(|frame: io::Result<Frame>| frame.expect("a frame")),
-            "the newest facts come first, the older are left out, and the rest keep their order"
+            "what is said of sessions goes ahead of facts, in its order; of the facts, only \
+             the newest are taken"
         );
         sender.send(facts(4)).expect("sent");
         assert_eq!(
@@ -3173,6 +3233,270 @@ mod tests {
                 .expect("read"),
             facts(4).expect("a frame"),
             "facts nothing newer waits behind are taken as they come"
+        );
+    }
+
+    // On 2026-11-26 starts asked of a cloud machine ran there, but their
+    // answers waited behind hundreds of shares, each an act on a loaded
+    // disk, until the asker gave up on them.
+    #[tokio::test]
+    async fn what_waits_only_behind_shares_goes_ahead_of_them() {
+        let (sender, mut frames) = mpsc::unbounded_channel();
+        let share = |file: &str| {
+            Frame::Share(Say::Want {
+                quest: "QEST-20261126-SKIFF1".to_owned(),
+                file: file.to_owned(),
+                at: None,
+            })
+        };
+        let started = Frame::Started {
+            ask: 7,
+            reply: Err("refused".to_owned()),
+        };
+        let ended = Frame::Ended {
+            session: "a".to_owned(),
+        };
+        // A run's piece taken answers this end; a run let go asks it.
+        let taken = Frame::Taken { ask: 3 };
+        let unrun = Frame::Unrun { ask: 4 };
+        let tern = facts::measure("tern", &facts::Sources::nowhere());
+        let facts = |cores: u32| {
+            let mut machine = tern.clone();
+            machine.cpu.cores = Some(cores);
+            Frame::Machine(Box::new(machine))
+        };
+        let said = [
+            share("one"),
+            facts(1),
+            share("two"),
+            started.clone(),
+            facts(2),
+            unrun.clone(),
+            Frame::HandedOver,
+            share("three"),
+            ended.clone(),
+            taken.clone(),
+        ];
+        for frame in said {
+            sender.send(Ok(frame)).expect("sent");
+        }
+        let mut queued = VecDeque::new();
+        let mut heard = Vec::new();
+        for _ in 0..9 {
+            heard.push(
+                pull(&mut queued, &mut frames)
+                    .await
+                    .expect("a frame")
+                    .expect("read"),
+            );
+        }
+        assert_eq!(
+            heard,
+            [
+                started,
+                share("one"),
+                facts(1),
+                share("two"),
+                facts(2),
+                unrun,
+                Frame::HandedOver,
+                ended,
+                taken,
+            ],
+            "an answer goes ahead of the shares and facts it came behind, which keep their \
+             order, but never ahead of an ask or a handover; facts, an ask and a handover \
+             never go ahead of a share"
+        );
+        // A frame said while shares still wait goes ahead of them too.
+        sender.send(Ok(share("four"))).expect("sent");
+        let presence = Frame::Presence {
+            session: "later".to_owned(),
+            body: json!({"session": "later"}),
+            leases: None,
+            held: None,
+            started_by: None,
+        };
+        sender.send(Ok(presence.clone())).expect("sent");
+        let mut heard = Vec::new();
+        for _ in 0..3 {
+            heard.push(
+                pull(&mut queued, &mut frames)
+                    .await
+                    .expect("a frame")
+                    .expect("read"),
+            );
+        }
+        assert_eq!(
+            heard,
+            [presence, share("three"), share("four")],
+            "a presence said later goes ahead of the shares still waiting"
+        );
+    }
+
+    // Our council on #482: a carried session's start, or the handover
+    // that lets its machine go, said behind shares and taken ahead of
+    // them, finds the quest's files not yet written.
+    #[test]
+    fn what_shares_are_waited_on_by_keeps_its_place_behind_them() {
+        let share = Frame::Share(Say::Want {
+            quest: "QEST-20261126-SKIFF1".to_owned(),
+            file: "one".to_owned(),
+            at: None,
+        });
+        let tern = facts::measure("tern", &facts::Sources::nowhere());
+        let start = serde_json::from_value(json!({
+            "work": {},
+            "command": ["pi-carry", "arrive", "QEST-20261126-SKIFF1"],
+        }))
+        .expect("a start");
+        for waits in [
+            Frame::Start { ask: 1, start },
+            Frame::HandedOver,
+            Frame::Unrun { ask: 2 },
+            Frame::Machine(Box::new(tern)),
+        ] {
+            let mut queued = VecDeque::from([Ok(share.clone()), Ok(waits.clone())]);
+            let next = next_waiting(&mut queued).expect("a frame").expect("read");
+            assert_eq!(
+                next, share,
+                "{waits:?} waits behind the share said before it"
+            );
+        }
+    }
+
+    // Our council on #482: the other end says its facts every minute,
+    // so an answer that waited behind them waited behind every share
+    // said before the latest.
+    #[test]
+    fn every_answer_goes_ahead_of_the_shares_and_facts_before_it() {
+        let share = Frame::Share(Say::Want {
+            quest: "QEST-20261126-SKIFF1".to_owned(),
+            file: "one".to_owned(),
+            at: None,
+        });
+        let facts = Frame::Machine(Box::new(facts::measure("tern", &facts::Sources::nowhere())));
+        for answer in [
+            Frame::Message {
+                id: "m".to_owned(),
+                body: json!({}),
+            },
+            Frame::Presence {
+                session: "a".to_owned(),
+                body: json!({"session": "a"}),
+                leases: None,
+                held: None,
+                started_by: None,
+            },
+            Frame::Ended {
+                session: "a".to_owned(),
+            },
+            Frame::Replies(Replies {
+                address: "a".to_owned(),
+                id: "t".to_owned(),
+                from: 0,
+                lines: String::new(),
+            }),
+            Frame::Ran {
+                ask: 1,
+                ran: Ran::Failed("refused".to_owned()),
+            },
+            Frame::Taken { ask: 2 },
+            Frame::Lent {
+                ask: 3,
+                lent: Lent::Done,
+            },
+            Frame::Started {
+                ask: 4,
+                reply: Err("refused".to_owned()),
+            },
+        ] {
+            let mut queued: VecDeque<io::Result<Frame>> =
+                [share.clone(), facts.clone(), share.clone(), answer.clone()]
+                    .into_iter()
+                    .map(Ok)
+                    .collect();
+            let next = next_waiting(&mut queued).expect("a frame").expect("read");
+            assert_eq!(
+                next, answer,
+                "{answer:?} goes ahead of the shares and facts"
+            );
+        }
+    }
+
+    #[test]
+    fn facts_wait_for_a_handover_or_share_said_before_them() {
+        let tern = facts::measure("tern", &facts::Sources::nowhere());
+        let facts = |cores: u32| {
+            let mut machine = tern.clone();
+            machine.cpu.cores = Some(cores);
+            Frame::Machine(Box::new(machine))
+        };
+        let share = Frame::Share(Say::Want {
+            quest: "QEST-20261126-SKIFF1".to_owned(),
+            file: "one".to_owned(),
+            at: None,
+        });
+        let mut queued: VecDeque<io::Result<Frame>> = [
+            facts(1),
+            facts(2),
+            Frame::HandedOver,
+            facts(3),
+            share.clone(),
+            facts(4),
+            facts(5),
+        ]
+        .into_iter()
+        .map(Ok)
+        .collect();
+        let mut heard = Vec::new();
+        while let Some(next) = next_waiting(&mut queued) {
+            heard.push(next.expect("read"));
+        }
+        assert_eq!(
+            heard,
+            [facts(2), Frame::HandedOver, facts(3), share, facts(5)],
+            "the newest before the handover, then it; facts after it are never taken ahead \
+             of a share said before them, nor left out for facts said after it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_frame_that_cant_be_read_waits_behind_the_shares_before_it() {
+        let (sender, mut frames) = mpsc::unbounded_channel();
+        let share = Frame::Share(Say::Want {
+            quest: "QEST-20261126-SKIFF1".to_owned(),
+            file: "one".to_owned(),
+            at: None,
+        });
+        sender.send(Ok(share.clone())).expect("sent");
+        sender
+            .send(Err(io::Error::other("a line that isn't a frame")))
+            .expect("sent");
+        sender
+            .send(Ok(Frame::Ended {
+                session: "a".to_owned(),
+            }))
+            .expect("sent");
+        let mut queued = VecDeque::new();
+        assert_eq!(
+            pull(&mut queued, &mut frames)
+                .await
+                .expect("a frame")
+                .expect("read"),
+            share,
+            "the share comes first"
+        );
+        assert_eq!(
+            queued.len(),
+            1,
+            "nothing said after where it broke is read, so nothing there goes ahead"
+        );
+        assert!(
+            pull(&mut queued, &mut frames)
+                .await
+                .expect("a frame")
+                .is_err(),
+            "then where it broke"
         );
     }
 
@@ -3721,6 +4045,8 @@ mod tests {
                 },
                 over: Some(Vec::new()),
                 saturated,
+                cpu_minute: None,
+                memory_full_minute: None,
             };
             let said = crate::within::Said {
                 at: now,
@@ -5995,6 +6321,7 @@ mod tests {
             );
             let mut tern = tern_undeclared();
             tern.worker = says_it_is;
+            tern.held_for = facts::HeldFor::Agents;
             says(
                 &mut far_writing,
                 &[
@@ -6019,9 +6346,9 @@ mod tests {
                 .into_iter()
                 .find(|machine| machine.name == "tern");
             assert_eq!(
-                kept.map(|machine| machine.worker),
-                Some(worker),
-                "tern said it was a worker: {says_it_is}, but the link's word is kept"
+                kept.map(|machine| (machine.worker, machine.held_for)),
+                Some((worker, facts::HeldFor::AsBooked)),
+                "tern said it was a worker: {says_it_is}, and a room, but the link's word is kept"
             );
         }
     }
@@ -6155,8 +6482,9 @@ mod tests {
     }
 
     /// What skiff answers a lend tern asks of it over a link, tern dialled
-    /// as its worker or not, skiff lending through `lender` or not.
-    async fn lent_to_tern(worker: bool, lender: Option<Lender>) -> Lent {
+    /// as its worker or not, by a way in that releases it or not, skiff
+    /// lending through `lender` or not.
+    async fn lent_to_tern(worker: bool, releases: bool, lender: Option<Lender>) -> Lent {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let starting = Starting {
             lender: lender.map(Arc::new),
@@ -6169,6 +6497,7 @@ mod tests {
                 Memory::default(),
                 &realm("skiff"),
                 Connection {
+                    releases,
                     worker,
                     ..connection(reading, writing)
                 },
@@ -6350,7 +6679,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_lend_is_answered_only_for_a_worker_where_this_machine_lends() {
+    async fn a_lend_is_answered_for_a_worker_or_a_made_machine_where_this_machine_lends() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let unread = || {
             Lender::new(
@@ -6361,25 +6690,33 @@ mod tests {
             )
         };
         assert_eq!(
-            lent_to_tern(false, Some(unread())).await,
+            lent_to_tern(false, false, Some(unread())).await,
             Lent::Refused {
                 status: 403,
-                why: "skiff lends only to its workers, and tern isn't one".to_owned(),
+                why: "skiff lends only to its workers and the machines it made, and tern is \
+                      neither"
+                    .to_owned(),
             },
-            "a machine that isn't skiff's worker borrows nothing"
+            "a machine that is neither skiff's worker nor made by it borrows nothing"
         );
         assert_eq!(
-            lent_to_tern(true, None).await,
+            lent_to_tern(true, false, None).await,
             Lent::Refused {
                 status: 403,
                 why: "skiff lends nothing".to_owned(),
             },
             "nor does a worker where skiff lends nothing"
         );
-        let lent = lent_to_tern(true, Some(unread())).await;
+        let lent = lent_to_tern(true, false, Some(unread())).await;
         assert!(
             matches!(lent, Lent::Refused { status: 503, .. }),
             "a worker's lend reaches skiff's lender, which can't read what it may lend: {lent:?}"
+        );
+        let lent = lent_to_tern(false, true, Some(unread())).await;
+        assert!(
+            matches!(lent, Lent::Refused { status: 503, .. }),
+            "and so does the lend of a machine skiff made for the person, which is no worker: \
+             {lent:?}"
         );
     }
 

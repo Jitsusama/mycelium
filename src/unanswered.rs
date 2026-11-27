@@ -349,11 +349,15 @@ const NAME_MOST: usize = 16;
 /// the names first, then the sender and the time, so
 /// the wait and the id a person answers by stay whole; only where even
 /// they don't fit are they cut from their end. Into a pipe nothing is
-/// cut.
+/// cut, and each time is [`stamped`].
 fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
     use crate::swarm::fit;
     let since = record["since"].as_str().unwrap_or_default();
-    let when = look.when(since).unwrap_or_default();
+    let when = match width {
+        Some(_) => look.when(since),
+        None => stamped(look, since),
+    }
+    .unwrap_or_default();
     let capped = |text: &str| match width {
         Some(_) => fit(text, NAME_MOST),
         None => text.to_owned(),
@@ -381,7 +385,10 @@ fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
     let (verb, named, after) = if record["intent"] == "hold" {
         let until = record["until"]
             .as_str()
-            .and_then(|until| lapses(look, until))
+            .and_then(|until| match width {
+                Some(_) => lapses(look, until),
+                None => stamped(look, until),
+            })
             .map_or_else(String::new, |until| format!(", until {until}"));
         ("holds", names(&record["groups"]), until)
     } else {
@@ -398,7 +405,7 @@ fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
     let Some(width) = width else {
         return format!("{lead}{named}{tail}");
     };
-    let tail_cells = tail.chars().count();
+    let tail_cells = crate::swarm::drawn_width(&tail);
     if width > tail_cells {
         format!(
             "{}{tail}",
@@ -407,6 +414,18 @@ fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
     } else {
         cut(&tail, Some(width))
     }
+}
+
+/// When `at` is, into a pipe: its day, date, time and zone, so a copy
+/// kept until tomorrow, or read on a machine in another zone, still says
+/// when. The zone's offset follows its name, since a name such as IST or
+/// CST is held by more than one zone, and some zones have none.
+fn stamped(look: &Look, at: &str) -> Option<String> {
+    let at = at
+        .parse::<jiff::Timestamp>()
+        .ok()?
+        .to_zoned(look.now.time_zone().clone());
+    Some(at.strftime("%a %-d %b %Y %H:%M %Z (%:z)").to_string())
 }
 
 /// The days ahead a lapse is said by its weekday alone.
@@ -878,7 +897,9 @@ mod tests {
         for width in [40, 60, 80] {
             let drawn = drawn(&records(ASKED), &look(), Some(width));
             assert!(
-                drawn.lines().all(|line| line.chars().count() <= width),
+                drawn
+                    .lines()
+                    .all(|line| crate::swarm::drawn_width(line) <= width),
                 "a line passes {width} columns:\n{drawn}"
             );
             let said: Vec<&str> = drawn
@@ -937,7 +958,7 @@ mod tests {
                 .expect("the question's line");
             assert!(
                 heading.ends_with(", 25 min so far  [c0cd280e]")
-                    && heading.chars().count() <= width,
+                    && crate::swarm::drawn_width(heading) <= width,
                 "the wait or the id was cut at {width}:\n{drawn}"
             );
             assert!(
@@ -965,7 +986,7 @@ mod tests {
                 .expect("the question's line");
             assert!(
                 heading.ends_with(", 25 min so far  [c0cd280e]")
-                    && heading.chars().count() <= width
+                    && crate::swarm::drawn_width(heading) <= width
                     && !heading.contains("deadbeef"),
                 "the wait or the id was lost at {width}:\n{drawn}"
             );
@@ -982,7 +1003,7 @@ mod tests {
             // its sender's end before the wait or the id does.
             let heading = drawn.lines().nth(1).expect("the question's line");
             assert!(
-                heading.chars().count() <= width && !heading.contains("deadbeef"),
+                crate::swarm::drawn_width(heading) <= width && !heading.contains("deadbeef"),
                 "a forged id was drawn at {width}:\n{drawn}"
             );
         }
@@ -1019,6 +1040,38 @@ mod tests {
         assert!(
             wide.contains("  TERN01TERN01TER… asks ") && wide.contains("[0123456789abcde…]"),
             "a name or an id wasn't capped at 16:\n{wide}"
+        );
+    }
+
+    #[test]
+    fn into_a_pipe_each_time_says_its_date_and_zone() {
+        let piped = drawn(&records(ASKED), &look(), None);
+        for line in [
+            "  Sun 15 Nov 2026 12:05 UTC (+00:00)  TERN01 asks SKIFF1 and KESTRL, 25 min so far  \
+             [c0cd280e]",
+            "  Sun 15 Nov 2026 12:02 UTC (+00:00)  OSPREY holds #all, until Sun 15 Nov 2026 14:02 \
+             UTC (+00:00)  [647648e1]",
+        ] {
+            assert!(
+                piped.lines().any(|each| each == line),
+                "no line {line:?}, so a kept copy can't say when:\n{piped}"
+            );
+        }
+    }
+
+    #[test]
+    fn into_a_pipe_a_time_is_said_in_the_reader_s_zone() {
+        let mut look = look();
+        look.now = look
+            .now
+            .with_time_zone(jiff::tz::TimeZone::fixed(jiff::tz::offset(-5)));
+        let piped = drawn(&records(ASKED), &look, None);
+        assert!(
+            piped.lines().any(|each| {
+                each.starts_with("  Sun 15 Nov 2026 07:05 ")
+                    && each.contains(" (-05:00)  TERN01 asks SKIFF1")
+            }),
+            "a time wasn't said in the reader's zone, with its offset:\n{piped}"
         );
     }
 
@@ -1071,10 +1124,13 @@ mod tests {
         // A name with nothing an address holds still leaves an asker.
         let mut unnamed = asked_of(&["SKIFF1"], 5, "c0cd280e");
         unnamed["from"] = json!("ÉÀ Ö");
-        for width in [None, Some(80)] {
+        for (width, when) in [
+            (None, "  Sun 15 Nov 2026 12:05 UTC (+00:00)"),
+            (Some(80), "  12:05"),
+        ] {
             let drawn = drawn(&[unnamed.clone()], &look(), width);
             assert!(
-                drawn.contains("  12:05  someone asks SKIFF1"),
+                drawn.contains(&format!("{when}  someone asks SKIFF1")),
                 "a sender with no address left no asker at {width:?}:\n{drawn}"
             );
         }

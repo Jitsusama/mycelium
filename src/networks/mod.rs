@@ -29,7 +29,6 @@ mod made;
 mod shown;
 mod subjects;
 
-use made::slug;
 pub use made::{FORMED, MOST_SUBJECTS, read, subject_key, subjects};
 pub use shown::{cell, cells, network, overview};
 pub use subjects::Subjects;
@@ -89,12 +88,16 @@ fn shares_of(presence: &Value) -> Vec<Share> {
         share.key.make_ascii_lowercase();
         // Cleaned whole before the cut, so what a terminal would act on is
         // gone wherever it was said, and the cut counts what is drawn.
-        share.about = drawable(&share.about);
+        // A title is a name read and voted on, so it drops what draws
+        // nothing too, as every peer's text on a page does; a folder is
+        // a path, kept to the letter but for what would act on a terminal.
+        share.about = swarm::unmarked(&share.about);
         share.folder = drawable(&share.folder);
         if let Some((cut, _)) = share.about.char_indices().nth(SHARE_FOR_MOST) {
             share.about.truncate(cut);
-            // Trimmed again, so a cut falling after a space ends in none.
-            share.about.truncate(share.about.trim_end().len());
+            // Cleaned again, so a cut falling after a space ends in none,
+            // and one falling after a joiner leaves none joining nothing.
+            share.about = swarm::unmarked(&share.about);
         }
         // Cleaning and a cut keep what was read, so a long `for` held in
         // every cell would still cost its whole length without this.
@@ -353,8 +356,7 @@ pub struct Cell {
     /// The repository a session works in, where it says.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
-    /// The subjects a session says it works on, as its presence declares
-    /// them: the first [`made::MOST_SUBJECTS`] that are short plain text.
+    /// The subjects its presence declares, as [`made::subjects`] keeps them.
     #[serde(skip_serializing_if = "Subjects::is_empty")]
     pub subjects: Subjects,
     /// What a session has spent today, as its presence says it.
@@ -555,9 +557,10 @@ impl Share {
     /// network's name can't be cut anywhere but its first dot, and saying
     /// its kind, a colon and what it is of, as `quest:<id>`, so its short
     /// name is never another shape's, as no mesh group holds a colon;
-    /// and its folder said. What it is for, and its folder, are made
-    /// [`drawable`] and the first cut to its bound before, in
-    /// [`shares_of`].
+    /// and its folder said. What it is for is held to one line, drops
+    /// what draws nothing, is trimmed and cut to its bound, and its
+    /// folder made [`drawable`], before, in [`shares_of`], so the titles
+    /// voted on and those `-o json` prints are the cleaned ones.
     fn fits(&self) -> bool {
         let keyed = |byte: u8| byte.is_ascii_alphanumeric() || b":-_".contains(&byte);
         let key = self.key.as_bytes();
@@ -579,12 +582,11 @@ impl Share {
     }
 }
 
-/// `said` as a terminal can draw it on one line, as a forage's lines
-/// are: each control character and line or paragraph separator a space,
-/// and each mark turning text's direction gone, so nothing it says acts
-/// on the terminal or turns the text after it. Every other character
-/// stays, the joiners an emoji or a script spells with among them: a
-/// folder is never refused for its title, which was the quest's.
+/// `said`, a folder's path, as a terminal can draw it on one line: each
+/// control character and line or paragraph separator a space, and each
+/// mark turning text's direction gone, so nothing it says acts on the
+/// terminal or turns the text after it. Every other character stays, as
+/// the path holds it.
 fn drawable(said: &str) -> String {
     said.chars()
         .filter(|each| !crate::forage::turns_direction(*each))
@@ -746,7 +748,7 @@ impl Mycelium {
     pub fn named_network(&self, asked: &str) -> Result<&Network, String> {
         let mesh_spelt = asked.trim_start_matches('#').replace('/', ".");
         if mesh_spelt != asked {
-            match swarm::picked(&self.networks, &mesh_spelt, Network::naming) {
+            match swarm::picked(&self.networks, &mesh_spelt, false, Network::naming) {
                 swarm::Picked::One(one) => return Ok(one),
                 swarm::Picked::Several(many) => {
                     return Err(several(asked, &many, |each| &each.name));
@@ -754,7 +756,7 @@ impl Mycelium {
                 swarm::Picked::None => {}
             }
         }
-        match swarm::picked(&self.networks, asked, Network::naming) {
+        match swarm::picked(&self.networks, asked, false, Network::naming) {
             swarm::Picked::One(one) => Ok(one),
             swarm::Picked::None => Err(format!("no network is named {asked}")),
             swarm::Picked::Several(many) => Err(several(asked, &many, |each| &each.name)),
@@ -768,7 +770,7 @@ impl Mycelium {
     ///
     /// When no cell, or more than one, goes by what was asked.
     pub fn named_cell(&self, asked: &str) -> Result<&Cell, String> {
-        match swarm::picked(&self.cells, asked, Cell::naming) {
+        match swarm::picked(&self.cells, asked, false, Cell::naming) {
             swarm::Picked::One(one) => Ok(one),
             swarm::Picked::None => Err(format!("no cell is named {asked}")),
             swarm::Picked::Several(many) => Err(several(asked, &many, |each| &each.name)),
@@ -776,9 +778,14 @@ impl Mycelium {
     }
 }
 
-/// That `asked` could be any of `many`, each by its `name`.
+/// That `asked` could be any of `many`, each by its `name`, held to one
+/// line, since a cell's name is a peer's text.
 fn several<T>(asked: &str, many: &[&T], name: impl Fn(&T) -> &str) -> String {
-    let names: Vec<&str> = many.iter().map(|each| name(each)).collect();
+    let names: Vec<String> = many
+        .iter()
+        .map(|each| swarm::unmarked(name(each)))
+        .collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
     format!("{asked} could be {}", swarm::either(&names))
 }
 

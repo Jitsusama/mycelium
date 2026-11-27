@@ -32,14 +32,14 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 use notify::event::ModifyKind;
-use notify::{EventKind, RecursiveMode, Watcher};
+use notify::{EventKind, RecursiveMode};
 use rustix::fs::FlockOperation;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::ends::Ends;
-use super::folder::{Folder, Kind};
+use super::folder::{Folder, Kind, Stamp};
 use super::{Change, Changes, Claim, Presence, Store};
 use crate::facts::Machine;
 
@@ -129,14 +129,10 @@ struct Verdict {
     times: u32,
 }
 
-/// A presence as it was read, and the file it was read from, by what
-/// changes whenever it is written: written whole by rename, a file is a
-/// new inode, and written in place, its length or time moves.
+/// A presence as it was read, and the stamp of the file it was read from.
 #[derive(Debug)]
 struct Kept {
-    inode: u64,
-    len: u64,
-    modified: Option<SystemTime>,
+    stamp: Stamp,
     body: Option<Arc<Value>>,
 }
 
@@ -187,7 +183,6 @@ impl Folders {
     /// since it was last read, and none kept of one gone; each shared, not
     /// copied, with what reads it.
     fn presence_bodies(&self) -> Vec<Arc<Value>> {
-        use std::os::unix::fs::MetadataExt;
         let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
         let mut seen = BTreeMap::new();
         // A folder that can't be opened, such as a link put in its place,
@@ -197,25 +192,22 @@ impl Folders {
             return Vec::new();
         };
         let dir = self.presence();
+        // Each file is only looked at, never opened, unless its stamp moved:
+        // the node reads presence on every change any session makes, so
+        // opening every file each time opened the whole folder several
+        // times a second.
         for name in records_in(&folder) {
-            let Ok(Some(file)) = folder.file(&name) else {
-                continue;
-            };
-            let Ok(meta) = file.metadata() else {
+            let Ok(Some(stamp)) = folder.stamp(&name) else {
                 continue;
             };
             let path = dir.join(&name);
-            let same = kept.remove(&path).filter(|one| {
-                one.inode == meta.ino()
-                    && one.len == meta.len()
-                    && one.modified == meta.modified().ok()
-            });
-            let one = same.unwrap_or_else(|| Kept {
-                inode: meta.ino(),
-                len: meta.len(),
-                modified: meta.modified().ok(),
-                body: read_in::<Value>(&folder, &name).map(Arc::new),
-            });
+            let one = match kept.remove(&path).filter(|one| one.stamp == stamp) {
+                Some(same) => same,
+                None => match kept_from(stamp, folder.read(&name)) {
+                    Some(read) => read,
+                    None => continue,
+                },
+            };
             seen.insert(path, one);
         }
         *kept = seen;
@@ -864,18 +856,24 @@ impl Store for Folders {
             }
         })
         .map_err(io::Error::other)?;
-        watcher
-            .watch(&self.messages(), RecursiveMode::NonRecursive)
-            .map_err(io::Error::other)?;
-        watcher
-            .watch(&self.presence(), RecursiveMode::NonRecursive)
-            .map_err(io::Error::other)?;
-        watcher
-            .watch(&self.leases(), RecursiveMode::NonRecursive)
-            .map_err(io::Error::other)?;
-        watcher
-            .watch(&self.claims, RecursiveMode::NonRecursive)
-            .map_err(io::Error::other)?;
+        // In one batch, so macOS's stream starts once, not once a folder.
+        let folders = [
+            self.messages(),
+            self.presence(),
+            self.leases(),
+            PathBuf::clone(&self.claims),
+        ];
+        let new = folders
+            .iter()
+            .map(|folder| (folder.clone(), RecursiveMode::NonRecursive))
+            .collect::<Vec<_>>();
+        let answers = crate::watching::watch_all(&mut watcher, &[], &new);
+        if let Some(at) = answers.iter().position(|took| !took) {
+            return Err(io::Error::other(format!(
+                "{} can't be watched",
+                folders[at].display()
+            )));
+        }
         Ok(Changes {
             changes,
             keep: Box::new((watcher, ends)),
@@ -961,6 +959,33 @@ impl Owner {
 /// fails now is read again at its next change.
 fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+/// What is kept of a presence whose file had `stamp`, from its `read`: its
+/// body; no body until the stamp moves, when the file was refused for what
+/// it is, as a fix to it moves the stamp; or nothing kept at all, so the
+/// next pass reads it again, when it was gone since its stat or not read
+/// for a cause that may pass, such as a want of descriptors or a refusal to
+/// open.
+fn kept_from(stamp: Stamp, read: io::Result<Option<Vec<u8>>>) -> Option<Kept> {
+    match read {
+        Ok(Some(bytes)) => Some(Kept {
+            stamp,
+            body: serde_json::from_slice(&bytes).ok().map(Arc::new),
+        }),
+        Err(error) if fails_for_the_file(&error) => Some(Kept { stamp, body: None }),
+        Ok(None) | Err(_) => None,
+    }
+}
+
+/// Whether a read was refused for what the file is, as the store judges
+/// it from the file's own stat (not plain, of two names, or too large),
+/// which its stamp holds, so that only a change to the file can mend it.
+/// Every other failure, a refusal to open included, may pass with nothing
+/// about the file changed: an access policy may be lifted, or descriptors
+/// may run short for a while.
+fn fails_for_the_file(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::InvalidData
 }
 
 /// Reads the plain file `name` in the mesh's `folder` as `T`, or nothing
@@ -1307,6 +1332,195 @@ mod tests {
             1,
             "only what stands is kept"
         );
+    }
+
+    /// The presence files a watch that hears opens heard opened, up to the
+    /// making of `mark`, which is made once what is asked of has run, so
+    /// everything it could have said has been said before the mark.
+    #[cfg(target_os = "linux")]
+    fn opened_until(heard: &std::sync::mpsc::Receiver<notify::Event>, mark: &Path) -> Vec<PathBuf> {
+        const PATIENCE: Duration = Duration::from_secs(30);
+        fs::write(mark, "").expect("the mark made");
+        let mut opened = Vec::new();
+        while let Ok(event) = heard.recv_timeout(PATIENCE) {
+            if matches!(event.kind, EventKind::Create(_)) && event.paths.iter().any(|p| p == mark) {
+                return opened;
+            }
+            if matches!(
+                event.kind,
+                EventKind::Access(notify::event::AccessKind::Open(_))
+            ) {
+                opened.extend(event.paths.into_iter().filter(|path| is_record(path)));
+            }
+        }
+        panic!("the mark {mark:?} was never heard");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_unchanged_presence_is_judged_without_opening_its_file() {
+        use notify::Watcher as _;
+
+        let (dir, folders) = store();
+        let presence = dir.path().join("mesh/presence");
+        for name in ["s-one", "s-two"] {
+            fs::write(
+                presence.join(format!("{name}.json")),
+                json!({"session": name, "title": "first"}).to_string(),
+            )
+            .expect("written");
+        }
+        let (tell, heard) = std::sync::mpsc::channel();
+        // Every kind of event, opens included, unlike the store's own.
+        let mut watch = notify::RecommendedWatcher::new(
+            move |event: notify::Result<notify::Event>| {
+                if let Ok(event) = event {
+                    let _ = tell.send(event);
+                }
+            },
+            notify::Config::default(),
+        )
+        .expect("a watcher");
+        watch
+            .watch(&presence, RecursiveMode::NonRecursive)
+            .expect("the folder is watched");
+
+        assert_eq!(folders.presence_bodies().len(), 2, "both read");
+        let first = opened_until(&heard, &presence.join("first-mark"));
+        assert_eq!(first.len(), 2, "the first reading opens each: {first:?}");
+
+        assert_eq!(folders.presence_bodies().len(), 2, "both read again");
+        let again = opened_until(&heard, &presence.join("second-mark"));
+        assert!(again.is_empty(), "unchanged, yet opened: {again:?}");
+
+        let one = presence.join("s-one.json");
+        fs::write(
+            &one,
+            json!({"session": "s-one", "title": "again, longer"}).to_string(),
+        )
+        .expect("written in place");
+        // The write's own open is heard before this mark, so only what
+        // the reading opens comes after it.
+        opened_until(&heard, &presence.join("written-mark"));
+        assert_eq!(folders.presence_bodies().len(), 2, "both read once more");
+        let third = opened_until(&heard, &presence.join("third-mark"));
+        assert_eq!(third, [one], "only the changed file is opened");
+        // Nothing counts opens past here, and the probe writes below would
+        // otherwise pile their events up unread.
+        drop(watch);
+
+        // Rewritten in place at its length, its time put back as a mark's
+        // rewrite puts it, only the file's change time moves; it is read
+        // again all the same.
+        let two = presence.join("s-two.json");
+        let probe = presence.join("tick-probe");
+        let written = fs::metadata(&two)
+            .and_then(|found| found.modified())
+            .expect("its time");
+        past_change_of(&two, &probe);
+        fs::write(
+            &two,
+            json!({"session": "s-two", "title": "again"}).to_string(),
+        )
+        .expect("rewritten at its length");
+        fs::File::options()
+            .write(true)
+            .open(&two)
+            .and_then(|file| file.set_modified(written))
+            .expect("its time put back");
+        let titles: Vec<Value> = folders
+            .presence_bodies()
+            .iter()
+            .filter(|body| body["session"] == "s-two")
+            .map(|body| body["title"].clone())
+            .collect();
+        assert_eq!(titles, [json!("again")], "read again by its change time");
+
+        // Root reads past a mode, so only another account can see a file
+        // made unreadable drop out; the rewrite above pins the change time
+        // for both.
+        if rustix::process::geteuid().is_root() {
+            return;
+        }
+        past_change_of(&two, &probe);
+        let mut mode = fs::metadata(&two).expect("its mode").permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o000);
+        fs::set_permissions(&two, mode.clone()).expect("made unreadable");
+        assert_eq!(
+            folders.presence_bodies().len(),
+            1,
+            "a file made unreadable drops out"
+        );
+        std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o644);
+        fs::set_permissions(&two, mode).expect("made readable again");
+        let titles: Vec<Value> = folders
+            .presence_bodies()
+            .iter()
+            .filter(|body| body["session"] == "s-two")
+            .map(|body| body["title"].clone())
+            .collect();
+        assert_eq!(titles, [json!("again")], "a file made readable is read");
+    }
+
+    #[test]
+    fn only_a_refusal_for_what_the_file_is_waits_for_it_to_change() {
+        let (dir, folders) = store();
+        let presence = dir.path().join("mesh/presence");
+        let folder = folders.folder("presence").expect("the folder");
+        fs::write(presence.join("named.json"), "{}").expect("written");
+        fs::hard_link(presence.join("named.json"), presence.join("again.json"))
+            .expect("a second name");
+        // Past the largest file the mesh reads, 8 MiB.
+        fs::write(presence.join("large.json"), vec![b' '; 9 << 20]).expect("written");
+        fs::write(presence.join("plain.json"), r#"{"session":"s"}"#).expect("written");
+        let stamp = folder.stamp("plain.json").expect("stamped").expect("there");
+        let read = kept_from(stamp, folder.read("plain.json")).expect("kept");
+        assert_eq!(read.body.as_deref(), Some(&json!({"session": "s"})));
+        for name in ["named.json", "large.json"] {
+            let refused = kept_from(stamp, folder.read(name));
+            assert!(
+                refused.is_some_and(|one| one.body.is_none()),
+                "{name} is kept unread until its stamp moves"
+            );
+        }
+        // As the read path's own failures arrive, through rustix.
+        for passing in [
+            rustix::io::Errno::ACCESS,
+            rustix::io::Errno::PERM,
+            rustix::io::Errno::MFILE,
+            rustix::io::Errno::NFILE,
+            rustix::io::Errno::NOMEM,
+            rustix::io::Errno::INTR,
+            rustix::io::Errno::IO,
+            rustix::io::Errno::STALE,
+        ] {
+            assert!(
+                kept_from(stamp, Err(io::Error::from(passing))).is_none(),
+                "{passing} may pass, so it is tried again"
+            );
+        }
+    }
+
+    /// Returns once the file system's clock has ticked past `file`'s last
+    /// change, by writing `probe` until its own change time is later, so a
+    /// change made next moves `file`'s change time however coarse that
+    /// clock is. Each write reads the clock afresh, so no sleep is needed.
+    #[cfg(target_os = "linux")]
+    fn past_change_of(file: &Path, probe: &Path) {
+        use std::os::unix::fs::MetadataExt;
+        const TRIES: u32 = 1_000_000;
+        let changed = |path: &Path| {
+            let found = fs::metadata(path).expect("its stat");
+            (found.ctime(), found.ctime_nsec())
+        };
+        let last = changed(file);
+        for tried in 0..TRIES {
+            fs::write(probe, tried.to_string()).expect("the probe written");
+            if changed(probe) > last {
+                return;
+            }
+        }
+        panic!("the clock never passed {file:?}'s change");
     }
 
     #[test]

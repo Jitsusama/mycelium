@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{EventKind, RecommendedWatcher, RecursiveMode};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
@@ -137,17 +137,24 @@ impl<'a> Watching<'a> {
     /// them: one that landed before its watch began is heard by nothing.
     pub fn arm(&mut self) -> bool {
         let mut waiting = false;
-        for inbox in &self.steers.inboxes {
-            if self.armed.contains(inbox) {
-                continue;
-            }
-            if self
-                .watcher
-                .watch(inbox, RecursiveMode::NonRecursive)
-                .is_ok()
-            {
-                self.armed.insert(inbox.clone());
-                waiting = waiting || self.steers.waits_in(inbox);
+        // In one batch, so macOS's stream starts once, not once an inbox,
+        // and not at all while every inbox there is armed already.
+        let new: Vec<PathBuf> = self
+            .steers
+            .inboxes
+            .iter()
+            .filter(|inbox| !self.armed.contains(*inbox) && inbox.exists())
+            .cloned()
+            .collect();
+        let modes: Vec<(PathBuf, RecursiveMode)> = new
+            .iter()
+            .map(|inbox| (inbox.clone(), RecursiveMode::NonRecursive))
+            .collect();
+        let answers = crate::watching::watch_all(&mut self.watcher, &[], &modes);
+        for (inbox, took) in new.into_iter().zip(answers) {
+            if took {
+                waiting = waiting || self.steers.waits_in(&inbox);
+                self.armed.insert(inbox);
             }
         }
         waiting
@@ -165,11 +172,13 @@ impl<'a> Watching<'a> {
             return self.steers.waiting();
         }
         if matches!(event.kind, EventKind::Remove(_)) {
-            for path in &event.paths {
-                if self.armed.remove(path) {
-                    let _ = self.watcher.unwatch(path);
-                }
-            }
+            let gone: Vec<PathBuf> = event
+                .paths
+                .iter()
+                .filter(|path| self.armed.remove(*path))
+                .cloned()
+                .collect();
+            crate::watching::watch_all(&mut self.watcher, &gone, &[]);
         }
         event
             .paths
