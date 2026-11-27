@@ -540,6 +540,31 @@ mod tests {
         program.display().to_string()
     }
 
+    // Our council on #512: a machine made for the person borrows its
+    // maker's lends only because its link releases it and is no
+    // worker's, so the way a program dials must say both.
+    #[tokio::test]
+    async fn a_program_dials_a_link_that_releases_and_is_a_workers_only_where_it_says() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        for worker in [true, false] {
+            let program = Program {
+                program: provider(dir.path(), "exec cat\n"),
+                place: "sandbox-1".to_owned(),
+                named: Arc::default(),
+                worker,
+            };
+            let connection = program.dial("work").await.expect("the program runs");
+            assert!(
+                connection.releases,
+                "a program's link releases the machine it reaches"
+            );
+            assert_eq!(
+                connection.worker, worker,
+                "and is a worker's only where its way says"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_program_releases_the_machine_it_reaches_and_ssh_never_does() {
         let dir = tempfile::tempdir().expect("a temporary folder");

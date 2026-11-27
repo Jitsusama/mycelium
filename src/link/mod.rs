@@ -985,8 +985,11 @@ fn health_of(starting: Option<&Starting>) -> OwnHealth {
     }
 }
 
-/// What this machine lends the other end, as `starting` says; none where
-/// the link carries no starts, so every lend it asks is refused.
+/// What this machine lends the other end: nothing to it unless it
+/// `borrows`, as a worker or a machine this end's way in releases does;
+/// otherwise what `starting` lends, which is nothing where the link
+/// carries no starts. Either way short of a lender, every lend it asks
+/// is refused 403, saying which.
 fn lends_to(starting: Option<&Starting>, borrows: bool) -> Lending {
     match starting.and_then(|starting| starting.lender.clone()) {
         _ if !borrows => Lending::NotToIt,
@@ -1959,7 +1962,8 @@ impl<S: Store> End<S> {
             Lending::By(lender) => Ok(lender.clone()),
             Lending::Nothing => Err(format!("{} lends nothing", self.here)),
             Lending::NotToIt => Err(format!(
-                "{} lends only to its workers and the machines it made, and {} is neither",
+                "{} lends only over a link it dialled to its worker or to a machine it made, \
+                 and its link with {} is neither",
                 self.here, self.other
             )),
         };
@@ -6480,10 +6484,22 @@ mod tests {
         tokio::io::split(far)
     }
 
-    /// What skiff answers a lend tern asks of it over a link, tern dialled
-    /// as its worker or not, by a way in that releases it or not, skiff
-    /// lending through `lender` or not.
-    async fn lent_to_tern(worker: bool, releases: bool, lender: Option<Lender>) -> Lent {
+    /// How skiff's link with tern was reached, for [`lent_to_tern`].
+    #[derive(Clone, Copy, Default)]
+    struct Reached {
+        /// Whether skiff dialled tern as its worker.
+        worker: bool,
+        /// Whether skiff's way in to tern releases it, as a provider's
+        /// program's does a machine skiff's node made.
+        releases: bool,
+        /// Whether tern's hello says its own way in releases skiff,
+        /// which is tern's word, never skiff's.
+        tern_says_it_releases: bool,
+    }
+
+    /// What skiff answers a lend tern asks of it over a link `reached` as
+    /// it says, skiff lending through `lender` or not.
+    async fn lent_to_tern(reached: Reached, lender: Option<Lender>) -> Lent {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let starting = Starting {
             lender: lender.map(Arc::new),
@@ -6496,8 +6512,8 @@ mod tests {
                 Memory::default(),
                 &realm("skiff"),
                 Connection {
-                    releases,
-                    worker,
+                    releases: reached.releases,
+                    worker: reached.worker,
                     ..connection(reading, writing)
                 },
                 None,
@@ -6506,6 +6522,10 @@ mod tests {
             .await
         });
         let (far_reading, mut far_writing) = tokio::io::split(far);
+        let hello = Hello {
+            releases: reached.tern_says_it_releases,
+            ..realm("tern").hello()
+        };
         let lend = Lend {
             budget: None,
             method: "POST".to_owned(),
@@ -6516,7 +6536,7 @@ mod tests {
         says(
             &mut far_writing,
             &[
-                Frame::Hello(realm("tern").hello()),
+                Frame::Hello(hello),
                 Frame::Have {
                     messages: Vec::new(),
                     living: Some(Vec::new()),
@@ -6688,35 +6708,64 @@ mod tests {
                 None,
             )
         };
-        assert_eq!(
-            lent_to_tern(false, false, Some(unread())).await,
-            Lent::Refused {
-                status: 403,
-                why: "skiff lends only to its workers and the machines it made, and tern is \
-                      neither"
-                    .to_owned(),
+        let (worker, made) = (
+            Reached {
+                worker: true,
+                ..Reached::default()
             },
+            Reached {
+                releases: true,
+                ..Reached::default()
+            },
+        );
+        let neither = Lent::Refused {
+            status: 403,
+            why: "skiff lends only over a link it dialled to its worker or to a machine it made, \
+                  and its link with tern is neither"
+                .to_owned(),
+        };
+        assert_eq!(
+            lent_to_tern(Reached::default(), Some(unread())).await,
+            neither,
             "a machine that is neither skiff's worker nor made by it borrows nothing"
         );
+        let tern_says_it_releases = Reached {
+            tern_says_it_releases: true,
+            ..Reached::default()
+        };
         assert_eq!(
-            lent_to_tern(true, false, None).await,
-            Lent::Refused {
-                status: 403,
-                why: "skiff lends nothing".to_owned(),
-            },
-            "nor does a worker where skiff lends nothing"
+            lent_to_tern(tern_says_it_releases, Some(unread())).await,
+            neither,
+            "nor does one whose hello says its way in releases skiff, since only skiff's own \
+             way in can say what skiff made"
         );
-        let lent = lent_to_tern(true, false, Some(unread())).await;
-        assert!(
-            matches!(lent, Lent::Refused { status: 503, .. }),
-            "a worker's lend reaches skiff's lender, which can't read what it may lend: {lent:?}"
-        );
-        let lent = lent_to_tern(false, true, Some(unread())).await;
-        assert!(
-            matches!(lent, Lent::Refused { status: 503, .. }),
-            "and so does the lend of a machine skiff made for the person, which is no worker: \
-             {lent:?}"
-        );
+        for (reached, which) in [(worker, "a worker"), (made, "a machine skiff made")] {
+            assert_eq!(
+                lent_to_tern(reached, None).await,
+                Lent::Refused {
+                    status: 403,
+                    why: "skiff lends nothing".to_owned(),
+                },
+                "nor does {which} where skiff lends nothing"
+            );
+        }
+        let both = Reached {
+            worker: true,
+            releases: true,
+            ..Reached::default()
+        };
+        for (reached, which) in [
+            (worker, "a worker"),
+            (made, "a machine skiff made for the person, which is no worker"),
+            (both, "a worker skiff's way in releases"),
+        ] {
+            let lent = lent_to_tern(reached, Some(unread())).await;
+            assert!(
+                matches!(lent, Lent::Refused { status: 503, .. }),
+                "the lend of {which} reaches skiff's lender, which can't read what it may lend: \
+                 {lent:?}"
+            );
+        }
     }
 
     #[tokio::test]

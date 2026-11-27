@@ -81,7 +81,8 @@ pub struct Hello {
     /// end older than this takes one as any start, so none is asked of it.
     #[serde(default)]
     pub reopens: bool,
-    /// Whether it carries lends of model calls, handing a worker's to its
+    /// Whether it carries lends of model calls, handing those of a worker,
+    /// or of a machine its node made that its way in releases, to its
     /// machine's lender and streaming back what it answers, and refusing
     /// every other machine's; an end older than this does neither, and
     /// would end a link that asked.
