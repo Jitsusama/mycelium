@@ -312,8 +312,18 @@ pub fn eased_lately(folder: &Path, here: &str, now: Timestamp) -> Result<Vec<Mov
 /// One refused, arrived, back or stuck holds nothing back, so a carry
 /// that never lands holds easing no longer than it stands ordered.
 pub fn on_way(kept: &[Kept], here: &str, judge: impl Fn(&Kept) -> kept::State) -> Vec<Moved> {
-    let _ = (kept, here, judge);
-    Vec::new()
+    let by = ease::by(here);
+    kept.iter()
+        .filter(|one| one.said("by") == by && one.said("from") == here)
+        .filter(|one| matches!(judge(one), kept::State::Ordered | kept::State::Carrying))
+        .map(|one| Moved {
+            session: one.said("session").to_owned(),
+            from: here.to_owned(),
+            to: one.said("to").to_owned(),
+            at: one.at,
+            eases: true,
+        })
+        .collect()
 }
 
 /// How many of the carries `kept` within the day before `now` this

@@ -1327,8 +1327,11 @@ or a password prompt waits inside its turn, so it stays as one in a
 turn. What a session is part
 way through is told only once its presence says `"leases":
 {"background": true}`, its harness keeping a lease for each background
-run. After a carry it would carry none for five minutes, and it would
-carry at most 48 in a day. A session moved by anyone stays put for a
+run. After a carry it would carry none for five minutes, nor while a
+carry it made to ease itself is still ordered or carrying, by the
+carries kept here, since neither machine's readings say what that
+carry eased until it lands; one ordered half an hour ago stands stuck
+and holds nothing. It would carry at most 48 in a day. A session moved by anyone stays put for a
 day, by the carries kept here, and nothing goes to a machine a session
 came from within the hour, nor to a Mac whose node doesn't say
 `fences_held` but a session shown unfenced (see The Socket). A strict

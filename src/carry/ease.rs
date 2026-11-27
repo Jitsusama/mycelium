@@ -587,6 +587,15 @@ fn carry(
             COOLDOWN.as_mins()
         ));
     }
+    // Its memory stays here until the session leaves, and the peer it
+    // went to counts it only once it runs there, so neither machine's
+    // readings say what the carry eased until it lands.
+    if let Some(going) = history.on_way.iter().max_by_key(|going| going.at) {
+        return nothing(format!(
+            "its carry of {} to {} at {} hasn't landed yet, and it carries none until it does",
+            going.session, going.to, going.at
+        ));
+    }
     match history.eased_today(here.name, now) {
         Ok(count) if count >= DAILY => {
             return nothing(format!(
