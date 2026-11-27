@@ -760,10 +760,19 @@ impl Store for Folders {
 
     fn mark_worker(&self, machine: &str, worker: bool) {
         let mut workers = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
-        if worker {
-            workers.insert(machine.to_owned());
+        let moved = if worker {
+            workers.insert(machine.to_owned())
         } else {
-            workers.remove(machine);
+            workers.remove(machine)
+        };
+        drop(workers);
+        // The mark is in memory alone, so no file's watch tells it.
+        if moved {
+            let change = Change::Machine(machine.to_owned());
+            self.told
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .retain(|told| told.send(change.clone()).is_ok());
         }
     }
 

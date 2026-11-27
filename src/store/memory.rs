@@ -555,10 +555,13 @@ impl Store for Memory {
 
     fn mark_worker(&self, machine: &str, worker: bool) {
         let mut held = self.held();
-        if worker {
-            held.workers.insert(machine.to_owned());
+        let moved = if worker {
+            held.workers.insert(machine.to_owned())
         } else {
-            held.workers.remove(machine);
+            held.workers.remove(machine)
+        };
+        if moved {
+            held.tell(&Change::Machine(machine.to_owned()));
         }
     }
 
