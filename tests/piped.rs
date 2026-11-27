@@ -102,7 +102,7 @@ fn into_a_pipe_a_machine_says_when_it_was_measured_with_its_day_and_zone() {
     let after = measured(home);
     drop(node);
 
-    let (Ok(before), Ok(after)) = (before, after) else {
+    let (Ok(before), Ok(after)) = (&before, &after) else {
         panic!("the JSON didn't say when kestrel was measured: {before:?} {after:?}");
     };
     let said = line(&page, "measured").map(str::to_owned);
