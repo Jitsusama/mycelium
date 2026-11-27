@@ -1712,7 +1712,9 @@ the `at` it said so; a `doing` it can't read, or whose line is longer, is
 left out whole), its latest `events`, newest first and at most 20 (each
 `at`, its `kind` as `commit`, `push`, `pr`, `merge` or `stage`, `where`
 as a repository's key or a quest's id, and a `title` cut to 120
-characters; any it can't read is left out), and the `window` it
+characters and then, cut or not, ending in no space, no joiner or
+non-joiner left joining nothing and no Khmer coeng with no letter to
+subscript; any it can't read is left out), and the `window` it
 runs in (`terminal`, `id`, `within`, such as a kitty window's id and
 kitty's socket, and `app_id`, the app id its window was opened with,
 where its opener said so in `MYCELIUM_APP_ID`, which names the same
