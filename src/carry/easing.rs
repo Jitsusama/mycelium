@@ -782,6 +782,10 @@ impl Easing {
         self.history.on_way(on_way);
     }
 
+    /// Notes that the carry of `session` its look chose was refused as
+    /// the session was told of it, `at`.
+    pub fn refused(&mut self, _session: &str, _at: Timestamp) {}
+
     /// What `here` would do now of its `cells`, by `reading`, as the line
     /// to keep for it; none where it would do nothing for the same reason
     /// as last. A carry's line says what the session `holds` of the
@@ -2545,6 +2549,36 @@ mod tests {
                 "chosen {minutes} minutes since: {chose:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_carry_refused_as_it_was_told_holds_back_no_other() {
+        let going = |at: Timestamp| Moved {
+            session: "s0".to_owned(),
+            from: "skiff".to_owned(),
+            to: "tern".to_owned(),
+            at,
+            eases: true,
+        };
+        let carried = |refused: Option<Timestamp>| {
+            let mut easing = Easing::after(&[], vec![going(ago(30))]);
+            if let Some(at) = refused {
+                easing.refused("s0", at);
+            }
+            // As the node does before each look, from the record that
+            // still stands it ordered.
+            easing.on_way(vec![going(ago(30))]);
+            first_carry(&looks(&mut easing, &[cell("s1")])).is_some()
+        };
+        assert!(!carried(None), "one on its way holds the next");
+        assert!(
+            carried(Some(ago(29))),
+            "one refused as it was told isn't on its way"
+        );
+        assert!(
+            !carried(Some(ago(31))),
+            "a refusal before it holds no later carry of the session"
+        );
     }
 
     #[test]
