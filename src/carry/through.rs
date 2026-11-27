@@ -250,22 +250,30 @@ impl Hands for Through {
                 self.shares.offer(quest, &scratch)
             }
             Lent::TakesNone => return Err(ground::takes_none(to)),
-            Lent::Not | Lent::TakesCarries => {
+            lent @ (Lent::Not | Lent::TakesCarries) => {
+                let what = if lent == Lent::Not {
+                    "a room lent for agents"
+                } else {
+                    "a worker"
+                };
                 // The whole handover, every machine's, since a worker's
-                // link serves all of it.
+                // link serves all of it. Found only once the sessions have
+                // carried into it, so the refusal says where they wait.
                 let handover = self.shares.scratch.join(quest).join("handover");
                 let found = secrets::first_in(&handover).map_err(|error| {
                     format!("{quest}'s handover can't be told free of secrets: {error}")
                 })?;
                 if let Some(secret) = found {
                     return Err(format!(
-                        "{} names a secret, so {quest} isn't given to {to}, a worker",
+                        "{} names a secret, so {quest} isn't given to {to}, {what}; its \
+                         sessions wait in the handover here, so take the secret out and carry \
+                         again, or carry to a machine of the person's own",
                         secret.display()
                     ));
                 }
                 let given = self.shares.offer_to(to, quest, &scratch);
                 if given.is_ok() {
-                    eprintln!("mycelium: {quest} given to {to}, a worker, for a carry");
+                    eprintln!("mycelium: {quest} given to {to}, {what}, for a carry");
                 }
                 given
             }
@@ -670,7 +678,7 @@ mod tests {
         put_brought, refusals, refused, short_host, unstarted, untaken,
     };
     use crate::carry::cell::Brought;
-    use crate::carry::{Refused, Untaken};
+    use crate::carry::{Refused, Untaken, ground};
     use crate::placement::Placement;
     use crate::wire::{Request, Response, Taking};
 
@@ -1040,7 +1048,7 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_is_given_a_quest_whose_handover_names_no_secret() {
+    fn a_worker_is_given_a_quest_free_of_secrets_and_the_persons_own_any_quest() {
         use super::{Hands, Places, Through};
         use crate::declared::Declared;
         use crate::facts;
@@ -1100,11 +1108,7 @@ mod tests {
         );
         assert_eq!(
             hands.share(quest, "wren"),
-            Err(
-                "wren is a worker that doesn't declare it takes carries, so nothing is carried \
-                 there"
-                    .to_owned()
-            ),
+            Err(ground::takes_none("wren")),
             "a worker taking none is given nothing"
         );
         hands.share(quest, "tern").expect("given");
@@ -1119,12 +1123,19 @@ mod tests {
         assert_eq!(
             hands.share(quest, "tern"),
             Err(format!(
-                "{} names a secret, so {quest} isn't given to tern, a worker",
+                "{} names a secret, so {quest} isn't given to tern, a worker; its sessions wait \
+                 in the handover here, so take the secret out and carry again, or carry to a \
+                 machine of the person's own",
                 login.display()
             )),
             "a handover holding a login is refused, naming it"
         );
         assert!(!places.given("tern", quest), "and nothing is given");
+        assert_eq!(
+            (hands.share(quest, "osprey"), hands.share(quest, "kestrel")),
+            (Ok(()), Ok(())),
+            "while the person's own share it, login and all, in the cloud as on the desk"
+        );
     }
 
     #[test]
@@ -1170,6 +1181,21 @@ mod tests {
             places.given("osprey", quest),
             "its link serves a worker only what it was given, so the room is given it"
         );
+        let login = notes.join("cells").join("auth.json");
+        fs::create_dir_all(notes.join("cells")).expect("a cells folder");
+        fs::write(&login, "{}").expect("a login");
+        fs::remove_dir_all(places.state.join("given")).expect("the gift taken back");
+        assert_eq!(
+            hands.share(quest, "osprey"),
+            Err(format!(
+                "{} names a secret, so {quest} isn't given to osprey, a room lent for agents; \
+                 its sessions wait in the handover here, so take the secret out and carry \
+                 again, or carry to a machine of the person's own",
+                login.display()
+            )),
+            "a handover holding a login is refused a room, as a worker, naming it"
+        );
+        assert!(!places.given("osprey", quest), "and nothing is given");
     }
 
     // 8855BD77's council (23 November): hands made once the session was

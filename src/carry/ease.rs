@@ -833,6 +833,12 @@ fn placed(work: &Work, peers: &[Machine], loads: &Loads, now: Timestamp) -> Resu
     for worker in &workers {
         let mut named = work.clone();
         named.needs.push(Need::Machine(worker.name.clone()));
+        // One of the person's own stays past the bar a carry holds it to,
+        // so it is placed for a session that long rather than refused for
+        // leaving at all, as the Mac would never be.
+        if ground::Lent::of(worker) == ground::Lent::Not {
+            named.lasts = Some(ground::STAYS_FOR);
+        }
         let alone = std::slice::from_ref(worker);
         let decision = placement::decide_as(&named, alone, loads, &[], now, weights);
         match decision.placement {
@@ -2161,12 +2167,42 @@ pub(super) mod tests {
             "one of the person's cloud machines takes a session, saying nothing of carries, \
              though placement keeps unnamed work off it"
         );
+        let mut kept = cloud.clone();
+        kept[1].declared.as_mut().expect("declared").leaves_at =
+            Some("9999-01-01T00:00:00Z".parse().expect("a time"));
+        assert_eq!(
+            carries(&chose(&kept, &[cell("s1")], &history)),
+            Some(("s1", "tern")),
+            "and so does one that says it leaves, long after a carry's bar"
+        );
         let mut both = cloud;
         both.push(machine("wren", 20.0));
         assert_eq!(
             carries(&chose(&both, &[cell("s1")], &hot_for(&both, 11))),
             Some(("s1", "wren")),
             "a machine placement takes unnamed goes first"
+        );
+    }
+
+    // #501's council (26 November): pin whether the node eases onto a
+    // room that says nothing of its leaving. The person ruled cloud
+    // machines full places for sessions, with no opt-in, so it does.
+    #[test]
+    fn a_room_its_node_names_takes_a_session_eased_with_no_word_of_its_own() {
+        let history = hot_for(&realm(), 11);
+        let mut rooms = realm();
+        rooms[1].worker = true;
+        rooms[1].declared.as_mut().expect("declared").costs_money = true;
+        assert!(
+            why_not(&chose(&rooms, &[cell("s1")], &history))
+                .starts_with("no machine with room is a peer"),
+            "unnamed, a machine a provider's link lent takes none unsaid"
+        );
+        rooms[1].held_for = facts::HeldFor::Agents;
+        assert_eq!(
+            carries(&chose(&rooms, &[cell("s1")], &history)),
+            Some(("s1", "tern")),
+            "named a room, and saying nothing of its leaving, it takes one"
         );
     }
 

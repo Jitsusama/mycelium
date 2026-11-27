@@ -5072,11 +5072,46 @@ impl<S: Store> Shared<S> {
     /// session lasts. Only carries read them so: a make lives as long as
     /// the work it was made for, so placement reading its end as a
     /// leaving would refuse that very work once the machine links.
+    ///
+    /// Each end is the newest make's of that name: this run's where it
+    /// booked one, else the last the book still stands by, so a make that
+    /// stood across a restart, which only one whose provider is still
+    /// asked is booked again for, still ends, and an older make of a name
+    /// made again never ends the newer. A make naming no realm is passed
+    /// over, as [`redial_standing`] passes it, since nothing ever releases
+    /// it and it may be another realm's. Another machine whose end has
+    /// passed is gone, as one past its own leaving is. Where the book
+    /// can't be read, no other machine that costs money is carried to,
+    /// since none can be told apart from one made to live an hour. This
+    /// machine is always kept, first where it was, since every reader
+    /// takes the head of the answer for here.
     fn as_carried(&self, machines: Vec<facts::Machine>) -> Vec<facts::Machine> {
-        let ends = self.lock().ends.clone();
+        let mut ends = BTreeMap::new();
+        let readable = match self.book.standing() {
+            Ok(standing) => {
+                for made in standing.made {
+                    ends.insert(made.machine, made.until);
+                }
+                true
+            }
+            Err(error) => {
+                eprintln!(
+                    "the book of machines made can't be read, so no paid machine is carried to: {error}"
+                );
+                false
+            }
+        };
+        ends.extend(self.lock().ends.clone());
+        let now = jiff::Timestamp::now();
         machines
             .into_iter()
             .map(|one| leaving_as_made(one, &ends))
+            .filter(|one| {
+                let said = one.declared.as_ref();
+                one.name == self.machine
+                    || (readable || !said.is_some_and(|said| said.costs_money))
+                        && !said.is_some_and(|said| said.has_left(now))
+            })
             .collect()
     }
 
@@ -7826,15 +7861,17 @@ impl<S: Store> Shared<S> {
     }
 
     /// Says in this node's log a carried session, as `arriving` names it
-    /// ([`carried_words`]), started on a worker, as `started` says, so
-    /// every carry to a lent machine is kept here, on the person's own.
+    /// ([`carried_words`]), started on a lent machine, as `started` says
+    /// ([`crate::carry::ground::kept_as_lent`]), so every carry to one is
+    /// kept here, on the person's own.
     fn says_carried_to_a_worker(&self, arriving: Option<&str>, started: &Started) {
         let Some(arriving) = arriving else {
             return;
         };
-        let worker = self.as_carried(self.others()).into_iter().any(|one| {
-            one.name == started.machine && crate::carry::Lent::of(&one) != crate::carry::Lent::Not
-        });
+        let worker = self
+            .as_carried(self.others())
+            .into_iter()
+            .any(|one| one.name == started.machine && ground::kept_as_lent(&one));
         if worker {
             eprintln!(
                 "mycelium: carried {arriving} to {}, a worker",
@@ -24967,7 +25004,7 @@ esac
             machine: "skiff".to_owned(),
         };
         let mut given = bare("/nowhere/steer".into(), None);
-        given.book = Book::at(dir.join("made.jsonl"));
+        given.book = Book::at(dir.join("made.jsonl")).of_realm("work");
         let (shared, _) = Shared::of(
             Memory::default(),
             (membership.hello(), "/nowhere/node".into()),
@@ -25056,6 +25093,122 @@ esac
                 .and_then(|said| said.leaves_at),
             None,
             "unbooked, it is as it says"
+        );
+    }
+
+    #[test]
+    fn a_make_standing_across_a_restart_still_ends_to_a_carry() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let gone = jiff::Timestamp::now() - jiff::SignedDuration::from_mins(1);
+        // Kept in the book by a node since restarted, which booked neither
+        // again: one's provider it no longer asks, the other's time is up.
+        for (name, until) in [("tern", soon), ("wren", gone)] {
+            let mut cloud = placement::tests::machine(name, "linux", 32, &["basin"]);
+            cloud.declared.as_mut().expect("declared").costs_money = true;
+            shared
+                .store
+                .put_machine(&cloud)
+                .expect("the made machine is kept");
+            let mut made = made_by("/usr/bin/lend", name, until);
+            made.asker = Some(made::PERSON.to_owned());
+            shared.book.made(&made).expect("the make is kept");
+        }
+        let carried = shared.as_carried(shared.others());
+        let tern = carried
+            .iter()
+            .find(|one| one.name == "tern")
+            .expect("the machine is known");
+        assert_eq!(
+            tern.declared.as_ref().and_then(|said| said.leaves_at),
+            Some(soon),
+            "the book's end stands for the leaving it doesn't declare"
+        );
+        assert_ne!(
+            ground::Lent::of(tern),
+            ground::Lent::Not,
+            "made to live an hour, it is no full place for a carried session"
+        );
+        assert!(
+            carried.iter().all(|one| one.name != "wren"),
+            "one whose make has ended is gone to a carry"
+        );
+    }
+
+    #[test]
+    fn only_the_newest_make_of_a_name_in_its_realm_ends_it_to_a_carry() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        let gone = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(24 * 365);
+        let kept: jiff::Timestamp = "9999-01-01T00:00:00Z".parse().expect("a time");
+        for name in ["tern", "wren"] {
+            let mut cloud = placement::tests::machine(name, "linux", 32, &["basin"]);
+            cloud.declared.as_mut().expect("declared").costs_money = true;
+            shared
+                .store
+                .put_machine(&cloud)
+                .expect("the made machine is kept");
+        }
+        // tern was made, ended while still linked so never let go, and was
+        // made again elsewhere to stay; wren's only make names no realm.
+        let mut ended = made_by("/usr/bin/lend", "tern", gone);
+        ended.place = "p1".to_owned();
+        let mut again = made_by("/usr/bin/lend", "tern", kept);
+        again.place = "p2".to_owned();
+        for made in [&ended, &again] {
+            shared.book.made(made).expect("the make is kept");
+        }
+        Book::at(dir.path().join("made.jsonl"))
+            .made(&made_by("/usr/bin/lend", "wren", gone))
+            .expect("a make naming no realm is kept");
+        let carried = shared.as_carried(shared.others());
+        let leaving = |name: &str| {
+            carried
+                .iter()
+                .find(|one| one.name == name)
+                .map(|one| one.declared.as_ref().and_then(|said| said.leaves_at))
+        };
+        assert_eq!(
+            leaving("tern"),
+            Some(Some(kept)),
+            "the newest make's end stands, never an older one's of its name"
+        );
+        assert_eq!(
+            leaving("wren"),
+            Some(None),
+            "a make naming no realm ends no machine of its name"
+        );
+    }
+
+    #[test]
+    fn this_machine_heads_the_carried_machines_while_the_book_cant_be_read() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        fs::create_dir(dir.path().join("made.jsonl")).expect("the book is a folder");
+        for (name, paid) in [("tern", true), ("wren", false)] {
+            let mut other = placement::tests::machine(name, "linux", 32, &["basin"]);
+            other.declared.as_mut().expect("declared").costs_money = paid;
+            shared
+                .store
+                .put_machine(&other)
+                .expect("the machine is kept");
+        }
+        let mut here = shared.measure();
+        here.declared
+            .get_or_insert_with(Default::default)
+            .costs_money = true;
+        let mut machines = vec![here];
+        machines.extend(shared.others());
+        let names: Vec<String> = shared
+            .as_carried(machines)
+            .into_iter()
+            .map(|one| one.name)
+            .collect();
+        assert_eq!(
+            names,
+            ["skiff", "wren"],
+            "this machine stays at the head, paid or not, and no other paid one is carried to"
         );
     }
 
