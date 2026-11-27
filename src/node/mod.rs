@@ -11918,6 +11918,7 @@ mod tests {
                     cpu,
                     memory: 0.0,
                     io: 0.0,
+                    memory_full: None,
                 },
                 takes: room::Takes {
                     builds: 1,
@@ -19558,6 +19559,7 @@ esac
                     cpu: 0.0,
                     memory: 0.0,
                     io: 0.0,
+                    memory_full: None,
                 },
                 takes: room::Takes {
                     builds: 1,

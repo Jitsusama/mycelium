@@ -1995,6 +1995,7 @@ pub(crate) mod tests {
                     cpu: 0.0,
                     memory: 0.0,
                     io: 0.0,
+                    memory_full: None,
                 },
                 takes: Takes {
                     builds: 1,

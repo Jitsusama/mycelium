@@ -28,7 +28,13 @@
 //! A queue's record is a file any session can write, so that verdict
 //! comes only from the kernel's own readings, [`felt`], judged by
 //! [`crate::balance`]'s copy of the queue's lines. Should the queue's
-//! lines move, its copy moves with them by hand.
+//! lines move, its copy moves with them by hand. Memory is judged by a
+//! slower line besides, which a machine kept lively is held to: all work
+//! stalled for part of the last minute. The ten seconds' stall alone
+//! flaps on a machine whose memory is full. Memory free is no line of
+//! its own, since what holds it may be no session's, so easing would
+//! park sessions for what they never caused; the kernel's stall says
+//! when the want of it slows work.
 //!
 //! [`Room`] and [`Limit`] say a queue's room; a room felt says the same
 //! fields, judged by the node.
@@ -92,6 +98,11 @@ pub struct Pressure {
     pub memory: f64,
     /// Waiting on disks.
     pub io: f64,
+    /// The share of the last minute in which all work waited on memory,
+    /// where a node felt it from a kernel that says it, so a machine over
+    /// by that line alone reads why. A queue's record says none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_full: Option<f64>,
 }
 
 /// How many more of each kind of heavy work a queue would start now. None
@@ -255,20 +266,22 @@ pub fn felt(procs: &Path, at: &str) -> Option<Room> {
 /// The room the kernel's `cpu`, `memory` and `io` pressure and its
 /// `meminfo` say, `at`, or none where any can't be read.
 fn felt_from(cpu: &str, memory: &str, io: &str, meminfo: &str, at: &str) -> Option<Room> {
+    // A file with no `full` line, as a kernel may write, is judged by its
+    // `some` line alone; one there that can't be read leaves it unfelt.
+    let memory_full = if memory.lines().any(|line| line.starts_with("full ")) {
+        Some(stall(memory, "full ", "avg60=")?)
+    } else {
+        None
+    };
     let pressure = Pressure {
         cpu: stalled(cpu)?,
         memory: stalled(memory)?,
         io: stalled(io)?,
+        memory_full,
     };
-    let memory_available = meminfo.lines().find_map(|line| {
-        let kib = line
-            .strip_prefix("MemAvailable:")?
-            .trim()
-            .strip_suffix("kB")?;
-        kib.trim().parse::<u64>().ok()?.checked_mul(1024)
-    })?;
+    let memory_available = meminfo_bytes(meminfo, "MemAvailable:")?;
     let mut over = Vec::new();
-    if pressure.memory >= crate::balance::OVER_MEMORY_PRESSURE {
+    if memory_over(&pressure) {
         over.push(Limit::Memory);
     }
     if pressure.cpu >= crate::balance::OVER_CPU_PRESSURE {
@@ -288,6 +301,32 @@ fn felt_from(cpu: &str, memory: &str, io: &str, meminfo: &str, at: &str) -> Opti
     })
 }
 
+/// The bytes `meminfo`'s line `name` says, as the kernel writes it in kB.
+fn meminfo_bytes(meminfo: &str, name: &str) -> Option<u64> {
+    meminfo.lines().find_map(|line| {
+        let kib = line.strip_prefix(name)?.trim().strip_suffix("kB")?;
+        kib.trim().parse::<u64>().ok()?.checked_mul(1024)
+    })
+}
+
+/// Whether a machine is past its memory limit by the kernel's
+/// `pressure`, by either of two lines: the queue's, some work stalled
+/// [`OVER_MEMORY_PRESSURE`] of the last ten seconds; or all of it
+/// stalled [`OVER_MEMORY_FULL`] of the last minute. The minute's stall
+/// moves slowly, where the ten seconds' flaps: on 26 November a machine
+/// whose memory was full for an hour read cool every few minutes by the
+/// ten seconds alone, and each pair of cool readings started its spell
+/// again, so it put no session to sleep.
+///
+/// [`OVER_MEMORY_PRESSURE`]: crate::balance::OVER_MEMORY_PRESSURE
+/// [`OVER_MEMORY_FULL`]: crate::balance::OVER_MEMORY_FULL
+fn memory_over(pressure: &Pressure) -> bool {
+    pressure.memory >= crate::balance::OVER_MEMORY_PRESSURE
+        || pressure
+            .memory_full
+            .is_some_and(|full| full >= crate::balance::OVER_MEMORY_FULL)
+}
+
 /// The share of the last ten seconds in which some task stalled, in
 /// percent, as a pressure file's `some` line says it.
 fn stalled(pressure: &str) -> Option<f64> {
@@ -297,11 +336,16 @@ fn stalled(pressure: &str) -> Option<f64> {
 /// The share in which some task stalled, in percent, over the window a
 /// pressure file's `some` line names by `average` (`avg10=` or `avg60=`).
 fn stalled_over(pressure: &str, average: &str) -> Option<f64> {
+    stall(pressure, "some ", average)
+}
+
+/// The share a pressure file's `line` says in its `field`, in percent.
+fn stall(pressure: &str, line: &str, field: &str) -> Option<f64> {
     pressure
         .lines()
-        .find_map(|line| line.strip_prefix("some "))?
+        .find_map(|said| said.strip_prefix(line))?
         .split_whitespace()
-        .find_map(|field| field.strip_prefix(average))?
+        .find_map(|said| said.strip_prefix(field))?
         .parse::<f64>()
         .ok()
         .filter(|share| share.is_finite())
@@ -400,6 +444,7 @@ mod tests {
                     cpu: 44.37,
                     memory: 3.92,
                     io: 51.53,
+                    memory_full: None,
                 },
                 takes: Takes {
                     builds: 8,
@@ -461,7 +506,8 @@ mod tests {
             Pressure {
                 cpu: 86.0,
                 memory: 1.5,
-                io: 40.0
+                io: 40.0,
+                memory_full: Some(0.0),
             }
         );
         assert_eq!(room.memory_available, 41_943_040 * 1024);
@@ -500,6 +546,91 @@ mod tests {
         assert_eq!(over(69.99, 0.0), Vec::new(), "just under it");
         assert_eq!(over(0.0, 10.0), vec![Limit::Memory], "at the memory line");
         assert_eq!(over(0.0, 9.99), Vec::new(), "just under it");
+    }
+
+    /// A memory pressure file whose `full` line says `avg60`, with no
+    /// work stalled in the last ten seconds.
+    fn full(avg60: f64) -> String {
+        format!(
+            "some avg10=0.00 avg60=0.00 avg300=0.00 total=123456\n\
+             full avg10=0.00 avg60={avg60:.2} avg300=0.00 total=0\n"
+        )
+    }
+
+    // On 26 November a machine whose memory was full for an hour read cool
+    // every few minutes by the ten seconds' stall alone, and each pair of
+    // cool readings started its spell again.
+    #[test]
+    fn all_work_stalled_for_a_minute_is_over_memory_from_its_line() {
+        let over = |avg60: f64| {
+            felt_from(&psi(0.0), &full(avg60), &psi(0.0), MEMINFO, FELT_AT)
+                .and_then(|room| room.over)
+                .expect("room felt")
+        };
+        assert_eq!(over(5.0), vec![Limit::Memory], "at the line");
+        assert_eq!(over(4.99), Vec::new(), "just under it");
+        let room = felt_from(&psi(0.0), &full(6.5), &psi(0.0), MEMINFO, FELT_AT);
+        assert_eq!(
+            room.map(|room| room.pressure.memory_full),
+            Some(Some(6.5)),
+            "saying the stall it is over by"
+        );
+    }
+
+    // Our council on #488: a machine short of free memory for reasons no
+    // session caused would park every session waiting there, and keep
+    // them parked.
+    #[test]
+    fn a_machine_short_of_free_memory_but_unstalled_is_not_over() {
+        let meminfo = "MemTotal: 67108864 kB\nMemAvailable: 1024 kB\n";
+        let room =
+            felt_from(&psi(0.0), &full(0.0), &psi(0.0), meminfo, FELT_AT).expect("room felt");
+        assert_eq!(room.over, Some(Vec::new()));
+    }
+
+    // On 26 November a full machine read cool by the ten seconds' stall
+    // every few minutes, so its spell never ran its ten minutes.
+    #[test]
+    fn a_machine_whose_ten_seconds_flap_under_a_steady_full_stall_stays_over() {
+        for some in [12.0, 3.0, 15.0, 0.5, 9.99] {
+            let pressure = format!(
+                "some avg10={some:.2} avg60=8.00 avg300=6.00 total=1\n\
+                 full avg10=1.00 avg60=6.00 avg300=5.00 total=1\n"
+            );
+            let room = felt_from(&psi(0.0), &pressure, &psi(0.0), MEMINFO, FELT_AT);
+            assert_eq!(
+                room.and_then(|room| room.over),
+                Some(vec![Limit::Memory]),
+                "over at some avg10 {some}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_full_line_that_cannot_be_read_leaves_the_room_unfelt() {
+        for full in [
+            "full avg10=0.00 avg300=0.00 total=1",
+            "full avg10=0.00 avg60=nan total=1",
+        ] {
+            let pressure = format!("some avg10=0.00 avg60=0.00 avg300=0.00 total=1\n{full}\n");
+            assert_eq!(
+                felt_from(&psi(0.0), &pressure, &psi(0.0), MEMINFO, FELT_AT),
+                None,
+                "{full}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pressure_file_with_no_full_line_is_judged_by_its_some_line() {
+        let over = |some: f64| {
+            let pressure = format!("some avg10={some:.2} avg60=0.00 avg300=0.00 total=1\n");
+            felt_from(&psi(0.0), &pressure, &psi(0.0), MEMINFO, FELT_AT)
+                .and_then(|room| room.over)
+                .expect("room felt")
+        };
+        assert_eq!(over(10.0), vec![Limit::Memory], "over by its some line");
+        assert_eq!(over(0.0), Vec::new(), "and cool by it");
     }
 
     #[test]

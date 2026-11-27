@@ -45,6 +45,12 @@ pub const OVER_CPU_PRESSURE: f64 = 70.0;
 /// queue, so a memory stall of 1.
 pub const OVER_MEMORY_PRESSURE: f64 = 10.0;
 
+/// Memory pressure, in percent of the last minute in which all work
+/// stalled, at which a machine is over: the line the harness's velocity
+/// work holds a machine kept lively to, past which its sessions wait on
+/// memory together.
+pub const OVER_MEMORY_FULL: f64 = 5.0;
+
 /// The most a machine with room may stall, 0 to 1.
 pub const ROOM_STALL: f64 = 0.25;
 
@@ -239,6 +245,7 @@ fn load(machine: &Machine, sessions: &[Session], now: jiff::Timestamp) -> Load {
     let stall = room.map(|room| {
         (room.pressure.cpu / 100.0)
             .max(room.pressure.memory / OVER_MEMORY_PRESSURE)
+            .max(room.pressure.memory_full.unwrap_or(0.0) / OVER_MEMORY_FULL)
             .clamp(0.0, 1.0)
     });
     let processor = room.map(|room| {
@@ -439,6 +446,7 @@ mod tests {
                 cpu,
                 memory: 0.0,
                 io: 0.0,
+                memory_full: None,
             },
             takes: Takes {
                 builds: 1,
