@@ -1329,20 +1329,24 @@ or a password prompt waits inside its turn, so it stays as one in a
 turn. What a session is part
 way through is told only once its presence says `"leases":
 {"background": true}`, its harness keeping a lease for each background
-run. After a carry it would carry none for five minutes, and it would
-carry at most 48 in a day. A session moved by anyone stays put for a
-day, by the carries kept here, and nothing goes to a machine a session
-came from within the hour, nor to a Mac whose node doesn't say
-`fences_held` but a session shown unfenced (see The Socket). A strict
-session goes only to a machine of its own system, by each machine's
-`system`, since a Mac's strict fence reads more of the home folder
-than Linux's: carried across, it would land looser though both say
-strict. A machine that names no system is taken as another. As with
-every carry a node makes (see A Carry an Orchestrator Orders), only
-the person takes such a session across. Nor does
-anything go to a machine whose facts are too old to place by (the
-`stale` flag, past 150 seconds), since it may have filled up since it
-was heard, or its link may be down.
+run. After a carry it would carry none for five minutes, nor while a
+carry it made to ease itself is still ordered or carrying, by the
+carries kept here, since neither machine's readings say what that
+carry eased until it lands; one ordered half an hour ago stands stuck
+and holds nothing, nor does one its session refused as it was told,
+while the node runs on. It would carry at most 48 in a day. A session moved
+by anyone stays put for a day, by the carries kept here, and nothing
+goes to a machine a session came from within the hour, nor to a Mac
+whose node doesn't say `fences_held` but a session shown unfenced
+(see The Socket). A strict session goes only to a machine of its own
+system, by each machine's `system`, since a Mac's strict fence reads
+more of the home folder than Linux's: carried across, it would land
+looser though both say strict. A machine that names no system is
+taken as another. As with every carry a node makes (see A Carry an
+Orchestrator Orders), only the person takes such a session across.
+Nor does anything go to a machine whose facts are too old to place by
+(the `stale` flag, past 150 seconds), since it may have filled up
+since it was heard, or its link may be down.
 
 Each choice to sleep or carry, and each change in why it does nothing,
 is a JSON line in the state folder's `eases`, a file each day of at

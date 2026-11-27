@@ -4492,6 +4492,19 @@ impl<S: Store> Shared<S> {
         Ok(ended::carried(&carries, judge, now))
     }
 
+    /// The carries this node made to ease its machine that haven't landed
+    /// yet, each judged as the person sees it, for easing to wait on. One
+    /// ordered longer ago than [`kept::STUCK_AFTER`] stands stuck, so it
+    /// isn't read.
+    fn easing_on_way(&self, now: jiff::Timestamp) -> Vec<ease::Moved> {
+        let sightings = self.sightings();
+        let carries = self.carries_here(now - kept::STUCK_AFTER);
+        easing::on_way(&carries, &self.machine, |carry| {
+            let seen = sightings.seen(carry, self.handed(carry));
+            kept::judged(carry, &seen, now)
+        })
+    }
+
     /// The sessions here that ended while their quest goes on, as
     /// [`ended`] says, each standing as it does here, against the quests
     /// this node serves; none where it serves none.
@@ -6356,6 +6369,13 @@ impl<S: Store> Shared<S> {
             }
             if let Some(line) = line {
                 let mut line = self.act_to_ease(eases.carries, line).await;
+                // Its record is kept before the session is told, so one
+                // refused then would stand ordered, on its way, till stuck.
+                if let Some(chosen) = easing::chosen(&line)
+                    && line.get("refused").is_some()
+                {
+                    easing.refused(&chosen.session, jiff::Timestamp::now());
+                }
                 if let Some(parking) = &mut parking {
                     self.sleep_to_ease(&mut line, parking, easing, now).await;
                 }
@@ -6611,6 +6631,7 @@ impl<S: Store> Shared<S> {
         let here = ease::Here::of(&self.machine, &machines, &loads, onto);
         let reading = crate::balance::read(&machines, &sessions, now);
         easing.doubt(orchestrators.err());
+        easing.on_way(self.easing_on_way(now));
         let line = easing.look(&here, reading, cells, &holds, kept_eases, now);
         (line, sampler)
     }
