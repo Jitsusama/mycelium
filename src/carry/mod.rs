@@ -1528,6 +1528,9 @@ mod tests {
         ends_after: usize,
         steered: Vec<(String, Value)>,
         rest: Option<String>,
+        /// Whether what no session held is the quest's own trees alone,
+        /// with no ended session's work beside them.
+        rest_trees_alone: bool,
         /// The done files in the handover, each with whether it was
         /// marked started.
         handover: Vec<(Done, bool)>,
@@ -1827,7 +1830,9 @@ mod tests {
             // What no session held goes the first time; nothing is left
             // of it for a later carry.
             if self.rest.is_none() {
-                self.write("s-gone");
+                if !self.rest_trees_alone {
+                    self.write("s-gone");
+                }
                 // The trees no session held, as `pi-carry` names them.
                 self.write(QUEST);
             }
@@ -2777,6 +2782,34 @@ mod tests {
             said.contains("NAPS02") && !said.contains("BUSY01"),
             "naming the one listed under another id, not one running there: {said}"
         );
+    }
+
+    #[test]
+    fn a_carry_that_starts_only_the_quests_own_trees_skips_its_answer() {
+        let none = json!({});
+        let mut realm = Realm {
+            sessions: vec![
+                session("THERE3", "tern", QUEST, "idle", &none),
+                session("OTHER4", "skiff", "QEST-20261107-OTHERS", "idle", &none),
+            ],
+            rest_trees_alone: true,
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        let done = done.expect("carried, its trees started there");
+        assert_eq!(
+            arrivals(&realm.started),
+            [QUEST],
+            "its trees alone start there"
+        );
+        assert!(done.sessions.is_empty(), "and no session: {done:?}");
+        let stood = steps(&lines);
+        assert!(
+            stood.contains(&"close skipped".to_owned())
+                && stood.contains(&"answer skipped".to_owned()),
+            "neither a session here to end nor one there to wait for: {lines:?}"
+        );
+        assert_eq!(last_said(&lines), "no session started there");
     }
 
     #[test]
