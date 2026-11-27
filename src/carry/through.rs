@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -628,8 +629,9 @@ pub(crate) fn short_host(host: &str) -> &str {
 
 /// Why `pi-carry` failed: what its `{"kind": "failed", "why"}` lines said
 /// on its output, since it says everything there, else what it wrote to
-/// its errors.
-fn failed_why(output: &[u8], errors: &[u8], _ended: ExitStatus) -> String {
+/// its errors, else how it `ended` and the last line it printed, so a
+/// failure is never said with no why.
+fn failed_why(output: &[u8], errors: &[u8], ended: ExitStatus) -> String {
     let output = String::from_utf8_lossy(output);
     let said: Vec<String> = output
         .lines()
@@ -637,10 +639,21 @@ fn failed_why(output: &[u8], errors: &[u8], _ended: ExitStatus) -> String {
         .filter(|line| line["kind"] == "failed")
         .filter_map(|line| line["why"].as_str().map(str::to_owned))
         .collect();
-    if said.is_empty() {
-        String::from_utf8_lossy(errors).trim().to_owned()
-    } else {
-        said.join("; ")
+    if !said.is_empty() {
+        return said.join("; ");
+    }
+    let errors = String::from_utf8_lossy(errors).trim().to_owned();
+    if !errors.is_empty() {
+        return errors;
+    }
+    let how = match (ended.code(), ended.signal()) {
+        (Some(code), _) => format!("it exited {code}"),
+        (None, Some(signal)) => format!("it was ended by signal {signal}"),
+        (None, None) => "it ended".to_owned(),
+    };
+    match output.lines().map(str::trim).rfind(|line| !line.is_empty()) {
+        Some(last) => format!("{how}, saying nothing of why; its last line was {last}"),
+        None => format!("{how}, saying nothing"),
     }
 }
 
