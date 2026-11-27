@@ -1388,10 +1388,11 @@ mod tests {
                 Lapsed::Held {
                     claimer: "s-weigh".to_owned(),
                     heads: "QEST-20261111-OSPHT4".to_owned(),
-                    doubting: "s-stray".to_owned(),
+                    doubting: "s-other".to_owned(),
                 },
             ],
-            "a claim no doubtful log may lead to passes on, though others can't be told"
+            "a claim no doubtful log may lead to passes on, though others can't be told, and \
+             one held names the logs that lead to it, not another's that can't be told"
         );
         assert_eq!(
             record.sessions.keys().collect::<Vec<_>>(),
