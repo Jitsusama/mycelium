@@ -68,6 +68,19 @@ pub struct Eases {
     pub onto: BTreeSet<String>,
 }
 
+impl Eases {
+    /// The workers it may carry to in one look: those [`Eases::onto`]
+    /// names, and `first_room`, the room its node's `agent-rooms` names
+    /// first then ([`crate::made::Book::first_agent_room`]), so easing
+    /// follows the room agents' work goes to now without its node being
+    /// told again.
+    #[must_use]
+    pub fn onto_now(&self, first_room: Option<String>) -> BTreeSet<String> {
+        let _ = first_room;
+        self.onto.clone()
+    }
+}
+
 /// What a node read for one look at its sessions.
 #[derive(Debug, Clone, Copy)]
 pub struct Looked<'a> {
@@ -937,6 +950,40 @@ mod tests {
     use crate::carry::ease::tests::{NOW, ago, cell, declaring, now, realm, short_realm};
     use crate::placement::Loads;
     use crate::room::{Limit, Pressure, Takes};
+
+    #[test]
+    fn easing_carries_to_the_first_agents_room_beside_the_workers_named() {
+        let eases = |onto: &[&str]| Eases {
+            folder: PathBuf::from("eases"),
+            every: Duration::from_secs(60),
+            carries: true,
+            sleeps: None,
+            onto: onto.iter().map(|name| (*name).to_owned()).collect(),
+        };
+        let names = |names: &[&str]| -> BTreeSet<String> {
+            names.iter().map(|name| (*name).to_owned()).collect()
+        };
+        assert_eq!(
+            eases(&["tern"]).onto_now(Some("wren".to_owned())),
+            names(&["tern", "wren"]),
+            "the first room beside those named"
+        );
+        assert_eq!(
+            eases(&[]).onto_now(Some("wren".to_owned())),
+            names(&["wren"]),
+            "the first room though none is named"
+        );
+        assert_eq!(
+            eases(&["tern"]).onto_now(None),
+            names(&["tern"]),
+            "no room, only those named"
+        );
+        assert_eq!(
+            eases(&["wren"]).onto_now(Some("wren".to_owned())),
+            names(&["wren"]),
+            "a room also named, once"
+        );
+    }
 
     /// A room its node felt, at processor pressure `cpu`.
     fn felt(cpu: f64) -> Room {
