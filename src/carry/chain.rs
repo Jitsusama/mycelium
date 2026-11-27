@@ -1785,7 +1785,9 @@ mod tests {
             Some(|session: &str| found.follows(session))
         });
         assert!(
-            !said.iter().any(|lapsed| matches!(lapsed, Lapsed::Held { .. })),
+            !said
+                .iter()
+                .any(|lapsed| matches!(lapsed, Lapsed::Held { .. })),
             "no claim is held for its doubt: {said:?}"
         );
         let why = found.disagreeing("s-stray").expect("its logs disagree");
