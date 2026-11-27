@@ -1756,6 +1756,43 @@ mod tests {
     }
 
     #[test]
+    fn logs_that_disagree_are_named_in_one_order_however_the_folders_read() {
+        let logs = tempfile::tempdir().expect("a temporary folder");
+        let log = "2026-11-23T11-31-00-000Z_s-weigh.jsonl";
+        // Eight copies, made out of their order, so a folder read in the
+        // order its entries were made, or the reverse, lists them out of
+        // theirs, as one read in a hashed order does all but one time in
+        // 40,320.
+        for at in [5, 2, 7, 0, 3, 6, 1, 4] {
+            let folder = logs.path().join(format!("--home-kestrel-{at}--"));
+            fs::create_dir_all(&folder).expect("made");
+            fs::write(
+                folder.join(log),
+                format!("{{\"id\":\"s-weigh\",\"parentSession\":\"s-elder-{at}\"}}\n"),
+            )
+            .expect("written");
+        }
+        let paths: Vec<String> = (0..8)
+            .map(|at| {
+                let folder = logs.path().join(format!("--home-kestrel-{at}--"));
+                folder.join(log).display().to_string()
+            })
+            .collect();
+        assert_eq!(
+            Logs::scan(logs.path())
+                .expect("scanned")
+                .disagreeing("s-weigh"),
+            Some(format!(
+                "the 8 logs named for s-weigh don't all say what it continues, so a claim it \
+                 may lead to is kept until the one that isn't its own is moved: {}",
+                paths.join(", ")
+            )),
+            "in their paths' order, so the sentence a node says once is the same at every \
+             lapse's scan, never said again as a folder reads in another order"
+        );
+    }
+
+    #[test]
     fn each_log_is_read_once_a_scan() {
         let logs = tempfile::tempdir().expect("a temporary folder");
         let own = logs.path().join("--home-joel-src-mycelium--");
