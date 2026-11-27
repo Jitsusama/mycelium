@@ -26,6 +26,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::facts::{Machine, Readiness};
+use crate::placement;
 use crate::record::{Session, State};
 use crate::room::Limit;
 
@@ -128,13 +129,15 @@ pub struct Load {
     /// `stall`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load: Option<f64>,
-    /// Whether it is over: its queue says it is past a limit, or its
-    /// processor pressure is at [`OVER_CPU_PRESSURE`].
+    /// Whether it is over: its queue says it is past a limit, its
+    /// processor pressure is at [`OVER_CPU_PRESSURE`], or it is past the
+    /// ceiling it is kept lively to.
     pub over: bool,
     /// The limits it is past: those its queue says, and its processor
     /// where its pressure is at [`OVER_CPU_PRESSURE`]. It is
-    /// [`over`](Self::over) exactly when this isn't empty; a reading kept
-    /// before it was said has none.
+    /// [`over`](Self::over) when this isn't empty or it is past its
+    /// [`lively`](Self::lively) ceiling; a reading kept before it was said
+    /// has none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub past: Vec<Limit>,
     /// Why it is past the ceiling it is kept lively to, where it is:
@@ -260,7 +263,13 @@ fn load(machine: &Machine, sessions: &[Session], now: jiff::Timestamp) -> Load {
     {
         past.push(Limit::Cpu);
     }
-    let over = !past.is_empty();
+    let lively = machine
+        .declared
+        .as_ref()
+        .and_then(|declared| declared.kept_lively)
+        .zip(room)
+        .and_then(|(lively, room)| placement::past_lively(lively, room));
+    let over = !past.is_empty() || lively.is_some();
     let has_room = !over
         && stall.is_some_and(|stall| stall < ROOM_STALL)
         && processor.is_some_and(|processor| processor < ROOM_PROCESSOR)
@@ -292,7 +301,7 @@ fn load(machine: &Machine, sessions: &[Session], now: jiff::Timestamp) -> Load {
         load,
         over,
         past,
-        lively: None,
+        lively,
         room: has_room,
         busy,
         idle: count(State::Idle),
