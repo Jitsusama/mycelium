@@ -4364,6 +4364,46 @@ mod tests {
         );
     }
 
+    // Followup 544(9): the room gate reads the worker mark as soon as the
+    // node can ask anything of a machine, so the link's admission marks it
+    // before the link offers the node its asks.
+    #[tokio::test]
+    async fn a_link_marks_its_worker_before_its_node_can_ask_of_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("node.sock");
+        let listener = tokio::net::UnixListener::bind(&path).expect("the node binds");
+        let (skiff, kestrel) = (Memory::default(), Memory::default());
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let _near_end = end(&skiff, "skiff", near);
+        let starting = dialled_starting(dir.path(), path);
+        let (reading, writing) = tokio::io::split(far);
+        let kept = kestrel.clone();
+        let _far_end = tokio::spawn(async move {
+            run(
+                kept,
+                &realm("kestrel"),
+                Connection {
+                    worker: true,
+                    ..connection(reading, writing)
+                },
+                None,
+                Some(starting),
+            )
+            .await
+        });
+        let (called, _) = tokio::time::timeout(PATIENCE, listener.accept())
+            .await
+            .expect("the link calls its node in time")
+            .expect("the node takes the call");
+        let mut node = BufReader::new(called).lines();
+        let first = node.next_line().await.expect("it asks").expect("a line");
+        assert!(first.contains("Carry"), "the link asks to carry: {first}");
+        assert!(
+            kestrel.is_worker("skiff"),
+            "skiff is marked a worker before kestrel's node can ask anything of it"
+        );
+    }
+
     // Our council, on #408's fix-forward (2026-11-24): a link another
     // machine dialled runs apart from the node and may drop while it is
     // stopped, so its drop must not be marked as seen.
@@ -5801,8 +5841,8 @@ mod tests {
     }
 
     // A worker's link is one by its way in, from its admission, so a
-    // worker that never says what its machine is, after a restart or a
-    // record a session wrote of it ready, still reads as a worker.
+    // worker that never says what its machine is still reads as a
+    // worker, though a record kept from before says it is none.
     #[tokio::test]
     async fn a_worker_saying_nothing_of_its_machine_is_one_from_its_admission() {
         let skiff = Memory::default();

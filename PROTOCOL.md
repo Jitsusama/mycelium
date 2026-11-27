@@ -844,7 +844,9 @@ in order and says each step:
    that isn't a bundle, patch, log or done file. One that is refuses
    the carry, naming it. What a bundle or a log holds isn't read. The
    node logs each carried session started on a worker, naming it, its
-   quest and the worker.
+   quest and the worker. A machine gone out of reach since the find, or
+   whose node restarted and hasn't heard it since, is refused as the
+   find refuses it, so nothing is shared unscreened.
 4. `start`: each carried session starts again on the machine, held:
    those told to carry first, then the quest's own, then those the find
    couldn't ask of, so a refusal the ask couldn't foresee meets no
