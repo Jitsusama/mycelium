@@ -547,6 +547,15 @@ pub enum Lapsed {
         /// The quest it heads.
         heads: String,
     },
+    /// Kept as it was, by the session that claimed it, as a log that
+    /// can't be told apart from another may continue it: neither handed
+    /// on nor lost until a later lapse can tell.
+    Held {
+        /// The session that claimed it.
+        claimer: String,
+        /// The quest it heads.
+        heads: String,
+    },
     /// Let go of, for the reason `why`.
     Forgotten {
         /// The session that claimed it.
@@ -571,6 +580,13 @@ impl std::fmt::Display for Lapsed {
                 shown(heads),
                 shown(claimer),
                 shown(heir)
+            ),
+            Self::Held { claimer, heads } => write!(
+                out,
+                "the claim to head {} is kept for {}, which no longer stands, as logs that may \
+                 continue it disagree on what they continue",
+                shown(heads),
+                shown(claimer)
             ),
             Self::Forgotten {
                 claimer,
@@ -1179,9 +1195,105 @@ mod tests {
             })
         });
         assert_eq!(
-            (record, said),
-            (before, Vec::new()),
+            record, before,
             "one log that can't be told may continue either, so neither is handed on or lost"
+        );
+        assert_eq!(
+            said,
+            [
+                Lapsed::Held {
+                    claimer: "s-steward".to_owned(),
+                    heads: "QEST-20261007-WCJQSG".to_owned(),
+                },
+                Lapsed::Held {
+                    claimer: "s-weigh".to_owned(),
+                    heads: "QEST-20261111-OSPHT4".to_owned(),
+                },
+            ],
+            "and each is said to be held, so a claim kept with no end names its cause"
+        );
+        assert_eq!(
+            said[0].to_string(),
+            "the claim to head QEST-20261007-WCJQSG is kept for s-steward, which no longer \
+             stands, as logs that may continue it disagree on what they continue"
+        );
+    }
+
+    #[test]
+    fn a_held_claim_passes_once_a_later_lapse_can_tell() {
+        let mut record = nested();
+        let was = record.sessions.get("s-steward").cloned().expect("claimed");
+        let standing = standing(&[("s-steward-2", Some("WCJQSG")), ("s-other", None)]);
+        record.lapse(&standing, || {
+            Some(|session: &str| match session {
+                "s-steward-2" => Ok(Some("s-steward".to_owned())),
+                "s-other" => Err(quests(&["s-steward", "s-elder"])),
+                _ => Ok(None),
+            })
+        });
+        assert_eq!(
+            record.sessions.keys().collect::<Vec<_>>(),
+            ["s-steward"],
+            "held at first, as the claim no doubt reaches lapses"
+        );
+        // The stray copy is gone, so its logs agree again.
+        let said = record.lapse(&standing, || {
+            Some(|session: &str| match session {
+                "s-steward-2" => Ok(Some("s-steward".to_owned())),
+                "s-other" => Ok(Some("s-elder".to_owned())),
+                _ => Ok(None),
+            })
+        });
+        assert_eq!(
+            said,
+            [Lapsed::Handed {
+                claimer: "s-steward".to_owned(),
+                heir: "s-steward-2".to_owned(),
+                heads: "QEST-20261007-WCJQSG".to_owned(),
+            }],
+            "once the logs agree, the held claim passes on"
+        );
+        assert_eq!(record.sessions.get("s-steward-2"), Some(&was));
+    }
+
+    #[test]
+    fn a_doubtful_walk_ends_at_a_cycle_and_past_its_bound() {
+        let mut record = nested();
+        let standing = standing(&[("s-steward-2", Some("WCJQSG")), ("s-other", None)]);
+        let said = record.lapse(&standing, || {
+            Some(|session: &str| match session {
+                "s-steward-2" => Ok(Some("s-steward".to_owned())),
+                // Two doubtful logs that lead to each other, and a line
+                // that reaches the claimer one log past the bound.
+                "s-other" => Err(quests(&["s-loop-a", "s-far-1"])),
+                "s-loop-a" => Err(quests(&["s-loop-b", "s-elder"])),
+                "s-loop-b" => Err(quests(&["s-loop-a", "s-older"])),
+                far => match far
+                    .strip_prefix("s-far-")
+                    .and_then(|at| at.parse::<usize>().ok())
+                {
+                    Some(at) if at < CONTINUED_MOST => Ok(Some(format!("s-far-{}", at + 1))),
+                    Some(_) => Ok(Some("s-weigh".to_owned())),
+                    None => Ok(None),
+                },
+            })
+        });
+        assert_eq!(
+            said,
+            [
+                Lapsed::Handed {
+                    claimer: "s-steward".to_owned(),
+                    heir: "s-steward-2".to_owned(),
+                    heads: "QEST-20261007-WCJQSG".to_owned(),
+                },
+                Lapsed::Forgotten {
+                    claimer: "s-weigh".to_owned(),
+                    heads: "QEST-20261111-OSPHT4".to_owned(),
+                    why: "no standing session continues it".to_owned(),
+                },
+            ],
+            "a cycle of doubtful logs holds nothing they don't reach, and a claim past the \
+             bound is no doubt's to hold"
         );
     }
 
@@ -1207,11 +1319,17 @@ mod tests {
         });
         assert_eq!(
             said,
-            [Lapsed::Handed {
-                claimer: "s-steward".to_owned(),
-                heir: "s-steward-2".to_owned(),
-                heads: "QEST-20261007-WCJQSG".to_owned(),
-            }],
+            [
+                Lapsed::Handed {
+                    claimer: "s-steward".to_owned(),
+                    heir: "s-steward-2".to_owned(),
+                    heads: "QEST-20261007-WCJQSG".to_owned(),
+                },
+                Lapsed::Held {
+                    claimer: "s-weigh".to_owned(),
+                    heads: "QEST-20261111-OSPHT4".to_owned(),
+                },
+            ],
             "a claim no doubtful log may lead to passes on, though others can't be told"
         );
         assert_eq!(
@@ -1423,7 +1541,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_two_logs_are_named_for_continues_none() {
+    fn a_session_whose_logs_disagree_continues_none() {
         let logs = tempfile::tempdir().expect("a temporary folder");
         let (own, planted) = (
             logs.path().join("--home-joel-src-mycelium--"),
@@ -1455,7 +1573,6 @@ mod tests {
             Err(vec!["s-elder".to_owned(), "s-steward".to_owned()]),
             "and it says what each may continue, for a lapse to keep those claims"
         );
-        assert_eq!(found.doubled().collect::<Vec<_>>(), ["s-weigh"]);
         assert_eq!(
             found.follows("s-nobody"),
             Ok(None),
@@ -1491,7 +1608,52 @@ mod tests {
             (Ok(Some("s-elder".to_owned())), Ok(None)),
             "a copy that says what the log says leaves nothing to tell apart"
         );
-        assert_eq!(found.doubled().count(), 0, "so neither is doubted");
+    }
+
+    #[test]
+    fn a_copy_naming_none_disagrees_with_one_naming_a_session() {
+        let logs = tempfile::tempdir().expect("a temporary folder");
+        let (own, planted) = (
+            logs.path().join("--home-joel-src-mycelium--"),
+            logs.path().join("--home-joel--"),
+        );
+        for folder in [&own, &planted] {
+            fs::create_dir_all(folder).expect("made");
+        }
+        fs::write(
+            own.join("2026-11-23T11-31-00-000Z_s-weigh.jsonl"),
+            "{\"id\":\"s-weigh\",\"parentSession\":\"s-elder\"}\n",
+        )
+        .expect("written");
+        // Unreadable as a header, so it reads as continuing none.
+        fs::write(
+            planted.join("2026-11-23T12-00-00-000Z_s-weigh.jsonl"),
+            "not a header\n",
+        )
+        .expect("written");
+        let found = Logs::scan(logs.path()).expect("scanned");
+        assert_eq!(
+            found.follows("s-weigh"),
+            Err(vec!["s-elder".to_owned()]),
+            "one naming none and one naming a session can't be told apart, so what the one names may be continued"
+        );
+    }
+
+    #[test]
+    fn each_log_is_read_once_a_scan() {
+        let logs = tempfile::tempdir().expect("a temporary folder");
+        let own = logs.path().join("--home-joel-src-mycelium--");
+        fs::create_dir_all(&own).expect("made");
+        let log = own.join("2026-11-23T11-31-00-000Z_s-weigh.jsonl");
+        fs::write(&log, "{\"id\":\"s-weigh\",\"parentSession\":\"s-elder\"}\n").expect("written");
+        let found = Logs::scan(logs.path()).expect("scanned");
+        assert_eq!(found.follows("s-weigh"), Ok(Some("s-elder".to_owned())));
+        fs::remove_file(&log).expect("removed");
+        assert_eq!(
+            found.follows("s-weigh"),
+            Ok(Some("s-elder".to_owned())),
+            "a lapse walking past it again reads what it read, not the disk again"
+        );
     }
 
     #[test]
