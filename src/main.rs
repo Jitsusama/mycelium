@@ -1238,7 +1238,7 @@ struct Sprouting {
     #[arg(long)]
     on: Option<String>,
     /// What the machine it starts on must be, as for `place`, such as
-    /// `cloud`; given again for each. Where no `--on` names one, it
+    /// `cloud`, or `fresh` for one made for it; given again for each. Where no `--on` names one, it
     /// starts on whichever meets them, made for the person if none does.
     #[arg(long = "need", value_parser = need)]
     needs: Vec<Need>,
@@ -1281,7 +1281,8 @@ struct Asked {
     /// What a machine must be, as `kind=value`: `machine`, `system`,
     /// `arch`, `reach`, `accelerator` or `tool` (one the realm's kit
     /// holds), such as `system=linux` or `tool=gcloud`, or `cloud` alone
-    /// for a machine that costs money; given again for each.
+    /// for a machine that costs money, or `fresh` for one a provider
+    /// makes for it now; given again for each.
     #[arg(long = "need", value_parser = need)]
     needs: Vec<Need>,
     /// What a machine had rather be, in the same words, most wanted first.
@@ -3737,14 +3738,17 @@ fn write_line(out: &mut impl Write, value: &impl serde::Serialize) -> io::Result
 }
 
 fn need(said: &str) -> Result<Need, String> {
-    // The cloud is a need with no value: any machine a provider made.
-    if said == "cloud" {
-        return Ok(Need::Cloud);
+    // The cloud is a need with no value: any machine a provider made; and
+    // so is a fresh one, made for this work now.
+    match said {
+        "cloud" => return Ok(Need::Cloud),
+        "fresh" => return Ok(Need::Fresh),
+        _ => {}
     }
     let not_one = || {
         format!(
-            "{said:?} is not a need: cloud, machine, system, arch, reach, accelerator (gpu, \
-             npu) or tool, each but cloud as kind=value, such as system=linux"
+            "{said:?} is not a need: cloud, fresh, machine, system, arch, reach, accelerator \
+             (gpu, npu) or tool, each but cloud and fresh as kind=value, such as system=linux"
         )
     };
     let (kind, value) = said.split_once('=').ok_or_else(not_one)?;
@@ -3812,9 +3816,10 @@ mod tests {
     fn the_cloud_is_a_need_with_no_value() {
         use mycelium::placement::Need;
         assert_eq!(need("cloud"), Ok(Need::Cloud));
+        assert_eq!(need("fresh"), Ok(Need::Fresh));
         assert_eq!(need("reach=basin"), Ok(Need::Reach("basin".to_owned())));
         assert!(
-            need("clouds").is_err_and(|why| why.contains("cloud, machine")),
+            need("clouds").is_err_and(|why| why.contains("cloud, fresh, machine")),
             "a word that isn't one names those that are"
         );
     }

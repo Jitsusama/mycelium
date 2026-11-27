@@ -2082,8 +2082,8 @@ where its provider fixes it. Each offer comes back with the `provider`
 that offered it, and a program that couldn't say is in `unanswered`
 with why, rather than taken as offering nothing. Beside them, `needs`
 lists the needs without a value this node places a `"Sprout"` by,
-`["cloud"]`, so a client offers cloud work only where a node says it;
-a node from before says none, and drops a sprout's `needs` unsaid,
+`["cloud", "fresh"]`, so a client offers cloud work only where a node
+says it; a node from before says none, and drops a sprout's `needs` unsaid,
 where a node that says them refuses a sprout field it doesn't know.
 An offer is the
 provider's promise, never a fact about a machine: it only decides
@@ -2093,9 +2093,12 @@ what it is.
 `"Place"` asks which of those machines work should go to. The work says
 its `needs` and `prefers`, each one of `{"machine": name}`,
 `{"system": "linux"}`, `{"arch": "x86_64"}`, `{"reach": network}`,
-`{"accelerator": "gpu"}`, `{"tool": name}` or `"cloud"`, the earliest
-preference most wanted (a machine is a cloud one where it declares it
-`costs_money`, as an offer does; a machine reaches a network it
+`{"accelerator": "gpu"}`, `{"tool": name}`, `"cloud"` or `"fresh"`, the
+earliest preference most wanted (a machine is a cloud one where it
+declares it `costs_money`, as an offer does; no machine made or linked
+is `"fresh"`, which only an offer meets, so such work is made a machine
+however much room another has, and the start relayed to it names that
+machine instead; a machine reaches a network it
 declares in `reach`, or one it probes while its probe last answered,
 and lacks one whose probe didn't; it has a tool its `kit` lists, lacks
 one its kit doesn't, and
@@ -2462,7 +2465,8 @@ meets no need, and none is a machine already named. An offer whose
 any start, so a provider lending machines that cost nothing is as easy
 to start on as a machine of the realm. One that costs is made only for
 a start that says it `may_cost` (`mycelium start --may-cost`), or for
-the person's own start that names a machine or needs `"cloud"`, since
+the person's own start that names a machine or needs `"cloud"` or
+`"fresh"`, since
 he pays for what he names; a start that doesn't is refused, saying
 which offer would have done and what it
 costs, and nothing is made. Of those that would take the work, it makes

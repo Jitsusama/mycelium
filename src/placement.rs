@@ -199,6 +199,8 @@ impl Need {
             // itself that the machine's node adds names it as the worker
             // it is.
             Self::Cloud => false,
+            // Met only by an offer, so never by the machine chosen.
+            Self::Fresh => false,
         }
     }
 }
@@ -224,6 +226,11 @@ pub enum Need {
     /// provider makes for it. It names a worker, so a worker's refusal of
     /// work that names none doesn't refuse it.
     Cloud,
+    /// A machine made for it now, from a provider's offer: never one
+    /// already made or linked, though it has room, so a start may have a
+    /// machine of what a provider offers today. It names a worker, as
+    /// [`Need::Cloud`] does.
+    Fresh,
 }
 
 /// Where work goes.
@@ -296,6 +303,7 @@ impl fmt::Display for Need {
             Need::Accelerator(AcceleratorKind::Npu) => write!(f, "an npu"),
             Need::Tool(tool) => write!(f, "tool {tool}"),
             Need::Cloud => write!(f, "a cloud machine"),
+            Need::Fresh => write!(f, "a machine made for it"),
         }
     }
 }
@@ -305,6 +313,7 @@ impl fmt::Display for Because {
         match self {
             Because::Lacks(Need::Machine(name)) => write!(f, "isn't {name}"),
             Because::Lacks(Need::Cloud) => write!(f, "isn't a cloud machine"),
+            Because::Lacks(Need::Fresh) => write!(f, "was made before it"),
             Because::Lacks(need) => write!(f, "lacks {need}"),
             Because::Unknown(need) => write!(f, "hasn't said {need}"),
             Because::Refuses(taint) => write!(f, "refuses: {}", taint.why),
@@ -1228,8 +1237,8 @@ fn judge_offer(work: &Work, offer: &Offer) -> Judged {
         Need::Reach(network) => reaches(shape.declared.as_ref(), &BTreeMap::new(), network),
         // What a machine not yet made would carry isn't offered yet.
         Need::Accelerator(_) | Need::Tool(_) => None,
-        // Whatever a provider makes is in the cloud.
-        Need::Cloud => Some(true),
+        // Whatever a provider makes is in the cloud, and made for it.
+        Need::Cloud | Need::Fresh => Some(true),
     };
     for need in &work.needs {
         match promised(need) {
@@ -1449,7 +1458,7 @@ fn lasting_reach(machines: &[Machine]) -> BTreeSet<&str> {
 fn names_worker(work: &Work, lasting: &BTreeSet<&str>) -> bool {
     work.needs.iter().any(|need| match need {
         Need::Reach(network) => !lasting.contains(network.as_str()),
-        Need::Cloud => true,
+        Need::Cloud | Need::Fresh => true,
         _ => false,
     })
 }
@@ -1583,6 +1592,8 @@ fn is(machine: &Machine, need: &Need) -> Option<bool> {
             .declared
             .as_ref()
             .map(|declared| declared.costs_money),
+        // Every machine placement weighs is made or linked already.
+        Need::Fresh => Some(false),
     }
 }
 
@@ -3813,6 +3824,29 @@ pub(crate) mod tests {
             to_make(&work, &offers, &[]).map(|chosen| chosen.shape.as_str()),
             Ok("large"),
             "one that lives exactly as long as the work will do"
+        );
+    }
+
+    #[test]
+    fn work_needing_a_fresh_machine_passes_every_standing_one_for_a_make() {
+        let mut made = machine("wren", "linux", 40, &["work"]);
+        made.declared.as_mut().expect("declared").costs_money = true;
+        let realm = [machine("skiff", "linux", 30, &["work"]), made];
+        let fresh = needing(vec![Need::Cloud, Need::Fresh]);
+        let Placement::Refused { misses } = place(&fresh, &realm) else {
+            panic!("no standing machine was made for it, though wren has room")
+        };
+        assert_eq!(
+            said(&misses),
+            "skiff isn't a cloud machine, was made before it; wren was made before it",
+            "each standing machine says why not"
+        );
+
+        let offers = [offer("large", "1.16", Some(43_200), &["work"])];
+        assert_eq!(
+            to_make(&fresh, &offers, &[]).map(|chosen| chosen.shape.as_str()),
+            Ok("large"),
+            "a machine made now is made for it"
         );
     }
 
