@@ -1379,7 +1379,10 @@ pub fn chosen(records: Vec<Value>, named: Option<&str>) -> Vec<Value> {
 /// can. Each is judged by what is left once direction marks and controls
 /// are gone, in one pass, so no mark beside it can vouch for it. A run of
 /// emoji keeps at most [`MOST_JOINED`] joiners, so a name chained from
-/// dozens can't count as the two cells one emoji takes.
+/// dozens can't count as the two cells one emoji takes; a joiner before a
+/// letter, as in Devanagari's half forms or Sinhala's yansaya, joins no
+/// emoji, since the swarm's measure gives that letter a cell of its own,
+/// so it is never counted.
 pub(crate) fn one_line(text: &str) -> String {
     let plain: Vec<char> = text
         .chars()
@@ -1400,22 +1403,25 @@ pub(crate) fn one_line(text: &str) -> String {
     // though a spacing mark can where unicode-width gives it a cell (not
     // one extending a grapheme), nor can any regional indicator, paired
     // as a flag or not, a flag's second half following its first rather
-    // than a joiner. A non-joiner is never counted, as it joins no emoji.
+    // than a joiner. A non-joiner is never counted, nor a joiner before a
+    // letter, as neither joins an emoji.
     let mut joined = 0;
     for (at, &each) in plain.iter().enumerate() {
         let before = kept.last().copied();
+        let after = plain.get(at + 1).copied();
+        let counted = each == '\u{200D}' && !after.is_some_and(char::is_alphabetic);
         let keep = match each {
             '\u{200C}' | '\u{200D}' => {
                 before.is_some_and(|before| spells(before) || selects(before))
-                    && plain.get(at + 1).is_some_and(|after| spells(*after))
-                    && (each == '\u{200C}' || joined < MOST_JOINED)
+                    && after.is_some_and(spells)
+                    && (!counted || joined < MOST_JOINED)
             }
             each if selects(each) => before.is_some_and(spells),
             each => !unseen(each),
         };
         if keep {
             kept.push(each);
-            if each == '\u{200D}' {
+            if counted {
                 joined += 1;
             } else if before != Some('\u{200D}')
                 && !selects(each)
@@ -3675,6 +3681,29 @@ mod tests {
             one_line(&joined(7)),
             format!("{}{}", joined(4), joined(3)),
             "a joiner past three in a run was kept"
+        );
+    }
+
+    #[test]
+    fn a_joiner_before_a_letter_joins_no_emoji_so_is_never_counted() {
+        // Four of Devanagari's half forms, each a consonant, a virama and
+        // a joiner, before a last consonant, and a chain of four of
+        // Sinhala's yansaya, each a virama and a joiner before ya.
+        let half_forms = format!("{}\u{915}", "\u{915}\u{94D}\u{200D}".repeat(4));
+        let yansaya = "\u{D9A}\u{DCA}\u{200D}\u{DBA}\u{DCA}\u{200D}\u{DBA}\u{DCA}\u{200D}\u{DBA}\u{DCA}\u{200D}\u{DBA}";
+        for spelt in [half_forms.as_str(), yansaya] {
+            assert_eq!(
+                one_line(spelt),
+                spelt,
+                "a joiner before a letter was capped"
+            );
+        }
+        let (woman, joiner, letter) = ("\u{1F469}", "\u{200D}", "\u{E9}");
+        let said = format!("{}{joiner}{letter}{joiner}{woman}", [woman; 4].join(joiner));
+        assert_eq!(
+            one_line(&said),
+            format!("{}{joiner}{letter}{woman}", [woman; 4].join(joiner)),
+            "the joiner before a letter went, or the letter began the emoji's count afresh"
         );
     }
 
