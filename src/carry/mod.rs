@@ -45,6 +45,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub use self::ground::Lent;
+use crate::link::dial::quoted;
 use crate::placement::{Need, Work};
 use crate::record::{Session, State};
 use crate::wire::{Start, Started, Taking};
@@ -682,7 +683,10 @@ fn rest<F: FnMut(&Value)>(
 /// it: its own session, busy or idle there. A start that landed only
 /// holds the arrival, which may still fail before pi takes the session
 /// up, so until then the session runs nowhere. Those that never run
-/// are named, each with how to join its start and see why.
+/// are named, each with where to see why: its start, joined by words
+/// quoted for a shell, while it may still be held, and the node log
+/// there, which alone says once the hold went, as it does with a pi
+/// that ended there or an arrival that exited.
 fn answered(hands: &mut impl Hands, to: &str, arrived: &[Arrived]) -> Result<(), String> {
     loop {
         let there = hands.sessions()?;
@@ -703,11 +707,22 @@ fn answered(hands: &mut impl Hands, to: &str, arrived: &[Arrived]) -> Result<(),
             let each: Vec<String> = silent
                 .iter()
                 .map(|one| {
+                    let ended = there.iter().any(|session| {
+                        session.machine == to && session_id(session) == Some(one.session.as_str())
+                    });
+                    if ended {
+                        return format!(
+                            "{} started on {to} but its pi there has ended, its start with \
+                             it, so {to}'s node log says why",
+                            one.address
+                        );
+                    }
+                    let attach: Vec<String> = one.attach.iter().map(|word| quoted(word)).collect();
                     format!(
                         "{} started on {to} but isn't running there; join its start with `{}` \
-                         to see why",
+                         to see why, or, once it has gone, read {to}'s node log",
                         one.address,
-                        one.attach.join(" ")
+                        attach.join(" ")
                     )
                 })
                 .collect();
