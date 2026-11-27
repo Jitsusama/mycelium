@@ -28801,8 +28801,7 @@ esac
             lender: None,
             gates: None,
         };
-        let there: crate::link::starts::There =
-            Arc::new(|_: &str, words: &[String]| words.to_vec());
+        let there: link::starts::There = Arc::new(|_: &str, words: &[String]| words.to_vec());
         let near_end = starting(
             dir.join("node.sock"),
             Some(Asking::Kept(skiff.asks.clone(), there)),
