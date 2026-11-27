@@ -7862,7 +7862,7 @@ impl<S: Store> Shared<S> {
         let worker = self
             .as_carried(self.others())
             .into_iter()
-            .any(|one| one.name == started.machine && crate::carry::ground::kept_as_lent(&one));
+            .any(|one| one.name == started.machine && ground::kept_as_lent(&one));
         if worker {
             eprintln!(
                 "mycelium: carried {arriving} to {}, a worker",
