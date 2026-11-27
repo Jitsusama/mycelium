@@ -122,7 +122,8 @@ mod tests {
     fn pieces_staged_in_turn_make_the_file_whole() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let pieces = Pieces::from(dir.path(), "kestrel");
-        let bytes: Vec<u8> = (0..=u8::MAX).cycle().take(2 * 1024 * 1024 + 7).collect();
+        let size = usize::try_from(2 * PIECE).expect("a size") + 7;
+        let bytes: Vec<u8> = (0..=u8::MAX).cycle().take(size).collect();
         let len = u64::try_from(bytes.len()).expect("a length");
         let mut at = 0;
         let whole = loop {
