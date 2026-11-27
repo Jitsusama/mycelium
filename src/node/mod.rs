@@ -25831,6 +25831,11 @@ esac
             "reef\nwren\ntern\nskiff\n",
         )
         .expect("named");
+        // Followup 534: kept as a worker and named a room, this node's own
+        // machine is held the person's by its guard alone.
+        let mut skiff = placement::tests::machine("skiff", "linux", 32, &["basin"]);
+        skiff.worker = true;
+        shared.store.put_machine(&skiff).expect("kept");
         for (by, work, why) in [
             (
                 By::Person,
