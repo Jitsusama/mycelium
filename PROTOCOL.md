@@ -2502,15 +2502,25 @@ beside the node's book of makes, a name a line, past blank lines and
 what follows a `#` on any line, is a room made for agents to share:
 already up and paid for by being so. The node alone writes it, as
 `mycelium rooms add` and `rooms remove` ask, holding
-`agent-rooms.lock` beside it and putting the new file in place whole,
-every other line kept as it stood. It names a machine a room only
+`agent-rooms.lock` beside it, giving up after 20 tries 50 ms apart,
+and putting the new file in place whole: every other line kept as it
+stood, its line endings too, synced before it is renamed in, mode
+0644, and never written through a link. A name is letters, digits,
+`.`, `-` and `_`, at most 253 of them. It names a machine a room only
 where its own realm's lines in the book hold it made and standing
 for an agent, refusing one made for the person, or before makes said
 for whom, and one another node made or nobody did, since naming one
-lets every agent's work go there; whoever asks, it says on its log
-who. A file past the most read is never written again. Every agent's
-start or run may be placed there, a granted session's and one from no one known included, whoever it is
-booked for, since its booking says who pays for it and may let it go,
+lets every agent's work go there. Only that make's own asker or the
+person names it one, never another agent, whose work its booking
+kept out; a session the person granted names one only as itself,
+though it makes as the person. It is judged again once written, and
+a machine released is taken out, so no name outlives what it was
+judged on. Anyone may take one out, which only sends work back to
+the machines it would go to anyway; whoever asks, the node says on
+its log who. A file past the most read is never written again.
+Every agent's start or run may be placed there, a granted session's
+and one from no one known included, whoever it is booked for, since
+its booking says who pays for it and may let it go,
 not who may use it; the person's own go there only where it is booked
 for the person or for no asker, never into a worker home an agent's
 make wrote. Any run the person asks naming one machine alone, a room
