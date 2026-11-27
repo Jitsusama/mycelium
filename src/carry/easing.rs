@@ -2603,6 +2603,20 @@ mod tests {
                 .all(|line| line["orchestrators_unknown"] == json!(doubt)),
             "within the cooldown only a doubt says more than a sleep: {cooling:?}"
         );
+        let held = cooldown_holding(&lines, &carries, doubt);
+        assert_eq!(
+            held.iter()
+                .filter(|line| line["choice"] != "sleep")
+                .map(|line| (&line["at"], &line["orchestrators_unknown"]))
+                .collect::<Vec<_>>(),
+            [(&json!(ago(50 - doubted).to_string()), &json!(doubt))],
+            "nothing says a sleep's why again until a doubt arises: {held:?}"
+        );
+    }
+
+    /// The lines after the carry before the first saying `doubt`, up to
+    /// the next carry or the end.
+    fn cooldown_holding<'a>(lines: &'a [Value], carries: &[usize], doubt: &str) -> &'a [Value] {
         let doubting = lines
             .iter()
             .position(|line| line["orchestrators_unknown"] == json!(doubt))
@@ -2616,15 +2630,7 @@ mod tests {
             .iter()
             .find(|&&carry| carry > doubting)
             .map_or(lines.len(), |&carry| carry);
-        let held = &lines[since + 1..until];
-        assert_eq!(
-            held.iter()
-                .filter(|line| line["choice"] != "sleep")
-                .map(|line| (&line["at"], &line["orchestrators_unknown"]))
-                .collect::<Vec<_>>(),
-            [(&json!(ago(50 - doubted).to_string()), &json!(doubt))],
-            "nothing says a sleep's why again until a doubt arises: {held:?}"
-        );
+        &lines[since + 1..until]
     }
 
     #[test]
