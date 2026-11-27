@@ -12,12 +12,15 @@
 //! ([`Book`]), so what was made, for how long and at what rate can always
 //! be read back and summed.
 //!
-//! Long because its tests, nearly half of it, walk each way a make, its
-//! book and the rooms' list are read and written.
+//! Long because its tests, nearly half of it, walk each way the book and
+//! the rooms' list are kept and read back: grants, rooms named and
+//! taken out, lines kept at once, restarts, releases, a line cut short
+//! and a book that changes between reads.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -181,6 +184,142 @@ pub struct Book {
     /// Why the rooms file last couldn't be read, if it couldn't, so the
     /// journal says so once each time that changes, not on every read.
     rooms_unread: Arc<Mutex<Option<String>>>,
+    /// The ends last read, with the file as it was then, so the book is
+    /// read again only once it changes, and the journal says once each
+    /// time that changes why the book can't say every end.
+    ends_read: Arc<Mutex<Option<EndsRead>>>,
+}
+
+/// The ends last read, with the stamp the book had as they were read;
+/// none where its stamp couldn't be taken, or the book couldn't be read,
+/// so they're read again.
+type EndsRead = (Option<Stamp>, Ends);
+
+/// A file as its metadata tells it apart from itself once changed: its
+/// inode, its length, when it was last written, and when its inode last
+/// changed, as a change of who may read it does, to the nanosecond.
+type Stamp = (u64, u64, std::time::SystemTime, i64, i64);
+
+/// The stamp `file` has now.
+fn stamp(file: &std::fs::Metadata) -> Option<Stamp> {
+    Some((
+        file.ino(),
+        file.len(),
+        file.modified().ok()?,
+        file.ctime(),
+        file.ctime_nsec(),
+    ))
+}
+
+/// When each machine this realm's node made ends, as the book stands by
+/// it, and whose make may be missing from them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Ends {
+    /// Each machine's end, its newest make's.
+    pub until: BTreeMap<String, jiff::Timestamp>,
+    /// The machines whose make may be missing from them, and why.
+    pub doubt: Doubt,
+}
+
+/// Whose make a book may have lost, as what is left of the lines it
+/// couldn't read says, each maybe a make cut short by a crash.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Doubt {
+    /// Nobody's: it read whole, or every line it couldn't read was a
+    /// release or another realm's, which hide no make of its own.
+    #[default]
+    None,
+    /// Only these machines': what is left of a line still names the
+    /// machine it made, and no line kept after it made or released that
+    /// machine again.
+    Of {
+        /// The machines in doubt.
+        machines: BTreeSet<String>,
+        /// Why, as the journal says it.
+        why: String,
+    },
+    /// Any machine's: the book can't be read, or a line was cut short
+    /// before it said what it kept, the reason saying which.
+    Any(String),
+}
+
+impl Doubt {
+    /// Whether `machine`'s make may be missing.
+    #[must_use]
+    pub fn of(&self, machine: &str) -> bool {
+        match self {
+            Self::None => false,
+            Self::Of { machines, .. } => machines.contains(machine),
+            Self::Any(_) => true,
+        }
+    }
+
+    /// Why a make may be missing, where one may.
+    #[must_use]
+    pub fn why(&self) -> Option<&str> {
+        match self {
+            Self::None => None,
+            Self::Of { why, .. } | Self::Any(why) => Some(why),
+        }
+    }
+
+    /// Adds that the line numbered `line` was cut short, leaving `torn`.
+    fn torn(&mut self, line: usize, torn: Torn) {
+        if matches!(self, Self::Any(_)) {
+            return;
+        }
+        match torn {
+            Torn::Nothing => {}
+            Torn::Any => {
+                *self = Self::Any(format!(
+                    "line {line} can't be read, nor which machine it may have made"
+                ));
+            }
+            Torn::Machine(machine) => {
+                if let Self::Of { machines, .. } = self {
+                    machines.insert(machine);
+                } else {
+                    *self = Self::Of {
+                        machines: BTreeSet::from([machine]),
+                        why: String::new(),
+                    };
+                }
+                self.say_of();
+            }
+        }
+    }
+
+    /// Lets go the doubt of `machine`, made or released whole since.
+    fn cleared(&mut self, machine: &str) {
+        if let Self::Of { machines, .. } = self
+            && machines.remove(machine)
+        {
+            if machines.is_empty() {
+                *self = Self::None;
+            } else {
+                self.say_of();
+            }
+        }
+    }
+
+    /// Says why again, once the machines in doubt change.
+    fn say_of(&mut self) {
+        if let Self::Of { machines, why } = self {
+            let names: Vec<&str> = machines.iter().map(String::as_str).collect();
+            *why = format!("a line cut short may hide a make of {}", names.join(", "));
+        }
+    }
+}
+
+/// What a line cut short may have hidden, read from what is left of it.
+#[derive(Debug, PartialEq, Eq)]
+enum Torn {
+    /// No make of this realm's: it was a release, or another realm's.
+    Nothing,
+    /// A make of this machine, whose name is still whole.
+    Machine(String),
+    /// A make of any machine, since nothing left says which.
+    Any,
 }
 
 /// The most of the rooms file read, far past any list of machines, so a
@@ -195,6 +334,8 @@ pub struct Standing {
     pub made: Vec<Made>,
     /// The lines passed over, each cut short by a crash among them.
     pub unread: usize,
+    /// Whose make those lines may have hidden.
+    pub doubt: Doubt,
     /// The makes that name no realm, kept before makes named one, and not
     /// released by a line naming none either, oldest first.
     pub unnamed: Vec<Made>,
@@ -208,6 +349,7 @@ impl Book {
             path,
             realm: None,
             rooms_unread: Arc::default(),
+            ends_read: Arc::default(),
         }
     }
 
@@ -390,14 +532,24 @@ impl Book {
             Err(error) => return Err(error),
         };
         let mut standing = Standing::default();
-        for line in String::from_utf8_lossy(&bytes).lines() {
-            let (kept, whole) = kept(line);
-            if !whole {
+        for (at, line) in String::from_utf8_lossy(&bytes).lines().enumerate() {
+            let (kept, left) = kept(line);
+            if let Some(left) = left {
                 standing.unread += 1;
+                standing
+                    .doubt
+                    .torn(at + 1, torn(left, self.realm.as_deref()));
             }
             let Some(kept) = kept else {
                 continue;
             };
+            if kept.realm == self.realm {
+                let named = kept.made.as_ref().map(|made| &made.machine);
+                let released = kept.released.as_ref().map(|released| &released.machine);
+                if let Some(machine) = named.or(released) {
+                    standing.doubt.cleared(machine);
+                }
+            }
             let kept_by = if kept.realm.is_none() {
                 &mut standing.unnamed
             } else if kept.realm == self.realm {
@@ -414,6 +566,62 @@ impl Book {
             }
         }
         Ok(standing)
+    }
+
+    /// When each machine this realm's node made and hasn't released
+    /// ends, by its newest make as [`Book::standing`] reads them, and
+    /// whose make the book may have lost ([`Doubt`]). Read again only
+    /// once the book changes, so a reader asking often costs no reading
+    /// of the whole book each time, and the journal says why it is
+    /// unsure once each time that changes.
+    #[must_use]
+    pub fn ends(&self) -> Ends {
+        // Taken before the book is read, so a line kept meanwhile is read
+        // at the next ask rather than missed for good.
+        let stamp = std::fs::metadata(&self.path).ok().as_ref().and_then(stamp);
+        let mut last = self
+            .ends_read
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let (Some(now), Some((Some(then), ends))) = (stamp, last.as_ref())
+            && now == *then
+        {
+            return ends.clone();
+        }
+        let read = self.standing();
+        // One that couldn't be read is read again at the next ask, though
+        // its stamp hasn't moved.
+        let stamp = stamp.filter(|_| read.is_ok());
+        let ends = match read {
+            Ok(standing) => Ends {
+                until: standing
+                    .made
+                    .into_iter()
+                    .map(|made| (made.machine, made.until))
+                    .collect(),
+                doubt: standing.doubt,
+            },
+            Err(error) => Ends {
+                until: BTreeMap::new(),
+                doubt: Doubt::Any(format!("it can't be read: {error}")),
+            },
+        };
+        let before = last.as_ref().and_then(|(_, ends)| ends.doubt.why());
+        if before != ends.doubt.why() {
+            match ends.doubt.why() {
+                Some(why) => eprintln!(
+                    "{} can't say when every machine made ends, as {why}, so no paid machine \
+                     in doubt is carried to till its end is known",
+                    self.path.display()
+                ),
+                None => eprintln!(
+                    "{} says when every machine made ends again",
+                    self.path.display()
+                ),
+            }
+        }
+        *last = Some((stamp, ends.clone()));
+        ends
     }
 
     /// Keeps `line`, naming this book's realm where it has one.
@@ -442,18 +650,48 @@ struct Kept {
     released: Option<Released>,
 }
 
-/// What `line` keeps, and whether it reads whole; where it doesn't, what
-/// the last line kept within it does, since a line cut short by a crash
-/// has the next written straight after it.
-fn kept(line: &str) -> (Option<Kept>, bool) {
+/// What `line` keeps, and where it doesn't read whole, what is left of
+/// the line cut short; then what it keeps is what the last line kept
+/// within it does, since a line cut short by a crash has the next
+/// written straight after it.
+fn kept(line: &str) -> (Option<Kept>, Option<&str>) {
     if let Ok(whole) = serde_json::from_str(line) {
-        return (Some(whole), true);
+        return (Some(whole), None);
     }
-    let after = line
-        .rfind(r#"{"at""#)
-        .filter(|at| *at > 0)
-        .and_then(|next| serde_json::from_str(&line[next..]).ok());
-    (after, false)
+    let next = line.rfind(r#"{"at""#).filter(|at| *at > 0);
+    match next.and_then(|next| Some((next, serde_json::from_str(&line[next..]).ok()?))) {
+        Some((next, after)) => (Some(after), Some(&line[..next])),
+        None => (None, Some(line)),
+    }
+}
+
+/// What `left`, all that is left of a line cut short, may have hidden
+/// from a book kept by `realm`. A line is kept with its keys in order,
+/// so a release says so before its machine, and a make says its
+/// machine before its place and its realm last; nothing a make holds
+/// before its machine has a key of that name, and a name said within
+/// another's text has its quotes escaped, so the first whole name after
+/// the make's start is its own. What is left before either says which
+/// may be any machine's make.
+fn torn(left: &str, realm: Option<&str>) -> Torn {
+    if left.contains(r#""released":"#)
+        || said(left, "realm").is_some_and(|said| Some(said.as_str()) != realm)
+    {
+        return Torn::Nothing;
+    }
+    left.find(r#""made":{"#)
+        .and_then(|made| said(&left[made..], "machine"))
+        .map_or(Torn::Any, Torn::Machine)
+}
+
+/// The text `left` first says whole for `key`, if it says one.
+fn said(left: &str, key: &str) -> Option<String> {
+    let key = format!("\"{key}\":");
+    let at = left.find(&key)? + key.len();
+    serde_json::Deserializer::from_str(&left[at..])
+        .into_iter::<String>()
+        .next()?
+        .ok()
 }
 
 /// Which machine a release let go.
@@ -935,6 +1173,197 @@ mod tests {
     }
 
     #[test]
+    fn the_ends_are_read_again_once_the_book_changes() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let book = Book::at(dir.path().join("made.jsonl")).of_realm("work");
+        assert_eq!(book.ends(), Ends::default(), "a book never kept ends none");
+        let now = jiff::Timestamp::now();
+        let (soon, later) = (
+            now + jiff::SignedDuration::from_hours(1),
+            now + jiff::SignedDuration::from_hours(2),
+        );
+        let (tern, wren) = (made_at("tern", "p1", soon), made_at("wren", "p2", soon));
+        book.made(&tern).expect("a make is kept");
+        assert_eq!(
+            book.ends().until,
+            BTreeMap::from([("tern".to_owned(), soon)]),
+            "a make kept is read"
+        );
+        book.made(&wren).expect("a make is kept");
+        book.made(&made_at("tern", "p3", later))
+            .expect("a make is kept");
+        book.released(&wren, "its time was up")
+            .expect("a release is kept");
+        assert_eq!(
+            book.ends(),
+            Ends {
+                until: BTreeMap::from([("tern".to_owned(), later)]),
+                doubt: Doubt::None,
+            },
+            "read again once the book changes: the newest make of a name \
+             ends it, and one released ends nothing"
+        );
+    }
+
+    #[test]
+    fn a_book_it_cant_read_whole_is_unsure_of_its_ends() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("made.jsonl");
+        let book = Book::at(path.clone()).of_realm("work");
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        book.made(&made_at("tern", "p1", soon))
+            .expect("a make is kept");
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("the book opens")
+            .write_all(b"{\"at\": \"cut sh\n")
+            .expect("a line cut short is written");
+        book.made(&made_at("wren", "p2", soon))
+            .expect("a make is kept");
+        let torn = book.ends();
+        assert_eq!(
+            torn.until,
+            BTreeMap::from([("tern".to_owned(), soon), ("wren".to_owned(), soon)]),
+            "the ends it can read still stand"
+        );
+        assert_eq!(
+            torn.doubt,
+            Doubt::Any("line 2 can't be read, nor which machine it may have made".to_owned()),
+            "a line cut short before it names its machine may be any machine's \
+             make, though a whole make follows it"
+        );
+        assert!(torn.doubt.of("osprey"), "so every machine is in doubt");
+        let gone = tempfile::tempdir().expect("a temporary folder");
+        fs::create_dir(gone.path().join("made.jsonl")).expect("the book is a folder");
+        let folder = Book::at(gone.path().join("made.jsonl")).ends();
+        assert!(folder.until.is_empty(), "a book it can't read ends none");
+        assert!(
+            matches!(&folder.doubt, Doubt::Any(why) if why.starts_with("it can't be read")),
+            "and doubts every machine, saying why: {:?}",
+            folder.doubt
+        );
+    }
+
+    /// Appends `torn` to the book at `path`, made where there is none, as
+    /// a crash leaves a line.
+    fn cut_short(path: &Path, torn: &str) {
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("the book opens")
+            .write_all(format!("{torn}\n").as_bytes())
+            .expect("a line cut short is written");
+    }
+
+    #[test]
+    fn a_make_cut_short_doubts_only_the_machine_it_still_names() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("made.jsonl");
+        let book = Book::at(path.clone()).of_realm("work");
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let (tern, wren) = (made_at("tern", "p1", soon), made_at("wren", "p2", soon));
+        book.made(&tern).expect("a make is kept");
+        let whole = serde_json::to_string(&json!({ "at": soon, "made": wren })).expect("a line");
+        let named = whole
+            .find(r#","place""#)
+            .expect("its place follows its name");
+        cut_short(&path, &whole[..named + 4]);
+        let doubt = book.ends().doubt;
+        assert!(
+            doubt.of("wren"),
+            "the machine it names is in doubt: {doubt:?}"
+        );
+        assert!(
+            !doubt.of("tern") && !doubt.of("osprey"),
+            "no other machine is: {doubt:?}"
+        );
+        assert_eq!(
+            doubt.why(),
+            Some("a line cut short may hide a make of wren"),
+            "saying which"
+        );
+        let cut_in_name = whole.find(r#""wren""#).expect("its name");
+        cut_short(&path, &whole[..cut_in_name + 3]);
+        assert!(
+            matches!(book.ends().doubt, Doubt::Any(ref why) if why.starts_with("line 3 ")),
+            "a make cut short within its name may be any machine's"
+        );
+        let again = Book::at(dir.path().join("again.jsonl")).of_realm("work");
+        cut_short(&again.path, &whole[..named + 4]);
+        again.made(&wren).expect("a make is kept");
+        assert_eq!(
+            again.ends().doubt,
+            Doubt::None,
+            "a whole make of that machine kept after lets the doubt go"
+        );
+        let released = Book::at(dir.path().join("released.jsonl")).of_realm("work");
+        cut_short(&released.path, &whole[..named + 4]);
+        released
+            .released(&wren, "its time was up")
+            .expect("a release is kept");
+        assert_eq!(
+            released.ends().doubt,
+            Doubt::None,
+            "and so does a whole release of it"
+        );
+    }
+
+    #[test]
+    fn a_release_cut_short_doubts_nothing() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("made.jsonl");
+        let book = Book::at(path.clone()).of_realm("work");
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        book.made(&made_at("tern", "p1", soon))
+            .expect("a make is kept");
+        for realm in ["work", "home"] {
+            cut_short(
+                &path,
+                &format!(r#"{{"at":"{soon}","realm":"{realm}","released":{{"machine":"te"#),
+            );
+        }
+        let ends = book.ends();
+        assert_eq!(ends.doubt, Doubt::None, "a release hides no make");
+        assert_eq!(
+            ends.until,
+            BTreeMap::from([("tern".to_owned(), soon)]),
+            "and ends nothing it might have named"
+        );
+    }
+
+    #[test]
+    fn a_book_it_couldnt_read_is_read_again_once_it_can() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("made.jsonl");
+        let book = Book::at(path.clone()).of_realm("work");
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        book.made(&made_at("tern", "p1", soon))
+            .expect("a make is kept");
+        let mode = |mode| fs::set_permissions(&path, fs::Permissions::from_mode(mode));
+        mode(0o000).expect("the book is shut");
+        if fs::read(&path).is_ok() {
+            // Whoever runs this reads past permissions, as root does.
+            return;
+        }
+        assert!(
+            matches!(book.ends().doubt, Doubt::Any(_)),
+            "a book it can't read doubts every machine"
+        );
+        mode(0o644).expect("the book opens again");
+        assert_eq!(
+            book.ends(),
+            Ends {
+                until: BTreeMap::from([("tern".to_owned(), soon)]),
+                doubt: Doubt::None,
+            },
+            "and is read again once it can be, though only its mode changed"
+        );
+    }
+
+    #[test]
     fn the_book_stands_by_each_machine_its_realm_made_and_has_not_released() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let path = dir.path().join("made.jsonl");
@@ -983,6 +1412,9 @@ mod tests {
             Standing {
                 made: vec![kept, its_place, its_name, ended, again],
                 unread: 2,
+                doubt: Doubt::Any(
+                    "line 10 can't be read, nor which machine it may have made".to_owned()
+                ),
                 unnamed: vec![older],
             },
             "each machine made and not released, oldest first, ended or not, \

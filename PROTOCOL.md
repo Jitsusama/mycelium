@@ -1329,20 +1329,24 @@ or a password prompt waits inside its turn, so it stays as one in a
 turn. What a session is part
 way through is told only once its presence says `"leases":
 {"background": true}`, its harness keeping a lease for each background
-run. After a carry it would carry none for five minutes, and it would
-carry at most 48 in a day. A session moved by anyone stays put for a
-day, by the carries kept here, and nothing goes to a machine a session
-came from within the hour, nor to a Mac whose node doesn't say
-`fences_held` but a session shown unfenced (see The Socket). A strict
-session goes only to a machine of its own system, by each machine's
-`system`, since a Mac's strict fence reads more of the home folder
-than Linux's: carried across, it would land looser though both say
-strict. A machine that names no system is taken as another. As with
-every carry a node makes (see A Carry an Orchestrator Orders), only
-the person takes such a session across. Nor does
-anything go to a machine whose facts are too old to place by (the
-`stale` flag, past 150 seconds), since it may have filled up since it
-was heard, or its link may be down.
+run. After a carry it would carry none for five minutes, nor while a
+carry it made to ease itself is still ordered or carrying, by the
+carries kept here, since neither machine's readings say what that
+carry eased until it lands; one ordered half an hour ago stands stuck
+and holds nothing, nor does one its session refused as it was told,
+while the node runs on. It would carry at most 48 in a day. A session moved
+by anyone stays put for a day, by the carries kept here, and nothing
+goes to a machine a session came from within the hour, nor to a Mac
+whose node doesn't say `fences_held` but a session shown unfenced
+(see The Socket). A strict session goes only to a machine of its own
+system, by each machine's `system`, since a Mac's strict fence reads
+more of the home folder than Linux's: carried across, it would land
+looser though both say strict. A machine that names no system is
+taken as another. As with every carry a node makes (see A Carry an
+Orchestrator Orders), only the person takes such a session across.
+Nor does anything go to a machine whose facts are too old to place by
+(the `stale` flag, past 150 seconds), since it may have filled up
+since it was heard, or its link may be down.
 
 Each choice to sleep or carry, and each change in why it does nothing,
 is a JSON line in the state folder's `eases`, a file each day of at
@@ -1613,7 +1617,7 @@ reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Rooms": {"act", "machine"}}` | `{"Rooms": {"rooms"}}`, after `add` or `remove` names `machine` a room or takes it out, or `list`, as the rooms below say |
 | `{"Update": {"machine"}}` | `{"Updated": ending}`, as its updater said it |
 | `{"End": {"held"}}` | `{"Ended": {"machine", "held", "ending"}}`, `ending` `gently` or `killed` (A Held Session) |
-| `{"Run": {"work", "folder", "command", "by", "from"}}` | `{"Running": {"machine"}}`, then a `Ran` a line |
+| `{"Run": {"work", "folder", "command", "by", "from", "asked_by"}}` | `{"Running": {"machine"}}`, then a `Ran` a line |
 | `{"Lend": {"budget", "method", "path", "headers", "body"}}` | a `Lent` a line, no reply first (Borrowing a Lend) |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
@@ -2533,21 +2537,33 @@ the person's own login still never runs in a worker home an agent
 wrote. Such a run is placed as an agent's run is: the asking machine
 must declare the agent fence and the room must say it runs commands in
 it, or the run is refused, its refusal saying the person asked it and
-it was sent as an agent's. The asking node's runs journal keeps
-`asked_by` beside its `by`; the room's own journal, and a refusal the
-room itself sends back, read as an agent's, since a run crossing the
-link carries no asker. One machine named twice is still one, and this
-node's own machine stays the person's whatever the file names. Since
-any session may write the file, naming a machine there only ever fences
-the person's runs to it, never loosens them, and never fences them to
-a machine that is no worker and no agent's make booked, as the
-person's own machines aren't. Work that names none of
-the workers may go to it though it costs money, ranked by its room as
-any machine is, so before a machine kept lively while it has room, and
-after one within its ceiling once it is over a limit. The node marks
-each one `"held_for": "agents"` as it places, from its own file, and
-every other as booked, never from what the machine says, and a link
-keeps nothing a machine says of it. A
+it was sent as an agent's; a refusal the room itself sends back reads
+as an agent's. The run says `"asked_by": "Person"`, which only a node
+says: one an asker puts there without naming a machine it comes from
+is cleared. The room runs it through `/bin/sh -c`, never the login
+shell, so no profile of the home the agent wrote runs before it, and
+takes every folder of that home off its path, by name or by where it
+leads, before the kit's tools go first, so nothing the home holds
+shadows its command: one found only there isn't found. Each folder
+kept is named by where it leads, one that can't be entered goes, and
+a path left with nothing is `/usr/bin:/bin`, never empty. The home is
+the one the node runs it in, and the `HOME` its launcher gives it
+too, so a launcher that takes `HOME` away or points it elsewhere
+leaves neither on the path. `HOME` still names that home, so a
+program the command runs that reads its own files from there reads
+what the agent left. Each run's journal keeps `asked_by` beside its
+`by`. One machine named twice is still one, and this node's own
+machine stays the person's whatever the file names. Since any session
+may write the file, naming a machine
+there only ever fences the person's runs to it, never loosens them,
+and never fences them to a machine that is no worker and no agent's
+make booked, as the person's own machines aren't. Work that names
+none of the workers may go to it though it costs
+money, ranked by its room as any machine is, so before a machine kept
+lively while it has room, and after one within its ceiling once it is
+over a limit. The node marks each one `"held_for": "agents"` as it
+places, from its own file, and every other as booked, never from what
+the machine says, and a link keeps nothing a machine says of it. A
 session the person granted is booked as the person but isn't one: its
 starts go to a machine booked for the person or for no asker, and not
 named in the file, only where they name it, never to one an agent's
@@ -2992,9 +3008,11 @@ ending comes back, and then the ask fails, saying so; the machine's
 
 `"Run"` runs `command` on the machine placement chooses for `work`,
 never on one made for it, in `folder` as for `"Start"`, through the
-person's login shell there without a terminal, its kit's tools first on
-its path as for `"Start"`, and with nothing on its
-input. This machine runs it as the node's own; another, through the link
+person's login shell there without a terminal (the person's run sent
+to a room as an agent's, through `/bin/sh -c`, reading no profile and
+with no folder of that home on its path),
+its kit's tools first on its path as for `"Start"`, and with nothing on
+its input. This machine runs it as the node's own; another, through the link
 reaching it, as A Link says. The node judges who asks, as `by`,
 `"Person"` or `{"Agent": kind}`: an agent, in the strictest fence the
 presences of its process and its forebears say, and in a strict one

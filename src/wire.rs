@@ -326,7 +326,8 @@ pub struct Run {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<PathBuf>,
     /// The command and its arguments, run through the login shell there,
-    /// with nothing on its standard input.
+    /// or the plain one where `asked_by` says so, with nothing on its
+    /// standard input.
     pub command: Vec<String>,
     /// Who asks it, as the machine it was asked of judged them. A node
     /// takes what is said here only as stricter than what it judges, and
@@ -338,6 +339,13 @@ pub struct Run {
     /// run asked elsewhere is told no session here (`PI_SESSION_ID`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
+    /// The person, where they asked it and their node sent it to a room
+    /// made for agents as an agent's (`by`). It runs there through a
+    /// shell that reads no profile, since the home it runs in is the
+    /// agent's to write, and the record of runs there keeps who asked.
+    /// Only a node says it: one asking here has it cleared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_by: Option<By>,
 }
 
 /// What is asked of a node's book of starts.
