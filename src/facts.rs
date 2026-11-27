@@ -147,6 +147,14 @@ pub struct Machine {
     /// measuring leaves it [`HeldFor::AsBooked`].
     #[serde(default, skip_serializing_if = "HeldFor::is_as_booked")]
     pub held_for: HeldFor,
+    /// When the make that made it ends, as the node deciding where work
+    /// goes booked it, so a machine made for a day never passes as one of
+    /// the person's own cloud machines
+    /// ([`crate::placement::is_the_persons_cloud`]), though placement reads
+    /// no leaving into it. Set by that node alone as it places, never sent
+    /// nor taken from what the machine says.
+    #[serde(skip)]
+    pub made_until: Option<jiff::Timestamp>,
     /// Whether its node starts an agent's held session through the launcher
     /// the session's fence declares there, as a Mac's node now does, so a
     /// Mac saying it may take an agent's held start. A node too old to say
@@ -454,6 +462,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         kit: None,
         worker: false,
         held_for: HeldFor::AsBooked,
+        made_until: None,
         fences_held: FENCES_HELD,
         holds: None,
     }

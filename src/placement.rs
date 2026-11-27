@@ -1154,13 +1154,17 @@ fn placement(work: &Work, mut judged: Vec<Judged>, chosen: Option<usize>) -> Pla
 ///
 /// A machine made is a worker, lent or paid for and let go after its
 /// work, so one is made only for work that names it: work needing a
-/// network none of the person's own `machines` reach.
+/// network none of the person's own `machines` reach. The person's own
+/// cloud machines aren't counted, though placement takes them as the
+/// person's: work is made a machine only once none could take it, and a
+/// cloud machine of theirs that is full or out of reach can't, so what
+/// only it reaches still names a worker to make.
 pub fn to_make<'a>(
     work: &Work,
     offers: &'a [Offer],
     machines: &[Machine],
 ) -> Result<&'a Offer, Vec<Miss>> {
-    let named = names_worker(work, &lasting_reach(machines, jiff::Timestamp::now()));
+    let named = names_worker(work, &declared_lasting_reach(machines));
     let judged: Vec<(Judged, &Offer)> = offers
         .iter()
         .map(|offer| {
@@ -1613,17 +1617,19 @@ const LASTS_AS_THE_PERSONS: jiff::SignedDuration = jiff::SignedDuration::from_ho
 /// asked on 26 November. A machine lent for a while, or Aquifer's, is a
 /// worker still, taking only work that names it, and so is one its link
 /// marks a worker, whatever it declares of itself, since the link is this
-/// node's own word and the declaration the machine's.
+/// node's own word and the declaration the machine's. So is one this
+/// node made to end within the month ([`Machine::made_until`]), whatever
+/// it declares, since its provider ends it then.
 #[must_use]
 pub fn is_the_persons_cloud(machine: &Machine, now: jiff::Timestamp) -> bool {
     let lasting = now.checked_add(LASTS_AS_THE_PERSONS).ok();
+    let stays = |end: jiff::Timestamp| lasting.is_some_and(|lasting| end > lasting);
     !machine.worker
+        && machine.made_until.is_none_or(stays)
         && machine.declared.as_ref().is_some_and(|declared| {
             declared.costs_money
                 && !declared.reach.iter().any(|network| network == "aquifer")
-                && declared
-                    .leaves_at
-                    .is_none_or(|leaves| lasting.is_some_and(|lasting| leaves > lasting))
+                && declared.leaves_at.is_none_or(stays)
         })
 }
 
@@ -3792,6 +3798,25 @@ pub(crate) mod tests {
             Ok("open"),
             "but for work needing a network only workers reach"
         );
+        let mut cloud = machine("wren", "linux", 0, &["gcp-experiments"]);
+        cloud.declared.as_mut().expect("declared").costs_money = true;
+        assert!(
+            is_the_persons_cloud(&cloud, jiff::Timestamp::now()),
+            "wren is the person's own cloud machine, full"
+        );
+        let realm = [realm[0].clone(), cloud];
+        let offers = [offer("open", "0.0", None, &["gcp-experiments"])];
+        assert_eq!(
+            to_make(
+                &needing(vec![Need::Reach("gcp-experiments".to_owned())]),
+                &offers,
+                &realm
+            )
+            .map(|chosen| chosen.shape.as_str()),
+            Ok("open"),
+            "and for work needing what only the person's cloud machine reaches, which is \
+             made a machine only once that one couldn't take it"
+        );
     }
 
     /// An offer of `shape` on `linux` and `x86_64`, reaching `reach`, at `hourly`
@@ -3873,6 +3898,27 @@ pub(crate) mod tests {
             Some("wren"),
             "work that says nothing goes there first too, since it is one of the person's own \
              cloud machines"
+        );
+    }
+
+    #[test]
+    fn a_machine_made_to_end_within_the_month_is_none_of_the_persons_cloud() {
+        let now = jiff::Timestamp::now();
+        let mut cloud = machine("wren", "linux", 30, &[]);
+        cloud.declared.as_mut().expect("declared").costs_money = true;
+        assert!(
+            is_the_persons_cloud(&cloud, now),
+            "declaring no leaving, it is the person's"
+        );
+        cloud.made_until = now.checked_add(jiff::SignedDuration::from_hours(12)).ok();
+        assert!(
+            !is_the_persons_cloud(&cloud, now),
+            "made for twelve hours, it is lent for a while, though it declares no leaving"
+        );
+        cloud.made_until = now.checked_add(jiff::SignedDuration::from_hours(800)).ok();
+        assert!(
+            is_the_persons_cloud(&cloud, now),
+            "made to last past the month, it is the person's"
         );
     }
 

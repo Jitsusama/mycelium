@@ -5095,6 +5095,22 @@ impl<S: Store> Shared<S> {
             .collect()
     }
 
+    /// `machines` as placement reads them: each this node made naming
+    /// when its make ends ([`facts::Machine::made_until`]), so one made
+    /// for a day never passes as the person's own cloud machine. Its end
+    /// is never read as a leaving, for the reason [`Self::as_carried`]
+    /// gives.
+    fn as_placed(&self, machines: Vec<facts::Machine>) -> Vec<facts::Machine> {
+        let ends = self.lock().ends.clone();
+        machines
+            .into_iter()
+            .map(|mut one| {
+                one.made_until = ends.get(&one.name).copied();
+                one
+            })
+            .collect()
+    }
+
     /// Waits, up to [`REDIAL_AWAITED_MOST`], for the machine `work` names
     /// to link again where its link dropped within
     /// [`REDIAL_AWAITED_SINCE`] ([`redial_awaited`]) and being out of
@@ -5277,7 +5293,7 @@ impl<S: Store> Shared<S> {
     ) -> (placements::Record, jiff::Timestamp) {
         // Measured before the lock is taken, since measuring reads this
         // machine and the store. This machine, first, is never booked.
-        let mut machines = self.machines();
+        let mut machines = self.as_placed(self.machines());
         // Rooms made for agents to share take agents' work naming none of
         // their workers, as the person's own cloud machines do.
         let rooms = self.book.agent_rooms();
@@ -9034,7 +9050,7 @@ impl<S: Store> Shared<S> {
         offers.offers = self
             .offered_on_ground(offers.offers, fence)
             .map_err(|why| format!("nowhere: {}, and {why}", placement::said(misses)))?;
-        placement::to_make(work, &offers.offers, &self.machines())
+        placement::to_make(work, &offers.offers, &self.as_placed(self.machines()))
             .map_err(|offered| nothing_offered(misses, &offered, &offers.unanswered))
             .cloned()
     }
@@ -9197,7 +9213,7 @@ impl<S: Store> Shared<S> {
             .filter(|offer| offer.costs.free())
             .cloned()
             .collect();
-        let machines = self.machines();
+        let machines = self.as_placed(self.machines());
         if let Ok(offer) = placement::to_make(&asked.work, &free, &machines) {
             let offer = offer.clone();
             return self.start_made_of(asked, &offer, &who, fence).await;
@@ -25057,6 +25073,17 @@ esac
             ),
             "placement reads the machine as it says, so the start it was made for lands"
         );
+        // Yet placement never takes one made for an hour as the person's
+        // own cloud machine, though it declares no leaving.
+        let placed = shared.as_placed(shared.machines());
+        let persons = |name: &str| {
+            placed
+                .iter()
+                .find(|one| one.name == name)
+                .is_some_and(|one| placement::is_the_persons_cloud(one, jiff::Timestamp::now()))
+        };
+        assert!(!persons("tern"), "made for an hour, it is lent");
+        assert!(persons("wren"), "kept for good, it is the person's");
         shared.unbook(&made_by("/usr/bin/lend", "tern", soon));
         assert_eq!(
             shared
