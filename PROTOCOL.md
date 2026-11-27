@@ -2472,7 +2472,11 @@ a granted session's and one from no one known included, whoever it is
 booked for, since its booking says who pays for it and may let it go,
 not who may use it; the person's own go there only where it is booked
 for the person or for no asker, never into a worker home an agent's
-make wrote. Work that names none of the workers may go to it though it
+make wrote. A run the person asks naming one machine alone, a room an
+agent's make booked, runs there as an agent's, in the agent fence, so
+the person's safe word reaches every room though no session asks it,
+and the person's own login still never runs in that worker home.
+Work that names none of the workers may go to it though it
 costs money, ranked by its room as any machine is, so before a machine
 kept lively while it has room, and after one within its ceiling once
 it is over a limit. The node marks each one `"held_for": "agents"` as it
