@@ -26715,16 +26715,28 @@ esac
             0,
             "nothing begun here weighs here"
         );
-        let elsewhere = Start {
-            folder: Some(dir.path().join("gone")),
+        // A holder that isn't there fails the start after it was booked,
+        // as no hold refuses it.
+        skiff.starter = Some(Arc::new(Starter {
+            program: dir.path().join("no-holder"),
+            scope: start::Scope::None,
+            kit: None,
+            worker_socket: None,
+        }));
+        let unheld = Start {
             command: ["pi", "--session", "s-other"].map(str::to_owned).to_vec(),
             ..start_of_skiff()
         };
         let at = jiff::Timestamp::now().as_millisecond();
         let refused = skiff
-            .placed((elsewhere, at), None, Screen::Ground, false)
+            .placed((unheld, at), None, Screen::Ground, false)
             .await;
-        assert!(refused.is_err(), "its folder isn't here: {refused:?}");
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.starts_with("it didn't start: ")),
+            "its holder can't be begun: {refused:?}"
+        );
         let loads =
             skiff
                 .lock()
