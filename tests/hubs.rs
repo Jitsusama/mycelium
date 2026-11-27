@@ -6,9 +6,8 @@
 //! The realm `realm` builds is held to its bar and its growth, and a
 //! realm of every cell saying as many subjects as it may, each as long
 //! as it may be and outside ASCII, to a bar of its own, so a needless
-//! copy of each subject shows. Each says what it held at peak as its
-//! holders were read, as the hubs were made and as each became its
-//! bytes:
+//! copy of each subject shows. Each says what it held at peak once its
+//! holders were read and once its hubs were made, each as its bytes:
 //!
 //! ```sh
 //! nix develop -c cargo test --release --test hubs -- --nocapture
@@ -82,7 +81,7 @@ fn ten_thousand_cells_make_their_hub_records_within_the_bar() {
         "each subject the realm's cells say has its hubs",
         REALM_AT_MOST,
         &GROWTH,
-        |holding| as_bytes(hubs_of(holding.sessions)),
+        |holding| hubs_of(holding.sessions),
     );
     drop(sessions);
 
@@ -106,23 +105,20 @@ fn ten_thousand_cells_make_their_hub_records_within_the_bar() {
 
 /// The hub records made of `sessions` as the node makes them, told at
 /// each step: the most held beyond what was given once the holders are
-/// read, once the hubs are made and once each is its bytes, which is
-/// the peak given back with the records.
+/// read, and once the hubs are made, each as its bytes, which is the
+/// peak given back with the records.
 fn staged(realm: &str, sessions: &[Session]) -> (usize, BTreeMap<String, Record>) {
     let before = HELD.load(Ordering::Relaxed);
     PEAK.store(before, Ordering::Relaxed);
     let holders = holders_of(sessions);
     let read = PEAK.load(Ordering::Relaxed) - before;
     let said: usize = holders.iter().map(|holder| holder.subjects.len()).sum();
-    let made = hub_records(&holders);
+    let records = hub_records(&holders);
     drop(holders);
-    let hubbed = PEAK.load(Ordering::Relaxed) - before;
-    let records = as_bytes(made);
     let peak = PEAK.load(Ordering::Relaxed) - before;
     eprintln!(
         "{realm}: {said} subjects said, {} hubbed; at most {read} bytes held once the \
-         holders were read, {hubbed} once the hubs were made and {peak} once each was its \
-         bytes, {} bytes a subject said",
+         holders were read and {peak} once the hubs were made, {} bytes a subject said",
         records.len(),
         peak / said.max(1),
     );
@@ -130,7 +126,7 @@ fn staged(realm: &str, sessions: &[Session]) -> (usize, BTreeMap<String, Record>
 }
 
 /// The hubs of `sessions`, as the node makes them of those it holds.
-fn hubs_of(sessions: &[Session]) -> BTreeMap<String, Value> {
+fn hubs_of(sessions: &[Session]) -> BTreeMap<String, Record> {
     hub_records(&holders_of(sessions))
 }
 
@@ -147,14 +143,6 @@ fn holders_of(sessions: &[Session]) -> Vec<HubHolder> {
             address: session.address.clone(),
         })
         .filter(|holder| !holder.subjects.is_empty())
-        .collect()
-}
-
-/// Each record of `made` held as its bytes, as the node holds them once
-/// made.
-fn as_bytes(made: BTreeMap<String, Value>) -> BTreeMap<String, Record> {
-    made.into_iter()
-        .map(|(key, record)| (key, Record::from(record)))
         .collect()
 }
 
