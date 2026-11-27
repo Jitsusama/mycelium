@@ -169,6 +169,52 @@ pub enum Shell<'a> {
     },
 }
 
+/// The variables that have what a program starts load code of its
+/// choosing, or that make a shell read a file as it starts: a library
+/// preloaded or looked for first, a module path, a startup script or a
+/// tool's own options. A service's environment needn't name any, and one
+/// that does may name an agent-written home's own files, as its path may.
+pub const LOADS_CODE: [&str; 23] = [
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "LD_LIBRARY_PATH",
+    "GCONV_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FRAMEWORK_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+    "DYLD_FALLBACK_FRAMEWORK_PATH",
+    "BASH_ENV",
+    "ENV",
+    "NODE_OPTIONS",
+    "NODE_PATH",
+    "NODE_COMPILE_CACHE",
+    "OPENSSL_CONF",
+    "OPENSSL_MODULES",
+    "PYTHONPATH",
+    "PYTHONSTARTUP",
+    "PERL5LIB",
+    "PERL5OPT",
+    "RUBYLIB",
+    "RUBYOPT",
+    "LUA_INIT",
+];
+
+impl Shell<'_> {
+    /// The node's variables a run through this shell starts without:
+    /// none for the login shell, whose profile sets its own, and for a
+    /// plain run each that loads code ([`LOADS_CODE`]). They are taken
+    /// away as the node starts it, not by the shell, since the loader
+    /// reads them as it starts the launcher and the shell themselves.
+    #[must_use]
+    pub fn unsets(self) -> &'static [&'static str] {
+        match self {
+            Self::Login => &[],
+            Self::Plain { .. } => &LOADS_CODE,
+        }
+    }
+}
+
 /// The words that run `command` here in `realm`: through `launcher`, a
 /// fence's words or none for a person, then the `shell`, with the realm's
 /// `kit` first on its path where there is one, then the command. What an
@@ -213,7 +259,7 @@ impl From<PathBuf> for Folder {
 /// Runs `words`, the first the program, in `folder`, as `session` where
 /// the node proved that session asks, signing as `by` asks, handing what
 /// it says to `ran` as it says it and then how it ended; stops it once
-/// `ran`'s reader lets go.
+/// `ran`'s reader lets go. It has the node's own environment.
 pub async fn here(
     words: Vec<String>,
     folder: impl Into<Folder>,
@@ -221,7 +267,20 @@ pub async fn here(
     by: By,
     ran: mpsc::Sender<Ran>,
 ) {
-    let ended = match command(&words, folder.into(), session.as_deref(), by)
+    here_without(words, folder, session, by, &[], ran).await;
+}
+
+/// Runs `words` as [`here`] does, but with none of the node's variables
+/// `unset` names, as [`Shell::unsets`] says for the shell it goes through.
+pub async fn here_without(
+    words: Vec<String>,
+    folder: impl Into<Folder>,
+    session: Option<String>,
+    by: By,
+    unset: &[&str],
+    ran: mpsc::Sender<Ran>,
+) {
+    let ended = match command(&words, folder.into(), session.as_deref(), by, unset)
         .and_then(|mut run| run.spawn())
     {
         Ok(child) => follow(child, &ran).await,
@@ -241,12 +300,14 @@ pub async fn here(
 /// ([`crate::hold::holder::agents`]), named again after any profile the
 /// shell [`words`] puts it through reads, whether or not its session
 /// was proved and wherever it was asked from; only a person's run keeps
-/// the person's agent.
+/// the person's agent. It starts with none of the variables `unset`
+/// names.
 fn command(
     words: &[String],
     folder: Folder,
     session: Option<&str>,
     by: By,
+    unset: &[&str],
 ) -> io::Result<tokio::process::Command> {
     let (program, arguments) = words
         .split_first()
@@ -278,6 +339,9 @@ fn command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
+    for variable in unset {
+        command.env_remove(variable);
+    }
     match session {
         Some(session) => command.env(SESSION, session),
         None => command.env_remove(SESSION),
@@ -498,7 +562,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn an_agents_run_is_told_the_agents_proxy_and_a_persons_keeps_its_own() {
         let told = |session, by| {
-            let run = command(&sh("true"), std::env::temp_dir().into(), session, by)
+            let run = command(&sh("true"), std::env::temp_dir().into(), session, by, &[])
                 .expect("the run is made");
             run.as_std()
                 .get_envs()
@@ -637,6 +701,7 @@ mod tests {
                 Folder::At(std::env::temp_dir()),
                 session,
                 By::Person,
+                &[],
             )
             .expect("words to run");
             run.as_std()
@@ -654,6 +719,42 @@ mod tests {
             envs(Some("s-proved")),
             [Some("s-proved".into())],
             "and one proved is told only its own"
+        );
+    }
+
+    #[test]
+    fn a_plain_run_starts_without_the_variables_that_load_code() {
+        // What the run starts without, which the node takes away itself,
+        // so neither a launcher nor the shell is ever started with one.
+        let taken = |shell: Shell<'_>| {
+            let run = command(
+                &sh("true"),
+                Folder::At(std::env::temp_dir()),
+                Some("s-harbour"),
+                By::Person,
+                shell.unsets(),
+            )
+            .expect("words to run");
+            run.as_std()
+                .get_envs()
+                .filter(|(_, value)| value.is_none())
+                .map(|(name, _)| name.to_string_lossy().into_owned())
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(
+            taken(Shell::Plain {
+                home: Path::new("/home/kestrel")
+            }),
+            LOADS_CODE
+                .map(str::to_owned)
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            "a plain run starts without each variable that loads code"
+        );
+        assert_eq!(
+            taken(Shell::Login),
+            BTreeSet::new(),
+            "a login run keeps them, since its profile says its own"
         );
     }
 

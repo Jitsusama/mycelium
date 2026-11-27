@@ -9901,6 +9901,7 @@ impl<S: Store> Shared<S> {
             let (folder, ground) = self.ground(folder, by, asked.from.as_deref()).await?;
             let launcher = self.launcher(by, ground.as_ref(), &from, &mut started)?;
             let shell = shell_for(asked.asked_by, &home);
+            let unset = shell.unsets();
             let words = run::words(launcher, &self.realm, self.kit(), asked.command, shell);
             // An agent's fence grants the work trees its session holds, so
             // the run is told the session the kernel and pi's records prove
@@ -9924,7 +9925,7 @@ impl<S: Store> Shared<S> {
             let (ran, said) = mpsc::channel(run::BACKLOG);
             // It signs as who asks, not as the session proved: an agent's
             // run gets the agents' proxy whether or not one is.
-            tokio::spawn(run::here(words, folder, session, by, ran));
+            tokio::spawn(run::here_without(words, folder, session, by, unset, ran));
             said
         } else {
             self.asks.run(&machine, asked).await?

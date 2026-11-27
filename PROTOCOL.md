@@ -2533,13 +2533,20 @@ runs it through `/bin/sh -c`, never the login
 shell, so no profile of the home the agent wrote runs before it, and
 takes every folder of that home off its path, by name or by where it
 leads, before the kit's tools go first, so nothing the home holds
-shadows its command: one found only there isn't found, and the run
-says so on its error output, naming the path it had, and ends 127, as
-the shell would. Each folder kept is named by where it leads, one that
-can't be entered goes, and a path left with nothing is
-`/usr/bin:/bin`, never empty. The home is
-the one the node runs it in, and the `HOME` its launcher gives it
-too, so a launcher that takes `HOME` away or points it elsewhere
+shadows its command: one found only there isn't found, and for a name
+with no slash the run says so on its error output, naming the path it
+had, and ends 127, as the shell would. Each folder kept is named by
+where it leads, one that can't be entered goes, and a path left with
+nothing is `/usr/bin:/bin`, never empty. The node starts the run, and
+any fence launcher before its shell, without the variables that load
+code as a program starts, which the node's environment could name in
+the home: `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `GCONV_PATH`,
+the five `DYLD_` ones, `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `NODE_PATH`,
+`NODE_COMPILE_CACHE`, `OPENSSL_CONF`, `OPENSSL_MODULES`, `PYTHONPATH`,
+`PYTHONSTARTUP`, `PERL5LIB`, `PERL5OPT`, `RUBYLIB`, `RUBYOPT` and
+`LUA_INIT`. A program that needs one of them there sets it itself. The
+home is the one the node runs it in, and the `HOME` its launcher gives
+it too, so a launcher that takes `HOME` away or points it elsewhere
 leaves neither on the path. `HOME` still names that home, so a
 program the command runs that reads its own files from there reads
 what the agent left. Each run's journal keeps `asked_by` beside its
