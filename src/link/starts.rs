@@ -7,6 +7,9 @@
 //! Mac keeps the model token. A steer, which is only a file written into
 //! a session's inbox, the far end writes itself, and an end of a session
 //! held there, which only signals its holder, it does itself too.
+//!
+//! Long because its tests ask each kind of ask of a stand-in link here,
+//! beside the asks they prove.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -208,7 +211,26 @@ impl Asks {
         start: Start,
         within: Duration,
     ) -> Result<Reply, Unsent> {
-        self.start(machine, start, (Asked::Start, within)).await
+        self.start((machine, None), start, (Asked::Start, within))
+            .await
+    }
+
+    /// Asks `machine` to start `start` as [`Self::ask_within`] does, where
+    /// its node sends it on to `onward`, one of its rooms this node hears
+    /// nothing of, so an answer naming `onward` is taken as its start's,
+    /// joined from here through `machine`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::ask`]'s.
+    pub async fn ask_onward_within(
+        &self,
+        (machine, onward): (&str, &str),
+        start: Start,
+        within: Duration,
+    ) -> Result<Reply, Unsent> {
+        self.start((machine, Some(onward)), start, (Asked::Start, within))
+            .await
     }
 
     /// Asks `machine` to reopen a session by `start`, pi's bare resume of
@@ -241,12 +263,13 @@ impl Asks {
                 sent: false,
             });
         }
-        self.start(machine, start, (Asked::Reopen, within)).await
+        self.start((machine, None), start, (Asked::Reopen, within))
+            .await
     }
 
     async fn start(
         &self,
-        machine: &str,
+        (machine, onward): (&str, Option<&str>),
         mut start: Start,
         (asked, within): (fn(Start) -> Asked, Duration),
     ) -> Result<Reply, Unsent> {
@@ -260,11 +283,16 @@ impl Asks {
                 // A start relayed there starts there or nowhere, so an
                 // answer naming another machine is refused: its node's
                 // book would keep it as that machine's session's start.
-                Ok(Response::Started(started)) if started.machine != machine => Err(format!(
-                    "{machine} answered a start as {}'s, which it can't start; whatever it \
-                     started there goes unbooked here",
-                    started.machine
-                )),
+                // One it was asked to send on lands on that machine alone.
+                Ok(Response::Started(started))
+                    if started.machine != machine && Some(started.machine.as_str()) != onward =>
+                {
+                    Err(format!(
+                        "{machine} answered a start as {}'s, which it can't start; whatever \
+                         it started there goes unbooked here",
+                        started.machine
+                    ))
+                }
                 Ok(Response::Started(started)) => Ok(Response::Started(Started {
                     attach: there(machine, &started.attach),
                     ..started
@@ -431,6 +459,44 @@ impl Asks {
         (asked, reaching)
     }
 
+    /// A link reaching `machine` for another module's test, which says
+    /// each start it is asked, and answers it with what `answer` says of
+    /// it, or never where that says none. It reaches `machine` until
+    /// another link does, or the runtime ends.
+    #[cfg(test)]
+    pub(crate) fn answering(
+        &self,
+        machine: &str,
+        answer: impl Fn(&Start) -> Option<Reply> + Send + 'static,
+    ) -> mpsc::UnboundedReceiver<Start> {
+        let there: There =
+            Arc::new(|via: &str, words: &[String]| [vec![via.to_owned()], words.to_vec()].concat());
+        let (mut asks, reaching) = self.reach(machine, there);
+        let (seen, starts) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let _reaching = reaching;
+            // Held, so one left unanswered is never answered as dropped.
+            let mut unanswered = Vec::new();
+            while let Some(Ask {
+                asked,
+                answer: reply,
+            }) = asks.recv().await
+            {
+                let (Asked::Start(start) | Asked::Reopen(start)) = asked else {
+                    continue;
+                };
+                match answer(&start) {
+                    Some(said) => {
+                        let _ = reply.send(said);
+                    }
+                    None => unanswered.push(reply),
+                }
+                let _ = seen.send(start);
+            }
+        });
+        starts
+    }
+
     fn lock(&self) -> MutexGuard<'_, Links> {
         // A panic while holding the lock leaves the links as they were
         // before it, so carrying on with them is sound.
@@ -463,9 +529,14 @@ impl Drop for Reaching {
 /// Hands a start the other end, the machine `from`, asks of `here` to
 /// this machine's node at `node`, pinned to this machine, so nothing is
 /// made for it here, and as relayed, since `from`'s node already judged,
-/// counted and booked it.
+/// counted and booked it. One naming another machine is left naming it
+/// alone, so the node sends it on where that machine is one of its rooms
+/// and refuses it otherwise; pinned here too, it could start nowhere.
 pub(super) async fn answer(node: PathBuf, here: String, from: String, mut start: Start) -> Reply {
-    start.work.needs.push(Need::Machine(here));
+    let names = |need: &Need| matches!(need, Need::Machine(named) if *named != here);
+    if !start.work.needs.iter().any(names) {
+        start.work.needs.push(Need::Machine(here));
+    }
     start.may_cost = false;
     let relayed = Request::Relayed { from, start };
     let asked = tokio::task::spawn_blocking(move || Client::connect(&node)?.ask(&relayed)).await;
@@ -746,6 +817,42 @@ mod tests {
             ],
             "a start relayed to kestrel is kestrel's or none, so no other machine's \
              session is booked on its word"
+        );
+        let mut answered = Vec::new();
+        for machine in ["tern", "wren"] {
+            let asks = Asks::default();
+            let there: There = Arc::new(|via: &str, words: &[String]| {
+                [vec![via.to_owned()], words.to_vec()].concat()
+            });
+            let (mut asked, _reaching) = asks.reach("kestrel", there);
+            let onward =
+                asks.ask_onward_within(("kestrel", "wren"), start.clone(), START_ANSWERED_WITHIN);
+            let (reply, ()) = tokio::join!(onward, async {
+                let Ask { answer, .. } = asked.recv().await.expect("kestrel is asked");
+                let _ = answer.send(Ok(Response::Started(Started {
+                    machine: machine.to_owned(),
+                    held: "h-1".to_owned(),
+                    folder: PathBuf::new(),
+                    attach: vec!["wren".to_owned()],
+                })));
+            });
+            answered.push(reply.expect("kestrel answered").map(|said| match said {
+                Response::Started(started) => started.attach,
+                _ => Vec::new(),
+            }));
+        }
+        assert_eq!(
+            answered,
+            [
+                Err(
+                    "kestrel answered a start as tern's, which it can't start; whatever \
+                     it started there goes unbooked here"
+                        .to_owned()
+                ),
+                Ok(vec!["kestrel".to_owned(), "wren".to_owned()])
+            ],
+            "one sent on through kestrel is the room's it names, joined through kestrel, \
+             or none"
         );
     }
 

@@ -282,16 +282,18 @@ same code, each line a JSON value:
 8. `{"Start": {"ask", "start"}}`: start a session held on the other
    end's machine, as a `"Start"` request says it. The other end hands it
    to its own node's socket as `{"Relayed": {"from", "start"}}`, `from`
-   the machine that asked, with a need for its own machine added.
+   the machine that asked, with a need for its own machine added
+   unless it names another machine.
    That node takes `"Relayed"` as a linked node's only from its own
    process or one it judges the person's, as a link's end is: none in
    an agent's unit, below a pi or a session's claim, or barred or
    mounted apart as a fence's. A relay from any other process is taken
    as an agent's start, so it gains an agent nothing its own start
    wouldn't: counted, limited and booked here as any agent's is, never
-   read for a carry, and logged; it starts there or nowhere, never on
-   a machine made for it, and waits for no room, since the asking node
-   stops waiting on its answer within 90 seconds. Where no person
+   read for a carry, and logged; it starts there or on the agent room
+   it names, never on a machine made for it, and waits for no room to
+   be made, since the asking node stops waiting on its answer within
+   90 seconds. Where no person
    works, an agent's SSH login can't be told from a link's end, so
    every relay but its own process's is taken so, and a machine made
    from a basin still takes the starts placed on it, where its strict
@@ -306,8 +308,18 @@ same code, each line a JSON value:
    node places a relay from its own process or the person's pinned to
    its own machine, so its facts as they are then still refuse it and
    count it as load, and starts it there or nowhere, never elsewhere
-   and never on a machine made for it. One it takes as the person's it
-   neither counts nor books, since the asking node did. The end
+   and never on a machine made for it. The one exception is a start
+   naming one of that node's agent rooms, which it asks of that room
+   through its own link, waiting 25 seconds at most, so a Mac reaches
+   rooms only the person's laptop links to. One fenced where it was
+   asked goes to the room whoever booked it, as an agent's start does,
+   and declares that fence there. A node that hears nothing of a
+   machine a start names, or holds it only as out of reach, asks each
+   machine it links to in turn, and takes an answer naming that
+   machine. It asks no other once one was sent the start and gave no
+   answer, or answered that it sent it on to the room and heard
+   nothing back, since the room may yet start it. One it takes as the
+   person's it neither counts nor books, since the asking node did. The end
    doesn't start it itself, since a process SSH started sits outside
    its person's login session.
 9. `{"Started": {"ask", "reply"}}`: the other end's reply to the ask
@@ -2938,7 +2950,11 @@ repository to work in, and <folder> isn't one: say which, ...`),
 `no_such_place` or `several_places` (naming the first eight). A
 launcher offers the places on `needs_folder`. Anything else is an
 error saying why, as `an agent's sprout is judged on the disk as it
-sees it, and <why it can't be read>; the person can start it`.
+sees it, and <why it can't be read>; the person can start it`. An
+agent's sprout whose view can't be read but that names another machine
+and a folder from the root, not a zone's `//`, is judged by that
+machine alone: it starts strict, in the agent's fence, so that machine
+refuses a folder it lacks, and nothing on this disk is read for it.
 `mycelium sprout` judges the sprout on its own disk first, so it
 refuses what the node would without asking it, printing the same
 `"Refused"` with `-o json`.

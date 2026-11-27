@@ -140,6 +140,10 @@ const PAST_ROOM_PASSED_OVER: i64 = 10 * 60_000;
 /// ([`began_nothing_here`]).
 const RELAYED_ELSEWHERE: &str = "a start relayed here starts here or nowhere, and it would go to ";
 const DECLINED_NOW: &str = " doesn't take it now: ";
+/// The words a node answers, named the room before them, where a start
+/// it sent on to one of its rooms went and was never answered, so the
+/// asker, which may yet see it start there, asks no other machine.
+const ONWARD_UNANSWERED: &str = " was sent the start and gave no answer, so it may yet start: ";
 const LAUNCHER_REFUSED: &str = " can't start this held session ";
 const STARTS_NO_SESSIONS: &str = "'s node starts no sessions";
 const NO_HOME_TO_START: &str = " has no home to start it in";
@@ -804,6 +808,12 @@ fn sprouted(
             let cwd = asked.cwd.as_deref().unwrap_or(home);
             sprout::starting(asked, cwd, home, here, &sprout::ThisDisk).map_err(Answer::Refused)
         }
+        // As a Mac's agent asks a room for work in /world: that machine
+        // judges it, strictly and in the agent's fence, so no disk here,
+        // which the agent may not see as the node does, is read for it.
+        By::Agent(_) if sprout::judged_there(asked, here) => {
+            sprout::starting(asked, home, home, here, &sprout::Unseen).map_err(Answer::Refused)
+        }
         By::Agent(_) => Err(Answer::Err(format!(
             "an agent's sprout is judged on the disk as it sees it, and {unseen}; \
              the person can start it"
@@ -1265,7 +1275,42 @@ impl<S: Store> Shared<S> {
             .standing()
             .is_ok_and(|standing| standing.made.iter().any(|made| made.machine == machine))
     }
+
+    /// Whether a start relayed here, which placement put on `machine`,
+    /// goes on to it rather than being refused: it names that machine,
+    /// another, and the machine is one of this node's agent rooms
+    /// ([`Book::agent_rooms`]), which it links to itself. So a Mac, which
+    /// links to this machine and not to its rooms, starts work on them
+    /// through it. It goes one step at most, since the room it goes on to
+    /// is the machine it names, where it starts there or nowhere.
+    fn relays_onward(&self, work: &Work, machine: &str) -> bool {
+        machine != self.machine
+            && work
+                .needs
+                .iter()
+                .any(|need| matches!(need, Need::Machine(named) if named == machine))
+            && self.book.agent_rooms().contains(machine)
+    }
+
+    /// Whether `work` names one of this node's agent rooms
+    /// ([`Book::agent_rooms`]) other than this machine.
+    fn names_a_room(&self, work: &Work) -> bool {
+        let rooms = self.book.agent_rooms();
+        work.needs.iter().any(|need| {
+            matches!(need, Need::Machine(named) if *named != self.machine && rooms.contains(named))
+        })
+    }
 }
+
+/// How long a start this node sends on to one of its rooms
+/// ([`Shared::relays_onward`]) is waited on: less than the least the
+/// asking node waits on this one, so the room's answer reaches the asker
+/// before it stops waiting.
+const ONWARD_ANSWERED_WITHIN: Duration = Duration::from_secs(25);
+const _: () = assert!(
+    ONWARD_ANSWERED_WITHIN.as_secs() < RELAYED_ANSWERED_LEAST.as_secs(),
+    "a start sent on is answered before its asker stops waiting"
+);
 
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
@@ -8662,7 +8707,9 @@ impl<S: Store> Shared<S> {
     /// toward its limits and booked it, so this one does none again. It
     /// is placed here once more, pinned, so this machine's facts as they
     /// are now still refuse it and count it as load, but it is never
-    /// placed elsewhere or made a machine for, whatever it says. One its
+    /// placed elsewhere or made a machine for, whatever it says, save
+    /// one naming one of this node's rooms, which goes on to that room
+    /// alone ([`Self::relays_onward`]). One its
     /// node marked as the person's carry of a session from `from` is
     /// noted once it starts, so the session is read for the cell it left
     /// as once it runs here. One relayed under a name is answered the
@@ -8673,8 +8720,9 @@ impl<S: Store> Shared<S> {
     /// A relay from any other process is taken as an agent's start
     /// instead: counted, limited and booked here, as [`Self::start`] takes
     /// one, and never read for a carry, so it gains an agent nothing its
-    /// own start wouldn't. It starts here or nowhere, never on a machine
-    /// made for it, and waits for no room, since the asking node stops
+    /// own start wouldn't. It starts here or on the agent room it names
+    /// ([`Self::relays_onward`]), never on a machine made for it, and
+    /// waits for no room to be made, since the asking node stops
     /// waiting on its answer within half a minute. Where no person works,
     /// every link's end is told so, and a machine made from a basin takes
     /// the starts placed on it that way; elsewhere, so is a link's end an
@@ -9107,9 +9155,10 @@ impl<S: Store> Shared<S> {
 
     /// Starts `asked` on this machine alone, as placed in `fence`, where
     /// its facts as they are now take it, and otherwise says why not,
-    /// asking no provider for a machine to make.
+    /// asking no provider for a machine to make; or, where it names one
+    /// of this node's rooms, on that room, asked through its link.
     async fn here(&self, asked: Start, fence: Option<crate::declared::Kind>) -> Reply {
-        let admits = self.admits().await;
+        let admits = self.admits_here(&asked.work, fence).await;
         match self.place(
             &asked.work,
             Counts::Always,
@@ -9121,12 +9170,49 @@ impl<S: Store> Shared<S> {
             Placement::Placed { machine, .. } if machine == self.machine => {
                 self.start_here(machine, asked, fence).await
             }
+            // Waited on no longer than the asker waits, made here or not,
+            // so it hears the room's answer; and one that went and was
+            // never answered says so, so the asker asks no other.
+            Placement::Placed { machine, .. } if self.relays_onward(&asked.work, &machine) => {
+                let mut asked = asked;
+                asked.work.fence = declaring_at_least(asked.work.fence, fence);
+                let there = asked.once.clone();
+                let answered = self
+                    .asks
+                    .ask_within(&machine, asked, ONWARD_ANSWERED_WITHIN)
+                    .await;
+                answered.unwrap_or_else(|unsent| {
+                    if let Some(there) = there {
+                        self.onces.unanswered(&there, &machine, unsent.sent, false);
+                    }
+                    if unsent.sent {
+                        Err(format!("{machine}{ONWARD_UNANSWERED}{}", unsent.why))
+                    } else {
+                        Err(unsent.why)
+                    }
+                })
+            }
             Placement::Placed { machine, .. } => Err(format!("{RELAYED_ELSEWHERE}{machine}")),
             Placement::Pending { misses } | Placement::Refused { misses } => Err(format!(
                 "{}{DECLINED_NOW}{}",
                 self.machine,
                 placement::said(&misses)
             )),
+        }
+    }
+
+    /// The machines made here that [`Self::here`] may place `work`,
+    /// asked in `fence`, on. A start fenced where it was asked, an
+    /// agent's there, is placed on the room it names as an agent's start
+    /// is, whoever booked the room, though the link's end here is judged
+    /// the person's: it runs in that fence, so the person's own login
+    /// never runs in the worker home an agent's make wrote. Any other is
+    /// admitted as its asker here is.
+    async fn admits_here(&self, work: &Work, fence: Option<crate::declared::Kind>) -> Admits {
+        if fence.is_some_and(|kind| kind > crate::declared::Kind::None) && self.names_a_room(work) {
+            Admits::Rooms
+        } else {
+            self.admits().await
         }
     }
 
@@ -9395,10 +9481,97 @@ impl<S: Store> Shared<S> {
         if reopens {
             return Err(nowhere);
         }
+        if let Some(unseen) = self.names_unseen(&asked.work) {
+            return self
+                .asked_through_links(&unseen, asked, (at, starts_in(fence, screen)), nowhere)
+                .await;
+        }
         if asked.may_cost {
             return self.start_on_made(asked, &misses, fence).await;
         }
         self.start_on_free(asked, nowhere, fence).await
+    }
+
+    /// The machine `work` names, where no link of this node reaches one
+    /// by that name now: one a machine it links to may reach, as a Mac's
+    /// start naming a room only the person's laptop links to. One it
+    /// linked to once and keeps out of reach counts too, so a room the
+    /// Mac reached before is still asked for through the laptop.
+    fn names_unseen(&self, work: &Work) -> Option<String> {
+        let machines = self.machines();
+        work.needs.iter().find_map(|need| match need {
+            Need::Machine(named)
+                if *named != self.machine
+                    && !machines
+                        .iter()
+                        .any(|one| one.name == *named && one.state == Readiness::Ready) =>
+            {
+                Some(named.clone())
+            }
+            _ => None,
+        })
+    }
+
+    /// Starts `asked`, asked at `at` in `fence`, which names `unseen`, a
+    /// machine this node hears nothing of, through the first machine it
+    /// links to that starts it: each sends it on where it is one of its
+    /// rooms ([`Shared::relays_onward`]) and refuses it otherwise, so it
+    /// lands only on the machine it names. Each is asked in name order,
+    /// waited on no longer than what's left of the harness's wait. Where
+    /// none starts it, says `nowhere`, and what each answered.
+    async fn asked_through_links(
+        &self,
+        unseen: &str,
+        asked: Start,
+        (at, fence): (i64, Option<crate::declared::Kind>),
+        nowhere: String,
+    ) -> Reply {
+        let mut through: Vec<String> = self
+            .machines()
+            .into_iter()
+            .filter(|one| one.name != self.machine && one.state == Readiness::Ready)
+            .map(|one| one.name)
+            .collect();
+        through.sort();
+        let mut asked = asked;
+        asked.work.fence = declaring_at_least(asked.work.fence, fence);
+        let mut answered = Vec::new();
+        for machine in through {
+            let within = relayed_within(at, jiff::Timestamp::now().as_millisecond());
+            let asking = self
+                .asks
+                .ask_onward_within((&machine, unseen), asked.clone(), within);
+            match asking.await {
+                Ok(Ok(started)) => return Ok(started),
+                // It sent the start on and heard nothing back, so the
+                // room may yet start it: asked of no other, as one this
+                // node sent and heard nothing back from.
+                Ok(Err(why)) if why.contains(ONWARD_UNANSWERED) => {
+                    if let Some(there) = &asked.once {
+                        self.onces.unanswered(there, &machine, true, false);
+                    }
+                    return Err(format!("{machine}: {why}"));
+                }
+                Ok(Err(why)) => answered.push(format!("{machine}: {why}")),
+                // One that went and was never answered may yet start, so
+                // it's asked of no other, which would start it twice.
+                Err(unsent) if unsent.sent => {
+                    if let Some(there) = &asked.once {
+                        self.onces.unanswered(there, &machine, true, false);
+                    }
+                    return Err(format!("{machine}: {}", unsent.why));
+                }
+                Err(unsent) => answered.push(format!("{machine}: {}", unsent.why)),
+            }
+        }
+        if answered.is_empty() {
+            return Err(nowhere);
+        }
+        Err(format!(
+            "{nowhere}; {unseen} isn't heard here, and asked through each machine linked here, \
+             {}",
+            answered.join("; ")
+        ))
     }
 
     /// Starts `asked`, asked at `at`, on `machine`, where placement chose
@@ -9863,10 +10036,28 @@ impl<S: Store> Shared<S> {
         let fence = starts_in(fence_of(by), held_or_run(unfenced.is_some(), by));
         let within = relayed_within(at, jiff::Timestamp::now().as_millisecond());
         let reopens = dropped && reopening.is_some_and(|(at, _)| *at == machine);
-        match (reopened, reopens) {
-            (false, _) => self.start_on(machine, asked, (fence, within)).await,
-            (true, true) => self.asked_there(&machine, asked, true, within).await,
-            (true, false) => {
+        // One that went through `machine` to a machine it names that no
+        // link here reaches goes so again, so the answer naming that
+        // machine is taken ([`Self::asked_through_links`]).
+        let unseen = self.names_unseen(&asked.work);
+        match (reopened, reopens, unseen) {
+            (false, _, Some(unseen)) => {
+                let mut asked = asked;
+                asked.work.fence = declaring_at_least(asked.work.fence, fence);
+                let there = asked.once.clone();
+                let asking = self
+                    .asks
+                    .ask_onward_within((&machine, &unseen), asked, within);
+                asking.await.unwrap_or_else(|unsent| {
+                    if let Some(there) = there {
+                        self.onces.unanswered(&there, &machine, unsent.sent, false);
+                    }
+                    Err(unsent.why)
+                })
+            }
+            (false, _, None) => self.start_on(machine, asked, (fence, within)).await,
+            (true, true, _) => self.asked_there(&machine, asked, true, within).await,
+            (true, false, _) => {
                 if let Some(there) = &asked.once {
                     self.onces.unanswered(there, &machine, true, true);
                 }
@@ -12895,6 +13086,50 @@ esac
             told_asker(&socket, &told).await,
             "person\n",
             "a start from the person's terminal is the person's"
+        );
+    }
+
+    // A Mac hears nothing of the rooms the person's laptop makes, so a
+    // start naming one is asked of each machine it links to, which sends
+    // it on where it's one of its rooms; here none is linked, so each
+    // says so, and the start goes nowhere else.
+    #[tokio::test]
+    async fn a_start_naming_a_machine_never_heard_is_asked_through_each_linked_one() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node) = alone(&store, "skiff", &socket);
+        asks_as_person(&socket);
+        let naming = || {
+            Request::Start(Start {
+                work: work(vec![Need::Machine("wren".to_owned())]),
+                folder: None,
+                strict: false,
+                command: vec!["pi".to_owned()],
+                may_cost: false,
+                carries: false,
+                once: None,
+            })
+        };
+        let refused = ask(socket.clone(), naming())
+            .await
+            .expect_err("no machine here is wren");
+        assert!(
+            !refused.contains("isn't heard here"),
+            "with none linked, it's asked of none: {refused}"
+        );
+        store
+            .put_machine(&placement::tests::machine("tern", "linux", 32, &[]))
+            .expect("tern is kept");
+        let refused = ask(socket, naming())
+            .await
+            .expect_err("tern isn't linked to send it on");
+        assert!(
+            refused.contains(
+                "wren isn't heard here, and asked through each machine linked here, tern: \
+                 no link reaches tern now"
+            ),
+            "{refused}"
         );
     }
 
@@ -26960,6 +27195,222 @@ esac
         );
     }
 
+    #[test]
+    fn a_start_goes_on_only_to_the_room_its_node_names_and_it_names() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        shared
+            .store
+            .put_machine(&placement::tests::machine("tern", "linux", 32, &[]))
+            .expect("tern is kept");
+        let naming = |name: &str| work(vec![Need::Machine(name.to_owned())]);
+        assert!(
+            !shared.relays_onward(&naming("tern"), "tern"),
+            "a machine its node names no room of takes none sent on"
+        );
+        fs::write(dir.path().join(made::AGENT_ROOMS), "tern\n").expect("named");
+        assert!(
+            shared.relays_onward(&naming("tern"), "tern"),
+            "the room it names takes one naming it"
+        );
+        assert!(
+            !shared.relays_onward(&work(Vec::new()), "tern"),
+            "one naming no machine stays here or nowhere, though placed on a room"
+        );
+        assert!(
+            !shared.relays_onward(&naming("skiff"), "skiff"),
+            "nor is one sent on to the machine it reached"
+        );
+        assert_eq!(
+            shared.names_unseen(&naming("wren")).as_deref(),
+            Some("wren"),
+            "a machine never heard of here is asked of those it links to"
+        );
+        assert_eq!(
+            shared.names_unseen(&naming("tern")),
+            None,
+            "one heard isn't"
+        );
+        assert_eq!(
+            shared.names_unseen(&naming("skiff")),
+            None,
+            "nor is this one"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_relayed_start_naming_a_room_of_this_nodes_is_sent_on_to_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        shared
+            .store
+            .put_machine(&placement::tests::machine("tern", "linux", 32, &[]))
+            .expect("tern is kept");
+        let start = Start {
+            work: work(vec![Need::Machine("tern".to_owned())]),
+            folder: None,
+            strict: false,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        assert_eq!(
+            shared.here(start.clone(), None).await,
+            Err(format!("{RELAYED_ELSEWHERE}tern")),
+            "one placed on a machine that isn't its room starts here or nowhere"
+        );
+        fs::write(dir.path().join(made::AGENT_ROOMS), "tern\n").expect("named");
+        assert_eq!(
+            shared.here(start, None).await,
+            Err("no link reaches tern now".to_owned()),
+            "one naming its room is asked of it"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_start_sent_on_to_a_room_made_here_is_waited_on_as_its_asker_waits() {
+        use crate::declared::Kind;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        // Made here for another cell, and named a room, so only a start
+        // fenced where it was asked is placed there. Both declare the
+        // strict fence a Linux room does, so a strict start lands as firm.
+        let mut shared = made_for(dir.path(), &[("tern", "P9R1KI")]);
+        runs_commands(&mut shared, dir.path());
+        let mut tern = placement::tests::machine("tern", "linux", 32, &["basin"]);
+        let declared = tern.declared.as_mut().expect("declared");
+        declared.costs_money = true;
+        declared.fence = fenced("tern", &["remote"])
+            .declared
+            .and_then(|said| said.fence);
+        shared.store.put_machine(&tern).expect("its fence is kept");
+        fs::write(dir.path().join(made::AGENT_ROOMS), "tern\n").expect("named");
+        let start = Start {
+            work: work(vec![Need::Machine("tern".to_owned())]),
+            folder: None,
+            strict: false,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let mut asked = shared.asks.answering("tern", |_| None);
+        let began = tokio::time::Instant::now();
+        let refused = shared
+            .here(start.clone(), Some(Kind::Strict))
+            .await
+            .expect_err("tern never answers");
+        assert!(
+            began.elapsed() <= ONWARD_ANSWERED_WITHIN + Duration::from_secs(1),
+            "waited {:?}, not a made machine's first start's wait",
+            began.elapsed()
+        );
+        assert!(
+            refused.starts_with(&format!("tern{ONWARD_UNANSWERED}")),
+            "it says the room may yet start it: {refused}"
+        );
+        let sent = asked.recv().await.expect("tern was asked");
+        assert_eq!(
+            sent.work.fence.map(|said| Kind::from(said.kind)),
+            Some(Kind::Strict),
+            "it goes on declaring the fence it was asked in"
+        );
+        let _answered = shared.asks.answering("tern", |_| {
+            Some(Ok(Response::Started(Started {
+                machine: "tern".to_owned(),
+                held: "h-1".to_owned(),
+                folder: PathBuf::new(),
+                attach: Vec::new(),
+            })))
+        });
+        assert!(
+            matches!(
+                shared.here(start, Some(Kind::Strict)).await,
+                Ok(Response::Started(Started { machine, .. })) if machine == "tern"
+            ),
+            "one the room answers is the room's start"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_start_naming_an_unseen_machine_stops_at_the_first_link_that_may_yet_start_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        for name in ["kestrel", "osprey", "tern"] {
+            shared
+                .store
+                .put_machine(&placement::tests::machine(name, "linux", 32, &[]))
+                .expect("it is kept");
+        }
+        let mut wren = placement::tests::machine("wren", "linux", 32, &[]);
+        wren.state = Readiness::Unreachable;
+        shared.store.put_machine(&wren).expect("wren is kept");
+        let start = Start {
+            work: work(vec![Need::Machine("wren".to_owned())]),
+            folder: None,
+            strict: false,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        assert_eq!(
+            shared.names_unseen(&start.work),
+            Some("wren".to_owned()),
+            "one kept but out of reach is asked for through the links"
+        );
+        let (mut kestrel, mut osprey, mut tern) = (
+            shared.asks.answering("kestrel", |_| {
+                Some(Err("wren isn't a room of mine".to_owned()))
+            }),
+            shared.asks.answering("osprey", |_| {
+                Some(Err(format!("wren{ONWARD_UNANSWERED}no answer in 25 s")))
+            }),
+            shared.asks.answering("tern", |_| None),
+        );
+        let at = jiff::Timestamp::now().as_millisecond();
+        let refused = shared
+            .asked_through_links("wren", start, (at, None), "nowhere".to_owned())
+            .await
+            .expect_err("osprey's room may yet start it");
+        assert!(refused.starts_with("osprey: wren"), "{refused}");
+        assert!(
+            kestrel.try_recv().is_ok() && osprey.try_recv().is_ok(),
+            "each is asked in name order"
+        );
+        assert!(
+            tern.try_recv().is_err(),
+            "none is asked after one that sent it on and heard nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_start_fenced_where_it_was_asked_is_placed_on_a_room_another_booked() {
+        use crate::declared::Kind;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[("tern", "P9R1KI")]);
+        fs::write(dir.path().join(made::AGENT_ROOMS), "tern\n").expect("named");
+        let naming = work(vec![Need::Machine("tern".to_owned())]);
+        assert!(
+            shared.names_a_room(&naming),
+            "tern is one of this node's rooms"
+        );
+        assert!(
+            !shared.names_a_room(&work(vec![Need::Machine("skiff".to_owned())])),
+            "this machine is no room of its own"
+        );
+        let admits = shared.admits_here(&naming, Some(Kind::Fence)).await;
+        assert!(
+            matches!(admits, Admits::Rooms),
+            "fenced, it is admitted as an agent's is"
+        );
+        let admits = shared.admits_here(&naming, Some(Kind::None)).await;
+        assert!(
+            !matches!(admits, Admits::Rooms),
+            "unfenced, it is admitted as its asker is"
+        );
+    }
+
     #[tokio::test]
     async fn another_agents_start_is_never_placed_on_a_machine_made_for_one_asker() {
         let (to_dial, _) = mpsc::unbounded_channel();
@@ -30464,6 +30915,37 @@ esac
                  folders can't be read here; the person can start it"
                     .to_owned()
             ))
+        );
+    }
+
+    // As a Mac's agent asks a room for work in a folder only the room
+    // holds: the room judges it, strictly, and nothing here is read.
+    #[test]
+    fn an_agents_sprout_naming_another_machine_and_a_whole_folder_starts_there_strictly() {
+        let place = tempfile::tempdir().expect("a place");
+        let there = Sprout {
+            folder: Some(PathBuf::from("/world/trees/plants")),
+            on: Some("tern".to_owned()),
+            ..sprout_here(Some(place.path()))
+        };
+
+        let start = sprouted(
+            &there,
+            By::Agent(crate::declared::Kind::Fence),
+            None,
+            &Processes::Listed,
+            place.path(),
+            "osprey",
+        )
+        .expect("it's left to tern")
+        .start;
+
+        assert_eq!(start.folder, Some(PathBuf::from("/world/trees/plants")));
+        assert!(start.strict, "so tern refuses a folder it lacks");
+        assert!(
+            start.work.needs.contains(&Need::Machine("tern".to_owned())),
+            "{:?}",
+            start.work.needs
         );
     }
 
