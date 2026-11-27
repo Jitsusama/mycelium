@@ -41,6 +41,8 @@ pub enum What {
         /// Fields whose changes say only what moved inside them, of those
         /// the kind's `hello` names `deep`; others come whole.
         deep: Vec<String>,
+        /// Only the records heard last, at most this many of them, or all.
+        latest: Option<usize>,
     },
     /// The end of the watch asked with this id.
     Unwatch,
@@ -143,15 +145,18 @@ pub fn read(line: &str) -> Result<Ask, (Value, Refusal)> {
                 .collect::<Vec<_>>()
         })
     };
+    let count = |name: &str| {
+        value
+            .get(name)
+            .and_then(Value::as_u64)
+            .and_then(|count| usize::try_from(count).ok())
+    };
     let what = match ask {
         "hello" => What::Hello,
         "get" => What::Get(keys("keys").unwrap_or_default()),
         "list" => What::List {
             kind: kind()?,
-            limit: value
-                .get("limit")
-                .and_then(Value::as_u64)
-                .and_then(|limit| usize::try_from(limit).ok()),
+            limit: count("limit"),
             fields: value
                 .get("fields")
                 .map(super::fields::read)
@@ -163,6 +168,7 @@ pub fn read(line: &str) -> Result<Ask, (Value, Refusal)> {
             keys: keys("keys"),
             when: keys("when"),
             deep: keys("deep").unwrap_or_default(),
+            latest: count("latest"),
         },
         "unwatch" => What::Unwatch,
         "health" => What::Health,
@@ -221,9 +227,21 @@ mod tests {
                     keys: Some(vec!["session:a".to_owned()]),
                     when: None,
                     deep: Vec::new(),
+                    latest: None,
                 },
             }),
             "a watch names its kind and keys"
+        );
+        assert_eq!(
+            read(r#"{"id":6,"ask":"watch","kind":"message","latest":20}"#).map(|ask| ask.what),
+            Ok(What::Watch {
+                kind: "message".to_owned(),
+                keys: None,
+                when: None,
+                deep: Vec::new(),
+                latest: Some(20),
+            }),
+            "and may ask for only those heard last"
         );
         let Err((id, refusal)) = read(r#"{"id":"x","ask":"juggle"}"#) else {
             panic!("an unknown ask is refused");

@@ -19,6 +19,8 @@ pub(super) struct Watching {
     pub(super) keys: Option<Vec<String>>,
     /// The fields whose changes say only what moved inside them.
     pub(super) deep: Vec<String>,
+    /// At most how many of those heard last it watches, or all.
+    pub(super) latest: Option<usize>,
     /// The fields whose moving it sends for, told to it as they change.
     pub(super) when: watch::Sender<Option<Vec<String>>>,
     /// What sends it.
@@ -31,11 +33,12 @@ pub(super) struct Watching {
 /// fields, a record's change moving none of them is held back, and sent
 /// with that record's next that does, or at once when `when` is changed
 /// to let it through. A field `deep` names says only what moved inside it
-/// since it was last sent, held back or not.
+/// since it was last sent, held back or not. Asked for the `latest`, it
+/// watches only that many of those heard last, as [`answer_now`] says.
 pub(super) async fn keep_watching<H: Holds>(
     holds: Arc<H>,
     id: Value,
-    (kind, keys, deep): (String, Option<Vec<String>>, Vec<String>),
+    (kind, keys, deep, latest): (String, Option<Vec<String>>, Vec<String>, Option<usize>),
     mut told: watch::Receiver<u64>,
     mut when: watch::Receiver<Option<Vec<String>>>,
     answering: mpsc::Sender<String>,
@@ -50,10 +53,12 @@ pub(super) async fn keep_watching<H: Holds>(
         .unwrap_or_default()
     };
     let first = held(&holds, *told.borrow_and_update());
+    let window = latest.map(|n| heard_last(first.records(), keys.as_deref(), n));
+    let watched = window.as_deref().or(keys.as_deref());
     let mut sent: Shared = first
         .records()
         .iter()
-        .filter(|(key, _)| keys.as_ref().is_none_or(|keys| keys.contains(*key)))
+        .filter(|(key, _)| watched.is_none_or(|keys| keys.contains(*key)))
         .map(|(key, record)| (key.clone(), Arc::clone(record)))
         .collect();
     drop(first);
@@ -79,8 +84,8 @@ pub(super) async fn keep_watching<H: Holds>(
             }
         }
         let now = held(&holds, *told.borrow_and_update());
-        let Some((changed, gone)) = answer(
-            (when.borrow().as_deref(), keys.as_deref()),
+        let Some((changed, gone)) = answer_now(
+            (when.borrow().as_deref(), keys.as_deref(), latest),
             &deep,
             &mut sent,
             &now,
@@ -124,6 +129,67 @@ struct Since<'a> {
 /// one ever not to, the watch ends rather than send a broken line.
 fn whole<'a>(id: &'a Value, records: Vec<&'a Record>) -> Option<String> {
     serde_json::to_string(&Whole { id, records }).ok()
+}
+
+/// What a watch that has sent `sent` answers now that the records stand
+/// as `now` built them, as [`answer`] says, asked `when` of those `keys`
+/// names or all. Asked for the `latest`, it answers only of that many of
+/// them heard last, and says each it sent that has left them gone, as it
+/// says one gone from the kind. A page showing the latest 20 messages
+/// was first sent 12,179 of them, 1796 KB, on 26 November.
+fn answer_now(
+    (when, keys, latest): (Option<&[String]>, Option<&[String]>, Option<usize>),
+    deep: &[String],
+    sent: &mut Shared,
+    now: &Build,
+) -> Option<(Vec<Arc<Change>>, Vec<String>)> {
+    let Some(latest) = latest else {
+        return answer((when, keys), deep, sent, now);
+    };
+    let window = heard_last(now.records(), keys, latest);
+    let left = leave(sent, now.records(), &window);
+    match answer((when, Some(window.as_slice())), deep, sent, now) {
+        Some((changed, mut gone)) => {
+            gone.extend(left);
+            Some((changed, gone))
+        }
+        None if left.is_empty() => None,
+        None => Some((Vec::new(), left)),
+    }
+}
+
+/// The keys of the `latest` of `records` heard last, of those `keys`
+/// names or all, newest first and the same moment's by key. Only that
+/// many are put in order, not every record.
+fn heard_last(records: &Shared, keys: Option<&[String]>, latest: usize) -> Vec<String> {
+    fn newest<'a>(&(key, heard): &(&'a String, i64)) -> (std::cmp::Reverse<i64>, &'a String) {
+        (std::cmp::Reverse(heard), key)
+    }
+    let mut named: Vec<(&String, i64)> = records
+        .iter()
+        .filter(|(key, _)| keys.is_none_or(|keys| keys.contains(*key)))
+        .map(|(key, record)| (key, record.heard()))
+        .collect();
+    if named.len() > latest {
+        named.select_nth_unstable_by_key(latest, newest);
+        named.truncate(latest);
+    }
+    named.sort_unstable_by_key(newest);
+    named.into_iter().map(|(key, _)| key.clone()).collect()
+}
+
+/// Takes out of `sent` each record `now` still holds that is no longer
+/// among the `window`, answering their keys, so they are said gone.
+fn leave(sent: &mut Shared, now: &Shared, window: &[String]) -> Vec<String> {
+    let left: Vec<String> = sent
+        .keys()
+        .filter(|key| now.contains_key(*key) && !window.contains(*key))
+        .cloned()
+        .collect();
+    for key in &left {
+        sent.remove(key);
+    }
+    left
 }
 
 /// What a watch that has sent `sent` answers now that the records stand
@@ -307,6 +373,59 @@ mod tests {
             heard(None, &kept).len(),
             5,
             "every build that changed something sends, and the last, unchanged, doesn't"
+        );
+    }
+
+    #[test]
+    fn a_watch_of_the_latest_sends_those_heard_last_and_says_one_pushed_out_gone() {
+        let heard = |all: &[(&str, i64)]| -> Shared {
+            all.iter()
+                .map(|&(key, heard)| {
+                    let record = Record::from(json!({"key": key, "heard": heard}));
+                    (key.to_owned(), Arc::new(record))
+                })
+                .collect()
+        };
+        let first = heard(&[("message:a", 1), ("message:b", 3), ("message:c", 2)]);
+        assert_eq!(
+            heard_last(&first, None, 2),
+            vec!["message:b".to_owned(), "message:c".to_owned()],
+            "the two heard last, newest first"
+        );
+        assert_eq!(
+            heard_last(&first, None, 5).len(),
+            3,
+            "and all, where there are fewer"
+        );
+        let mut sent: Shared = first
+            .iter()
+            .filter(|(key, _)| key.as_str() != "message:a")
+            .map(|(key, record)| (key.clone(), Arc::clone(record)))
+            .collect();
+        let next = heard(&[
+            ("message:a", 1),
+            ("message:b", 3),
+            ("message:c", 2),
+            ("message:d", 4),
+        ]);
+        assert_eq!(
+            answer_now(
+                (None, None, Some(2)),
+                &[],
+                &mut sent,
+                &Build::after(next, Some(Arc::new(first)))
+            )
+            .map(read),
+            Some((
+                vec![json!({"key": "message:d", "heard": 4})],
+                vec!["message:c".to_owned()],
+            )),
+            "one heard anew is sent, and the one it pushed out is said gone"
+        );
+        assert_eq!(
+            sent.keys().collect::<Vec<_>>(),
+            ["message:b", "message:d"],
+            "so the watch holds only the latest"
         );
     }
 

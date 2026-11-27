@@ -3672,7 +3672,7 @@ in milliseconds.
 | `hello` | `version`, `domain` (`node`), `state` and `kinds`, each with its `live` fields, and those it offers `deep` |
 | `get` with `keys` | `records`, those held, in the order asked |
 | `list` with `kind`, and `limit` and `fields` | `records`, every one of the kind |
-| `watch` with `kind`, and `keys`, `when` and `deep` | `records` whole, then `changed` and `gone` |
+| `watch` with `kind`, and `keys`, `when`, `deep` and `latest` | `records` whole, then `changed` and `gone` |
 | `unwatch` | nothing; the watch with that `id` ends |
 | `health` | `state`, and each linked machine and served file as a source |
 | `steer` with `address` and `steer` | `steered` with the `machine` whose session's inbox has it |
@@ -4074,6 +4074,14 @@ changed 56 times in a minute on 2026-11-11, and none of them moved a
 30 KB a line. Asked again under its `id` for the same kind and keys,
 a watch keeps on, sending at once what it held back, and from then on
 as `when` now says, rather than everything whole again.
+
+A watch asked for the `latest` so many watches only that many of its
+records, those whose `heard` is latest, the same moment's by key. A
+record heard later is sent as it comes, and one it pushes out is said
+`gone`, as one taken from the kind is. A page showing the latest 20
+messages was first sent all 12,179 of them, 1796 KB, on 2026-11-26.
+Asked again under its `id` with another `latest`, a watch starts over,
+its records whole. A node that doesn't know `latest` sends them all.
 
 A watch asked `deep` some fields, among those its kind's `hello` offers
 `deep`, says a change to one, an object before and after, as only what
