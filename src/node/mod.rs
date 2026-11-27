@@ -1217,15 +1217,15 @@ const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 const MADE_ANSWERED_WITHIN: Duration = Duration::from_secs(10 * 60);
 
 /// Whether a start by `by` asking `work` may cost money unasked: the
-/// person's, where it names a machine or needs the cloud, since he pays
-/// for what he names. His other starts go where room is, as an agent's
-/// do, so none makes a machine he didn't ask for.
+/// person's, where it names a machine or needs the cloud or a fresh
+/// machine, since he pays for what he names. His other starts go where
+/// room is, as an agent's do, so none makes a machine he didn't ask for.
 fn may_cost_unasked(by: By, work: &Work) -> bool {
     by == By::Person
         && work
             .needs
             .iter()
-            .any(|need| matches!(need, Need::Cloud | Need::Machine(_)))
+            .any(|need| matches!(need, Need::Cloud | Need::Fresh | Need::Machine(_)))
 }
 
 /// Whether a machine made for `made`'s start is let go when nothing
@@ -5568,7 +5568,7 @@ impl<S: Store> Shared<S> {
         let mut asked = asking.join_all().await;
         asked.sort_by_key(|(order, _, _)| *order);
         let mut offers = Offers {
-            needs: vec![Need::Cloud],
+            needs: vec![Need::Cloud, Need::Fresh],
             ..Offers::default()
         };
         for (_, program, said) in asked {
@@ -9446,6 +9446,8 @@ impl<S: Store> Shared<S> {
                 )
             })?;
         let mut there = asked.work.clone();
+        // Made for it, so a fresh machine; once made, no machine is one.
+        there.needs.retain(|need| *need != Need::Fresh);
         there.needs.push(Need::Machine(made.machine.clone()));
         // Pinned to the machine made for it, which is booked for its asker.
         match self.place(
@@ -12459,6 +12461,47 @@ esac
             told_asker(&socket, &told).await,
             "person\n",
             "a start from the person's terminal is the person's"
+        );
+    }
+
+    // 9R6RA6's ask (2026-11-27): a start may need a machine made for it,
+    // which no machine standing is, however much room it has.
+    #[tokio::test]
+    async fn a_start_needing_a_fresh_machine_is_made_one_though_here_has_room() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let told = dir.path().join("told");
+        let (_stop, _node) = alone(&Memory::default(), "skiff", &socket);
+        provider_telling(&socket, &told);
+        asks_as_person(&socket);
+        let start = |needs: Vec<Need>| {
+            Request::Start(Start {
+                work: work(needs),
+                folder: None,
+                strict: false,
+                command: vec!["pi".to_owned()],
+                may_cost: false,
+                carries: false,
+                once: None,
+            })
+        };
+        assert_eq!(
+            ask(socket.clone(), start(Vec::new())).await,
+            Err("skiff's node starts no sessions".to_owned()),
+            "a start needing nothing more stays here, where there is room"
+        );
+        assert!(!told.exists(), "and nothing is made for it");
+        let fresh = ask(socket.clone(), start(vec![Need::Fresh])).await;
+        assert!(
+            fresh
+                .as_ref()
+                .is_err_and(|why| why.contains("make cell ended")),
+            "one needing a fresh machine is made one, which the stand-in fails: {fresh:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(&told).expect("the provider was asked to make one"),
+            "person\n",
+            "made for the person who asked"
         );
     }
 
