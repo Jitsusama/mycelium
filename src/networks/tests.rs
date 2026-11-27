@@ -2509,11 +2509,13 @@ fn a_cell_declares_plain_subjects_alone_each_bad_one_passed_over() {
         "bell\u{7}",
         "x".repeat(121),
         "x".repeat(120),
+        "é".repeat(121),
+        "é".repeat(120),
     ]);
     assert_eq!(
         subjects(&declared),
-        vec!["mycelium:hubs".to_owned(), "x".repeat(120)],
-        "only plain words of at most 120 characters are kept, trimmed"
+        vec!["mycelium:hubs".to_owned(), "x".repeat(120), "é".repeat(120)],
+        "only plain words of at most 120 characters, however many bytes, are kept, trimmed"
     );
     assert_eq!(MOST_SUBJECTS, 24, "PROTOCOL.md tells clients 24");
     // Each good subject comes after a bad entry and before a repeat of
@@ -2537,7 +2539,8 @@ fn a_cell_declares_plain_subjects_alone_each_bad_one_passed_over() {
     assert!(subjects(&json!("one")).is_empty(), "subjects are a list");
     // The hub keys a subject by `subject_key`, so a repeat past ASCII's
     // letters must fold the same way, or it takes a place of the cap
-    // while sharing the first one's hub; the hub's own case pins its half.
+    // while sharing the first one's hub. The hub's case of two cells
+    // saying one subject in two cases pins that it folds the same.
     assert_eq!(
         subjects(&json!(["école", "ÉCOLE", "Straße", "STRASSE"])),
         vec![

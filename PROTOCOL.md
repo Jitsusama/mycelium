@@ -3778,7 +3778,8 @@ the `subjects` its presence declares (the first 24 strings of at most
 120 characters a terminal draws as plain text, a repeat (one whose
 lower case matches an earlier one's) passed over like any other entry,
 and no accent composed first, so one written as its own mark is a
-subject apart; the rest are dropped without a word,
+subject apart, as is one that only looks like another in a different
+script; the rest are dropped without a word,
 though the session's presence keeps them all), `usage`, the networks it
 `leads`, `machine`, `since`, `quest`, `started_by` (the cell its
 session's record says a book of starts names, else the orchestrator it
@@ -3808,7 +3809,9 @@ characters each, in time that grows with them. Each such subject a
 cell says adds about 33 bytes to that peak, so the 30 MB holds about six
 a cell on the whole, and every cell saying 24 took about 36 MB. A
 subject costs about a byte for each of its bytes, so one of 120
-characters outside ASCII may cost up to about 480 bytes.
+characters outside ASCII may cost up to about 480 bytes, and the
+cap counts characters, not bytes: by that count, ten thousand cells
+each saying 24 such subjects would hold about 115 MB more.
 
 The `tie` kind holds who talked with whom in the last day, made from the
 messages the node holds: never what a message said, nor its id, only
@@ -3853,8 +3856,9 @@ hub. A hub is made by the node's own count and grants nothing: it is
 where a need is sent first, never a cell that may do more. A cell's
 subjects are its own word, checked by nobody, so a cell heard least,
 new or silent, is among the first made a hub or named a fit of each
-subject it says. Each node names hubs from the messages and sessions
-it holds, so two nodes may name different hubs for a while, and nodes
+subject it says: a router following hubs should send a hub no more of
+a need than it would send any cell. Each node names hubs from the
+messages and sessions it holds, so two nodes may name different hubs for a while, and nodes
 of two versions may keep different subjects for one cell and name
 different hubs for one subject. The kind
 is told as the sessions change, so a busy hour of talk moves the hubs
