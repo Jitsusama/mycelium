@@ -1594,7 +1594,11 @@ pub(super) mod tests {
             "nine minutes past its ceiling isn't ten"
         );
         assert_eq!(
-            carries(&chose(&realm, &[cell("s1")], &hot_for(&realm, HOT_FOR.as_mins()))),
+            carries(&chose(
+                &realm,
+                &[cell("s1")],
+                &hot_for(&realm, HOT_FOR.as_mins())
+            )),
             Some(("s1", "tern")),
             "ten minutes past its ceiling, it carries to the machine with room"
         );
