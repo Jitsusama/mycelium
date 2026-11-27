@@ -34,6 +34,14 @@ const TIES_WITHIN: Duration = Duration::from_secs(30);
 /// to end: time for a busy one to finish its turn and push.
 pub const PATIENCE: Duration = Duration::from_secs(15 * 60);
 
+/// How long a carry waits, once the sessions here have ended, for each
+/// started there to run: its own, whatever the waits before it spent,
+/// since a turn that ended late leaves its start no less to do. Time
+/// for each arrival to fetch its trees over a slow link and for pi to
+/// take its session up, while one whose arrival failed is said within
+/// minutes rather than after another quarter of an hour.
+const ANSWERED_WITHIN: Duration = Duration::from_secs(5 * 60);
+
 /// How a carry's hands put a request to the node from within it, rather
 /// than over its socket: answered as the asker the node vouched for.
 pub type Asking = Box<dyn Fn(&Request) -> Reply + Send>;
@@ -327,7 +335,9 @@ impl Hands for Through {
         true
     }
 
-    fn wait_afresh(&mut self) {}
+    fn wait_afresh(&mut self) {
+        self.until = Instant::now() + ANSWERED_WITHIN;
+    }
 }
 
 /// What a done file's name ends with, after its session's id.

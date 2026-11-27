@@ -656,6 +656,9 @@ fn rest<F: FnMut(&Value)>(
         Stood::Doing,
         format!("waiting for each session started on {to} to run there"),
     );
+    // A close that waited out a long turn leaves the starts there no
+    // less to do, so they get a wait of their own.
+    hands.wait_afresh();
     said.or_failed(Step::Answer, answered(hands, to, &arrived))?;
     if arrived.is_empty() {
         said.line(
