@@ -473,10 +473,7 @@ mod tests {
             .nth(2)
             .expect("sentences after the table");
         for line in sentences.lines() {
-            assert!(
-                crate::swarm::drawn_width(line) <= 60,
-                "{line:?} in:\n{shown}"
-            );
+            assert!(drawn_width(line) <= 60, "{line:?} in:\n{shown}");
         }
         assert!(
             sentences.lines().nth(1).is_some_and(
@@ -514,7 +511,7 @@ mod tests {
         let shown = said(&two(), "work", 80, false);
         let long: Vec<&str> = shown
             .lines()
-            .filter(|line| crate::swarm::drawn_width(line) > 80)
+            .filter(|line| drawn_width(line) > 80)
             .collect();
         assert!(long.is_empty(), "lines past 80 columns: {long:?}\n{shown}");
         let lines: Vec<&str> = shown.lines().collect();
@@ -657,7 +654,7 @@ mod tests {
         let shown = said(&two(), "work", 40, false);
         let long: Vec<&str> = shown
             .lines()
-            .filter(|line| crate::swarm::drawn_width(line) > 40)
+            .filter(|line| drawn_width(line) > 40)
             .collect();
         assert!(long.is_empty(), "lines past 40 columns: {long:?}\n{shown}");
         let lines: Vec<&str> = shown.lines().collect();
