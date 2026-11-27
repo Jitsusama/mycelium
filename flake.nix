@@ -4,6 +4,9 @@
 {
   description = "A nimble core for agent networks";
 
+  # The Rust toolchain comes from here, and with it the tables
+  # `char::is_alphabetic` asks, which Cargo.toml's unicode-width note
+  # says to check against both width rules whenever this moves.
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
   outputs =

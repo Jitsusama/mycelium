@@ -467,10 +467,11 @@ pub fn joins(said: &Value) -> Vec<Join> {
 
 /// `cut` without what a cut can leave at its end holding nothing: what
 /// its text counts `blank`, a joiner or non-joiner, or a Khmer coeng
-/// (U+17D2) with no letter after it to subscript, as the swarm's `within`
-/// leaves none either. All are trimmed together, as any could be left
-/// last once another after it goes: a coeng keeps a joiner or a space
-/// before it, which its going leaves last.
+/// (U+17D2) with no letter after it to subscript. All are trimmed
+/// together, as any could be left last once another after it goes: a
+/// coeng keeps a joiner or a space before it, which its going leaves
+/// last. The swarm's `within` trims only the joiner and the coeng, as a
+/// page it draws ends in nothing a reader sees either way.
 pub(crate) fn cut_ended(cut: &str, blank: fn(char) -> bool) -> &str {
     cut.trim_end_matches(|each: char| {
         blank(each) || matches!(each, '\u{200C}' | '\u{200D}' | '\u{17D2}')
@@ -2485,7 +2486,13 @@ mod tests {
             {"cell": "WRENSS", "need": format!("{shorter}\u{200D}\u{17D2}\u{1780}"), "since": "2026-11-16T09:00:00Z"},
             {"cell": "SKIFFS", "need": format!("{shorter} \u{17D2}\u{1780}"), "since": "2026-11-16T09:00:00Z"},
             {"cell": "KESTRL", "need": "\u{1780}\u{17D2}", "since": "2026-11-16T09:00:00Z"},
+            {"cell": "PIPITS", "need": "\u{17D2}", "since": "2026-11-16T09:00:00Z"},
         ]));
+        assert_eq!(
+            joins.len(),
+            7,
+            "a need of a lone coeng, left with nothing, passes its join over: {joins:?}"
+        );
         assert_eq!(
             joins[0].need, letters,
             "a joiner the cut parts from its letter joins nothing, so it goes"
