@@ -382,12 +382,16 @@ const IN_ITS_REALM: &str = r#"export MYCELIUM_REALM="$1"; if [ -n "$2" ]; then P
 /// named relatively, which the run's folder in that home would hold: a
 /// service's path may name the home's own tools (`~/.local/bin`, a
 /// profile's `bin`), which whoever wrote the home could make shadow a
-/// command. The home is the one its first word names, the node's own,
-/// and the `HOME` it is given as well, so a launcher that takes `HOME`
-/// away or points it elsewhere leaves none of either on the path. It
-/// shifts that word off. With no home, or `/` for one, only the relative
-/// go.
-const OUT_OF_ITS_HOME: &str = r#"homes=; for at in "$1" "${HOME-}"; do case $at in /?*) at=${at%/}; homes=$homes$at:; led=$(cd -P "$at" 2>/dev/null && pwd -P) && homes=$homes$led:;; esac; done; shift; kept=; set -f; IFS=:; for dir in ${PATH-}; do case $dir in /*) led=$(cd -P "$dir" 2>/dev/null && pwd -P) || led=$dir; for at in $homes; do case $dir/ in "$at"/*) dir=;; esac; case $led/ in "$at"/*) dir=;; esac; done; [ -z "$dir" ] || kept=${kept:+$kept:}$dir;; esac; done; unset IFS; set +f; PATH=$kept; export PATH; "#;
+/// command. Each folder it keeps it names by where it leads, so no link
+/// the home holds along the way can be pointed elsewhere before the
+/// command is looked up, and one it can't enter, which may not be there
+/// yet, goes too. A path left with nothing is `/usr/bin:/bin`, never
+/// empty, which a shell reads as the run's folder. The home is the one
+/// its first word names, the node's own, and the `HOME` it is given as
+/// well, so a launcher that takes `HOME` away or points it elsewhere
+/// leaves none of either on the path. It shifts that word off. With no
+/// home, or `/` for one, only the relative and the missing go.
+const OUT_OF_ITS_HOME: &str = r#"homes=; for at in "$1" "${HOME-}"; do case $at in /?*) at=${at%/}; homes=$homes$at:; led=$(cd -P "$at" 2>/dev/null && pwd -P) && homes=$homes$led:;; esac; done; shift; kept=; set -f; IFS=:; for dir in ${PATH-}; do case $dir in /*) ;; *) continue;; esac; led=$(cd -P "$dir" 2>/dev/null && pwd -P) || continue; for at in $homes; do case $dir/ in "$at"/*) led=;; esac; case $led/ in "$at"/*) led=;; esac; done; [ -z "$led" ] || kept=${kept:+$kept:}$led; done; unset IFS; set +f; PATH=${kept:-/usr/bin:/bin}; export PATH; "#;
 
 /// The words that run a program held in `realm` through the person's
 /// login shell, as a terminal would run it, so it has their environment
@@ -449,7 +453,9 @@ fn in_its_realm(
 /// it, but with no folder of `home`, the home it runs in, nor of the
 /// `HOME` it is given, on its path ([`OUT_OF_ITS_HOME`]), and the kit's
 /// tools first. A command found only in the home isn't found, rather
-/// than found as the home's writer left it.
+/// than found as the home's writer left it. `HOME` still names the
+/// home, though, so a program that reads its own files from there, as
+/// an interpreter may, reads what that writer left.
 #[must_use]
 pub fn plain_run(realm: &str, kit: Option<&Path>, home: &Path) -> Vec<String> {
     let script = format!("{OUT_OF_ITS_HOME}{IN_ITS_REALM}");
@@ -808,29 +814,45 @@ mod tests {
         std::os::unix::fs::symlink(&real, &home).expect("a home by a link");
         let leads = at.join("leads");
         std::os::unix::fs::symlink(&tools, &leads).expect("a folder leading in");
+        // The system's folders, made here, since a sandbox may lack the
+        // real ones.
+        let (first, last) = (at.join("first"), at.join("last"));
         let around = at.join("around");
-        fs::create_dir(&around).expect("a folder outside");
-        let (home, real, leads, around) = (
-            home.display().to_string(),
-            real.display().to_string(),
-            leads.display().to_string(),
-            around.display().to_string(),
-        );
+        let beside = at.join("homex/bin");
+        // Outside the home: a folder by a link, kept by where it leads, and
+        // one whose way runs through a link in the home, which the home's
+        // writer could point elsewhere, kept only where it leads now.
+        let store = at.join("store");
+        for folder in [&first, &last, &around, &beside, &store.join("bin")] {
+            fs::create_dir_all(folder).expect("a folder outside");
+        }
+        let named = at.join("named");
+        std::os::unix::fs::symlink(&around, &named).expect("a folder by a link");
+        std::os::unix::fs::symlink(&store, real.join(".nix-profile")).expect("a profile");
+        let through = at.join("through");
+        std::os::unix::fs::symlink(home.join(".nix-profile"), &through).expect("a way in");
+        let shown = |folder: &Path| folder.display().to_string();
+        let [first, last, around, beside, store] =
+            [&first, &last, &around, &beside, &store].map(shown);
+        let [home, real, leads] = [&home, &real, &leads].map(shown);
         let path = [
             format!("{home}/.local/bin"),
-            "/usr/bin".to_owned(),
+            first.clone(),
             format!("{real}/.nix-profile/bin"),
             "bin".to_owned(),
             String::new(),
             leads,
             home.clone(),
-            around.clone(),
-            format!("{home}x/bin"),
-            "/bin".to_owned(),
+            shown(&named),
+            shown(&through.join("bin")),
+            // Not there yet, so it may yet be made a way in.
+            shown(&at.join("missing")),
+            beside.clone(),
+            last.clone(),
         ]
         .join(":");
         let print = r#"printf %s "$PATH""#;
-        let kept = format!("/nix/store/kit/bin:/usr/bin:{around}:{home}x/bin:/bin");
+        let kept = format!("/nix/store/kit/bin:{first}:{around}:{store}/bin:{beside}:{last}");
         let plain = plain_run(
             "harbour",
             Some(Path::new("/nix/store/kit")),
@@ -843,7 +865,8 @@ mod tests {
                 &[("HOME", &format!("{home}/")), ("PATH", &path)]
             ),
             kept,
-            "the home's folders go, by name or by where they lead, and relative ones"
+            "the home's folders go, by name or by where they lead, and relative and missing \
+             ones, and each kept is named by where it leads"
         );
         // A launcher may point HOME elsewhere; the home the run is in
         // still goes, by name or by where it leads.
@@ -871,12 +894,6 @@ mod tests {
             kept,
             "the home HOME names goes as well"
         );
-        let plain = plain_run("harbour", None, Path::new("/"));
-        assert_eq!(
-            run_through(&plain, print, &[("HOME", "/"), ("PATH", "/usr/bin:.:/bin")]),
-            "/usr/bin:/bin",
-            "a home of / takes off only the relative"
-        );
         assert_eq!(
             run_through(
                 &login_run("harbour", None),
@@ -886,6 +903,43 @@ mod tests {
             path,
             "the person's own run keeps its path"
         );
+    }
+
+    #[test]
+    fn a_plain_run_left_with_no_folder_has_the_systems_alone() {
+        let made = tempfile::tempdir().expect("a temporary folder");
+        let at = fs::canonicalize(made.path()).expect("the folder's place");
+        let (home, first, last) = (at.join("home"), at.join("first"), at.join("last"));
+        for folder in [&home.join(".local/bin"), &first, &last] {
+            fs::create_dir_all(folder).expect("a folder");
+        }
+        let shown = |folder: &Path| folder.display().to_string();
+        let (home, first, last) = (shown(&home), shown(&first), shown(&last));
+        let print = r#"printf %s "$PATH""#;
+        let plain = plain_run("harbour", None, Path::new("/"));
+        assert_eq!(
+            run_through(
+                &plain,
+                print,
+                &[("HOME", "/"), ("PATH", &format!("{first}:.:{last}"))]
+            ),
+            format!("{first}:{last}"),
+            "a home of / takes off only the relative and the missing"
+        );
+        // A path left with nothing, and no kit, is never empty, which a
+        // shell would read as the run's folder, in the home.
+        let plain = plain_run("harbour", None, Path::new(&home));
+        for given in [
+            format!("{home}/.local/bin"),
+            String::new(),
+            ":bin:".to_owned(),
+        ] {
+            assert_eq!(
+                run_through(&plain, print, &[("HOME", &home), ("PATH", &given)]),
+                "/usr/bin:/bin",
+                "a path of {given:?} left with nothing is the system's alone"
+            );
+        }
     }
 
     #[test]

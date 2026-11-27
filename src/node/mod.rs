@@ -9845,15 +9845,7 @@ impl<S: Store> Shared<S> {
             let folder = start::begins_in(asked.folder.as_deref(), &home);
             let (folder, ground) = self.ground(folder, by, asked.from.as_deref()).await?;
             let launcher = self.launcher(by, ground.as_ref(), &from, &mut started)?;
-            // The person's run sent here as an agent's reads no profile
-            // of this home, which the agent may have written, and finds no
-            // tool in it, by the home it runs in, whatever `HOME` its
-            // launcher gives it.
-            let shell = if asked.asked_by == Some(By::Person) {
-                run::Shell::Plain { home: &home }
-            } else {
-                run::Shell::Login
-            };
+            let shell = shell_for(asked.asked_by, &home);
             let words = run::words(launcher, &self.realm, self.kit(), asked.command, shell);
             // An agent's fence grants the work trees its session holds, so
             // the run is told the session the kernel and pi's records prove
@@ -10691,6 +10683,19 @@ fn asked_by(recast: bool, judged: By, run: &Run) -> Option<By> {
         run.asked_by
     } else {
         None
+    }
+}
+
+/// The shell a run here goes through: for the person's run sent here as
+/// an agent's ([`asked_by`]), one that reads no profile of `home`, the
+/// home it runs in, which the agent may have written, and finds no tool
+/// in it, whatever `HOME` its launcher gives it; the login shell for
+/// every other.
+fn shell_for(asked_by: Option<By>, home: &Path) -> run::Shell<'_> {
+    if asked_by == Some(By::Person) {
+        run::Shell::Plain { home }
+    } else {
+        run::Shell::Login
     }
 }
 
@@ -25673,6 +25678,25 @@ esac
             None,
             "and whoever asks here saying it is not heard"
         );
+    }
+
+    #[test]
+    fn only_the_persons_run_sent_as_an_agents_reads_no_profile() {
+        use crate::declared::Kind;
+        let home = Path::new("/home/tern");
+        assert!(
+            matches!(
+                shell_for(Some(By::Person), home),
+                run::Shell::Plain { home: plain } if plain == home
+            ),
+            "the person's run sent as an agent's goes through the plain shell, in its home"
+        );
+        for asked in [None, Some(By::Agent(Kind::Fence))] {
+            assert!(
+                matches!(shell_for(asked, home), run::Shell::Login),
+                "a run asked by {asked:?} goes through the login shell"
+            );
+        }
     }
 
     #[test]

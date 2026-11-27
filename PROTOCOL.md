@@ -2522,13 +2522,17 @@ is cleared. The room runs it through `/bin/sh -c`, never the login
 shell, so no profile of the home the agent wrote runs before it, and
 takes every folder of that home off its path, by name or by where it
 leads, before the kit's tools go first, so nothing the home holds
-shadows its command: one found only there isn't found. The home is
+shadows its command: one found only there isn't found. Each folder
+kept is named by where it leads, one that can't be entered goes, and
+a path left with nothing is `/usr/bin:/bin`, never empty. The home is
 the one the node runs it in, and the `HOME` its launcher gives it
 too, so a launcher that takes `HOME` away or points it elsewhere
-leaves neither on the path. Each runs
-journal keeps `asked_by` beside its `by`. One machine named twice is
-still one, and this node's own machine stays the person's whatever the
-file names. Since any session may write the file, naming a machine
+leaves neither on the path. `HOME` still names that home, so a
+program the command runs that reads its own files from there reads
+what the agent left. Each run's journal keeps `asked_by` beside its
+`by`. One machine named twice is still one, and this node's own
+machine stays the person's whatever the file names. Since any session
+may write the file, naming a machine
 there only ever fences the person's runs to it, never loosens them,
 and never fences them to a machine that is no worker and no agent's
 make booked, as the person's own machines aren't. Work that names
