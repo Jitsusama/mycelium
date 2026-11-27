@@ -381,6 +381,7 @@ pub async fn run(
         realm: membership.hello().realm,
         proven: membership.proves(),
         worker,
+        made_here: releases,
         shows: membership.hello().shows && other.shows && !releases && !other.releases && !worker,
         handover: Handover::new(other.releases, skipped_shares),
         // Two ends that both take facts each say their machine every
@@ -1236,6 +1237,12 @@ struct End<S> {
     /// Whether the other end is a worker, which asks nothing of this
     /// machine and speaks only for its own sessions ([`Connection::worker`]).
     worker: bool,
+    /// Whether this end's way in releases the other's machine
+    /// ([`Connection::releases`]): one a provider's program reaches, which
+    /// this machine's node made or a provider lent it, so one this machine
+    /// pays for. It is lent to as a worker is, though the node made it for
+    /// the person and it is no worker.
+    made_here: bool,
     /// Whether the two ends tell each other of the carries their nodes
     /// ordered: both said they do, neither releases the other, and the
     /// other isn't a worker, since quest ids and reasons aren't work.
@@ -1932,16 +1939,18 @@ impl<S: Store> End<S> {
     }
 
     /// Hands a lend the other end asks of this machine to its lender, only
-    /// when the other end is a worker of this machine and this machine
-    /// lends. The lender knows the worker by this link's other end.
+    /// when the other end is a worker of this machine or a machine its
+    /// node made, such as one made for the person, and this machine lends.
+    /// The lender knows the machine by this link's other end, and holds it
+    /// to the same budgets as a worker.
     fn lend_here(&mut self, ask: u64, lend: Lend) {
-        let lender = if self.worker {
+        let lender = if self.worker || self.made_here {
             self.lender
                 .clone()
                 .ok_or_else(|| format!("{} lends nothing", self.here))
         } else {
             Err(format!(
-                "{} lends only to its workers, and {} isn't one",
+                "{} lends only to its workers and the machines it made, and {} is neither",
                 self.here, self.other
             ))
         };
@@ -6463,8 +6472,9 @@ mod tests {
     }
 
     /// What skiff answers a lend tern asks of it over a link, tern dialled
-    /// as its worker or not, skiff lending through `lender` or not.
-    async fn lent_to_tern(worker: bool, lender: Option<Lender>) -> Lent {
+    /// as its worker or not, by a way in that releases it or not, skiff
+    /// lending through `lender` or not.
+    async fn lent_to_tern(worker: bool, releases: bool, lender: Option<Lender>) -> Lent {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let starting = Starting {
             lender: lender.map(Arc::new),
@@ -6478,6 +6488,7 @@ mod tests {
                 &realm("skiff"),
                 Connection {
                     worker,
+                    releases,
                     ..connection(reading, writing)
                 },
                 None,
@@ -6658,7 +6669,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_lend_is_answered_only_for_a_worker_where_this_machine_lends() {
+    async fn a_lend_is_answered_for_a_worker_or_a_made_machine_where_this_machine_lends() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let unread = || {
             Lender::new(
@@ -6669,25 +6680,33 @@ mod tests {
             )
         };
         assert_eq!(
-            lent_to_tern(false, Some(unread())).await,
+            lent_to_tern(false, false, Some(unread())).await,
             Lent::Refused {
                 status: 403,
-                why: "skiff lends only to its workers, and tern isn't one".to_owned(),
+                why: "skiff lends only to its workers and the machines it made, and tern is \
+                      neither"
+                    .to_owned(),
             },
-            "a machine that isn't skiff's worker borrows nothing"
+            "a machine that is neither skiff's worker nor made by it borrows nothing"
         );
         assert_eq!(
-            lent_to_tern(true, None).await,
+            lent_to_tern(true, false, None).await,
             Lent::Refused {
                 status: 403,
                 why: "skiff lends nothing".to_owned(),
             },
             "nor does a worker where skiff lends nothing"
         );
-        let lent = lent_to_tern(true, Some(unread())).await;
+        let lent = lent_to_tern(true, false, Some(unread())).await;
         assert!(
             matches!(lent, Lent::Refused { status: 503, .. }),
             "a worker's lend reaches skiff's lender, which can't read what it may lend: {lent:?}"
+        );
+        let lent = lent_to_tern(false, true, Some(unread())).await;
+        assert!(
+            matches!(lent, Lent::Refused { status: 503, .. }),
+            "and so does the lend of a machine skiff made for the person, which is no worker: \
+             {lent:?}"
         );
     }
 
