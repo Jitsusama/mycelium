@@ -1543,6 +1543,12 @@ mod tests {
         /// The sessions, by id, that start there but never run, as one
         /// whose arrival fails after it was held.
         silent: BTreeSet<String>,
+        /// The sessions, by id, whose record once started reads on wren
+        /// rather than the machine its start needs.
+        astray: BTreeSet<String>,
+        /// The sessions, by id, whose record once started reads ended
+        /// there, as one whose pi exited as it was taken up.
+        ended_there: BTreeSet<String>,
         /// How many looks at the sessions pass after a start before the
         /// sessions started run there.
         slow: usize,
@@ -1613,7 +1619,8 @@ mod tests {
     impl Realm {
         /// Each session started, as the node it started on lists it once
         /// pi runs it there: by the address it went by here, or its id, on
-        /// the machine its start needs, idle. None for the quest's own
+        /// the machine its start needs, idle, but on wren for one `astray`
+        /// and ended for one `ended_there`. None for the quest's own
         /// trees, which no pi takes up, nor for one `silent`.
         fn arrived_there(&self) -> Vec<Session> {
             self.started
@@ -1631,7 +1638,17 @@ mod tests {
                         .iter()
                         .find(|one| session_id(one) == Some(id.as_str()))
                         .map_or_else(|| id.clone(), |one| one.address.clone());
-                    let mut there = session(&address, on, QUEST, "idle", &json!({}));
+                    let machine = if self.astray.contains(id) {
+                        "wren"
+                    } else {
+                        on.as_str()
+                    };
+                    let state = if self.ended_there.contains(id) {
+                        "ended"
+                    } else {
+                        "idle"
+                    };
+                    let mut there = session(&address, machine, QUEST, state, &json!({}));
                     there.presence = Arc::new(json!({"session": id}));
                     Some(there)
                 })
@@ -2693,6 +2710,44 @@ mod tests {
         assert!(
             said.contains("mycelium attach h1"),
             "with how to join its start, to see why: {said}"
+        );
+    }
+
+    #[test]
+    fn a_session_found_running_on_another_machine_fails_the_carry() {
+        let mut realm = Realm {
+            astray: ["s-naps02"].map(str::to_owned).into(),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        assert_eq!(
+            done,
+            Err(Failed { step: Step::Answer }),
+            "a session runs there only on the machine it was started on"
+        );
+        let said = last_said(&lines);
+        assert!(
+            said.contains("NAPS02") && !said.contains("BUSY01"),
+            "naming the one running elsewhere, not one running there: {said}"
+        );
+    }
+
+    #[test]
+    fn a_session_whose_record_there_has_ended_fails_the_carry() {
+        let mut realm = Realm {
+            ended_there: ["s-naps02"].map(str::to_owned).into(),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        assert_eq!(
+            done,
+            Err(Failed { step: Step::Answer }),
+            "a session there that has ended doesn't run there"
+        );
+        let said = last_said(&lines);
+        assert!(
+            said.contains("NAPS02") && !said.contains("BUSY01"),
+            "naming the one that ended, not one running there: {said}"
         );
     }
 
