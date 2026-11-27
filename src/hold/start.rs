@@ -1205,15 +1205,18 @@ mod tests {
             let leave = format!(": > '{}'\n", marker(file).display());
             fs::write(home.join(file), leave).expect("a start file");
         }
+        let run = |words: &[String]| {
+            Command::new(&words[0])
+                .args(&words[1..])
+                .arg("true")
+                .env("HOME", &home)
+                .env("ENV", home.join("env.sh"))
+                .env("BASH_ENV", home.join("bash_env.sh"))
+                .output()
+                .expect("the plain run starts")
+        };
         let plain = plain_run("harbour", None, &home);
-        let ran = Command::new(&plain[0])
-            .args(&plain[1..])
-            .arg("true")
-            .env("HOME", &home)
-            .env("ENV", home.join("env.sh"))
-            .env("BASH_ENV", home.join("bash_env.sh"))
-            .output()
-            .expect("the plain run starts");
+        let ran = run(&plain);
         assert!(
             ran.status.success(),
             "the plain run of true ends well: {}",
@@ -1222,9 +1225,30 @@ mod tests {
         for (file, named) in start_files {
             assert!(!marker(file).exists(), "a plain run read {named}");
         }
-        // Each start file does leave its marker when read, so no marker
-        // above means none was.
-        for (file, named) in start_files {
+        // The same run, its shell's flags turned to the login shell's, as
+        // a run of the person's own takes them, reads the home's .profile
+        // and the file ENV names, so the markers missing above are the
+        // plain run's doing, not a shell's that reads nothing whatever it
+        // is told.
+        let mut as_a_login = plain;
+        let flags = as_a_login
+            .iter()
+            .position(|word| word == "-c")
+            .expect("the plain run's flags");
+        "-lic".clone_into(&mut as_a_login[flags]);
+        let ran = run(&as_a_login);
+        for &(file, named) in &start_files[..2] {
+            assert!(
+                marker(file).exists(),
+                "a login shell's run reads {named}: {}",
+                String::from_utf8_lossy(&ran.stderr)
+            );
+        }
+        // No shell named sh reads the file BASH_ENV names, whatever its
+        // flags, so no run can show that file passed over: its case guards
+        // only a plain run's shell turned to bash by name, and its marker
+        // is shown to be left when read, as no run of sh would read it.
+        for &(file, named) in &start_files[2..] {
             let read = Command::new(the_shell())
                 .args(["-c", r#". "$1""#, "sh"])
                 .arg(home.join(file))
