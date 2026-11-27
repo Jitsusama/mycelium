@@ -536,8 +536,8 @@ fn plain_quest(quest: &str) -> bool {
 /// lapse of the record of orchestrations asks only where a claim lapses;
 /// none where the folder can't be read, so what lapses is kept until it
 /// can be. That, each folder in it passed over as unreadable, and each
-/// session two logs are named for, is said once, so claims kept with no
-/// end name their cause.
+/// session whose several logs disagree, is said once, so claims kept
+/// with no end name their cause.
 fn continuing(
     logs: &Path,
     unreadable: &through::Unreadable,
@@ -563,8 +563,8 @@ fn continuing(
     // Kept where a lapse follows one back (`chain::Orchestrations::lapse`).
     for session in found.doubled() {
         say(format!(
-            "claims are kept, rather than lapse, while a lapse has to read what {}'s log \
-             continues, as two logs under {} are named for it",
+            "claims {}'s logs may continue are kept, rather than lapse, as the logs under {} \
+             named for it disagree on what it continues",
             crate::carry::shown(session),
             logs.display()
         ));
