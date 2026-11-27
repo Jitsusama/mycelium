@@ -4046,6 +4046,7 @@ mod tests {
                 over: Some(Vec::new()),
                 saturated,
                 cpu_minute: None,
+                memory_full_minute: None,
             };
             let said = crate::within::Said {
                 at: now,
