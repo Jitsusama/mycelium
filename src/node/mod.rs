@@ -895,7 +895,9 @@ fn held_here_already(why: &str, machine: &str, named: &[String]) -> bool {
         .is_some_and(|word| {
             !word.is_empty()
                 && (!word.contains(char::is_whitespace)
-                    || named.iter().any(|name| name.escape_debug().eq(word.chars())))
+                    || named
+                        .iter()
+                        .any(|name| name.escape_debug().eq(word.chars())))
         })
 }
 
