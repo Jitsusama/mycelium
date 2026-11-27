@@ -2041,13 +2041,18 @@ mod tests {
         };
         assert!(carried(Vec::new()), "with nothing seeded, s1 is carried");
         let deciding = first_carry_ago();
+        let first_after = |mins: i64| {
+            let eased = vec![moved("s0", deciding + mins)];
+            first_carry(&looks(&mut Easing::after(&[], eased), &[cell("s1")]))
+        };
         assert!(
-            !carried(vec![moved("s0", deciding + within_cooldown())]),
+            first_after(within_cooldown()).is_none_or(|carried| carried < deciding),
             "a carry its lines say a minute short of the cooldown before the look that \
-             would carry holds it"
+             would carry holds that look"
         );
-        assert!(
-            carried(vec![moved("s0", deciding + ease::COOLDOWN.as_mins())]),
+        assert_eq!(
+            first_after(ease::COOLDOWN.as_mins()),
+            Some(deciding),
             "and one the whole cooldown before it holds none"
         );
         assert!(
@@ -2220,23 +2225,28 @@ mod tests {
 
     #[test]
     fn a_carry_kept_by_its_node_holds_the_cooldown_across_a_restart() {
+        let deciding = first_carry_ago();
         let kept = |by: &str| {
             [Kept {
                 id: "s0:then".to_owned(),
-                at: ago(first_carry_ago() + within_cooldown()),
+                at: ago(deciding + within_cooldown()),
                 line: json!({"by": by, "session": "s0", "from": "skiff", "to": "osprey"}),
             }]
         };
-        let carried = |by: &str| {
-            let lines = looks(&mut Easing::after(&kept(by), Vec::new()), &[cell("s1")]);
-            lines.iter().any(|line| line["choice"] == "carry")
+        let first = |by: &str| {
+            first_carry(&looks(
+                &mut Easing::after(&kept(by), Vec::new()),
+                &[cell("s1")],
+            ))
         };
         assert!(
-            !carried("node@skiff"),
-            "its node's carry a minute short of the cooldown ago"
+            first("node@skiff").is_none_or(|carried| carried < deciding),
+            "its node's carry a minute short of the cooldown before the look that would \
+             carry holds that look"
         );
-        assert!(
-            carried("WCJQSG"),
+        assert_eq!(
+            first("WCJQSG"),
+            Some(deciding),
             "an orchestrator's carry starts no cooldown"
         );
     }
@@ -2371,20 +2381,23 @@ mod tests {
         ease::COOLDOWN.as_mins() - 1
     }
 
-    /// How many minutes ago [`looks`] first carries s1 with nothing
-    /// seeded, so a carry seeded by it is in the past of the look it
-    /// holds back, not ahead of it.
-    fn first_carry_ago() -> i64 {
-        let lines = looks(&mut Easing::after(&[], Vec::new()), &[cell("s1")]);
-        let at: Timestamp = lines
-            .iter()
-            .find(|line| line["choice"] == "carry")
-            .expect("a carry with nothing seeded")["at"]
+    /// How many minutes ago the first carry of `lines` was, if any.
+    fn first_carry(lines: &[Value]) -> Option<i64> {
+        let line = lines.iter().find(|line| line["choice"] == "carry")?;
+        let at: Timestamp = line["at"]
             .as_str()
             .expect("a time")
             .parse()
             .expect("a time");
-        now().duration_since(at).as_mins()
+        Some(now().duration_since(at).as_mins())
+    }
+
+    /// How many minutes ago [`looks`] first carries s1 with nothing
+    /// seeded, so a carry seeded by it is in the past of the look it
+    /// holds back, not ahead of it.
+    fn first_carry_ago() -> i64 {
+        first_carry(&looks(&mut Easing::after(&[], Vec::new()), &[cell("s1")]))
+            .expect("a carry with nothing seeded")
     }
 
     /// Each line `easing` would keep at skiff, looking each minute from 20
