@@ -7210,11 +7210,13 @@ impl<S: Store> Shared<S> {
         if to == self.machine {
             return Err(format!("{address} already runs on {to}"));
         }
-        if !self.takes_a_carry(to, &address) {
+        let Some(floor) = self.carry_fenced_at_least(to, &address) else {
             return Err(format!(
-                "{to} was made for another asker, so {address} isn't carried there"
+                "{to} was made for another asker and isn't named in {}, so {address} isn't \
+                 carried there",
+                made::AGENT_ROOMS
             ));
-        }
+        };
         let claimed = target
             .presence
             .get("fence")
@@ -7225,7 +7227,7 @@ impl<S: Store> Shared<S> {
             .shown_fence(session)
             .await?
             .max(self.fences.strictest(session)?);
-        let kind = ground::as_shown(claimed, shown, &address)?;
+        let kind = ground::as_shown(claimed, shown, &address)?.map(|kind| kind.max(floor));
         let there = self
             .as_carried(self.others())
             .into_iter()
@@ -9812,16 +9814,24 @@ impl<S: Store> Shared<S> {
         })
     }
 
-    /// Whether `to` takes a session carried there by `address`: any
-    /// machine not booked, and a booked one only as [`Admits::takes`]
-    /// says. A machine made for one asker takes only its sessions and the
-    /// person's, so another's never lands in a worker home that asker's
-    /// make wrote. A room made for agents to share takes any agent's, as a
-    /// start placed there does, since its worker home is theirs alike. A
-    /// carry names its machine.
-    fn takes_a_carry(&self, to: &str, address: &str) -> bool {
+    /// The fence a session carried to `to` by `address` runs in there at
+    /// least, or none where `to` takes no such carry. A machine not booked,
+    /// or booked for `address`, takes it as it runs. Another machine made
+    /// for one asker takes none, so it never lands in a worker home that
+    /// asker's make wrote. A room made for agents to share, named in
+    /// agent-rooms, takes any session in the agent fence at least, as it
+    /// takes the person's run, so the person's own unfenced session never
+    /// runs in a worker home an agent's make wrote.
+    fn carry_fenced_at_least(&self, to: &str, address: &str) -> Option<crate::declared::Kind> {
         let asker = Admits::Asker(address.to_owned());
-        self.admitted_among(to, &asker, &self.book.agent_rooms(), true)
+        let rooms = std::collections::BTreeSet::new();
+        if self.admitted_among(to, &asker, &rooms, true) {
+            Some(crate::declared::Kind::None)
+        } else if self.book.agent_rooms().contains(to) {
+            Some(crate::declared::Kind::Fence)
+        } else {
+            None
+        }
     }
 
     /// Whether `machine` takes `admits` counting no room made for agents,
@@ -25267,21 +25277,31 @@ esac
     }
 
     #[tokio::test]
-    async fn a_room_made_for_agents_takes_another_agents_carry() {
+    async fn a_room_made_for_agents_takes_another_agents_carry_in_the_agent_fence() {
+        use crate::declared::Kind;
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let shared = made_for(dir.path(), &[("wren", "P9R1KI")]);
-        assert_eq!(
+        let shared = made_for(dir.path(), &[("wren", "P9R1KI"), ("osprey", "P9R1KI")]);
+        let floors = |to: &str| {
             (
-                shared.takes_a_carry("wren", "QK4T7Z"),
-                shared.takes_a_carry("wren", "P9R1KI"),
-            ),
-            (false, true),
-            "unnamed as a room, it takes only its asker's carry"
+                shared.carry_fenced_at_least(to, "QK4T7Z"),
+                shared.carry_fenced_at_least(to, "P9R1KI"),
+            )
+        };
+        assert_eq!(
+            floors("wren"),
+            (None, Some(Kind::None)),
+            "unnamed as a room, it takes only its asker's carry, as it runs"
         );
         fs::write(dir.path().join(made::AGENT_ROOMS), "wren\n").expect("named");
-        assert!(
-            shared.takes_a_carry("wren", "QK4T7Z"),
-            "named as a room, it takes another agent's carry"
+        assert_eq!(
+            (floors("wren"), floors("osprey")),
+            ((Some(Kind::Fence), Some(Kind::None)), (None, Some(Kind::None))),
+            "named as a room, it takes another's carry in the agent fence, and no other changes"
+        );
+        assert_eq!(
+            shared.carry_fenced_at_least("tern", "QK4T7Z"),
+            Some(Kind::None),
+            "a machine booked for nobody takes any carry as it runs"
         );
     }
 
