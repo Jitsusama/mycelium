@@ -1036,10 +1036,12 @@ mod tests {
             String::from_utf8_lossy(&said.stderr)
         );
         // A name with a slash is looked for by no path, so the run says
-        // nothing of one, and the shell says its own.
+        // nothing of one, and the shell says its own, under the script's
+        // name, `mycelium`, as its $0.
         let said = run(None, "./tide-gauge");
         assert!(
-            !said.status.success() && !String::from_utf8_lossy(&said.stderr).contains("mycelium:"),
+            !said.status.success()
+                && !String::from_utf8_lossy(&said.stderr).contains("not found on this run's path"),
             "a missing ./tide-gauge is the shell's to say: {}",
             String::from_utf8_lossy(&said.stderr)
         );
