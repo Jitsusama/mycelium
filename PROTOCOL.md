@@ -2576,10 +2576,12 @@ where the variable is missing too, as it is from a node older than it,
 though `offers`, `link` and `release` never carry it. A machine made
 is booked, before it is dialled, for the asker its make was told: once
 it links, a start or run is placed there only when that asker asks, so
-another agent's work goes elsewhere or waits, and a machine whose book
-line names no asker takes only the person's. The person's own starts
-go only to a machine booked for the person or for no asker, never to
-one an agent's make booked, whose worker home that agent wrote. A
+another agent's work goes elsewhere or waits. A machine whose book
+line names no asker, as one written before makes told askers, is read
+as an agent's whose asker is unknown, as its worker mark reads it, so
+no asker's start or run goes there but as to a room, below. The
+person's own starts go only to a machine booked for the person, never
+to one an agent's make booked, whose worker home that agent wrote. A
 preview is held to it as its run would be, and an ordered carry there
 of another's session is refused but to a room, below; only a start
 pinned to the machine
@@ -2621,15 +2623,16 @@ Every agent's start or run may be placed there, a granted session's
 and one from no one known included, whoever it is booked for, since
 its booking says who pays for it and may let it go,
 not who may use it; the person's own go there only where it is booked
-for the person or for no asker, never into a worker home an agent's
-make wrote. Any run the person asks naming one machine alone, a room
-not booked here for the person (an agent's make booked it, or its book
-line names no asker, read as an agent's as its worker mark is, or this
-node never booked it but its link reached it as a worker, since each
-node keeps its own bookings), runs there as an agent's, in the agent
-fence. So the person's safe word reaches every room though no session
-asks it, and the person's own login still never runs in a worker home
-an agent wrote. Such a run is placed as an agent's run is,
+for the person, never where its book line names no asker, nor into a
+worker home an agent's make wrote. Any run the person asks naming one
+machine alone, a room not booked here for the person (an agent's make
+booked it, or its book line names no asker, read as an agent's as its
+worker mark is, or this node never booked it but its link reached it
+as a worker, since each node keeps its own bookings), runs there as an
+agent's, in the agent fence. So the person's safe word reaches every
+room though no session asks it, and the person's own login still
+never runs in a worker home an agent wrote. Such a run is placed as
+an agent's run is,
 and a `"Place"` the person asks of it the same way, so where it is told
 the run would go is where it runs: the asking machine must declare the
 agent fence and the room must say it runs commands in it, or the run is
@@ -2684,8 +2687,8 @@ over a limit. The node marks each one `"held_for": "agents"` as it
 places, from its own file, and every other as booked, never from what
 the machine says, and a link keeps nothing a machine says of it. A
 session the person granted is booked as the person but isn't one: its
-starts go to a machine booked for the person or for no asker, and not
-named in the file, only where they name it, never to one an agent's
+starts go to a machine booked for the person, and not named in the
+file, only where they name it, never to one an agent's
 make booked, and even then that machine is full one session short of
 the most it holds, kept for the person, where it says or was promised
 a most. A start of its that no machine takes goes on to a make. A

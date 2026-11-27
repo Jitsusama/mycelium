@@ -64,7 +64,9 @@ pub struct Made {
     pub costs: Costs,
     /// Who its make was told asked ([`ASKER`]), for whom alone, and the
     /// person, it is booked. A machine kept before makes said so has none,
-    /// and is booked for nobody but the person.
+    /// and is read as an agent's whose asker is unknown, as [`UNKNOWN`]
+    /// is, so neither the person's work nor any one agent's is placed
+    /// there but as to a room made for agents, which takes every agent's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asker: Option<String>,
     /// How many sessions its offer promised it holds at most, for as long

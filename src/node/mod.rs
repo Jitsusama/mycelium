@@ -3437,14 +3437,14 @@ enum Admits {
     /// Every machine: a preview, or a start already pinned to its machine.
     All,
     /// Those booked for this asker, as a make would tell it: for
-    /// [`made::PERSON`], those booked for the person or for nobody told,
-    /// never one an agent's make booked, whose worker home that agent
-    /// wrote; and none for [`made::UNKNOWN`].
+    /// [`made::PERSON`], only those booked for the person, never one an
+    /// agent's make booked, whose worker home that agent wrote, nor one
+    /// booked for nobody told, which is read as an agent's, as its worker
+    /// mark reads it; and none for [`made::UNKNOWN`].
     Asker(String),
     /// A session the person granted ([`made::Grant`]), whose makes are
     /// booked for the person: of those booked, only the person's own,
-    /// those booked for the person or for nobody told, and only where its
-    /// work names them.
+    /// those booked for the person, and only where its work names them.
     Granted,
     /// Of the machines booked here, only rooms made for agents to share,
     /// for the person's run sent to one as an agent's
@@ -3461,9 +3461,14 @@ impl Admits {
     /// agent's, granted or not, since its booking says who pays for it and
     /// may let it go, not who may use it; the person's own starts are held
     /// to the person's machines all the same, never where an agent's make
-    /// booked, whose worker home that agent wrote.
+    /// booked, whose worker home that agent wrote. A booking for nobody
+    /// told (`None`), as one written before makes told askers, is read as
+    /// an agent's whose asker is unknown, as one for [`made::UNKNOWN`] is,
+    /// so that worker's home is held from the person's starts too. It is
+    /// only asked of a machine booked here ([`Shared::admitted_among`]):
+    /// one not booked at all is every placement's, the person's included.
     fn takes(&self, booked: Option<&str>, room: bool, named: bool) -> bool {
-        let the_persons = booked.is_none() || booked == Some(made::PERSON);
+        let the_persons = booked == Some(made::PERSON);
         match self {
             Self::All => true,
             Self::Asker(told) if told == made::PERSON => the_persons,
@@ -5787,10 +5792,7 @@ impl<S: Store> Shared<S> {
                     .booked
                     .iter()
                     .filter(|(name, (_, booked))| {
-                        booked
-                            .as_deref()
-                            .is_none_or(|booked| booked == made::PERSON)
-                            && !rooms.contains(*name)
+                        booked.as_deref() == Some(made::PERSON) && !rooms.contains(*name)
                     })
                     .map(|(name, _)| name.clone())
                     .collect()
@@ -26139,10 +26141,13 @@ esac
             !asker(made::UNKNOWN).takes(Some(made::UNKNOWN), false, false),
             "a start from no one known takes no booked machine"
         );
+        // Followup 562: a booking for nobody told is an agent's.
         assert!(
-            asker(made::PERSON).takes(None, false, false)
+            !asker(made::PERSON).takes(None, false, false)
+                && !asker(made::PERSON).takes(None, true, true)
                 && !asker("P9R1KI").takes(None, false, false),
-            "a machine whose make told no asker takes only the person's starts"
+            "a machine whose make told no asker is an agent's, its asker unknown, so it takes \
+             neither the person's starts, though it is a room or named, nor one agent's"
         );
         assert!(
             Admits::All.takes(Some("P9R1KI"), false, false),
@@ -26152,19 +26157,20 @@ esac
             [asker("QK4T7Z"), asker(made::UNKNOWN), Admits::Granted]
                 .iter()
                 .all(|admits| admits.takes(Some("P9R1KI"), true, false)
-                    && admits.takes(Some(made::PERSON), true, false)),
+                    && admits.takes(Some(made::PERSON), true, false)
+                    && admits.takes(None, true, false)),
             "a room made for agents to share takes every agent's starts, whoever it is booked for"
         );
         assert!(
             !Admits::Granted.takes(Some(made::PERSON), false, false)
                 && !Admits::Granted.takes(None, false, false)
                 && !Admits::Granted.takes(Some("P9R1KI"), false, true)
-                && !Admits::Granted.takes(Some(made::UNKNOWN), false, true),
+                && !Admits::Granted.takes(Some(made::UNKNOWN), false, true)
+                && !Admits::Granted.takes(None, false, true),
             "a granted session's starts take no other booked machine, an agent's though named"
         );
         assert!(
-            Admits::Granted.takes(Some(made::PERSON), false, true)
-                && Admits::Granted.takes(None, false, true),
+            Admits::Granted.takes(Some(made::PERSON), false, true),
             "and the person's own only where they name it"
         );
         assert!(
@@ -26797,19 +26803,21 @@ esac
             (None, Some("osprey")),
             "its last session is kept for the person"
         );
+        // Followup 562: rebooked for nobody told, promising nothing, it is
+        // an agent's, so neither start that names it goes there.
         let mut unasked = made_by("/usr/bin/lend", "osprey", a_day_out());
         unasked.asker = None;
         shared.book_for(&unasked);
-        shared.lock().promised.insert("osprey".to_owned(), 1);
         let mut naming = basin();
         naming.push(Need::Machine("osprey".to_owned()));
         assert_eq!(
             (
                 placed(naming.clone(), &Admits::Granted),
-                placed(naming, &Admits::Asker(made::PERSON.to_owned())).as_deref(),
+                placed(naming, &Admits::Asker(made::PERSON.to_owned())),
             ),
-            (None, Some("osprey")),
-            "so is one made at no asker's word"
+            (None, None),
+            "one made at no asker's word is an agent's, which takes neither the person's start \
+             nor a granted one"
         );
     }
 
@@ -27434,9 +27442,10 @@ esac
         made.asker = None;
         shared.book_for(&made);
         assert_eq!(
-            (placed("P9R1KI"), placed(made::PERSON).as_deref()),
-            (None, Some("osprey")),
-            "a machine whose make told no asker takes only the person's starts"
+            (placed("P9R1KI"), placed(made::PERSON)),
+            (None, None),
+            "a machine whose make told no asker is an agent's, its asker unknown, so it takes \
+             neither one agent's start nor the person's"
         );
         assert!(
             !shared.admitted_on("osprey", &Admits::Asker("P9R1KI".to_owned()))
