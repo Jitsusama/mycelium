@@ -378,20 +378,27 @@ const YIELDING_ON_A_MAC: [&str; 3] = ["/usr/sbin/taskpolicy", "-c", "utility"];
 const IN_ITS_REALM: &str = r#"export MYCELIUM_REALM="$1"; if [ -n "$2" ]; then PATH="$2/bin${PATH:+:$PATH}"; export PATH; fi; if [ "${MYCELIUM_AGENT+said}" = said ]; then if [ -n "$MYCELIUM_AGENT" ]; then SSH_AUTH_SOCK="$MYCELIUM_AGENT"; export SSH_AUTH_SOCK; else unset SSH_AUTH_SOCK; fi; unset SSH_TPM_AUTH_SOCK MYCELIUM_AGENT; fi; shift 2; exec "$@""#;
 
 /// The shell's script that takes off its path, before [`IN_ITS_REALM`],
-/// every folder in its home, by name or by where it leads, and every one
-/// named relatively, which the run's folder in that home would hold: a
-/// service's path may name the home's own tools (`~/.local/bin`, a
-/// profile's `bin`), which whoever wrote the home could make shadow a
-/// command. Each folder it keeps it names by where it leads, so no link
-/// the home holds along the way can be pointed elsewhere before the
-/// command is looked up, and one it can't enter, which may not be there
-/// yet, goes too. A path left with nothing is `/usr/bin:/bin`, never
-/// empty, which a shell reads as the run's folder. The home is the one
-/// its first word names, the node's own, and the `HOME` it is given as
-/// well, so a launcher that takes `HOME` away or points it elsewhere
-/// leaves none of either on the path. It shifts that word off. With no
-/// home, or `/` for one, only the relative and the missing go.
-const OUT_OF_ITS_HOME: &str = r#"homes=; for at in "$1" "${HOME-}"; do case $at in /?*) at=${at%/}; homes=$homes$at:; led=$(cd -P "$at" 2>/dev/null && pwd -P) && homes=$homes$led:;; esac; done; shift; kept=; set -f; IFS=:; for dir in ${PATH-}; do case $dir in /*) ;; *) continue;; esac; led=$(cd -P "$dir" 2>/dev/null && pwd -P) || continue; for at in $homes; do case $dir/ in "$at"/*) led=;; esac; case $led/ in "$at"/*) led=;; esac; done; [ -z "$led" ] || kept=${kept:+$kept:}$led; done; unset IFS; set +f; PATH=${kept:-/usr/bin:/bin}; export PATH; "#;
+/// every folder in its home, by name or by where it leads, every one
+/// named relatively, which the run's folder in that home would hold, and
+/// every one the run's own user could write or replace: a service's path
+/// may name the home's own tools (`~/.local/bin`, a profile's `bin`),
+/// which whoever wrote the home could make shadow a command, and the
+/// agents that wrote it run as that same user, who can write folders
+/// outside it too (`/tmp`, `/run/user/UID`, one it made anywhere). So a
+/// folder goes that the user owns or can write, or that lies under one
+/// it owns, or can write without the sticky bit, up to `/`: the owner of
+/// a folder above could rename the one below away and put its own in its
+/// place, though a sticky one, as `/tmp` is, lets it rename only its own
+/// entries. Each folder it keeps it names by where it leads, so no link
+/// along the way can be pointed elsewhere before the command is looked
+/// up, and one it can't enter, which may not be there yet, goes too. A
+/// path left with nothing is `/usr/bin:/bin`, never empty, which a shell
+/// reads as the run's folder. The home is the one its first word names,
+/// the node's own, and the `HOME` it is given as well, so a launcher that
+/// takes `HOME` away or points it elsewhere leaves none of either on the
+/// path. It shifts that word off. With no home, or `/` for one, only the
+/// relative, the missing and the ones its user could write or replace go.
+const OUT_OF_ITS_HOME: &str = r#"homes=; for at in "$1" "${HOME-}"; do case $at in /?*) at=${at%/}; homes=$homes$at:; led=$(cd -P "$at" 2>/dev/null && pwd -P) && homes=$homes$led:;; esac; done; shift; kept=; set -f; IFS=:; for dir in ${PATH-}; do case $dir in /*) ;; *) continue;; esac; led=$(cd -P "$dir" 2>/dev/null && pwd -P) || continue; for at in $homes; do case $dir/ in "$at"/*) led=;; esac; case $led/ in "$at"/*) led=;; esac; done; if [ -O "$led" ] || [ -w "$led" ]; then led=; fi; up=$led; while [ -n "$up" ]; do up=${up%/*}; if [ -O "${up:-/}" ] || { [ -w "${up:-/}" ] && [ ! -k "${up:-/}" ]; }; then led=; up=; fi; done; [ -z "$led" ] || kept=${kept:+$kept:}$led; done; unset IFS; set +f; PATH=${kept:-/usr/bin:/bin}; export PATH; "#;
 
 /// How [`IN_ITS_REALM`] ends: by running the program it was given.
 const RUNS: &str = r#"exec "$@""#;
@@ -463,13 +470,14 @@ fn in_its_realm(
 /// agent's make booked, whose profile that agent could make shadow the
 /// command or fake its end. It has the environment its launcher gives
 /// it, but with no folder of `home`, the home it runs in, nor of the
-/// `HOME` it is given, on its path ([`OUT_OF_ITS_HOME`]), and the kit's
-/// tools first. A command found only in the home isn't found, rather
-/// than found as the home's writer left it, and the run says where it
-/// looked ([`FOUND_OR_SAID`]). The node starts it with no variable that
-/// loads code ([`crate::run::Shell::unsets`]). `HOME` still names the
-/// home, though, so a program that reads its own files from there, as
-/// an interpreter may, reads what that writer left.
+/// `HOME` it is given, nor one its user could write or replace, on its
+/// path ([`OUT_OF_ITS_HOME`]), and the kit's tools first. A command
+/// found only in the home isn't found, rather than found as the home's
+/// writer left it, and the run says where it looked ([`FOUND_OR_SAID`]).
+/// The node starts it with no variable that loads code
+/// ([`crate::run::Shell::unsets`]). `HOME` still names the home, though,
+/// so a program that reads its own files from there, as an interpreter
+/// may, reads what that writer left.
 #[must_use]
 pub fn plain_run(realm: &str, kit: Option<&Path>, home: &Path) -> Vec<String> {
     let realmed = IN_ITS_REALM
@@ -661,6 +669,18 @@ mod tests {
             .expect("sh is on the PATH")
     }
 
+    /// Two folders a plain run keeps, by where they lead: the one holding
+    /// [`the_shell`] and the one above it, which only the system can write
+    /// (a store's, in a build's sandbox). Read from this test's own
+    /// environment, since where they are differs by build.
+    fn the_systems_folders() -> (PathBuf, PathBuf) {
+        let shell = the_shell();
+        let folder = shell.parent().expect("the shell's folder");
+        let system = fs::canonicalize(folder).expect("the shell's folder's place");
+        let above = system.parent().expect("a folder above the shell's").to_path_buf();
+        (system, above)
+    }
+
     /// What `program`, given to `sh -c`, prints when run through `words`
     /// by `sh` standing for the person's shell, with `profile`'s
     /// variables standing for what a profile sets before the script runs.
@@ -841,45 +861,39 @@ mod tests {
         std::os::unix::fs::symlink(&real, &home).expect("a home by a link");
         let leads = at.join("leads");
         std::os::unix::fs::symlink(&tools, &leads).expect("a folder leading in");
-        // The system's folders, made here, since a sandbox may lack the
-        // real ones.
-        let (first, last) = (at.join("first"), at.join("last"));
-        let around = at.join("around");
-        let beside = at.join("homex/bin");
-        // Outside the home: a folder by a link, kept by where it leads, and
-        // one whose way runs through a link in the home, which the home's
+        // The folders kept are the system's, since one made here is this
+        // test's own user's, and goes for that
+        // (`a_plain_run_keeps_no_folder_its_user_could_write`). Outside
+        // the home: a folder by a link, kept by where it leads, and one
+        // whose way runs through a link in the home, which the home's
         // writer could point elsewhere, kept only where it leads now.
-        let store = at.join("store");
-        for folder in [&first, &last, &around, &beside, &store.join("bin")] {
-            fs::create_dir_all(folder).expect("a folder outside");
-        }
+        let (system, above) = the_systems_folders();
         let named = at.join("named");
-        std::os::unix::fs::symlink(&around, &named).expect("a folder by a link");
-        std::os::unix::fs::symlink(&store, real.join(".nix-profile")).expect("a profile");
+        std::os::unix::fs::symlink(&above, &named).expect("a folder by a link");
+        std::os::unix::fs::symlink(&above, real.join(".nix-profile")).expect("a profile");
         let through = at.join("through");
         std::os::unix::fs::symlink(home.join(".nix-profile"), &through).expect("a way in");
+        let through = through.join(system.file_name().expect("the system's folder's name"));
         let shown = |folder: &PathBuf| folder.display().to_string();
-        let [first, last, around, beside, store] =
-            [&first, &last, &around, &beside, &store].map(shown);
+        let [system, above] = [&system, &above].map(shown);
         let [home, real, leads] = [&home, &real, &leads].map(shown);
         let path = [
             format!("{home}/.local/bin"),
-            first.clone(),
+            system.clone(),
             format!("{real}/.nix-profile/bin"),
             "bin".to_owned(),
             String::new(),
             leads,
             home.clone(),
             shown(&named),
-            shown(&through.join("bin")),
+            shown(&through),
             // Not there yet, so it may yet be made a way in.
             shown(&at.join("missing")),
-            beside.clone(),
-            last.clone(),
+            above.clone(),
         ]
         .join(":");
         let print = r#"printf %s "$PATH""#;
-        let kept = format!("/nix/store/kit/bin:{first}:{around}:{store}/bin:{beside}:{last}");
+        let kept = format!("/nix/store/kit/bin:{system}:{above}:{system}:{above}");
         let plain = plain_run(
             "harbour",
             Some(Path::new("/nix/store/kit")),
@@ -936,10 +950,11 @@ mod tests {
     fn a_plain_run_left_with_no_folder_has_the_systems_alone() {
         let made = tempfile::tempdir().expect("a temporary folder");
         let at = fs::canonicalize(made.path()).expect("the folder's place");
-        let (home, first, last) = (at.join("home"), at.join("first"), at.join("last"));
-        for folder in [&home.join(".local/bin"), &first, &last] {
-            fs::create_dir_all(folder).expect("a folder");
-        }
+        let home = at.join("home");
+        fs::create_dir_all(home.join(".local/bin")).expect("the home's tools");
+        // The folders kept are the system's, since one made here is this
+        // test's own user's, and goes for that.
+        let (first, last) = the_systems_folders();
         let shown = |folder: &Path| folder.display().to_string();
         let (home, first, last) = (shown(&home), shown(&first), shown(&last));
         let print = r#"printf %s "$PATH""#;
@@ -957,8 +972,9 @@ mod tests {
             "a home of / takes off only the relative and the missing"
         );
         // A folder named with a pattern is that name alone, never the
-        // folders it would match, so it is missing, and goes.
-        let pattern = shown(&at.join("*"));
+        // folders it would match, such as the kept one it begins with, so
+        // it is missing, and goes.
+        let pattern = format!("{first}*");
         assert_eq!(
             run_through(
                 &plain,
@@ -982,6 +998,68 @@ mod tests {
                 "a path of {given:?} left with nothing is the system's alone"
             );
         }
+    }
+
+    // Followup 541: the agents that wrote the home run as the run's own
+    // user, who can write folders outside the home as well, so a folder
+    // there is the same shadowing by another door.
+    #[test]
+    fn a_plain_run_keeps_no_folder_its_user_could_write() {
+        let made = tempfile::tempdir().expect("a temporary folder");
+        let at = fs::canonicalize(made.path()).expect("the folder's place");
+        let home = at.join("home");
+        let (owned, under) = (at.join("owned"), at.join("held/sealed"));
+        for folder in [&home, &owned, &under] {
+            fs::create_dir_all(folder).expect("a folder outside the home");
+        }
+        // Made read-only, it is still its owner's, under a folder that
+        // owner could rename it out of and put another in its place.
+        fs::set_permissions(&under, std::os::unix::fs::PermissionsExt::from_mode(0o555))
+            .expect("a folder made read-only");
+        let (system, above) = the_systems_folders();
+        let shown = |folder: &Path| folder.display().to_string();
+        // The temporary folder this test is given, which its user can
+        // write, whether it owns it or it is shared, as `/tmp` is.
+        let temporary = shown(&std::env::temp_dir());
+        let path = [
+            shown(&owned),
+            shown(&system),
+            temporary,
+            shown(&under),
+            shown(&above),
+        ]
+        .join(":");
+        let plain = plain_run("harbour", None, &home);
+        assert_eq!(
+            run_through(
+                &plain,
+                r#"printf %s "$PATH""#,
+                &[("HOME", &shown(&home)), ("PATH", &path)]
+            ),
+            format!("{}:{}", shown(&system), shown(&above)),
+            "a folder outside the home its user owns or could replace goes, as the home's do"
+        );
+    }
+
+    // Its case of the home moved here from
+    // `a_plain_run_finds_nothing_in_its_home`, since a folder that test
+    // makes is its own user's, and goes whatever its name.
+    #[test]
+    fn a_plain_run_keeps_a_folder_whose_name_only_begins_with_its_homes() {
+        let (system, _) = the_systems_folders();
+        let kept = system.display().to_string();
+        // As `/home/kestrelx/bin` is beside `/home/kestrel`, not in it.
+        let home = &kept[..kept.len() - 1];
+        let plain = plain_run("harbour", None, Path::new(home));
+        assert_eq!(
+            run_through(
+                &plain,
+                r#"printf %s "$PATH""#,
+                &[("HOME", home), ("PATH", &kept)]
+            ),
+            kept,
+            "{kept} is beside the home {home}, not in it"
+        );
     }
 
     /// A plain run's program found only in its home isn't found, and the

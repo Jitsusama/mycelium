@@ -162,7 +162,8 @@ pub enum Shell<'a> {
     /// The person's login shell, reading their profile.
     Login,
     /// A shell reading no profile, with no folder of `home`, the home the
-    /// run is in, on its path ([`crate::hold::start::plain_run`]).
+    /// run is in, nor one its user could write or replace, on its path
+    /// ([`crate::hold::start::plain_run`]).
     Plain {
         /// The home the node runs the command in.
         home: &'a Path,

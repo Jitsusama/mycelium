@@ -2644,9 +2644,15 @@ takes every folder of that home off its path, by name or by where it
 leads, before the kit's tools go first, so nothing the home holds
 shadows its command: one found only there isn't found, and for a name
 with no slash the run says so on its error output, naming the path it
-had, and ends 127, as the shell would. Each folder kept is named by
-where it leads, one that can't be entered goes, and a path left with
-nothing is `/usr/bin:/bin`, never empty. The node starts the run, and
+had, and ends 127, as the shell would. The agent runs as the run's own user,
+who can write folders outside the home too, so a folder that user owns or can
+write goes as well, and so does one under a folder it owns, or can write
+without the sticky bit, up to `/`, since it could rename the folder away and
+put its own in its place: `/tmp` goes, though a folder under it that another
+owns and the user can't write stays. On a Mac, Homebrew's `/opt/homebrew/bin`
+belongs to the user, so it goes too. Each folder kept is named by where it
+leads, one that can't be entered, which may not be there yet, goes, and a path
+left with nothing is `/usr/bin:/bin`, never empty. The node starts the run, and
 any fence launcher before its shell, without the variables that load
 code as a program starts, which the node's environment could name in
 the home: `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `GCONV_PATH`,
@@ -3120,7 +3126,7 @@ ending comes back, and then the ask fails, saying so; the machine's
 never on one made for it, in `folder` as for `"Start"`, through the
 person's login shell there without a terminal (the person's run sent
 to a room as an agent's, through `/bin/sh -c`, reading no profile and
-with no folder of that home on its path),
+with no folder of that home, nor one its user could write, on its path),
 its kit's tools first on its path as for `"Start"`, and with nothing on
 its input. This machine runs it as the node's own; another, through the link
 reaching it, as A Link says. The node judges who asks, as `by`,
