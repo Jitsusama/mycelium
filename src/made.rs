@@ -264,15 +264,26 @@ impl Doubt {
         }
     }
 
-    /// What ends the doubt, as the journal says it beside why.
-    fn way_out(&self) -> &'static str {
+    /// What ends the doubt, as the journal says it beside why, naming
+    /// where each machine in doubt is released ([`released_at`]), so a
+    /// reader can act on it.
+    fn way_out(&self) -> String {
         match self {
-            Self::None => "nothing doubts it",
-            Self::Of { .. } => {
-                "a whole make of each again, or its release where it was made, ends the \
-                 doubt, as does mending the line cut short"
+            Self::None => "nothing doubts it".to_owned(),
+            Self::Of { machines, .. } => {
+                let each: Vec<String> = machines
+                    .iter()
+                    .map(|(machine, places)| released_at(machine, places))
+                    .collect();
+                format!(
+                    "a whole make of each again, or its release where it was made ({}), \
+                     ends the doubt, as does mending the line cut short",
+                    each.join("; ")
+                )
             }
-            Self::Any(_) => "mending the line cut short, or the file till it reads, ends the doubt",
+            Self::Any(_) => {
+                "mending the line cut short, or the file till it reads, ends the doubt".to_owned()
+            }
         }
     }
 
@@ -343,6 +354,19 @@ impl Doubt {
             let names: Vec<&str> = machines.keys().map(String::as_str).collect();
             *why = format!("a line cut short may hide a make of {}", names.join(", "));
         }
+    }
+}
+
+/// Where `machine`, whose makes cut short still say `places`, is released
+/// to end its doubt: at each place they say, as a release lifts only the
+/// makes cut short at its own place and those that say none; and, where
+/// none says one, at a place that can't be told.
+fn released_at(machine: &str, places: &BTreeSet<Option<String>>) -> String {
+    let said: Vec<&str> = places.iter().flatten().map(String::as_str).collect();
+    if said.is_empty() {
+        format!("{machine} at a place no line cut short still says")
+    } else {
+        format!("{machine} at {}", said.join(" and at "))
     }
 }
 

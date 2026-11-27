@@ -5371,11 +5371,11 @@ impl<S: Store> Shared<S> {
     /// passed is gone, as one past its own leaving is. Where the book
     /// may have lost a machine's make ([`made::Doubt`]), that machine is
     /// carried to only if it costs nothing or an end is known for it,
-    /// its make's or the one it says itself, since one whose make was lost can't be told apart from one kept
-    /// for good. The book is read again
-    /// only once it changes ([`made::Book::ends`]). This
-    /// machine is always kept, first where it was, since every reader
-    /// takes the head of the answer for here.
+    /// its make's or the one it says itself, since one whose make was
+    /// lost can't be told apart from one kept for good. The book is read
+    /// again only once it changes ([`made::Book::ends`]). This machine is
+    /// always kept, first where it was, since every reader takes the head
+    /// of the answer for here.
     fn as_carried(&self, machines: Vec<facts::Machine>) -> Vec<facts::Machine> {
         let made::Ends {
             until: mut ends,
