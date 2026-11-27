@@ -831,7 +831,7 @@ mod tests {
         std::os::unix::fs::symlink(&store, real.join(".nix-profile")).expect("a profile");
         let through = at.join("through");
         std::os::unix::fs::symlink(home.join(".nix-profile"), &through).expect("a way in");
-        let shown = |folder: &Path| folder.display().to_string();
+        let shown = |folder: &PathBuf| folder.display().to_string();
         let [first, last, around, beside, store] =
             [&first, &last, &around, &beside, &store].map(shown);
         let [home, real, leads] = [&home, &real, &leads].map(shown);
