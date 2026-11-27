@@ -25421,8 +25421,17 @@ esac
         use crate::declared::Kind;
         let dir = tempfile::tempdir().expect("a temporary folder");
         // Made here for another cell, and named a room, so only a start
-        // fenced where it was asked is placed there.
-        let shared = made_for(dir.path(), &[("tern", "P9R1KI")]);
+        // fenced where it was asked is placed there. Both declare the
+        // strict fence a Linux room does, so a strict start lands as firm.
+        let mut shared = made_for(dir.path(), &[("tern", "P9R1KI")]);
+        runs_commands(&mut shared, dir.path());
+        let mut tern = placement::tests::machine("tern", "linux", 32, &["basin"]);
+        let declared = tern.declared.as_mut().expect("declared");
+        declared.costs_money = true;
+        declared.fence = fenced("tern", &["remote"])
+            .declared
+            .and_then(|said| said.fence);
+        shared.store.put_machine(&tern).expect("its fence is kept");
         fs::write(dir.path().join(made::AGENT_ROOMS), "tern\n").expect("named");
         let start = Start {
             work: work(vec![Need::Machine("tern".to_owned())]),
