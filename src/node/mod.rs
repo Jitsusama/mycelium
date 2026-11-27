@@ -14077,12 +14077,12 @@ esac
         ] {
             let dir = tempfile::tempdir().expect("a temporary folder");
             let at = jiff::Timestamp::now().as_millisecond();
-            let line = json!({"at": at, "by": {"Agent": "fence"}, "started_by": "HARBOR",
-                              "machine": "skiff", "held": "e0d4", "relayed_from": "wren"});
-            fs::write(dir.path().join("starts.jsonl"), format!("{line}\n")).expect("a book");
-            let mut link = holding_skiff(dir.path(), Memory::default(), None, processes);
-            link.client = Some(1);
-            let refused = link
+            let started = json!({"at": at, "by": {"Agent": "fence"}, "started_by": "HARBOR",
+                                 "machine": "skiff", "held": "e0d4", "relayed_from": "wren"});
+            fs::write(dir.path().join("starts.jsonl"), format!("{started}\n")).expect("a book");
+            let mut skiff = holding_skiff(dir.path(), Memory::default(), None, processes);
+            skiff.client = Some(1);
+            let refused = skiff
                 .end_start("e0d4", "wren", "HARBOR")
                 .await
                 .expect_err("nothing is held as e0d4, or the asker isn't taken");
