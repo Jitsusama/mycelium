@@ -383,13 +383,7 @@ fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
     let (verb, named, after) = if record["intent"] == "hold" {
         let until = record["until"]
             .as_str()
-            .and_then(|until| {
-                if look.whole() {
-                    look.stamped(until)
-                } else {
-                    lapses(look, until)
-                }
-            })
+            .and_then(|until| lapses(look, until))
             .map_or_else(String::new, |until| format!(", until {until}"));
         ("holds", names(&record["groups"]), until)
     } else {
@@ -422,8 +416,12 @@ const WEEK_AHEAD: i32 = 6;
 
 /// When a hold lapses, `until`: its time, and its weekday when that
 /// isn't today, as a hold put late in the evening lapses after midnight;
-/// its date too past this week, as one sent dated ahead does.
+/// its date too past this week, as one sent dated ahead does. Into a
+/// pipe it is stamped whole, as [`Look::when`] stamps every other time.
 fn lapses(look: &Look, until: &str) -> Option<String> {
+    if look.whole() {
+        return look.stamped(until);
+    }
     let until = until
         .parse::<jiff::Timestamp>()
         .ok()?
@@ -538,9 +536,11 @@ fn waited(millis: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::group::Group;
 
     /// `records` drawn as [`super::drawn`] draws them at `look`'s time, in
-    /// `width` columns, or whole into a pipe where none.
+    /// `width` columns, or whole into a pipe where none: `look` is built
+    /// here from the width, so `look`'s own is never read.
     fn drawn(records: &[Value], look: &Look, width: Option<usize>) -> String {
         super::drawn(
             records,
@@ -552,7 +552,6 @@ mod tests {
             },
         )
     }
-    use crate::group::Group;
 
     /// Noon, in milliseconds, which the tests' messages are sent around.
     fn noon() -> i64 {
