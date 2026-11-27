@@ -1996,11 +1996,13 @@ worker home does; and
 `agents`, by realm, the command an agent session starts with there, such
 as `{"personal": "pi-claude"}`, of which a realm hears only its own; and
 `leaves_at`, the time it leaves the realm, as a machine lent for a while
-does, in RFC 3339, after which it is no longer one of `"Machines"`; from
-ten minutes before then, its node puts a steer into the inbox of each
-session running there, once, saying when it leaves and to commit and
-push, to put what can't be pushed and a note of what's next where its
-work is shared, and to stop, with `from` `"machine"` and no `act`.
+does, in RFC 3339, after which it is no longer one of `"Machines"`, a
+leaving that came while a link ran standing whatever that link says of
+the machine after; from ten minutes before then, its node puts a steer
+into the inbox of each session running there, once, saying when it
+leaves and to commit and push, to put what can't be pushed and a note of
+what's next where its work is shared, and to stop, with `from`
+`"machine"` and no `act`.
 A machine on its battery below 20% is let sleep, so its node puts the
 same kind of steer, once while it stays below, saying to commit and push
 and put the rest where its work is shared, though not to stop, since a
