@@ -2879,11 +2879,11 @@ struct Seen<'a> {
 }
 
 /// What one judgement of parks reads, outside the node's lock: the park
-/// markers this boot wrote, read first, then each holders' folder that
-/// this node's own holders, the markers or the judged sessions' presences
-/// name, each once ([`Shared::looked`]). Read in that order, a holder that
-/// parks between the two is seen parked, so no marker is judged against a
-/// record older than it.
+/// markers this boot wrote, read first, then this node's own holders'
+/// folder, each one the presences of the sessions judged name and each
+/// one a marker names, each once ([`look`]). Read in that order, a holder
+/// that parks between the two is seen parked, so no marker is judged
+/// against a record older than it.
 #[derive(Default)]
 struct Looked {
     /// The park markers, each with what its holder's records said of it.
@@ -2895,19 +2895,71 @@ struct Looked {
 impl Looked {
     /// Whether the holder `id` in `folder` still runs, and if so whether
     /// its own record says its program is parked
-    /// ([`steer::its_holder_among`]), as this look read it; a folder it
-    /// didn't read is read now.
+    /// ([`steer::its_holder_among`]), as this look read it. Every folder a
+    /// judgement asks of is one the look read, since the presences it
+    /// judges name them; one it missed is a fault, failing a test, and is
+    /// read afresh elsewhere, as a running holder is never taken as gone.
     fn holder(&self, folder: &Path, id: &str) -> Option<bool> {
-        match self.folders.get(folder) {
+        let read = self.folders.get(folder);
+        debug_assert!(read.is_some(), "the look missed {}", folder.display());
+        match read {
             Some(holders) => steer::its_holder_among(id, holders),
             None => steer::its_holder_among(id, &hold::held(folder)),
         }
     }
 
-    /// The holders of the folder `held`, as this look read it.
+    /// The holders of this node's own folder `held`, which every look
+    /// reads first ([`look`]); the empty look of a judgement needing no
+    /// park has none, and is never asked.
     fn held(&self, held: &Path) -> &[hold::Held] {
-        self.folders.get(held).map_or(&[], Vec::as_slice)
+        let read = self.folders.get(held);
+        debug_assert!(read.is_some(), "the look missed {}", held.display());
+        read.map_or(&[], Vec::as_slice)
     }
+}
+
+/// The look [`Shared::looked`] takes, given its two reads, so their order
+/// is pinned by a test: `parks` reads the park markers, first, and `read`
+/// reads a holders' folder, each once however many name it: this node's
+/// own `held`, each one the wake files `wakes` name, then each a marker
+/// names. Every marker is judged against the very holders the rest of
+/// the judgement reads, never a second read that may disagree with it.
+fn look(
+    held: &Path,
+    wakes: &[&Path],
+    parks: impl FnOnce() -> Vec<crate::wake::Parked>,
+    mut read: impl FnMut(&Path) -> Vec<hold::Held>,
+) -> Looked {
+    let parks = parks();
+    let mut folders = HashMap::from([(held.to_path_buf(), read(held))]);
+    for wake in wakes {
+        if let Some((folder, _)) = steer::holder_of(wake, held) {
+            read_once(&mut folders, folder, &mut read);
+        }
+    }
+    let marked = parks
+        .into_iter()
+        .map(|parked| Marked {
+            holder: steer::holder_of(&parked.wake, held).and_then(|(folder, id)| {
+                steer::its_holder_among(id, read_once(&mut folders, folder, &mut read))
+            }),
+            session: parked.session,
+            wake: parked.wake,
+        })
+        .collect();
+    Looked { marked, folders }
+}
+
+/// The holders of `folder` as `folders` keeps them, read with `read` and
+/// kept there the first time it is asked, so a look reads it once.
+fn read_once<'a>(
+    folders: &'a mut HashMap<PathBuf, Vec<hold::Held>>,
+    folder: &Path,
+    read: &mut impl FnMut(&Path) -> Vec<hold::Held>,
+) -> &'a [hold::Held] {
+    folders
+        .entry(folder.to_path_buf())
+        .or_insert_with(|| read(folder))
 }
 
 /// A park marker this boot wrote, with what its holder's records said of
@@ -5502,8 +5554,10 @@ impl<S: Store> Shared<S> {
             steer.body.insert("id".to_owned(), words::talk_id().into());
         }
         let address = steer.address.clone();
-        // The markers are read only where a session here neither runs nor
-        // is parked by its presence, and then once, for the wake too.
+        // The markers and the holders' folders are read only where a
+        // session here neither runs nor is parked by its presence, and
+        // then once, to say where it runs; the wake reads its own look,
+        // after the inbox and the carry are written ([`Self::steer_here`]).
         let looked = std::cell::OnceCell::new();
         let sessions: Vec<Session> = self
             .lock()
@@ -5570,7 +5624,7 @@ impl<S: Store> Shared<S> {
             return steered;
         }
         self.keep_persons_carry(&steer, &sessions)?;
-        self.steer_here(&steer, &sessions, &looked)?;
+        self.steer_here(&steer, &sessions)?;
         if person {
             self.keep_word(&steer, &machine);
         }
@@ -7229,11 +7283,7 @@ impl<S: Store> Shared<S> {
             .map_err(|error| format!("the carry couldn't be kept, so it isn't ordered: {error}"))?;
         self.said.sessions.send_modify(|said| *said += 1);
         self.tell_carries();
-        self.steer_here(
-            &steer,
-            std::slice::from_ref(target),
-            &std::cell::OnceCell::new(),
-        )
+        self.steer_here(&steer, std::slice::from_ref(target))
     }
 
     /// Carries the session a look `chosen` to ease this machine, under
@@ -7371,15 +7421,12 @@ impl<S: Store> Shared<S> {
     /// can't is refused, but a steer told and not woken is read at the
     /// session's next wake, whatever wakes it. The park markers and the
     /// holders' folders are read, once, only where no holder's own record
-    /// names its wake, unless `looked` holds them already, so the wake is
-    /// found from one look exactly where a start would be refused for it
+    /// names its wake, and only after the inbox is written, so the wake is
+    /// judged from a look no older than the words it wakes the session to
+    /// read, and found exactly where a start would be refused for it
     /// ([`Self::parked_here`]).
-    fn steer_here(
-        &self,
-        steer: &Steer,
-        sessions: &[Session],
-        looked: &std::cell::OnceCell<Looked>,
-    ) -> Result<(), String> {
+    fn steer_here(&self, steer: &Steer, sessions: &[Session]) -> Result<(), String> {
+        let looked = std::cell::OnceCell::new();
         let address = &steer.address;
         if !steer.only_wakes() {
             steer
@@ -8002,7 +8049,8 @@ impl<S: Store> Shared<S> {
     /// coming back is refused by [`starts::Starts::admit`]. A park marker
     /// of this boot counts too, as [`Self::marked_wake`] finds it in
     /// `looked`, the same marker a steer wakes through. Every holder is
-    /// judged as `looked` read it.
+    /// judged as `looked` read it, which reads each folder the presence of
+    /// a session it was taken for names ([`Looked::holder`]).
     fn parked_here(&self, session: &Session, looked: &Looked) -> bool {
         let holder = |folder: &Path, id: &str| looked.holder(folder, id);
         session.machine == self.machine
@@ -8017,51 +8065,18 @@ impl<S: Store> Shared<S> {
     /// however many name it. The boot is the one read when the node
     /// started, so no `sysctl` runs for it.
     fn looked(&self, sessions: &[Session]) -> Looked {
-        let parks = crate::wake::parked(&self.parked, self.boot.began);
-        let mut folders = HashMap::from([(self.held.clone(), hold::held(&self.held))]);
-        for session in sessions.iter().filter(|one| one.machine == self.machine) {
-            let named = session
-                .presence
-                .get("wake")
-                .and_then(serde_json::Value::as_str);
-            if let Some((folder, _)) =
-                named.and_then(|it| steer::holder_of(Path::new(it), &self.held))
-            {
-                folders
-                    .entry(folder.to_path_buf())
-                    .or_insert_with(|| hold::held(folder));
-            }
-        }
-        let marked = self.marked_among(parks, &mut folders);
-        Looked { marked, folders }
-    }
-
-    /// The park markers `parks`, each judged by its holder's records,
-    /// each holders' folder in `folders` taken as already read and each
-    /// other one kept there once read, so the markers are judged against
-    /// the very look the rest of a judgement reads, never a second one
-    /// that may disagree with it.
-    fn marked_among(
-        &self,
-        parks: Vec<crate::wake::Parked>,
-        folders: &mut HashMap<PathBuf, Vec<hold::Held>>,
-    ) -> Vec<Marked> {
-        parks
-            .into_iter()
-            .map(|parked| {
-                let holder = steer::holder_of(&parked.wake, &self.held).and_then(|(folder, id)| {
-                    let holders = folders
-                        .entry(folder.to_path_buf())
-                        .or_insert_with(|| hold::held(folder));
-                    steer::its_holder_among(id, holders)
-                });
-                Marked {
-                    holder,
-                    session: parked.session,
-                    wake: parked.wake,
-                }
-            })
-            .collect()
+        let wakes: Vec<&Path> = sessions
+            .iter()
+            .filter(|one| one.machine == self.machine)
+            .filter_map(|one| one.presence.get("wake")?.as_str())
+            .map(Path::new)
+            .collect();
+        look(
+            &self.held,
+            &wakes,
+            || crate::wake::parked(&self.parked, self.boot.began),
+            hold::held,
+        )
     }
 
     /// The wake file of a park marker this boot wrote for `session`,
@@ -8409,7 +8424,19 @@ impl<S: Store> Shared<S> {
             let known = inner.state.sessions();
             (known, ended::coming_back(away, inner.turns.waiting()))
         };
-        let looked = self.looked(&known);
+        // Only the sessions judged are looked for: each asked, and each an
+        // asked id begins ([`Self::begun_by`]), so a park's holders' folder
+        // is read only where a judgement may ask it.
+        let judged: Vec<Session> = known
+            .iter()
+            .filter(|one| {
+                sessions
+                    .iter()
+                    .any(|asked| one.id.starts_with(asked.as_str()))
+            })
+            .cloned()
+            .collect();
+        let looked = self.looked(&judged);
         let seen = Seen {
             held: looked.held(&self.held),
             coming_back: &coming_back,
@@ -22288,6 +22315,81 @@ esac
             ),
             "a park its presence names beside, whose holder runs, holds the reopening back"
         );
+        // Followup 492: a steer finds the same park from its own look,
+        // taken after the inbox is written, and wakes it there.
+        let mut client = Speaking::greeted(&socket).await;
+        client
+            .ask(json!({"id": 1, "ask": "steer", "address": "BESIDE",
+                        "steer": {"act": "wake", "from": "WCJQSG"}}))
+            .await;
+        let woken = client.next().await;
+        assert_eq!(woken["steered"]["machine"], json!("skiff"), "{woken}");
+        assert!(
+            beside.join("e0r6.wake").exists(),
+            "a steer wakes a park beside through the holder its presence names"
+        );
+    }
+
+    // Followups 488 and 489: a look reads the park markers before any
+    // holders' folder, and each folder once, so a holder that parks
+    // between the two reads is seen parked, and the markers are judged by
+    // the very holders the rest of the judgement reads. The folder beside
+    // answers its holder only the first time it is read, so a second read
+    // for the markers would judge them apart from the presence.
+    #[test]
+    fn a_look_reads_the_markers_first_and_each_folder_once() {
+        let home = Path::new("/run/skiff");
+        let (held, beside) = (home.join("work.held"), home.join("home.held"));
+        let reads = std::cell::RefCell::new(Vec::<PathBuf>::new());
+        let parks_now = std::cell::Cell::new(false);
+        let parks = || {
+            reads.borrow_mut().push(PathBuf::from("markers"));
+            parks_now.set(true);
+            vec![crate::wake::Parked {
+                session: "s-beside".to_owned(),
+                addresses: vec!["BESIDE".to_owned()],
+                wake: beside.join("e0r7.wake"),
+            }]
+        };
+        let read = |folder: &Path| {
+            let first = !reads.borrow().iter().any(|read| read == folder);
+            reads.borrow_mut().push(folder.to_path_buf());
+            let parked = parks_now.get();
+            (folder == beside && first)
+                .then(|| hold::Held {
+                    id: "e0r7".to_owned(),
+                    command: vec!["pi".to_owned()],
+                    folder: home.to_path_buf(),
+                    holder: 1,
+                    pid: u32::from(!parked),
+                    parked,
+                    since: String::new(),
+                    windows: Vec::new(),
+                })
+                .into_iter()
+                .collect()
+        };
+        let (named, other) = (beside.join("e0r7.wake"), held.join("e0r8.wake"));
+        let looked = look(&held, &[named.as_path(), other.as_path()], parks, read);
+        assert_eq!(
+            reads.into_inner(),
+            vec![PathBuf::from("markers"), held.clone(), beside.clone()],
+            "the markers are read first, then each folder once however many name it"
+        );
+        assert_eq!(
+            looked.marked.first().map(|marked| marked.holder),
+            Some(Some(true)),
+            "a holder that parks after the markers are read is seen parked"
+        );
+        assert_eq!(
+            looked.holder(&beside, "e0r7"),
+            Some(true),
+            "and the presence's park is judged from that same read"
+        );
+        assert!(
+            looked.held(&held).is_empty(),
+            "this node's own folder holds none"
+        );
     }
 
     // Our council's round 3 on the marks: an agent's start of a session
@@ -24884,51 +24986,6 @@ esac
             shared.book_for(&made);
         }
         shared
-    }
-
-    // Followup 481: the markers are judged against the look a judgement
-    // already took of a holders' folder, never a second read of it that
-    // may disagree, however the disk has moved on since.
-    #[test]
-    fn a_marker_is_judged_by_the_look_already_taken_not_the_disk() {
-        let dir = tempfile::tempdir().expect("a temporary folder");
-        let (to_dial, _) = mpsc::unbounded_channel();
-        let membership = Realm {
-            name: "work".to_owned(),
-            machine: "skiff".to_owned(),
-        };
-        let mut given = bare("/nowhere/steer".into(), None);
-        given.held = dir.path().join("work.held");
-        let (shared, _) = Shared::of(
-            Memory::default(),
-            (membership.hello(), "/nowhere/node".into()),
-            given,
-            to_dial,
-        );
-        let beside = dir.path().join("home.held");
-        let parks = vec![crate::wake::Parked {
-            session: "s-beside".to_owned(),
-            addresses: vec!["BESIDE".to_owned()],
-            wake: beside.join("e0r7.wake"),
-        }];
-        let seen = hold::Held {
-            id: "e0r7".to_owned(),
-            command: vec!["pi".to_owned()],
-            folder: "/".into(),
-            holder: std::process::id(),
-            pid: 0,
-            parked: true,
-            since: "2026-11-26T18:00:00Z".to_owned(),
-            windows: Vec::new(),
-        };
-        let mut folders = HashMap::from([(beside.clone(), vec![seen])]);
-        let marked = shared.marked_among(parks, &mut folders);
-        assert_eq!(
-            marked[0].holder,
-            Some(true),
-            "the holder the look saw parked, though the disk holds none"
-        );
-        assert_eq!(folders[&beside].len(), 1, "and the look stands as taken");
     }
 
     #[test]
