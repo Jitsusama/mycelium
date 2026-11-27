@@ -2296,7 +2296,9 @@ long ago), `{"full": most}` (it holds the `sessions_at_most` its own
 made of promised, judged under the same lock as the starts it counts so
 a burst can't overfill it; never a run's, since a run starts no session
 and takes no worker home, so a full machine still takes one as its
-load allows) or, for an offer, `{"lives_only": duration}`.
+load allows, though a `"Place"` is refused it as a start is, since a
+spawn starts where `"Place"` tells it; so a run may go to a machine
+`"Place"` said was full) or, for an offer, `{"lives_only": duration}`.
 Placement only
 chooses: a machine says whether work starts there when asked, by its
 own queue and taints, so nothing fits work against its room, which only

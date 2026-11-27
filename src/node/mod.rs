@@ -26904,7 +26904,9 @@ esac
 
     // A machine holding all the sessions it says it holds still runs what
     // is asked of it, as a run through the node finds, so a filled room
-    // still builds and tests.
+    // still builds and tests. Followup 555: where work would go is asked
+    // as a spawn asks it before it starts there, so it is refused the
+    // filled machine as a start is, though the run then goes there.
     #[tokio::test]
     async fn a_run_asked_of_the_node_runs_on_a_machine_holding_all_it_holds() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -26924,6 +26926,14 @@ esac
         let store = Memory::default();
         let (stop, node) = alone(&store, "skiff", &socket);
         asks_as_person(&socket);
+        assert!(
+            matches!(
+                placement_through(socket.clone(), Request::Place(run_of("skiff", "").work))
+                    .await,
+                Placement::Refused { .. }
+            ),
+            "where work would go is refused a machine holding all it holds, as a spawn's start is"
+        );
         let came = run_through(socket.clone(), run_of("skiff", "echo ran"))
             .await
             .expect("a run reaches a machine holding all it holds");
