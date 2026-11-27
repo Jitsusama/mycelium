@@ -410,10 +410,12 @@ same code, each line a JSON value:
     save what it holds and what is killed past them two more to go.
 19. `{"Lend": {"ask", "lend"}}`: answer a model call through the other
     end's lender, as a `"Lend"` request says it (Borrowing a Lend).
-    The other end takes it only where this end is its worker, or a
-    machine its node made, such as one made for the person, which its
-    way in releases, each known by the link alone, and its node was
-    started with `--lend`; otherwise it refuses 403, saying why. Its
+    The other end takes it only over a link it dialled, where its way
+    in names this end its worker or releases this end's machine, as a
+    provider's program does a machine its node made for the person; it
+    goes by its own way in alone, never by what this end's hello says.
+    Its node must also have been started with `--lend`; otherwise it
+    refuses 403, saying which. Its
     lender names the borrowing machine by the link's other end, never
     by what the lend says. It answers
     `{"Lent": {"ask", "lent"}}` a line for each `Lent`, the last its
@@ -3205,7 +3207,8 @@ A group is named by dot-separated tokens: the mesh's `#quest/4uhc5q` is
 
 ### Borrowing a Lend
 
-A machine borrowing model calls, as a worker does from its maker, has
+A machine borrowing model calls, as a worker does from its maker, or a
+machine a node made for the person does from that node's machine, has
 its node started with `--lends-from MACHINE`. A `"Lend"` asked of it
 goes over the link reaching that machine, which knows this one by the
 link alone, and the node writes each `Lent` it answers as a line:
