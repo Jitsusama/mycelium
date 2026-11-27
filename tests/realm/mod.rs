@@ -59,8 +59,9 @@ const TIMINGS: usize = 5;
 /// a quieter moment for each (04TNWT, 2026-11-16: 3.2 times against 3).
 const MOST_TIMINGS: usize = 25;
 
-/// The system's allocator, counting what is held and the most held.
-mod counting;
+/// The system's allocator, counting what is held and the most held,
+/// which a test measuring more than one making reads too.
+pub mod counting;
 
 /// That the records `making` makes of ten thousand cells hold to the bar,
 /// more than `more_than` of them, as `formed` says they should be, the
@@ -150,7 +151,7 @@ impl Realm {
         let keeps = tempfile::tempdir().expect("a folder");
         Self {
             teams: teams(cells),
-            sessions: (0..cells).map(|n| session(n, cells)).collect(),
+            sessions: sessions(cells),
             machines: machines(cells),
             receptors: receptors(),
             builders: builders(),
@@ -200,6 +201,12 @@ fn fastest<const N: usize>(
         }
     }
     least
+}
+
+/// The sessions of a realm of `cells`, as [`holds_the_bar`] builds its
+/// records from, for a test that makes them otherwise too.
+pub fn sessions(cells: usize) -> Vec<Session> {
+    (0..cells).map(|n| session(n, cells)).collect()
 }
 
 /// `took` for `cells`, said for one of them.

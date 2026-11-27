@@ -19,6 +19,10 @@ The rest of the tests sit beside the code they prove, in `src/`.
   is gone, and joining it once it's back
 - `held.rs`: a holder told to end as its scope's stop tells it, with a
   window joined, ending as its program does
+- `hubs.rs`: the node's hub records made for `realm/`'s ten thousand
+  cells within 47.2 MB, in time that grows with them, and for ten
+  thousand cells each saying 24 subjects of 120 characters outside
+  ASCII within 925 MB, so one more copy of each subject fails it
 - `made.rs`: a machine made for a start from a provider's offer, linked,
   started on and let go at its time or once it hands over, each node and
   link a process of its own; nothing of the asker's environment, or its
@@ -37,9 +41,10 @@ The rest of the tests sit beside the code they prove, in `src/`.
 - `process/`: the `mycelium` command with its folders under a test's own
   home, and the wait for a path it makes, that `declared.rs`,
   `named.rs`, `piped.rs`, `stopped.rs` and `unanswered.rs` share
-- `realm/`: the realm of ten thousand cells both are built for, and the
+- `realm/`: the realm of ten thousand cells these are built for, and the
   bar they are held to, with the counting allocator and thread time
-  (`counting.rs`) that `ties.rs`, `forages.rs` and `murmurs.rs` share
+  (`counting.rs`) that `ties.rs`, `forages.rs`, `murmurs.rs` and
+  `hubs.rs` share
 - `rejoined.rs`: a window's join of a session on another machine, run
   again each time SSH drops after saying it reconnects, ending as the
   join there ends, once the node says the session has, or on Ctrl+C

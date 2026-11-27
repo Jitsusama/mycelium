@@ -77,6 +77,7 @@ mod formed;
 pub use formed::Formed;
 mod glyph;
 mod hub;
+pub use hub::{Holder as HubHolder, KIND as HUB_KIND, records as hub_records};
 mod network;
 mod once;
 pub use network::{Holding, Standing, records as network_records};
