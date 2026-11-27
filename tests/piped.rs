@@ -6,10 +6,8 @@
 use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 use std::process::{Child, Stdio};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use notify::{RecursiveMode, Watcher};
 use process::{made, mycelium};
 
 mod process;
@@ -19,7 +17,7 @@ mod process;
 /// and half an hour off UTC, so a stamp drawn in UTC regardless fails.
 const ZONE: &str = "<+0530>-5:30";
 
-/// How long the node has to start and measure its machine.
+/// How long the node has to start.
 const PATIENCE: Duration = Duration::from_secs(30);
 
 /// A node that is stopped once the test is done with it, however it ends.
@@ -89,26 +87,14 @@ fn into_a_pipe_a_machine_says_when_it_was_measured_with_its_day_and_zone() {
         &home.join("r").join("mycelium").join("work.sock"),
         PATIENCE,
     );
-    let (telling, told) = mpsc::channel();
-    let mut watcher = notify::recommended_watcher(telling).expect("a watcher");
-    watcher
-        .watch(home, RecursiveMode::Recursive)
-        .expect("the home is watched");
-    let deadline = Instant::now() + PATIENCE;
-    let (before, page, after) = loop {
-        let before = measured(home);
-        let page = printed(home, &["machines", "kestrel", "-o", "text"]);
-        let after = measured(home);
-        if before.is_some() && line(&page, "measured").is_some() {
-            break (before, page, after);
-        }
-        let left = deadline.saturating_duration_since(Instant::now());
-        assert!(!left.is_zero(), "kestrel was never measured:\n{page}");
-        // A watch that fails or times out has the node asked again.
-        let _ = told.recv_timeout(left);
-    };
+    // The node measures its own machine each time it is asked, so the
+    // first page already says when, and nothing is waited for.
+    let before = measured(home);
+    let page = printed(home, &["machines", "kestrel", "-o", "text"]);
+    let after = measured(home);
     drop(node);
 
+    assert!(before.is_some(), "kestrel was never measured:\n{page}");
     let said = line(&page, "measured").map(str::to_owned);
     assert!(
         said == before || said == after,

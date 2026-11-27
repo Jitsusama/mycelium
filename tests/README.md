@@ -32,9 +32,11 @@ The rest of the tests sit beside the code they prove, in `src/`.
   built for ten thousand cells within 30 MB, each cell holding two
   trees, in time that grows with the cells, the memory counted by
   an allocator of its own, which only a program of its own may hold
+- `piped.rs`: a machine's page drawn into a pipe against a node of its
+  own, saying when it was measured with its day, date and zone
 - `process/`: the `mycelium` command with its folders under a test's own
   home, and the wait for a path it makes, that `declared.rs`,
-  `named.rs`, `stopped.rs` and `unanswered.rs` share
+  `named.rs`, `piped.rs`, `stopped.rs` and `unanswered.rs` share
 - `realm/`: the realm of ten thousand cells both are built for, and the
   bar they are held to, with the counting allocator and thread time
   (`counting.rs`) that `ties.rs`, `forages.rs` and `murmurs.rs` share
