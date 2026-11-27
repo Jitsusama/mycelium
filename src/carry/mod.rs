@@ -11,9 +11,10 @@
 //! carries the rest, shares the quest with its handover, starts each
 //! carried session again on the other machine, held, once `pi-carry
 //! arrive` has its trees there, marking each started so no later carry
-//! starts it again, and waits until the sessions here have ended. A
-//! step that fails says why and nothing after it runs; what was
-//! done stays done, since each step can be taken again.
+//! starts it again, waits until the sessions here have ended, and then
+//! until each runs on the other machine. A step that fails says why
+//! and nothing after it runs; what was done stays done, since each
+//! step can be taken again.
 //!
 //! What it does to the world goes through [`Hands`], whose one
 //! implementation is the command's, so the order is proved over a fake.
@@ -653,19 +654,58 @@ fn rest<F: FnMut(&Value)>(
         format!("waiting for each session started on {to} to run there"),
     );
     said.or_failed(Step::Answer, answered(hands, to, &arrived))?;
-    said.line(
-        Step::Answer,
-        Stood::Done,
-        format!("{} running on {to}", plural(arrived.len(), "session")),
-    );
+    if arrived.is_empty() {
+        said.line(
+            Step::Answer,
+            Stood::Skipped,
+            "no session started there".to_owned(),
+        );
+    } else {
+        said.line(
+            Step::Answer,
+            Stood::Done,
+            format!("{} running on {to}", plural(arrived.len(), "session")),
+        );
+    }
     Ok(arrived)
 }
 
 /// Waits until each of `arrived` runs on `to`, as the node there says
-/// it: busy or idle, as its own session.
+/// it: its own session, busy or idle there. A start that landed only
+/// holds the arrival, which may still fail before pi takes the session
+/// up, so until then the session runs nowhere. Those that never run
+/// are named, each with how to join its start and see why.
 fn answered(hands: &mut impl Hands, to: &str, arrived: &[Arrived]) -> Result<(), String> {
-    let _ = (hands, to, arrived);
-    Ok(())
+    loop {
+        let there = hands.sessions()?;
+        let silent: Vec<&Arrived> = arrived
+            .iter()
+            .filter(|one| {
+                !there.iter().any(|session| {
+                    session.machine == to
+                        && session_id(session) == Some(one.session.as_str())
+                        && runs(session)
+                })
+            })
+            .collect();
+        if silent.is_empty() {
+            return Ok(());
+        }
+        if !hands.wait() {
+            let each: Vec<String> = silent
+                .iter()
+                .map(|one| {
+                    format!(
+                        "{} started on {to} but isn't running there; join its start with `{}` \
+                         to see why",
+                        one.address,
+                        one.attach.join(" ")
+                    )
+                })
+                .collect();
+            return Err(each.join("; "));
+        }
+    }
 }
 
 /// What a carry's sessions were, once found: those it carries, and the
@@ -2074,7 +2114,7 @@ mod tests {
             "a quest with no session here asks nothing and brings nothing"
         );
         let mut unnamed = session("BUSY01", "skiff", QUEST, "busy", &json!({}));
-        if let Some(presence) = std::sync::Arc::make_mut(&mut unnamed.presence).as_object_mut() {
+        if let Some(presence) = Arc::make_mut(&mut unnamed.presence).as_object_mut() {
             presence.remove("session");
         }
         assert_eq!(
@@ -2641,16 +2681,17 @@ mod tests {
 
     #[test]
     fn a_session_started_there_is_waited_for_until_it_runs() {
-        let mut realm = Realm {
-            slow: 2,
-            ..realm()
-        };
+        let mut realm = Realm { slow: 2, ..realm() };
         let (done, lines) = carried(&mut realm, "tern");
         let done = done.expect("carried, once each runs there");
-        assert_eq!(done.sessions.len(), 2, "each told: {done:?}");
+        assert_eq!(
+            done.sessions.len(),
+            3,
+            "each told, and the one found after: {done:?}"
+        );
         assert_eq!(
             last_said(&lines),
-            "2 sessions running on tern",
+            "3 sessions running on tern",
             "said once each runs there"
         );
     }
