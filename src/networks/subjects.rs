@@ -8,7 +8,10 @@ use serde::{Serialize, Serializer};
 
 /// A cell's subjects, in the order it said them. None is empty or holds
 /// a line: `made::subjects` passes those over, and [`Subjects::kept`]
-/// does too, so a line between each never splits or hides a subject.
+/// does too, so the text it stores has no stray line to split or hide a
+/// subject. [`Subjects::each`] passes over an empty piece, which is what
+/// makes an empty text hold none, since an empty text splits into one
+/// empty piece; within a text it only backs `kept`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Subjects(Box<str>);
 
@@ -83,14 +86,28 @@ mod tests {
         assert_eq!(
             said.each().collect::<Vec<_>>(),
             ["hubs"],
-            "a line would split one into two, and an empty one vanish"
+            "a line would split one into two, so it isn't kept"
         );
         let blank = Subjects::kept(vec![String::new(), String::new()]);
-        assert!(blank.is_empty(), "only empty ones say none");
+        assert_eq!(blank, Subjects::default(), "empty ones aren't kept");
+        assert_eq!(
+            Subjects::kept(vec![String::new(), "hubs".to_owned()]),
+            Subjects::kept(vec!["hubs".to_owned()]),
+            "an empty one takes no line"
+        );
         assert_eq!(
             serde_json::to_value(&blank).expect("subjects serialize"),
             serde_json::json!([]),
             "and nothing reads back"
         );
+    }
+
+    #[test]
+    fn a_hand_built_text_of_lines_alone_holds_none() {
+        // `kept` never stores this; the case holds `is_empty` to what
+        // `each` says, rather than to whether the text is empty.
+        let lines = Subjects("\n\n".into());
+        assert!(lines.is_empty(), "lines between no subjects hold none");
+        assert_eq!(lines.each().count(), 0, "and say none");
     }
 }

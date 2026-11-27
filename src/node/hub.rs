@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::json;
 
-use crate::daemon;
+use crate::{daemon, networks};
 
 /// The kind of a subject's hubs' record.
 pub const KIND: &str = "hub";
@@ -62,14 +62,17 @@ pub struct Holder {
     pub heard: f64,
 }
 
-/// Each declared subject's hubs, by key, a subject read in lower case so
-/// two cells saying it differently hold the same one.
+/// Each declared subject's hubs, by key, a subject read by
+/// [`networks::subject_key`] so two cells saying it differently hold the
+/// same one, as the cap counts it.
 #[must_use]
 pub fn records(holders: &[Holder]) -> BTreeMap<String, serde_json::Value> {
     let mut held: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
     for (at, holder) in holders.iter().enumerate() {
         for subject in &holder.subjects {
-            held.entry(subject.to_lowercase()).or_default().insert(at);
+            held.entry(networks::subject_key(subject))
+                .or_default()
+                .insert(at);
         }
     }
     // Each subject's holders, least heard first, the rarest subject first.
@@ -188,6 +191,31 @@ mod tests {
             json!({"hub": "OSPREY", "fits": record["fits"]})
         );
         assert_eq!(record["kind"], KIND);
+    }
+
+    #[test]
+    fn cells_saying_a_subject_in_any_case_share_its_hub_as_the_cap_folds_it() {
+        // Each cell's subjects pass the cap alone, as the node's do, so
+        // only the hub's own fold can join what two cells say.
+        let cell = |address: &str, said: serde_json::Value, heard: f64| Holder {
+            address: address.to_owned(),
+            subjects: networks::subjects(&said),
+            heard,
+        };
+        let made = records(&[
+            cell("KESTRL", json!(["école", "Straße"]), 0.0),
+            cell("OSPREY", json!(["ÉCOLE", "STRASSE"]), 1.0),
+        ]);
+        assert_eq!(
+            made.keys().cloned().collect::<Vec<_>>(),
+            ["hub:strasse", "hub:straße", "hub:école"],
+            "an accented subject in two cases is one hub, and two the cap keeps apart are two"
+        );
+        assert_eq!(
+            made["hub:école"]["fits"],
+            json!(["KESTRL", "OSPREY"]),
+            "both cells fit the one they said in different cases"
+        );
     }
 
     #[test]

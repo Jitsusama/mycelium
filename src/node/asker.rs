@@ -118,6 +118,13 @@ impl Processes {
         }
     }
 
+    /// Whether process `pid` is `forebear` or runs below it, as far as its
+    /// forebears can be read.
+    #[must_use]
+    pub fn runs_below(&self, pid: i32, forebear: i32) -> bool {
+        self.lineage(pid).contains(&forebear)
+    }
+
     /// Process `pid` and each of its forebears in turn, as far as can be
     /// read, nearest first.
     fn lineage(&self, pid: i32) -> Vec<i32> {

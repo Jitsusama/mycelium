@@ -510,6 +510,9 @@ fn doing(said: &Value) -> Option<Doing> {
 
 /// The newest events a presence says, as it says them newest first,
 /// leaving out any it can't read and cutting a title past `LINE_MOST`.
+/// Cut or not, a title's end is then cleaned as a need's is, so it ends
+/// on no space and nothing left holding nothing, as a share's title
+/// does; only its end, so a title keeps whatever else it said.
 fn events(said: &Value) -> Vec<Event> {
     said.as_array()
         .into_iter()
@@ -517,9 +520,13 @@ fn events(said: &Value) -> Vec<Event> {
         .filter_map(|event| Event::deserialize(event).ok())
         .filter(|event| !event.place.is_empty() && is_instant(&event.at))
         .map(|mut event| {
-            if let Some((cut, _)) = event.title.char_indices().nth(LINE_MOST) {
-                event.title.truncate(cut);
-            }
+            let kept = event
+                .title
+                .char_indices()
+                .nth(LINE_MOST)
+                .map_or(event.title.len(), |(cut, _)| cut);
+            let ended = crate::forage::cut_ended(&event.title[..kept], char::is_whitespace);
+            event.title.truncate(ended.len());
             event
         })
         .take(EVENTS_MOST)
@@ -1120,6 +1127,9 @@ mod tests {
         );
         said.insert(2, json!({"kind": "push", "where": "x", "title": "no time"}));
         said[3]["title"] = json!("é".repeat(130));
+        said[4]["title"] = json!(format!("{} \u{17D2}\u{1780}", "\u{1780}".repeat(118)));
+        said[5]["title"] = json!("Tide \u{17D2}");
+        said[6]["title"] = json!("\u{1780}".repeat(LINE_MOST));
         let read = session(&presence(json!(said)), "kestrel").expect("a presence reads");
         assert_eq!(
             read.events
@@ -1144,6 +1154,20 @@ mod tests {
             read.events[1].title,
             "é".repeat(120),
             "a long title is cut at 120 characters"
+        );
+        assert_eq!(
+            read.events[2].title,
+            "\u{1780}".repeat(118),
+            "a cut title ends on no coeng, nor the space it leaves last"
+        );
+        assert_eq!(
+            read.events[3].title, "Tide",
+            "an uncut title ends on no lone coeng either, nor its space"
+        );
+        assert_eq!(
+            read.events[4].title,
+            "\u{1780}".repeat(LINE_MOST),
+            "a title of 120 characters is kept whole"
         );
         let serialized = serde_json::to_value(&read).expect("a session serializes");
         assert_eq!(

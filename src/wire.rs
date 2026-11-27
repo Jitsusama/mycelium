@@ -4,6 +4,10 @@
 //! one per line, for as long as the client stays: first the whole state,
 //! then each change. A `Present` connection is held open by its process
 //! for as long as it runs.
+//!
+//! Long because it is the socket's whole vocabulary: every request a
+//! client may send and every reply and event it may read, each said once
+//! here so the node, its clients and PROTOCOL.md hold to one shape.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -101,6 +105,20 @@ pub enum Request {
         /// Its held id, as `holds` lists it.
         held: String,
     },
+    /// End the session held here as `held` for good, as the node of the
+    /// linked machine `from` asks for `cell`, whose start it is by that
+    /// node's book: only where this node's own book let that start go
+    /// ahead as an agent's relayed from `from`, and landed here. Only
+    /// this node's own process, or one judged the person's, as a link's
+    /// end is, asks it.
+    EndStart {
+        /// Its held id, as `holds` lists it.
+        held: String,
+        /// The machine whose node asks it.
+        from: String,
+        /// The cell whose start it is, as that node proved it asks.
+        cell: String,
+    },
     /// The latest messages to the groups `groups` hears, oldest first.
     Messages {
         /// Which groups.
@@ -145,6 +163,17 @@ pub enum Request {
     Starts {
         /// What to do.
         act: StartsAct,
+    },
+    /// The machines named rooms for agents to share, after naming
+    /// `machine` one or taking it out, as `act` asks: the node writes
+    /// `agent-rooms` so, and names only a machine its own book holds as
+    /// made for an agent, though placement trusts a line put by hand.
+    Rooms {
+        /// What to do.
+        act: RoomsAct,
+        /// The machine named or taken out, which a list needs none of.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machine: Option<String>,
     },
     /// What the session asking, as the kernel and pi's records prove it,
     /// orchestrates by the node's record, changing nothing. Its own
@@ -346,6 +375,18 @@ pub enum StartsAct {
     /// Let agents start again, within their limits.
     Resume,
     /// Only say how they stand.
+    List,
+}
+
+/// What is asked of the rooms made for agents to share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomsAct {
+    /// Name a machine a room.
+    Add,
+    /// Take a machine out of the rooms.
+    Remove,
+    /// Only say which machines are rooms.
     List,
 }
 
@@ -552,6 +593,11 @@ pub enum Response {
         /// The newest starts.
         newest: Vec<serde_json::Value>,
     },
+    /// The machines named rooms for agents to share, after the act asked.
+    Rooms {
+        /// Each, by name, in order.
+        rooms: Vec<String>,
+    },
     /// Events follow, one per line.
     Watching,
     /// The process is counted present until it hangs up.
@@ -643,6 +689,37 @@ mod tests {
         assert!(
             serde_json::from_str::<Request>(r#"{"Watch":{"groups":[]}}"#).is_err(),
             "a pattern is one string, never a list"
+        );
+    }
+
+    // Followup 507(b): a run a node recast, saying who asked it, is read
+    // and written as PROTOCOL.md says, so a node clearing it has it to
+    // clear, and a run that says nothing of it is written as before it was
+    // said.
+    #[test]
+    fn a_run_saying_who_asked_it_reads_and_writes_as_said() {
+        let said = r#"{"Run":{"work":{},"command":["true"],"by":{"Agent":"fence"},"from":"tern","asked_by":"Person"}}"#;
+        let request = serde_json::from_str::<Request>(said).expect("a run reads");
+        let Request::Run(run) = &request else {
+            panic!("a run: {request:?}");
+        };
+        assert_eq!(run.asked_by, Some(By::Person), "{said}");
+        assert_eq!(run.by, Some(By::Agent(Kind::Fence)), "{said}");
+        let written = serde_json::to_string(&request).expect("a run writes");
+        assert!(written.contains(r#""asked_by":"Person""#), "{written}");
+        assert_eq!(
+            serde_json::from_str::<Request>(&written).expect("it reads back"),
+            request
+        );
+        let plain = Run {
+            asked_by: None,
+            ..run.clone()
+        };
+        assert!(
+            !serde_json::to_string(&plain)
+                .expect("a run writes")
+                .contains("asked_by"),
+            "a run no node recast says nothing of it"
         );
     }
 

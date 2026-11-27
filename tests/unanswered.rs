@@ -11,8 +11,10 @@ use std::time::Duration;
 
 use process::{made, mycelium};
 use serde_json::{Value, json};
+use zone::ZONE;
 
 mod process;
+mod zone;
 
 /// A hold's first line, wider than any terminal a test might run in, so a
 /// pipe drawn as one would cut or wrap it.
@@ -69,7 +71,10 @@ fn a_pipe_reads_text_and_json_is_asked_for() {
         PATIENCE,
     );
     let printed = |args: &[&str]| {
-        let ran = mycelium(home, args).output().expect("mycelium runs");
+        let ran = mycelium(home, args)
+            .env("TZ", ZONE)
+            .output()
+            .expect("mycelium runs");
         assert!(ran.status.success(), "{args:?} failed: {ran:?}");
         String::from_utf8(ran.stdout).expect("UTF-8")
     };
@@ -85,6 +90,14 @@ fn a_pipe_reads_text_and_json_is_asked_for() {
             line.contains("KESTRL holds #all, until ") && line.ends_with("  [647648e1]")
         }),
         "no line for the hold:\n{text}"
+    );
+    assert_eq!(
+        lines
+            .get(1)
+            // The zone as each time drawn in ZONE says it.
+            .map(|line| line.matches(" +0530 (+05:30)").count()),
+        Some(2),
+        "into a pipe, when the hold was put and until when weren't both stamped:\n{text}"
     );
     assert_eq!(
         lines.get(2),

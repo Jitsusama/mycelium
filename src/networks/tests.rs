@@ -933,6 +933,34 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
          nothing or null it is for is kept, \
          untitled"
     );
+    // Apart, as a cell reads no more than sixteen of what it shares.
+    let khmer = format!("{}\u{17D2}\u{1780}", "\u{1780}".repeat(119));
+    let shorter = "\u{1780}".repeat(118);
+    assert_eq!(
+        shared_by_two(&[
+            json!({"key": "quest:khmer", "for": khmer, "folder": "/k"}),
+            json!({"key": "quest:khmerlone", "for": "\u{1780}\u{17D2}", "folder": "/k"}),
+            json!({"key": "quest:khmerzwnj", "for": format!("{shorter}\u{200C}\u{17D2}\u{1780}"),
+                   "folder": "/k"}),
+            json!({"key": "quest:khmerspace", "for": format!("{shorter} \u{17D2}\u{1780}"),
+                   "folder": "/k"}),
+            json!({"key": "quest:khmerbraille", "for": format!("{shorter}\u{2800}\u{17D2}\u{1780}"),
+                   "folder": "/k"}),
+            json!({"key": "quest:tide", "for": "Tide\u{2800}\u{17D2}", "folder": "/k"}),
+            json!({"key": "quest:coeng", "for": "\u{17D2}", "folder": "/k"}),
+        ]),
+        [
+            untitled("quest:coeng"),
+            titled("quest:khmer", &"\u{1780}".repeat(119)),
+            titled("quest:khmerbraille", &shorter),
+            titled("quest:khmerlone", "\u{1780}"),
+            titled("quest:khmerspace", &shorter),
+            titled("quest:khmerzwnj", &shorter),
+            titled("quest:tide", "Tide"),
+        ],
+        "a title ends in no lone Khmer coeng, cut or not, nor in the non-joiner, space or braille \
+         blank one kept, and one of only a coeng is untitled"
+    );
 }
 
 #[test]
@@ -1923,6 +1951,18 @@ fn every_cell_lists_worst_first_and_one_says_its_networks() {
         expected,
         "one cell:\n{shown}"
     );
+    // Into a pipe, since when says its day, date and zone, as a copy is
+    // read later or elsewhere.
+    let whole = Look {
+        width: WHOLE,
+        ..look()
+    };
+    let shown = cell(&mycelium, one, &whole);
+    assert_eq!(
+        shown.lines().nth(2),
+        Some("on skiff · since Thu 12 Nov 2026 15:00 UTC (+00:00) · QEST-20261112-HARBOR"),
+        "a cell's start drawn into a pipe said only its hour:\n{shown}"
+    );
 }
 
 #[test]
@@ -2509,11 +2549,13 @@ fn a_cell_declares_plain_subjects_alone_each_bad_one_passed_over() {
         "bell\u{7}",
         "x".repeat(121),
         "x".repeat(120),
+        "é".repeat(121),
+        "é".repeat(120),
     ]);
     assert_eq!(
         subjects(&declared),
-        vec!["mycelium:hubs".to_owned(), "x".repeat(120)],
-        "only plain words of at most 120 characters are kept, trimmed"
+        vec!["mycelium:hubs".to_owned(), "x".repeat(120), "é".repeat(120)],
+        "only plain words of at most 120 characters, however many bytes, are kept, trimmed"
     );
     assert_eq!(MOST_SUBJECTS, 24, "PROTOCOL.md tells clients 24");
     // Each good subject comes after a bad entry and before a repeat of
@@ -2535,9 +2577,10 @@ fn a_cell_declares_plain_subjects_alone_each_bad_one_passed_over() {
         "the first 24 good subjects are kept, in the order declared"
     );
     assert!(subjects(&json!("one")).is_empty(), "subjects are a list");
-    // The hub keys a subject by its full lower case, so a repeat past
-    // ASCII's letters must fold the same way, or it takes a place of the
-    // cap while sharing the first one's hub.
+    // The hub keys a subject by `subject_key`, so a repeat past ASCII's
+    // letters must fold the same way, or it takes a place of the cap
+    // while sharing the first one's hub. The hub's case of two cells
+    // saying one subject in two cases pins that it folds the same.
     assert_eq!(
         subjects(&json!(["école", "ÉCOLE", "Straße", "STRASSE"])),
         vec![
@@ -2546,5 +2589,12 @@ fn a_cell_declares_plain_subjects_alone_each_bad_one_passed_over() {
             "STRASSE".to_owned()
         ],
         "a repeat is one whose lower case matches, as the hub reads it"
+    );
+    // Nothing composes characters first: an accent written as its own
+    // mark is a subject apart, though it draws as the letter written whole.
+    assert_eq!(
+        subjects(&json!(["\u{e9}cole", "e\u{301}cole"])),
+        vec!["\u{e9}cole".to_owned(), "e\u{301}cole".to_owned()],
+        "a repeat is matched by its characters, not by how it draws"
     );
 }

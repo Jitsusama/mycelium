@@ -234,11 +234,12 @@ impl Orchestrations {
         for (claimer, claim) in &lapsing {
             // Kept by the claimer it was, which no longer stands, so no
             // standing session's own claim is overwritten.
-            if doubted.contains(claimer.as_str()) {
+            if let Some(doubting) = doubted.get(claimer.as_str()) {
                 self.sessions.insert(claimer.clone(), claim.clone());
                 lapsed.push(Lapsed::Held {
                     claimer: claimer.clone(),
                     heads: claim.heads.clone(),
+                    doubting: doubting.clone(),
                 });
                 continue;
             }
@@ -350,7 +351,8 @@ impl Orchestrations {
 
 /// Each standing session continuing a lapsing claim, by the claimer, as
 /// [`Orchestrations::lapse`] follows each back through `continues`, and
-/// each claimer a log that can't be told may lead to. Every standing
+/// each claimer a log that can't be told may lead to, with the session
+/// whose logs those are, the first a walk met. Every standing
 /// session that continues a claim counts, one that claimed for itself
 /// too: that it continues the claimer still makes which goes on unclear
 /// to tell.
@@ -358,24 +360,28 @@ fn heirs<'a>(
     lapsing: &'a BTreeMap<String, Claim>,
     standing: &'a BTreeMap<String, Option<String>>,
     continues: &impl Fn(&str) -> Continued,
-) -> (BTreeMap<&'a str, Vec<&'a str>>, BTreeSet<&'a str>) {
+) -> (BTreeMap<&'a str, Vec<&'a str>>, BTreeMap<&'a str, String>) {
     let mut heirs: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    let mut doubted = BTreeSet::new();
+    let mut doubted = BTreeMap::new();
     for session in standing.keys() {
-        // Each log reached, and whether one that can't be told led there:
-        // one path, until a log's continuation can't be told.
-        let mut reached = BTreeSet::from([(session.clone(), false)]);
+        // Each log reached, and the first session whose logs can't be
+        // told that led there: one path, until a log's continuation
+        // can't be told.
+        let mut reached: BTreeSet<(String, Option<String>)> =
+            BTreeSet::from([(session.clone(), None)]);
         for _ in 0..CONTINUED_MOST {
             let mut next = BTreeSet::new();
-            for (at, doubtful) in reached {
-                let (before, doubtful): (Vec<String>, bool) = match continues(&at) {
-                    Ok(before) => (before.into_iter().collect(), doubtful),
-                    Err(may) => (may, true),
+            for (at, doubting) in reached {
+                let (before, doubting): (Vec<String>, Option<String>) = match continues(&at) {
+                    Ok(before) => (before.into_iter().collect(), doubting),
+                    Err(may) => (may, Some(doubting.unwrap_or_else(|| at.clone()))),
                 };
                 for before in before {
                     if let Some((claimer, _)) = lapsing.get_key_value(&before) {
-                        if doubtful {
-                            doubted.insert(claimer.as_str());
+                        if let Some(doubting) = &doubting {
+                            doubted
+                                .entry(claimer.as_str())
+                                .or_insert_with(|| doubting.clone());
                         } else {
                             heirs.entry(claimer).or_default().push(session);
                         }
@@ -384,7 +390,7 @@ fn heirs<'a>(
                         // is its own: what it continues isn't handed past
                         // it, so the walk goes on only past one that
                         // doesn't stand.
-                        next.insert((before, doubtful));
+                        next.insert((before, doubting.clone()));
                     }
                 }
             }
@@ -519,6 +525,26 @@ impl Logs {
         continued
     }
 
+    /// The sentence naming each log of `session`, by its path, where they
+    /// don't all say what it continues ([`Self::follows`]), so the copy
+    /// that isn't its own can be found; none where they agree.
+    #[must_use]
+    pub fn disagreeing(&self, session: &str) -> Option<String> {
+        self.follows(session).err()?;
+        let found = self.found.get(session)?;
+        let paths: Vec<String> = found
+            .iter()
+            .map(|log| shown(&log.display().to_string()))
+            .collect();
+        Some(format!(
+            "the {} logs named for {} don't all say what it continues, so a claim it may \
+             lead to is kept until the one that isn't its own is moved: {}",
+            found.len(),
+            shown(session),
+            paths.join(", ")
+        ))
+    }
+
     /// What the log at `log` continues, as its first line names it, where
     /// that line names `session` as its own.
     fn header_continues(log: &Path, session: &str) -> Option<String> {
@@ -565,6 +591,10 @@ pub enum Lapsed {
         claimer: String,
         /// The quest it heads.
         heads: String,
+        /// The session whose logs don't all say what it continues, the
+        /// first such a walk back to the claim met, so the copies can be
+        /// found ([`Logs::disagreeing`]).
+        doubting: String,
     },
     /// Let go of, for the reason `why`.
     Forgotten {
@@ -591,12 +621,18 @@ impl std::fmt::Display for Lapsed {
                 shown(claimer),
                 shown(heir)
             ),
-            Self::Held { claimer, heads } => write!(
+            Self::Held {
+                claimer,
+                heads,
+                doubting,
+            } => write!(
                 out,
-                "the claim to head {} is kept for {}, which no longer stands, as logs that may \
-                 continue it disagree on what they continue",
+                "the claim to head {} is kept for {}, which no longer stands, as the logs named \
+                 for {}, which may continue it, don't all say what it continues (one that \
+                 can't be read says none)",
                 shown(heads),
-                shown(claimer)
+                shown(claimer),
+                shown(doubting)
             ),
             Self::Forgotten {
                 claimer,
@@ -1214,18 +1250,32 @@ mod tests {
                 Lapsed::Held {
                     claimer: "s-steward".to_owned(),
                     heads: "QEST-20261007-WCJQSG".to_owned(),
+                    doubting: "s-other".to_owned(),
                 },
                 Lapsed::Held {
                     claimer: "s-weigh".to_owned(),
                     heads: "QEST-20261111-OSPHT4".to_owned(),
+                    doubting: "s-other".to_owned(),
                 },
             ],
-            "and each is said to be held, so a claim kept with no end names its cause"
+            "and each is said to be held, naming whose logs can't be told, so a claim kept \
+             with no end names its cause"
         );
         assert_eq!(
             said[0].to_string(),
             "the claim to head QEST-20261007-WCJQSG is kept for s-steward, which no longer \
-             stands, as logs that may continue it disagree on what they continue"
+             stands, as the logs named for s-other, which may continue it, don't all say what \
+             it continues (one that can't be read says none)"
+        );
+        let planted = Lapsed::Held {
+            claimer: "s-steward".to_owned(),
+            heads: "QEST-20261007-WCJQSG\nforged".to_owned(),
+            doubting: "s-other\nforged".to_owned(),
+        }
+        .to_string();
+        assert!(
+            !planted.contains('\n') && planted.matches("\\nforged").count() == 2,
+            "each name the asker or a log chose is escaped, so the line stays one: {planted}"
         );
     }
 
@@ -1338,9 +1388,11 @@ mod tests {
                 Lapsed::Held {
                     claimer: "s-weigh".to_owned(),
                     heads: "QEST-20261111-OSPHT4".to_owned(),
+                    doubting: "s-other".to_owned(),
                 },
             ],
-            "a claim no doubtful log may lead to passes on, though others can't be told"
+            "a claim no doubtful log may lead to passes on, though others can't be told, and \
+             one held names the logs that lead to it, not another's that can't be told"
         );
         assert_eq!(
             record.sessions.keys().collect::<Vec<_>>(),
@@ -1646,6 +1698,25 @@ mod tests {
             found.follows("s-weigh"),
             Err(vec!["s-elder".to_owned()]),
             "one naming none and one naming a session can't be told apart, so what the one names may be continued"
+        );
+        let said = found.disagreeing("s-weigh").unwrap_or_default();
+        for log in [
+            own.join("2026-11-23T11-31-00-000Z_s-weigh.jsonl"),
+            planted.join("2026-11-23T12-00-00-000Z_s-weigh.jsonl"),
+        ] {
+            assert!(
+                said.contains(&log.display().to_string()),
+                "it names each copy, so the stray can be found: {said:?}"
+            );
+        }
+        assert!(
+            said.contains("s-weigh"),
+            "and whose logs they are: {said:?}"
+        );
+        assert_eq!(
+            found.disagreeing("s-steward"),
+            None,
+            "a session with no logs here has none that disagree"
         );
     }
 

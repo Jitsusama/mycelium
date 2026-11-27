@@ -336,6 +336,23 @@ async fn the_worker_socket_answers_its_own_account_and_asks_alone() {
                 .is_some_and(|why| why.contains("present")),
             "{refused}"
         );
+        let mut ender = Client::connect(&worker);
+        let refused = ender.ask(&json!({"End": {"held": "e0d4"}}));
+        assert!(
+            refused["Err"]
+                .as_str()
+                .is_some_and(|why| why.contains("opens")),
+            "an end before a presence: {refused}"
+        );
+        let mut present = Client::connect(&worker);
+        let held_now = present.ask(&json!({"Presence": {"presence": presence("01b2", "7WRKR1")}}));
+        assert_eq!(held_now, json!({"Ok": "Present"}));
+        let refused = present.ask(&json!({"End": {"held": "e0d4"}}));
+        assert_eq!(
+            refused,
+            json!({"Err": "01b2 can't end e0d4: nothing is held here as e0d4"}),
+            "a session ends only a hold it runs in"
+        );
     })
     .await
     .expect("the worker's run");

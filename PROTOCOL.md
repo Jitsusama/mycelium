@@ -164,7 +164,7 @@ same code, each line a JSON value:
 
 1. `{"Hello": {"machine", "realm", "version", "facts", "starts",
    "steers", "releases", "updates", "runs", "carries", "shows",
-   "ends", "lends", "reopens", "parks"}}`, first,
+   "ends", "ends_starts", "lends", "reopens", "parks"}}`, first,
    from each end. Each end's
    membership admits the other or refuses it, and nothing else crosses
    until it has. `facts` says the end hears and says what a machine is; an end
@@ -177,7 +177,10 @@ same code, each line a JSON value:
    older than any of them is asked none of it. `shows` says it tells of
    the carries its node ordered and keeps those the other end tells of;
    an end older than it is told none. `ends` says it carries an end of a
-   session held there; an end older than it is asked none. `lends`
+   session held there; an end older than it is asked none.
+   `ends_starts` says it takes an end asked for a start's starter, as
+   below; an end older than it is asked none, since it would read
+   that asker as no frame it knows and close the link. `lends`
    says it carries lends, as below; an end older than it is asked none.
    `reopens` says its node judges a reopening relayed to it
    (`"Start"`); an end older than it is asked none. `parks` says it
@@ -392,11 +395,17 @@ same code, each line a JSON value:
 18. `{"End": {"ask", "held", "by"}}`: end the session held on the
     other end's machine as `held` for good, answered by `Started` with
     `Ended`. `by` is who this end's node judged asks: `"Person"` for the
-    person's own login, or `{"Session": address}` for the session asking.
-    The other end takes it only if its membership proved which machine
-    asked, as for an update, and `by` is the person, since a session's
+    person's own login, `{"Session": address}` for the session asking,
+    or `{"Starter": address}` for the cell this end's book of starts
+    names as having asked that start, proved to be asking. The other end
+    takes it only if its membership proved which machine asked, as for
+    an update, and `by` is the person or the starter, since a session's
     orchestration is proved only where both run; otherwise it refuses,
-    saying why. It ends the hold itself, as `"End"` on the socket does.
+    saying why. A starter's end is sent only where both hellos say
+    `ends_starts`, and the other end's node ends the hold only where its
+    own book took that start as an agent's relayed from this end's
+    machine, refusing one the person started there, as its log says.
+    It ends the hold itself, as `"End"` on the socket does.
     No time limits the answer, since the session has ten seconds to
     save what it holds and what is killed past them two more to go.
 19. `{"Lend": {"ask", "lend"}}`: answer a model call through the other
@@ -835,7 +844,9 @@ in order and says each step:
    that isn't a bundle, patch, log or done file. One that is refuses
    the carry, naming it. What a bundle or a log holds isn't read. The
    node logs each carried session started on a worker, naming it, its
-   quest and the worker.
+   quest and the worker. A machine gone out of reach since the find, or
+   whose node restarted and hasn't heard it since, is refused as the
+   find refuses it, so nothing is shared unscreened.
 4. `start`: each carried session starts again on the machine, held:
    those told to carry first, then the quest's own, then those the find
    couldn't ask of, so a refusal the ask couldn't foresee meets no
@@ -1291,7 +1302,10 @@ A node run with `--eases` looks each minute at what its machine would
 do to ease itself, judging only by what it reads, and does none of it
 but where `--eases-carry` says to make its carries. It reads the
 realm's balance as `mycelium balance --follow` does and holds what
-is seen in most of the last ten readings. Once its readings have said
+is seen in most of the last ten readings. A machine kept lively is
+over there once past its ceiling, as placement judges it, so it
+carries to one with room though its queue is past no limit; past its
+ceiling alone, it puts none to sleep. Once its readings have said
 for ten minutes that its machine is over its limits, whether or not
 another has room, it would put its sessions that wait to sleep where
 they are while it is past its memory limit in eight of the last ten
@@ -1614,8 +1628,10 @@ reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
 | `{"Free": {"quest"}}` | `"Orchestrated"`, freed, from the person's own login |
 | `{"Starts": {"act"}}` | `{"Starts": {"stopped", "newest"}}`, `stop`, `resume` or `list` from the person's own login |
+| `{"Rooms": {"act", "machine"}}` | `{"Rooms": {"rooms"}}`, after `add` or `remove` names `machine` a room or takes it out, or `list`, as the rooms below say |
 | `{"Update": {"machine"}}` | `{"Updated": ending}`, as its updater said it |
 | `{"End": {"held"}}` | `{"Ended": {"machine", "held", "ending"}}`, `ending` `gently` or `killed` (A Held Session) |
+| `{"EndStart": {"held", "from", "cell"}}` | as `End`, from a link proved to be machine `from`, ending for its starter `cell` a start relayed from there (A Held Session) |
 | `{"Run": {"work", "folder", "command", "by", "from", "asked_by"}}` | `{"Running": {"machine"}}`, then a `Ran` a line |
 | `{"Lend": {"budget", "method", "path", "headers", "body"}}` | a `Lent` a line, no reply first (Borrowing a Lend) |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
@@ -1699,7 +1715,9 @@ the `at` it said so; a `doing` it can't read, or whose line is longer, is
 left out whole), its latest `events`, newest first and at most 20 (each
 `at`, its `kind` as `commit`, `push`, `pr`, `merge` or `stage`, `where`
 as a repository's key or a quest's id, and a `title` cut to 120
-characters; any it can't read is left out), and the `window` it
+characters and then, cut or not, ending in no space, no joiner or
+non-joiner left joining nothing and no Khmer coeng with no letter to
+subscript; any it can't read is left out), and the `window` it
 runs in (`terminal`, `id`, `within`, such as a kitty window's id and
 kitty's socket, and `app_id`, the app id its window was opened with,
 where its opener said so in `MYCELIUM_APP_ID`, which names the same
@@ -2230,7 +2248,9 @@ only a machine out of reach would do and the work may wait, or
 long ago), `{"full": most}` (it holds the `sessions_at_most` its own
 `declared` gives, or, where that gives none, the one the offer it was
 made of promised, judged under the same lock as the starts it counts so
-a burst can't overfill it) or, for an offer, `{"lives_only": duration}`.
+a burst can't overfill it; never a run's, since a run starts no session
+and takes no worker home, so a full machine still takes one as its
+load allows) or, for an offer, `{"lives_only": duration}`.
 Placement only
 chooses: a machine says whether work starts there when asked, by its
 own queue and taints, so nothing fits work against its room, which only
@@ -2517,34 +2537,65 @@ which runs as the same account; an agent's process left with no agent
 above it is judged the person's. A machine named in `agent-rooms`,
 beside the node's book of makes, a name a line, past blank lines and
 what follows a `#` on any line, is a room made for agents to share:
-already up and
-paid for by being so. Every agent's start or run may be placed there,
-a granted session's and one from no one known included, whoever it is
-booked for, since its booking says who pays for it and may let it go,
+already up and paid for by being so. The node writes it as
+`mycelium rooms add` and `rooms remove` ask, though placement
+trusts every line, one written by hand included, holding
+`agent-rooms.lock` beside it, giving up after 20 tries 50 ms apart,
+and putting the new file in place whole: every other line kept as it
+stood, its line endings too, synced before it is renamed in, mode
+0644, and never written through a link. A name is letters, digits,
+`.`, `-` and `_`, at most 253 of them. It names a machine a room only
+where its own realm's lines in the book hold it made and standing
+for an agent, refusing one made for the person, or before makes said
+for whom, and one another node made or nobody did, since naming one
+lets every agent's work go there. Only that make's own asker or the
+person names it one, never another agent, whose work its booking
+kept out; a session the person granted names one only as itself,
+though it makes as the person. It is judged again once written, and
+a machine released is taken out, so no name outlives what it was
+judged on, and an add whose second judgement refuses takes out
+only a name it wrote. Anyone may take one out, which only sends work
+back to the machines it would go to anyway; whoever asks, the node
+says on its log who. A file past the most read is never written again.
+Every agent's start or run may be placed there, a granted session's
+and one from no one known included, whoever it is booked for, since
+its booking says who pays for it and may let it go,
 not who may use it; the person's own go there only where it is booked
 for the person or for no asker, never into a worker home an agent's
 make wrote. Any run the person asks naming one machine alone, a room
 not booked here for the person or for no asker (an agent's make booked
 it, or this node never booked it but its link reached it as a worker,
 since each node keeps its own bookings), runs there as an agent's, in
-the agent fence. So the
-person's safe word reaches every room though no session asks it, and
-the person's own login still never runs in a worker home an agent
-wrote. Such a run is placed as an agent's run is: the asking machine
-must declare the agent fence and the room must say it runs commands in
-it, or the run is refused, its refusal saying the person asked it and
-it was sent as an agent's; a refusal the room itself sends back reads
-as an agent's. The run says `"asked_by": "Person"`, which only a node
-says: one an asker puts there without naming a machine it comes from
-is cleared. The room runs it through `/bin/sh -c`, never the login
+the agent fence. So the person's safe word reaches every room though
+no session asks it, and the person's own login still never runs in a
+worker home an agent wrote. Such a run is placed as an agent's run is,
+and a `"Place"` the person asks of it the same way, so where it is told
+the run would go is where it runs: the asking machine must declare the
+agent fence and the room must say it runs commands in it, or the run is
+refused, its refusal saying the person asked it and it was sent as an
+agent's, and, where no booking on this node names the room, that none
+does: a node holds a booking again after a restart only once its make
+redials. A refusal the room itself sends back reads as an agent's. The
+run says `"asked_by": "Person"`, which only a node says: one an asker
+puts there without naming a machine it comes from is cleared. The room
+runs it through `/bin/sh -c`, never the login
 shell, so no profile of the home the agent wrote runs before it, and
 takes every folder of that home off its path, by name or by where it
 leads, before the kit's tools go first, so nothing the home holds
-shadows its command: one found only there isn't found. Each folder
-kept is named by where it leads, one that can't be entered goes, and
-a path left with nothing is `/usr/bin:/bin`, never empty. The home is
-the one the node runs it in, and the `HOME` its launcher gives it
-too, so a launcher that takes `HOME` away or points it elsewhere
+shadows its command: one found only there isn't found, and for a name
+with no slash the run says so on its error output, naming the path it
+had, and ends 127, as the shell would. Each folder kept is named by
+where it leads, one that can't be entered goes, and a path left with
+nothing is `/usr/bin:/bin`, never empty. The node starts the run, and
+any fence launcher before its shell, without the variables that load
+code as a program starts, which the node's environment could name in
+the home: `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `GCONV_PATH`,
+the five `DYLD_` ones, `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `NODE_PATH`,
+`NODE_COMPILE_CACHE`, `OPENSSL_CONF`, `OPENSSL_MODULES`, `PYTHONPATH`,
+`PYTHONSTARTUP`, `PERL5LIB`, `PERL5OPT`, `RUBYLIB`, `RUBYOPT` and
+`LUA_INIT`. A program that needs one of them there sets it itself. The
+home is the one the node runs it in, and the `HOME` its launcher gives
+it too, so a launcher that takes `HOME` away or points it elsewhere
 leaves neither on the path. `HOME` still names that home, so a
 program the command runs that reads its own files from there reads
 what the agent left. Each run's journal keeps `asked_by` beside its
@@ -2682,8 +2733,11 @@ write there could lift it, as it could stop the node. Every start,
 refused ones too, is kept in `starts.jsonl` beside `runs.jsonl` as a
 JSON line, `{"at", "by", "started_by", "folder", "program",
 "resumes", "reopens", "carried", "machine", "held",
-"failed", "refused"}`: `at` in milliseconds, `started_by` null for the
-person's, `resumes` the id of the session it brings back uncounted,
+"relayed_from", "failed", "refused"}`: `at` in milliseconds,
+`started_by` null for the person's, `relayed_from` the machine whose
+link relayed an agent's start counted here, which alone may end it
+for its starter, `resumes` the id of the session it brings back
+uncounted,
 `reopens` the id of the session it brings back, counted or not,
 `carried` the id of the session a carry takes uncounted, as below,
 `program` the command's first word alone, so no argument is kept,
@@ -3452,7 +3506,13 @@ go as the connection closes. It refuses a session, or any address,
 that a session living or parked here or elsewhere answers to, and a
 session another connection holds. Later lines on it are another
 `Presence`, when it changes, or `{"Send": {"message": {...}}}`, the
-message as the harness writes its file, each answered in turn.
+message as the harness writes its file, each answered in turn, or
+`{"End": {"held"}}`, an end of the hold the session runs in. The
+node ends it only where the kernel shows the connection's process
+below that hold's program here, refusing any other with `{"Err":
+"why"}`, since the presence proves nothing, and answers `{"Ok":
+"Ending"}` before it begins, as the person's own end does, its
+ending said on the node's log. An end opening a connection is refused.
 
 The node writes a message again with only the fields the mesh reads,
 keeping it only when its id is of the mesh's shape, names its sender
@@ -3753,11 +3813,15 @@ grapheme, such as U+09BE; no nonspacing mark, conjoining jamo vowel or
 final, or selector is) and following no zero-width joiner kept, to the
 next, the rest dropped, a non-joiner (U+200C) never counted, nor a
 zero-width joiner before a letter (any character Unicode gives
-Alphabetic, as in Devanagari's half forms), each
+Alphabetic, as in Devanagari's half forms, by the Unicode tables the
+node's Rust toolchain carries for `char::is_alphabetic`, which a newer
+toolchain may widen), each
 judged against what is kept so far; and then is trimmed of such
 spaces and braille blanks (U+2800), and cut to its first 120 characters,
-then cleaned again, so it ends in no space and no joiner left joining
-nothing; `folder` is 1 to 1024 bytes. A
+then, cut or not, cleaned again, so it ends in no space, no joiner or
+non-joiner left joining nothing and no Khmer coeng (U+17D2) with no
+letter to subscript;
+`folder` is 1 to 1024 bytes. A
 `for` said as null or as anything but text is unsaid, and one unsaid,
 empty or cleaned to nothing is left out of the cell record. A cell's
 first 16 shares are read, those past these bounds are passed over,
@@ -3807,8 +3871,11 @@ text its want asks in, where the session says one: its lines and
 paragraphs kept, nothing else that steers a terminal, cut past 4096
 characters to end in a space and `[...]`), `repo`,
 the `subjects` its presence declares (the first 24 strings of at most
-120 characters a terminal draws as plain text, a repeat in any case
-passed over like any other entry; the rest are dropped without a word,
+120 characters a terminal draws as plain text, a repeat (one whose
+lower case matches an earlier one's) passed over like any other entry,
+and no accent composed first, so one written as its own mark is a
+subject apart, as is one that only looks like another in a different
+script; the rest are dropped without a word,
 though the session's presence keeps them all), `usage`, the networks it
 `leads`, `machine`, `since`, `quest`, `started_by` (the cell its
 session's record says a book of starts names, else the orchestrator it
@@ -3834,9 +3901,16 @@ only the fields that moved. A node holds each record of every kind as
 the bytes it is sent as, and reads only the fields that moved, so ten
 thousand cells make their records within 30 MB while each holds two
 trees and three in ten say from 1 to 24 subjects of about 30
-characters each, in time that grows with them. Each subject a cell says
-adds about 33 bytes to that peak, so the 30 MB holds about six a cell
-on the whole, and every cell saying 24 would take about 36 MB.
+characters each, in time that grows with them. Each such subject a
+cell says adds about 33 bytes to that peak, so the 30 MB holds about six
+a cell on the whole, and every cell saying 24 took about 36 MB. A
+subject costs about a byte for each of its bytes, so one of 120
+characters outside ASCII may cost up to about 480 bytes, and the
+cap counts characters, not bytes: ten thousand cells each saying 24
+such subjects would spend about 115 MB on them, some 107 MB more than
+the same count of 30-character subjects. The `hub` kind holds each
+different subject again in records of its own, which these figures
+leave out.
 
 The `tie` kind holds who talked with whom in the last day, made from the
 messages the node holds: never what a message said, nor its id, only
@@ -3879,12 +3953,15 @@ make. A record says its `subject`, its `hubs`, each `{"hub", "fits"}`,
 and the first of them again as `hub` and `fits`, for a reader of one
 hub. A hub is made by the node's own count and grants nothing: it is
 where a need is sent first, never a cell that may do more. A cell's
-subjects are its own word, checked by nobody, so a newcomer heard
-least sits first among the fits of every subject it says. Each node
-makes the kind by its own rules, so while nodes of two versions share
-a realm, they may name different hubs for one subject. The kind
-is told as the sessions change, so a busy hour of talk moves the hubs
-with the next change, not a message at a time.
+subjects are its own word, checked by nobody, so a cell heard least,
+new or silent, is among the first made a hub or named a fit of each
+subject it says: a router following hubs should trust a hub with no
+more of a need than it would trust any cell. Each node names hubs from
+the messages and sessions it holds, so two nodes may name different
+hubs for a while, and nodes of two versions may keep different
+subjects for one cell and name different hubs for one subject. The
+kind is told as the sessions change, so a busy hour of talk moves the
+hubs with the next change, not a message at a time.
 
 The `ended` kind holds each session of this machine's whose work
 stopped while its quest goes on, keyed `ended:<session>`, so whoever
@@ -4343,7 +4420,7 @@ cells', and a reader gathers them as `mycelium forage` does.
 | `documents` | each of its documents: `id`, `kind`, `title`, `stage`, and how many steps are `ticked` and `open` |
 | `waits` | only when there are any, what the quest waits on its person for: `id`, `title`, `why`, `minutes`, `when`, whether it's `ready`, and when it was `raised` |
 | `lineage` | `started_by`, the cell that asked this node to start it, else the orchestrator its presence names; beside one, `started_by_from`, `book` when this node's book of starts holds that start, else `presence`; `split_from`, the cell its presence says it split from, kept only as an address; only when there are any, `split_into`, the cells its presence says it split into; and `parent`, the quest its own sits under |
-| `serves`, `relies` | only when there are any, the needs its presence says it took from other cells, and handed them: each `cell`, by address, `need`, what it was about, and `since`, an ISO time. A `need` is drawn on one line and cleaned as `for` is, its joiners capped at three in a run alike, though it keeps any noncharacter and is trimmed only of whitespace, then cut to its first 280 characters and cleaned and trimmed again, so it ends in no space and no joiner left joining nothing |
+| `serves`, `relies` | only when there are any, the needs its presence says it took from other cells, and handed them: each `cell`, by address, `need`, what it was about, and `since`, an ISO time. A `need` is drawn on one line and cleaned as `for` is, its joiners capped at three in a run alike, though it keeps any noncharacter and is trimmed only of whitespace, then cut to its first 280 characters and cleaned and trimmed again, so it ends in no space, no joiner or non-joiner left joining nothing and no Khmer coeng with no letter to subscript, cut or not; a need left with nothing then passes its join over |
 
 The node works out `started_by` and `started_by_from` itself and never
 takes either from a presence's `lineage`. It finds a session's start in
@@ -4453,10 +4530,22 @@ holding it in `sessions` names its `orchestrator` by address: the asker
 must head that orchestrator's open quest by this node's record and by
 that quest's record, and the mesh must put the ended quest's sessions
 and the asker in that orchestrator's group. Only that orchestrator
-ends them so, never one above it. Anyone else is refused, saying
-why. An id held here is ended here; one held on more than one other
-machine is refused. Another machine's hold is known by the presence
-of the session running in it, or, where none does, by the node's
+ends them so, never one above it. A session also ends the hold it
+runs in, here, once the kernel shows its process below that hold's
+program; a parked hold runs none. The cell this node's book of
+starts names as having asked a start that landed on another machine,
+proved to be that cell, ends it there as its starter: the link sends
+it as such, and that machine's node ends it only where its own book
+took that start as an agent's relayed from this machine, logging the
+hold, the cell and the machine, the log stamping when. A machine
+where the person works takes such an end only from its node's own
+process, so it refuses those a link's end asks there. The end goes
+only over a link whose far key proved it, as one this machine dials
+to that machine by ssh is, never over one that machine dialled.
+Anyone else is refused, saying why. An id held here is ended here;
+one held on more than one other machine is refused. Another
+machine's hold is known by the presence of the session running in
+it, or, where none does, by the node's
 book of starts, which keeps the machine each start it holds landed
 on, up to 2048 of them, on disk, so a node started again knows. The
 book forgets nothing a hold ending does, so an end it routes says so,

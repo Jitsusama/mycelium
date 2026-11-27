@@ -276,11 +276,13 @@ const SAYS_LINES: usize = 2;
 /// oldest first. A question says who asks whom, since when and how long
 /// it has waited; a hold, who holds whom and until when; each its id as
 /// the mesh's tools take it, then the opening of what it says, an
-/// ellipsis after it where more lines follow. In `width` columns, a
-/// terminal's; with none, into a pipe, nothing is cut and each says its
-/// first line whole.
+/// ellipsis after it where more lines follow. In a terminal it keeps to
+/// `look`'s width; drawn [`WHOLE`](crate::swarm::WHOLE), into a pipe,
+/// nothing is cut, each says its first line whole and each time is
+/// [`Look::stamped`], all by the one look, as every other page is drawn.
 #[must_use]
-pub fn drawn(records: &[Value], look: &Look, width: Option<usize>) -> String {
+pub fn drawn(records: &[Value], look: &Look) -> String {
+    let width = (!look.whole()).then_some(look.width);
     let mut records: Vec<&Value> = records.iter().collect();
     records.sort_by_key(|record| millis(record["since"].as_str().unwrap_or_default()));
     let (questions, holds): (Vec<&Value>, Vec<&Value>) = records
@@ -349,15 +351,11 @@ const NAME_MOST: usize = 16;
 /// the names first, then the sender and the time, so
 /// the wait and the id a person answers by stay whole; only where even
 /// they don't fit are they cut from their end. Into a pipe nothing is
-/// cut, and each time is [`stamped`].
+/// cut, and each time is [`Look::stamped`].
 fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
     use crate::swarm::fit;
     let since = record["since"].as_str().unwrap_or_default();
-    let when = match width {
-        Some(_) => look.when(since),
-        None => stamped(look, since),
-    }
-    .unwrap_or_default();
+    let when = look.when(since).unwrap_or_default();
     let capped = |text: &str| match width {
         Some(_) => fit(text, NAME_MOST),
         None => text.to_owned(),
@@ -385,10 +383,7 @@ fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
     let (verb, named, after) = if record["intent"] == "hold" {
         let until = record["until"]
             .as_str()
-            .and_then(|until| match width {
-                Some(_) => lapses(look, until),
-                None => stamped(look, until),
-            })
+            .and_then(|until| lapses(look, until))
             .map_or_else(String::new, |until| format!(", until {until}"));
         ("holds", names(&record["groups"]), until)
     } else {
@@ -416,25 +411,17 @@ fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
     }
 }
 
-/// When `at` is, into a pipe: its day, date, time and zone, so a copy
-/// kept until tomorrow, or read on a machine in another zone, still says
-/// when. The zone's offset follows its name, since a name such as IST or
-/// CST is held by more than one zone, and some zones have none.
-fn stamped(look: &Look, at: &str) -> Option<String> {
-    let at = at
-        .parse::<jiff::Timestamp>()
-        .ok()?
-        .to_zoned(look.now.time_zone().clone());
-    Some(at.strftime("%a %-d %b %Y %H:%M %Z (%:z)").to_string())
-}
-
 /// The days ahead a lapse is said by its weekday alone.
 const WEEK_AHEAD: i32 = 6;
 
 /// When a hold lapses, `until`: its time, and its weekday when that
 /// isn't today, as a hold put late in the evening lapses after midnight;
-/// its date too past this week, as one sent dated ahead does.
+/// its date too past this week, as one sent dated ahead does. Into a
+/// pipe it is stamped whole, as [`Look::when`] stamps every other time.
 fn lapses(look: &Look, until: &str) -> Option<String> {
+    if look.whole() {
+        return look.stamped(until);
+    }
     let until = until
         .parse::<jiff::Timestamp>()
         .ok()?
@@ -550,6 +537,21 @@ fn waited(millis: i64) -> String {
 mod tests {
     use super::*;
     use crate::group::Group;
+
+    /// `records` drawn as [`super::drawn`] draws them at `look`'s time, in
+    /// `width` columns, or whole into a pipe where none: `width` takes the
+    /// place of `look`'s own, which is never read.
+    fn drawn(records: &[Value], look: &Look, width: Option<usize>) -> String {
+        super::drawn(
+            records,
+            &Look {
+                width: width.unwrap_or(crate::swarm::WHOLE),
+                colour: look.colour,
+                now: look.now.clone(),
+                shapes: look.shapes.clone(),
+            },
+        )
+    }
 
     /// Noon, in milliseconds, which the tests' messages are sent around.
     fn noon() -> i64 {

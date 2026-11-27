@@ -1149,6 +1149,10 @@ fn cannot_carry(asked: &Asked, said: &Hello) -> Option<&'static str> {
         Asked::Run(..) => (said.runs, "run commands"),
         Asked::Lend(..) => (said.lends, "lend model calls"),
         Asked::Carry { .. } => (said.carries, "carry sessions"),
+        Asked::End {
+            by: hold::end::Asker::Starter(_),
+            ..
+        } => (said.ends && said.ends_starts, "end a start for its starter"),
         Asked::End { .. } => (said.ends, "end held sessions"),
     };
     (!carries).then_some(cannot)
@@ -2370,6 +2374,10 @@ impl<S: Store> End<S> {
     /// a grace to save what it holds: only when the other end is proven
     /// to be its machine, as for a carry, and only for the person.
     fn end(&self, ask: u64, held: String, by: &hold::end::Asker) {
+        if let hold::end::Asker::Starter(cell) = by {
+            self.end_start(ask, held, cell);
+            return;
+        }
         let answering = self.answering.clone();
         let folder = if self.proven {
             self.held
@@ -2386,11 +2394,13 @@ impl<S: Store> End<S> {
         // record of orchestrations, so across a link only the person's is.
         let may = folder.and_then(|folder| match by {
             hold::end::Asker::Person => Ok(folder),
-            hold::end::Asker::Session(address) => Err(format!(
-                "{} ends a held session over a link only for the person, not for {address}, \
+            hold::end::Asker::Session(address) | hold::end::Asker::Starter(address) => {
+                Err(format!(
+                    "{} ends a held session over a link only for the person, not for {address}, \
                  whose orchestration is proved only where both run",
-                self.here
-            )),
+                    self.here
+                ))
+            }
         });
         let folder = match may {
             Ok(folder) => folder,
@@ -2420,6 +2430,45 @@ impl<S: Store> End<S> {
                 Ok(Err(error)) => Err(format!("{held} didn't end on {here}: {error}")),
                 Err(error) => Err(format!("its end stopped: {error}")),
             };
+            // A link that dropped meanwhile has nobody to answer.
+            let _ = answering.send((ask, reply));
+        });
+    }
+
+    /// Hands the end the other end asks of the session held here as
+    /// `held`, for `cell`, whose start it is by the other end's book, to
+    /// this machine's node, away from the link's own work: only when the
+    /// other end is proven to be its machine, since the node ends it only
+    /// where it booked that start as an agent's relayed from there.
+    fn end_start(&self, ask: u64, held: String, cell: &str) {
+        let node = match (self.proven, self.node.clone()) {
+            (true, Some(node)) => Ok(node),
+            (true, None) => Err(format!(
+                "{} ends no held sessions over this link",
+                self.here
+            )),
+            (false, _) => Err(format!(
+                "{} ends a start for its starter only when asked over a link its key \
+                 proved, which this one isn't",
+                self.here
+            )),
+        };
+        let answering = self.answering.clone();
+        let node = match node {
+            Ok(node) => node,
+            Err(why) => {
+                eprintln!(
+                    "{} asked {} to end {held:?} for its starter {cell:?}, refused: {why}",
+                    self.other, self.here
+                );
+                // The link outlives this call, so its loop is there to send it.
+                let _ = answering.send((ask, Err(why)));
+                return;
+            }
+        };
+        let (from, cell) = (self.other.clone(), cell.to_owned());
+        tokio::spawn(async move {
+            let reply = starts::end_start(node, from, held, cell).await;
             // A link that dropped meanwhile has nobody to answer.
             let _ = answering.send((ask, reply));
         });
@@ -3132,6 +3181,32 @@ mod tests {
             recast.asked_by,
             Some(By::Person),
             "the person's run its node sent as an agent's still says who asked"
+        );
+    }
+
+    // Followup 507(b): a recast run's asker crosses the link as its node
+    // said it, so the room runs it reading no profile.
+    #[test]
+    fn a_recast_runs_asker_crosses_a_link_as_said() {
+        let said: Run = serde_json::from_value(json!({
+            "work": {"needs": [], "prefers": [], "tolerates": [], "may_wait": false},
+            "command": ["true"],
+            "by": {"Agent": "fence"},
+            "asked_by": "Person"
+        }))
+        .expect("a recast run as a node says it");
+        assert_eq!(
+            (said.by, said.asked_by),
+            (Some(By::Agent(Kind::Fence)), Some(By::Person)),
+            "both read as PROTOCOL.md writes them"
+        );
+        let frame = Frame::Run { ask: 7, run: said };
+        let written = serde_json::to_string(&frame).expect("a frame writes");
+        assert!(written.contains(r#""asked_by":"Person""#), "{written}");
+        assert_eq!(
+            serde_json::from_str::<Frame>(&written).expect("a frame reads"),
+            frame,
+            "and the far end reads it back whole"
         );
     }
 
@@ -4316,6 +4391,46 @@ mod tests {
         );
     }
 
+    // Followup 544(9): the room gate reads the worker mark as soon as the
+    // node can ask anything of a machine, so the link's admission marks it
+    // before the link offers the node its asks.
+    #[tokio::test]
+    async fn a_link_marks_its_worker_before_its_node_can_ask_of_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("node.sock");
+        let listener = tokio::net::UnixListener::bind(&path).expect("the node binds");
+        let (skiff, kestrel) = (Memory::default(), Memory::default());
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let _near_end = end(&skiff, "skiff", near);
+        let starting = dialled_starting(dir.path(), path);
+        let (reading, writing) = tokio::io::split(far);
+        let kept = kestrel.clone();
+        let _far_end = tokio::spawn(async move {
+            run(
+                kept,
+                &realm("kestrel"),
+                Connection {
+                    worker: true,
+                    ..connection(reading, writing)
+                },
+                None,
+                Some(starting),
+            )
+            .await
+        });
+        let (called, _) = tokio::time::timeout(PATIENCE, listener.accept())
+            .await
+            .expect("the link calls its node in time")
+            .expect("the node takes the call");
+        let mut node = BufReader::new(called).lines();
+        let first = node.next_line().await.expect("it asks").expect("a line");
+        assert!(first.contains("Carry"), "the link asks to carry: {first}");
+        assert!(
+            kestrel.is_worker("skiff"),
+            "skiff is marked a worker before kestrel's node can ask anything of it"
+        );
+    }
+
     // Our council, on #408's fix-forward (2026-11-24): a link another
     // machine dialled runs apart from the node and may drop while it is
     // stopped, so its drop must not be marked as seen.
@@ -4485,6 +4600,45 @@ mod tests {
             )
             .is_ok_and(|said| !said.reopens),
             "an end whose hello doesn't say it judges none"
+        );
+    }
+
+    // An end older than a starter's end can't read who asks one, so it
+    // would end the link that asked: it is asked only the person's.
+    #[test]
+    fn a_starters_end_is_asked_only_of_an_end_that_takes_one() {
+        let end = |by| Asked::End {
+            held: "h-1".to_owned(),
+            by,
+        };
+        let starter = || hold::end::Asker::Starter("OSPREY".to_owned());
+        let older = Hello {
+            ends_starts: false,
+            ..realm("kestrel").hello()
+        };
+        assert_eq!(
+            cannot_carry(&end(starter()), &realm("kestrel").hello()),
+            None
+        );
+        assert_eq!(
+            cannot_carry(&end(starter()), &older),
+            Some("end a start for its starter")
+        );
+        assert_eq!(cannot_carry(&end(hold::end::Asker::Person), &older), None);
+        let endless = Hello {
+            ends: false,
+            ..realm("kestrel").hello()
+        };
+        assert_eq!(
+            cannot_carry(&end(starter()), &endless),
+            Some("end a start for its starter")
+        );
+        assert!(
+            serde_json::from_value::<Hello>(
+                json!({"machine": "tern", "realm": "work", "version": VERSION})
+            )
+            .is_ok_and(|said| !said.ends_starts),
+            "an end whose hello doesn't say it takes none"
         );
     }
 
@@ -5230,6 +5384,7 @@ mod tests {
             carries: true,
             shows: true,
             ends: true,
+            ends_starts: true,
             reopens: true,
             lends: true,
             parks: true,
@@ -5401,6 +5556,113 @@ mod tests {
         skiff_end.abort();
         assert_eq!(from, "kestrel", "from the machine that asked");
         start
+    }
+
+    /// The end of h-1 kestrel asks skiff's end of a link for its starter
+    /// OSPREY, the end judging kestrel by `membership`: what skiff's end
+    /// answers, and the starter's end skiff's node is asked, if any.
+    async fn a_starters_end_as_handed_on(
+        membership: impl Membership + 'static,
+    ) -> (Reply, Option<crate::wire::Request>) {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("node.sock");
+        let (_node, mut heard) = keeping_node(&socket);
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        let starting = Starting {
+            node: socket,
+            held: dir.path().join("held"),
+            asking: None,
+            steers: dir.path().join("steer"),
+            parked: dir.path().join("parked"),
+            health: None,
+            declared: None,
+            kit: None,
+            saturation: None,
+            lender: None,
+            gates: None,
+        };
+        let skiff_end = tokio::spawn(async move {
+            run(
+                Memory::default(),
+                &membership,
+                connection(reading, writing),
+                None,
+                Some(starting),
+            )
+            .await
+            .map(|_| ())
+        });
+        let (far_reading, mut far_writing) = tokio::io::split(far);
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("kestrel").hello()),
+                Frame::End {
+                    ask: 1,
+                    held: "h-1".to_owned(),
+                    by: hold::end::Asker::Starter("OSPREY".to_owned()),
+                },
+            ],
+        )
+        .await;
+        let mut lines = BufReader::new(far_reading).lines();
+        let answered = async {
+            loop {
+                let line = lines.next_line().await.expect("the pipe reads");
+                let line = line.expect("skiff answers");
+                if let Ok(Frame::Started { ask: 1, reply }) = serde_json::from_str(&line) {
+                    break reply;
+                }
+            }
+        };
+        let reply = tokio::time::timeout(PATIENCE, answered)
+            .await
+            .expect("skiff answers in time");
+        skiff_end.abort();
+        // The end asks its node what this machine is too, which isn't
+        // what this is about.
+        let mut ended = None;
+        while let Ok(request) = heard.try_recv() {
+            if let crate::wire::Request::EndStart { .. } = request {
+                ended = Some(request);
+            }
+        }
+        (reply, ended)
+    }
+
+    // Only the node judges a starter's end, by its own book of starts, and
+    // only where the link proved the machine asking, whose name it takes.
+    #[tokio::test]
+    async fn a_starters_end_goes_to_the_node_only_over_a_link_proven_to_be_its_machine() {
+        let proven = Proven {
+            by: realm("skiff"),
+            far: "kestrel".to_owned(),
+        };
+        let (reply, ended) = a_starters_end_as_handed_on(proven).await;
+        assert_eq!(
+            reply,
+            Err("it starts nothing".to_owned()),
+            "the node's answer"
+        );
+        assert_eq!(
+            ended,
+            Some(crate::wire::Request::EndStart {
+                held: "h-1".to_owned(),
+                from: "kestrel".to_owned(),
+                cell: "OSPREY".to_owned(),
+            })
+        );
+        let (reply, ended) = a_starters_end_as_handed_on(realm("skiff")).await;
+        assert_eq!(
+            reply,
+            Err(
+                "skiff ends a start for its starter only when asked over a link its key \
+                 proved, which this one isn't"
+                    .to_owned()
+            )
+        );
+        assert_eq!(ended, None, "its node is never asked");
     }
 
     #[tokio::test]
@@ -5606,8 +5868,8 @@ mod tests {
     }
 
     // A worker's link is one by its way in, from its admission, so a
-    // worker that never says what its machine is, after a restart or a
-    // record a session wrote of it ready, still reads as a worker.
+    // worker that never says what its machine is still reads as a
+    // worker, though a record kept from before says it is none.
     #[tokio::test]
     async fn a_worker_saying_nothing_of_its_machine_is_one_from_its_admission() {
         let skiff = Memory::default();
@@ -5623,22 +5885,14 @@ mod tests {
             None,
         );
         says(&mut far_writing, &[Frame::Hello(realm("tern").hello())]).await;
-        let worker = |store: &Memory| {
+        // The mark that moves is told, so this waits on the change.
+        until(&skiff, |store| {
             store
                 .machines()
                 .iter()
                 .any(|machine| machine.name == "tern" && machine.worker)
-        };
-        let waited = tokio::time::timeout(PATIENCE, async {
-            while !worker(&skiff) {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
         })
         .await;
-        assert!(
-            waited.is_ok(),
-            "a worker's machine read as one within {PATIENCE:?} of its hello alone"
-        );
     }
 
     /// Each link's admission says whether its machine is a worker, either

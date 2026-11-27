@@ -258,6 +258,8 @@ pub trait Store: Clone + Send + Sync + 'static {
     /// Keeps whether a link let in with `machine` reached it as a
     /// `worker`, as its way in alone says, so it reads so from now until a
     /// put of it says otherwise, whether or not it has said what it is.
+    /// A mark that moves is told as a change of that machine, as a put is,
+    /// so a watch of the machines sees it.
     fn mark_worker(&self, machine: &str, worker: bool);
 
     /// Whether this store last heard from its node's link, since it

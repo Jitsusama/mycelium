@@ -1387,7 +1387,7 @@ struct Judged {
 
 /// Why a machine kept lively to `lively` is past its ceiling, as `room`
 /// says, if it is.
-fn past_lively(lively: &Lively, room: &Room) -> Option<String> {
+pub(crate) fn past_lively(lively: &Lively, room: &Room) -> Option<String> {
     // Over the last minute where its node says it, so a burst of a few
     // seconds never crosses the ceiling; over ten from a node too old.
     let (cpu, over) = room

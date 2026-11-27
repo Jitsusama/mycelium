@@ -17,6 +17,9 @@
 //! the other idle), and facts too old to place by. Over time, a [`Watch`]
 //! holds a flag once it is seen in most of the last readings and lets it
 //! go only once it is seen in few, so a flag neither flickers nor lingers.
+//!
+//! Long because a machine's load, the flags read from every load and the
+//! watch over them are one reading, and their tests share its fixtures.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
@@ -26,6 +29,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::facts::{Machine, Readiness};
+use crate::placement;
 use crate::record::{Session, State};
 use crate::room::Limit;
 
@@ -128,15 +132,22 @@ pub struct Load {
     /// `stall`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load: Option<f64>,
-    /// Whether it is over: its queue says it is past a limit, or its
-    /// processor pressure is at [`OVER_CPU_PRESSURE`].
+    /// Whether it is over: its queue says it is past a limit, its
+    /// processor pressure is at [`OVER_CPU_PRESSURE`], or it is past the
+    /// ceiling it is kept lively to.
     pub over: bool,
     /// The limits it is past: those its queue says, and its processor
     /// where its pressure is at [`OVER_CPU_PRESSURE`]. It is
-    /// [`over`](Self::over) exactly when this isn't empty; a reading kept
-    /// before it was said has none.
+    /// [`over`](Self::over) when this isn't empty or it is past its
+    /// [`lively`](Self::lively) ceiling; a reading kept before it was said
+    /// has none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub past: Vec<Limit>,
+    /// Why it is past the ceiling it is kept lively to, where it is:
+    /// such a machine is over though its queue is past no limit, since
+    /// the person at it feels it before the queue does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lively: Option<String>,
     /// Whether it has room for more: not over, stalling under
     /// [`ROOM_STALL`] and using under [`ROOM_MEMORY`] of its memory.
     pub room: bool,
@@ -255,7 +266,13 @@ fn load(machine: &Machine, sessions: &[Session], now: jiff::Timestamp) -> Load {
     {
         past.push(Limit::Cpu);
     }
-    let over = !past.is_empty();
+    let lively = machine
+        .declared
+        .as_ref()
+        .and_then(|declared| declared.kept_lively.as_ref())
+        .zip(room)
+        .and_then(|(lively, room)| placement::past_lively(lively, room));
+    let over = !past.is_empty() || lively.is_some();
     let has_room = !over
         && stall.is_some_and(|stall| stall < ROOM_STALL)
         && processor.is_some_and(|processor| processor < ROOM_PROCESSOR)
@@ -287,6 +304,7 @@ fn load(machine: &Machine, sessions: &[Session], now: jiff::Timestamp) -> Load {
         load,
         over,
         past,
+        lively,
         room: has_room,
         busy,
         idle: count(State::Idle),
@@ -411,6 +429,7 @@ pub fn keep_latest(folder: &Path, reading: &Reading) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::declared::Lively;
     use crate::facts::{self, Sources};
     use crate::room::{Pressure, Room, Takes};
     use serde_json::json;
@@ -508,6 +527,93 @@ mod tests {
             older.over && older.past.is_empty(),
             "kept before it was said"
         );
+    }
+
+    #[test]
+    fn a_machine_past_the_ceiling_it_is_kept_lively_to_is_over_while_another_has_room() {
+        let lively = |name: &str, cpu: f64| {
+            let mut one = machine(name, 16, 64, 40, cpu, 20);
+            one.declared
+                .get_or_insert_with(Default::default)
+                .kept_lively = Some(Lively {
+                cpu: 30,
+                memory_available: None,
+                memory_full: None,
+                io_full: None,
+                io_full_from: Vec::new(),
+            });
+            one
+        };
+        let realm = [
+            machine("kestrel", 16, 64, 40, 4.6, 20),
+            lively("tern", 45.0),
+            lively("wren", 20.0),
+        ];
+        let reading = read(&realm, &[], now());
+        let tern = of(&reading, "tern");
+        assert!(
+            tern.over && !tern.room,
+            "pressure 45 is past a lively ceiling of 30, though under the queue's line"
+        );
+        assert!(
+            tern.lively
+                .as_deref()
+                .is_some_and(|why| why.contains("processor pressure 30 at most")),
+            "it says the ceiling it is past: {:?}",
+            tern.lively
+        );
+        assert!(
+            tern.past.is_empty(),
+            "its queue is past no limit of its own"
+        );
+        assert!(
+            reading.flags.contains(&Flag::HotWhileCool {
+                hot: "tern".to_owned(),
+                cool: "kestrel".to_owned(),
+            }),
+            "so it is over while another has room: {:?}",
+            reading.flags
+        );
+        let wren = of(&reading, "wren");
+        assert!(
+            !wren.over && wren.lively.is_none(),
+            "pressure 20 is within its ceiling"
+        );
+    }
+
+    #[test]
+    fn a_load_is_over_exactly_when_past_a_limit_or_its_lively_ceiling() {
+        let mut hot = machine("tern", 16, 64, 40, 45.0, 20);
+        hot.declared
+            .get_or_insert_with(Default::default)
+            .kept_lively = Some(Lively {
+            cpu: 30,
+            memory_available: None,
+            memory_full: None,
+            io_full: None,
+            io_full_from: Vec::new(),
+        });
+        // What each is past: a limit of its queue's, and its ceiling.
+        let loads = [
+            (machine("osprey", 12, 48, 41, 86.0, 40), (true, false)),
+            (hot, (false, true)),
+            (machine("kestrel", 16, 64, 40, 4.6, 20), (false, false)),
+        ];
+        for (one, past) in loads {
+            let load = load(&one, &[], now());
+            assert_eq!(
+                (!load.past.is_empty(), load.lively.is_some()),
+                past,
+                "{} is past what it is: {load:?}",
+                load.machine
+            );
+            assert_eq!(
+                load.over,
+                !load.past.is_empty() || load.lively.is_some(),
+                "{} is over exactly when past a limit or its ceiling",
+                load.machine
+            );
+        }
     }
 
     #[test]
