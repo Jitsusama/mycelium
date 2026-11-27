@@ -174,6 +174,8 @@ pub enum Shell<'a> {
 /// preloaded or looked for first, a module path, a startup script or a
 /// tool's own options. A service's environment needn't name any, and one
 /// that does may name an agent-written home's own files, as its path may.
+/// It holds each a pi host is refused for (`node::asker`'s own), and more,
+/// since a plain run may start any program, not node alone.
 pub const LOADS_CODE: [&str; 23] = [
     "LD_PRELOAD",
     "LD_AUDIT",

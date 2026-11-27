@@ -1043,6 +1043,9 @@ const NO_SIGUSR1: &str = "--disable-sigusr1";
 /// runs as the host's modules, the loader's libraries, and the modules
 /// OpenSSL's configuration loads. A host's unit must unset each, as
 /// core.nix's pi host unit does, or its word for a spawner isn't taken.
+/// A plain run starts without each of these and more
+/// ([`crate::run::LOADS_CODE`]), since what it starts may be any
+/// program, not node alone.
 const LOADS_CODE: [&str; 8] = [
     "NODE_OPTIONS",
     "NODE_PATH",
@@ -1920,6 +1923,19 @@ mod tests {
     /// tells it.
     fn under_manager(below: &str) -> String {
         format!("0::/user.slice/user-1000.slice/user@1000.service/{below}\n")
+    }
+
+    #[test]
+    fn a_plain_run_starts_without_whatever_would_load_code_into_a_host() {
+        // What would load code into node loads code into a plain run's
+        // program too, so a name added here and missed there leaves one
+        // open.
+        for name in LOADS_CODE {
+            assert!(
+                crate::run::LOADS_CODE.contains(&name),
+                "a plain run starts without {name}, as a host must"
+            );
+        }
     }
 
     #[test]
