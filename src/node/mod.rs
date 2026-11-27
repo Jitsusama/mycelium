@@ -8192,8 +8192,9 @@ impl<S: Store> Shared<S> {
     /// A relay from any other process is taken as an agent's start
     /// instead: counted, limited and booked here, as [`Self::start`] takes
     /// one, and never read for a carry, so it gains an agent nothing its
-    /// own start wouldn't. It starts here or nowhere, never on a machine
-    /// made for it, and waits for no room, since the asking node stops
+    /// own start wouldn't. It starts here or on the agent room it names
+    /// ([`Self::relays_onward`]), never on a machine made for it, and
+    /// waits for no room to be made, since the asking node stops
     /// waiting on its answer within half a minute. Where no person works,
     /// every link's end is told so, and a machine made from a basin takes
     /// the starts placed on it that way; elsewhere, so is a link's end an
@@ -8671,8 +8672,7 @@ impl<S: Store> Shared<S> {
     /// never runs in the worker home an agent's make wrote. Any other is
     /// admitted as its asker here is.
     async fn admits_here(&self, work: &Work, fence: Option<crate::declared::Kind>) -> Admits {
-        if fence.is_some_and(|kind| kind > crate::declared::Kind::None) && self.names_a_room(work)
-        {
+        if fence.is_some_and(|kind| kind > crate::declared::Kind::None) && self.names_a_room(work) {
             Admits::Rooms
         } else {
             self.admits().await
@@ -25499,9 +25499,9 @@ esac
             "one kept but out of reach is asked for through the links"
         );
         let (mut kestrel, mut osprey, mut tern) = (
-            shared
-                .asks
-                .answering("kestrel", |_| Some(Err("wren isn't a room of mine".to_owned()))),
+            shared.asks.answering("kestrel", |_| {
+                Some(Err("wren isn't a room of mine".to_owned()))
+            }),
             shared.asks.answering("osprey", |_| {
                 Some(Err(format!("wren{ONWARD_UNANSWERED}no answer in 25 s")))
             }),

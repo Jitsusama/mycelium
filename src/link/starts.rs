@@ -469,16 +469,19 @@ impl Asks {
         machine: &str,
         answer: impl Fn(&Start) -> Option<Reply> + Send + 'static,
     ) -> mpsc::UnboundedReceiver<Start> {
-        let there: There = Arc::new(|via: &str, words: &[String]| {
-            [vec![via.to_owned()], words.to_vec()].concat()
-        });
+        let there: There =
+            Arc::new(|via: &str, words: &[String]| [vec![via.to_owned()], words.to_vec()].concat());
         let (mut asks, reaching) = self.reach(machine, there);
         let (seen, starts) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             let _reaching = reaching;
             // Held, so one left unanswered is never answered as dropped.
             let mut unanswered = Vec::new();
-            while let Some(Ask { asked, answer: reply }) = asks.recv().await {
+            while let Some(Ask {
+                asked,
+                answer: reply,
+            }) = asks.recv().await
+            {
                 let (Asked::Start(start) | Asked::Reopen(start)) = asked else {
                     continue;
                 };

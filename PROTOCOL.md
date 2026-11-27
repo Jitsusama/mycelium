@@ -287,9 +287,10 @@ same code, each line a JSON value:
    mounted apart as a fence's. A relay from any other process is taken
    as an agent's start, so it gains an agent nothing its own start
    wouldn't: counted, limited and booked here as any agent's is, never
-   read for a carry, and logged; it starts there or nowhere, never on
-   a machine made for it, and waits for no room, since the asking node
-   stops waiting on its answer within 90 seconds. Where no person
+   read for a carry, and logged; it starts there or on the agent room
+   it names, never on a machine made for it, and waits for no room to
+   be made, since the asking node stops waiting on its answer within
+   90 seconds. Where no person
    works, an agent's SSH login can't be told from a link's end, so
    every relay but its own process's is taken so, and a machine made
    from a basin still takes the starts placed on it, where its strict
@@ -307,11 +308,15 @@ same code, each line a JSON value:
    and never on a machine made for it. The one exception is a start
    naming one of that node's agent rooms, which it asks of that room
    through its own link, waiting 25 seconds at most, so a Mac reaches
-   rooms only the person's laptop links to. A node that hears nothing
-   of a machine a start names asks each machine it links to in turn,
-   and takes an answer naming that machine; it asks no other once one
-   was sent the start and gave no answer. One it takes as the person's
-   it neither counts nor books, since the asking node did. The end
+   rooms only the person's laptop links to. One fenced where it was
+   asked goes to the room whoever booked it, as an agent's start does,
+   and declares that fence there. A node that hears nothing of a
+   machine a start names, or holds it only as out of reach, asks each
+   machine it links to in turn, and takes an answer naming that
+   machine. It asks no other once one was sent the start and gave no
+   answer, or answered that it sent it on to the room and heard
+   nothing back, since the room may yet start it. One it takes as the
+   person's it neither counts nor books, since the asking node did. The end
    doesn't start it itself, since a process SSH started sits outside
    its person's login session.
 9. `{"Started": {"ask", "reply"}}`: the other end's reply to the ask
