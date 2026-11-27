@@ -1040,6 +1040,23 @@ fn a_letter_a_ligature_joins_still_takes_its_own_cell() {
         // widths count it.
         ("\u{5D0}\u{200D}👩", 3, "an emoji after a letter's joiner"),
         ("a\u{200D}👩", 3, "or after a Latin letter's"),
+        (
+            "\u{915}\u{94D}\u{200D}👩",
+            3,
+            "or after a half form's, its virama taking none",
+        ),
+        // A letter that is an emoji too, given the emoji selector, starts
+        // an emoji's sequence, counted two cells whole as any pictograph's.
+        (
+            "\u{2139}\u{FE0F}\u{200D}👩",
+            2,
+            "the information sign as an emoji, joined to one",
+        ),
+        (
+            "\u{263A}\u{FE0F}\u{200D}👩",
+            2,
+            "as a smile joined to one is",
+        ),
     ] {
         assert_eq!(drawn_width(text), wide, "{what}: {text:?}");
     }

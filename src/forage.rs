@@ -1396,7 +1396,10 @@ pub fn chosen(records: Vec<Value>, named: Option<&str>) -> Vec<Value> {
 /// so it is never counted. A letter is what [`char::is_alphabetic`]
 /// says, by the tables the Rust toolchain carries, which take in a few
 /// emoji such as the blood types; a chain of those keeps its joiners,
-/// and the measure counts each of them a cell all the same.
+/// and the measure counts each of them a cell all the same. They take in
+/// combining vowel signs too, which take no cell, so a joiner before one
+/// is kept uncounted; a mark never ends a run, so the emoji a run holds
+/// are capped all the same.
 pub(crate) fn one_line(text: &str) -> String {
     let plain: Vec<char> = text
         .chars()
