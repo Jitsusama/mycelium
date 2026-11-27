@@ -2513,6 +2513,9 @@ struct Shared<S> {
     lends_from: Option<Arc<str>>,
     /// What this machine lends the machines it made, if it lends any.
     lender: Option<Arc<crate::lend::lender::Lender>>,
+    /// What the machine this one borrows from handed it to lend its own
+    /// sessions, which lends nothing until something is handed.
+    handed: Arc<crate::lend::lender::Lender>,
     /// The gates this machine answers its workers, if it answers any.
     gates: Option<Arc<crate::gate::Gates>>,
     /// The ids of the signals this node said as its receptors this run,
@@ -2683,6 +2686,7 @@ impl<S: Clone> Clone for Shared<S> {
             stimuli: self.stimuli.clone(),
             lends_from: self.lends_from.clone(),
             lender: self.lender.clone(),
+            handed: Arc::clone(&self.handed),
             gates: self.gates.clone(),
             spoken: Arc::clone(&self.spoken),
             refused: Arc::clone(&self.refused),
@@ -4152,6 +4156,7 @@ impl<S: Store> Shared<S> {
             stimuli,
             lends_from: lends_from.map(Into::into),
             lender,
+            handed: Arc::new(crate::lend::lender::Lender::handed()),
             gates,
             spoken: Arc::default(),
             refused: Arc::default(),
@@ -5733,6 +5738,7 @@ impl<S: Store> Shared<S> {
             Request::Places {} => Err("places are answered by `places`".to_owned()),
             Request::Run(_) => Err("a run is answered by `run`".to_owned()),
             Request::Lend(_) => Err("a lend is answered by `lend`".to_owned()),
+            Request::Hands { from, hands } => self.take_hands(&from, hands),
             Request::Offers => Err("offers are answered by `offers`".to_owned()),
             Request::Steer { .. } => Err("a steer is answered by `steer`".to_owned()),
             Request::End { .. } => Err("an end is answered by `end`".to_owned()),
@@ -5754,6 +5760,29 @@ impl<S: Store> Shared<S> {
             Request::Health => Err("health is answered by `own_health::tell`".to_owned()),
             Request::Turn { .. } => Err("a turn is answered by `take_turn`".to_owned()),
         }
+    }
+
+    /// Lends this machine's own sessions from now on as `hands` says, as
+    /// the link reaching `from` carried it, where `from` is the machine
+    /// this one borrows from; refused from any other. A process here
+    /// asking it in that machine's name hands only what it holds itself:
+    /// a key and the budget it came with are taken together, and never
+    /// said back, so none can read or spend a key it didn't hand.
+    fn take_hands(&self, from: &str, hands: crate::lend::Hands) -> Result<Response, String> {
+        if self.lends_from.as_deref() != Some(from) {
+            return Err(format!(
+                "{from} isn't the machine this one borrows from, so it hands nothing here"
+            ));
+        }
+        let first = !self.handed.lends();
+        self.handed.hand(hands)?;
+        if first {
+            eprintln!(
+                "mycelium: {from} handed this machine a lend of its own, so its sessions' \
+                 calls go straight up"
+            );
+        }
+        Ok(Response::Handed)
     }
 
     /// What a link over `dial` carries starts with: this node's `node`
@@ -11249,6 +11278,52 @@ const LENDER_AWAITED_MOST: Duration = Duration::from_secs(1);
 
 const LENDER_ASKED_EVERY: Duration = Duration::from_millis(250);
 
+/// How a lend this machine lent itself, from what its lender handed it,
+/// ended.
+enum Here {
+    /// It ended as the lend here said, or its client hung up.
+    Ended,
+    /// It was refused before anything of it was said, as one this
+    /// machine's own lend can't make: not yet handed one that stands, or
+    /// its upstream not answering, so it is borrowed instead.
+    Refused(u16, String),
+}
+
+/// Writes what this machine's own lend `answers` a line each until it
+/// ends or its client at `lines` hangs up; but a refusal before anything
+/// else is said, 403 or 503, is handed back unsaid, to be borrowed
+/// instead. A refusal past a day's count stands, since the lender's own
+/// count would say the same.
+async fn lent_here(
+    mut answers: mpsc::Receiver<Lent>,
+    lines: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    writing: &mut tokio::net::unix::OwnedWriteHalf,
+) -> Here {
+    let first = tokio::select! {
+        first = answers.recv() => first,
+        // Dropping what it answers lets the lend go.
+        _ = lines.next_line() => return Here::Ended,
+    };
+    let first = match first {
+        Some(Lent::Refused { status, why }) if matches!(status, 403 | 503) => {
+            return Here::Refused(status, why);
+        }
+        Some(first) => first,
+        None => {
+            return Here::Refused(503, "this machine's own lend ended unsaid".to_owned());
+        }
+    };
+    if write(writing, &first).await.is_err() || first.ends() {
+        return Here::Ended;
+    }
+    if matches!(lent_on(answers, lines, writing).await, Handed::Unsaid) {
+        let why = "this machine's own lend ended partway through its answer";
+        let _ = write(writing, &Lent::Refused { status: 503, why: why.to_owned() })
+            .await;
+    }
+    Here::Ended
+}
+
 /// How a lend handed to the link reaching its lender ended.
 enum Handed {
     /// It ended as its lender said, or its client hung up.
@@ -11279,6 +11354,16 @@ async fn hand_on_lend<S: Store>(
         let _ = write(&mut writing, &refused(403, why.to_owned())).await;
         return;
     };
+    if shared.handed.lends() {
+        let answers = crate::lend::lender::answer(&shared.handed, &shared.machine, lend.clone());
+        match lent_here(answers, &mut lines, &mut writing).await {
+            Here::Ended => return,
+            Here::Refused(status, why) => eprintln!(
+                "mycelium: this machine's own lend refused a lend {status}, so it borrows it from \
+                 {lender}: {why}"
+            ),
+        }
+    }
     let until = tokio::time::Instant::now() + LENDER_AWAITED_MOST;
     loop {
         let why = match shared.asks.lend(&lender, lend.clone()).await {

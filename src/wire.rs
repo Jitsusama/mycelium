@@ -88,6 +88,15 @@ pub enum Request {
     /// with no reply first, until it ends. A client that hangs up lets it
     /// go.
     Lend(crate::lend::Lend),
+    /// Lend from now on as `hands` says, as the link reaching `from`, the
+    /// machine this one lends from, carried it: answered
+    /// [`Response::Handed`], or refused where `from` is any other machine.
+    Hands {
+        /// The machine that handed it.
+        from: String,
+        /// What it handed.
+        hands: crate::lend::Hands,
+    },
     /// Put what the person says into a session's steer inbox, on the one
     /// machine running the session that goes by `address`, in the
     /// harness's own shape: text, act, at, from and id.
@@ -606,6 +615,8 @@ pub enum Response {
     Spawned,
     /// Asks follow, one per line, each to be answered on a line back.
     Carrying,
+    /// What was handed is lent from now on.
+    Handed,
     /// This machine's own health, or none while it is unknown: one at
     /// first, and another each time it moves.
     Health(Option<crate::own_health::Health>),

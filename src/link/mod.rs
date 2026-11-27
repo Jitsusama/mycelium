@@ -47,6 +47,7 @@
 pub mod carried;
 mod declared_heard;
 pub mod dial;
+pub mod hands;
 pub mod discovery;
 pub mod membership;
 pub mod refused;
@@ -80,7 +81,7 @@ use crate::gate::Gates;
 use crate::handover;
 use crate::hold;
 use crate::lend::lender::{self, Lender};
-use crate::lend::{BACKLOG, Lend, Lent};
+use crate::lend::{BACKLOG, Hands, Lend, Lent};
 use crate::mesh;
 use crate::own_health;
 use crate::share::exchange::{Exchange, Places, Say};
@@ -262,6 +263,11 @@ pub enum Frame {
         /// Which ask.
         ask: u64,
     },
+    /// What this end's machine hands the other's, a machine it lends to,
+    /// to lend its own sessions from, its key with it, in place of all it
+    /// handed before ([`hands`]). Sent only to an end that said it
+    /// `hands`, as the link comes up and again every [`hands::EVERY`].
+    Hands(Hands),
     /// The other end's machine's answer to an ask, a start's or a steer's.
     Started {
         /// Which ask.
@@ -435,6 +441,14 @@ pub async fn run(
     if let Err(error) = end.open(&mut writing).await {
         return end.leave(Err(error));
     }
+    let _handing = match &end.lender {
+        Lending::By(lender) if end.said.hands => Some(hands::Handing::start(
+            Arc::clone(lender),
+            end.other.clone(),
+            end.runs.saying.clone(),
+        )),
+        _ => None,
+    };
 
     let (mut keeping, mut looking) = paces();
     let mut queued = VecDeque::new();
@@ -1685,6 +1699,9 @@ impl<S: Store> End<S> {
             Frame::Lent { ask, lent } => self.runs.lent(ask, lent),
             // Dropping it lets the lender's answer go.
             Frame::Unlend { ask } => drop(self.runs.lending.remove(&ask)),
+            Frame::Hands(handed) => {
+                hands::take(self.node.clone(), &self.other, handed);
+            }
             Frame::Carry {
                 ask,
                 quest,
@@ -1758,6 +1775,10 @@ impl<S: Store> End<S> {
             // Quest ids and reasons aren't work.
             Frame::Carries { .. } => Some(Refused::Dropped(format!(
                 "{other}, a worker, told of carries, which aren't work"
+            ))),
+            // A worker borrows from this machine; it lends it nothing.
+            Frame::Hands(_) => Some(Refused::Dropped(format!(
+                "{other}, a worker, handed this machine a lend, which only its maker hands"
             ))),
             Frame::Hello(_)
             | Frame::Have { .. }
@@ -2082,6 +2103,7 @@ impl<S: Store> End<S> {
                 self.runs.borrowed.remove(&ask);
                 Frame::Unlend { ask }
             }
+            RunSaid::Hands(handed) => Frame::Hands(handed),
         };
         send(writing, &frame).await
     }
@@ -5387,6 +5409,7 @@ mod tests {
             reopens: true,
             lends: true,
             parks: true,
+            hands: true,
         };
         send(&mut far_writing, &Frame::Hello(personal))
             .await

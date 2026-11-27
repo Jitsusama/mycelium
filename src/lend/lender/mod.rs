@@ -36,7 +36,7 @@ use tokio::sync::mpsc;
 
 use crate::lend::forge::BORROWER;
 use crate::lend::serve::{HANDED_ON, MOST_BODY, MOST_HEAD};
-use crate::lend::{BACKLOG, Lend, Lent};
+use crate::lend::{BACKLOG, Hands, Key, Lend, Lent};
 
 use spend::{Meter, dollars, millionths, spend_watch_allows, usd};
 
@@ -104,6 +104,11 @@ struct Vm {
     /// past which each is refused; none where it may make none.
     #[serde(default)]
     usd_a_day: Option<f64>,
+    /// The budget each is handed to lend itself from, its key with it,
+    /// where it takes one ([`Lender::handing`]); none where it borrows
+    /// every call through this machine.
+    #[serde(default)]
+    hands: Option<String>,
 }
 
 /// What a budget's upstream is.
@@ -134,6 +139,10 @@ struct Budget {
     /// value; none where the upstream adds its own.
     #[serde(default)]
     key: Option<Vec<String>>,
+    /// The header's value, where the machine that made this one handed
+    /// the budget over with it; never read from a file.
+    #[serde(skip)]
+    handed: Option<Key>,
     /// What answers at its upstream.
     #[serde(default)]
     kind: Kind,
@@ -247,12 +256,21 @@ struct Tally {
     spent: u64,
 }
 
-/// This machine's lend: its file, and where it keeps its counts and cuts.
+/// Where a lender reads what may be lent.
+enum Source {
+    /// A sealed file, read again at every lend, and the accounts that
+    /// may seal it.
+    File(PathBuf, Vec<u32>),
+    /// What the machine that made this one handed it last, if it handed
+    /// anything yet, which it hands again as it changes.
+    Handed(Mutex<Option<Hands>>),
+}
+
+/// This machine's lend: what may be lent, and where it keeps its counts
+/// and cuts.
 pub struct Lender {
-    /// The sealed file saying what may be lent.
-    file: PathBuf,
-    /// The accounts that may seal it.
-    declarers: Vec<u32>,
+    /// Where it reads what may be lent.
+    source: Source,
     /// Where the day's counts and the cuts are kept.
     folder: PathBuf,
     /// The folder an upstream named within it is found in, if there is
@@ -274,11 +292,61 @@ impl Lender {
         runtime: Option<PathBuf>,
     ) -> Self {
         Self {
-            file,
-            declarers,
+            source: Source::File(file, declarers),
             folder,
             runtime,
             counting: Mutex::new(()),
+        }
+    }
+
+    /// A lender of what the machine that made this one hands it, lending
+    /// nothing until it hands something, keeping its counts and cuts in
+    /// `folder` and finding an upstream not named whole within `runtime`.
+    #[must_use]
+    pub fn handed_in(folder: PathBuf, runtime: Option<PathBuf>) -> Self {
+        Self {
+            source: Source::Handed(Mutex::new(None)),
+            folder,
+            runtime,
+            counting: Mutex::new(()),
+        }
+    }
+
+    /// A lender of what the machine that made this one hands it, keeping
+    /// its counts and cuts in a folder of their own within this machine's
+    /// [`folder`], apart from a lend file's, and finding an upstream
+    /// within the login's runtime folder.
+    #[must_use]
+    pub fn handed() -> Self {
+        Self::handed_in(folder().join("handed"), crate::place::login_runtime())
+    }
+
+    /// Takes `hands` as what may be lent from now on, in place of all it
+    /// was handed before, so a key and the budget it came with are never
+    /// mixed with another's; refused by a lender reading a file.
+    ///
+    /// # Errors
+    ///
+    /// When this lender reads its file, or `hands` is no lend.
+    pub fn hand(&self, hands: Hands) -> Result<(), String> {
+        let Source::Handed(held) = &self.source else {
+            return Err("this machine lends as its own file says, and is handed nothing".to_owned());
+        };
+        handed_written(&hands)?;
+        *held.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hands);
+        Ok(())
+    }
+
+    /// Whether it lends anything yet: one reading a file always may, and
+    /// one handed its lend once it was handed one.
+    #[must_use]
+    pub fn lends(&self) -> bool {
+        match &self.source {
+            Source::File(..) => true,
+            Source::Handed(held) => held
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_some(),
         }
     }
 
@@ -303,19 +371,86 @@ impl Lender {
     /// this machine's log alone, since the asker is another machine's
     /// agent, and says where it doesn't parse but never what it found.
     fn written(&self) -> Result<Written, Refusal> {
-        crate::declared::sealed(&self.file, &self.declarers)
-            .and_then(|()| fs::read(&self.file).map_err(|error| error.to_string()))
-            .and_then(|text| serde_json::from_slice(&text).map_err(|error| unparsed(&error)))
+        let (file, declarers) = match &self.source {
+            Source::File(file, declarers) => (file, declarers),
+            Source::Handed(held) => {
+                let held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let Some(hands) = held.as_ref() else {
+                    return Err(refused(503, "this machine was handed no lend yet"));
+                };
+                // Checked as it was handed, so this fails only as no lend.
+                return handed_written(hands).map_err(|why| refused(503, why));
+            }
+        };
+        raw(file, declarers)
+            .and_then(|raw| serde_json::from_value(raw).map_err(|error| unparsed(&error)))
             .map_err(|why| {
                 eprintln!(
                     "mycelium: this machine's lend, {}, isn't taken: {why}",
-                    self.file.display()
+                    file.display()
                 );
                 refused(
                     503,
                     "this machine's lend isn't taken; its node's log says why".to_owned(),
                 )
             })
+    }
+
+    /// What this machine hands `machine`, a machine it lends to, to lend
+    /// itself from, where its file says it hands that machine a budget:
+    /// a lend naming `machine` alone, with that budget's paths, prices
+    /// and upstream as the file says them, the day's most it may make and
+    /// spend as its lend here says, and the key that budget's command
+    /// prints here. That budget is the machine's own, apart from what it
+    /// borrows here, so its file names an upstream on that machine.
+    /// None where the file hands it nothing.
+    ///
+    /// # Errors
+    ///
+    /// When the file can't be read, names no one lend for `machine`, or
+    /// the budget it hands is missing or its key can't be had.
+    pub async fn handing(&self, machine: &str) -> Result<Option<Hands>, String> {
+        let Source::File(file, declarers) = &self.source else {
+            return Ok(None);
+        };
+        let raw = raw(file, declarers)?;
+        let written: Written =
+            serde_json::from_value(raw.clone()).map_err(|error| unparsed(&error))?;
+        let mut matching = written
+            .vms
+            .iter()
+            .filter(|vm| machine.starts_with(vm.prefix.as_str()));
+        let (Some(vm), None) = (matching.next(), matching.next()) else {
+            return Err(format!("no one lend here names {machine}"));
+        };
+        let Some(name) = &vm.hands else {
+            return Ok(None);
+        };
+        let command = written
+            .budgets
+            .get(name)
+            .ok_or_else(|| format!("the budget {name} isn't in this machine's lend"))?
+            .key
+            .clone()
+            .ok_or_else(|| format!("the budget {name} names no key to hand"))?;
+        let key = key(&command).await.map_err(|refusal| refusal.why)?;
+        let mut budget = raw["budgets"][name].clone();
+        if let Some(budget) = budget.as_object_mut() {
+            budget.remove("key");
+        }
+        let lend = json!({
+            "vms": [{
+                "prefix": machine,
+                "budget": name,
+                "requests_a_day": vm.requests_a_day,
+                "usd_a_day": vm.usd_a_day,
+            }],
+            "budgets": {name.as_str(): budget},
+        });
+        Ok(Some(Hands {
+            lend,
+            key: Key(key),
+        }))
     }
 
     /// Why `machine` is cut off, as the cuts say now, where it is: cuts
@@ -1067,9 +1202,10 @@ async fn reached(
     lender: &Lender,
     budget: &Budget,
 ) -> Result<(UnixStream, Option<String>), Refusal> {
-    let key = match &budget.key {
-        Some(command) => Some(key(command).await?),
-        None => None,
+    let key = match (&budget.handed, &budget.key) {
+        (Some(Key(handed)), _) => Some(handed.clone()),
+        (None, Some(command)) => Some(key(command).await?),
+        (None, None) => None,
     };
     let upstream = if budget.upstream.is_absolute() {
         budget.upstream.clone()
@@ -1339,6 +1475,31 @@ async fn unquiet<T>(reading: impl Future<Output = T>) -> Result<T, Ended> {
                 ),
             ))
         })
+}
+
+/// What the sealed `file` says, as JSON, unread as a lend yet.
+fn raw(file: &Path, declarers: &[u32]) -> Result<serde_json::Value, String> {
+    crate::declared::sealed(file, declarers)
+        .and_then(|()| fs::read(file).map_err(|error| error.to_string()))
+        .and_then(|text| serde_json::from_slice(&text).map_err(|error| unparsed(&error)))
+}
+
+/// What `hands` lends, its key in each budget, where it is a lend whose
+/// budgets run no command of their own for a key and whose key can stand
+/// in a request's head.
+fn handed_written(hands: &Hands) -> Result<Written, String> {
+    let mut written: Written = serde_json::from_value(hands.lend.clone())
+        .map_err(|error| format!("what was handed {}", unparsed(&error)))?;
+    if hands.key.0.is_empty() || !spoken(&hands.key.0) {
+        return Err("the key handed can't stand in a request".to_owned());
+    }
+    for (name, budget) in &mut written.budgets {
+        if budget.key.is_some() {
+            return Err(format!("the budget {name} handed runs a key command"));
+        }
+        budget.handed = Some(hands.key.clone());
+    }
+    Ok(written)
 }
 
 /// Why a lend file doesn't parse, as the log may keep it: what kind of

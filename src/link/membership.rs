@@ -98,6 +98,12 @@ pub struct Hello {
     /// of one; an end older than this would take one as running.
     #[serde(default)]
     pub parks: bool,
+    /// Whether it hands the lend it is handed on to its node, which lends
+    /// its own sessions from it where it came from the machine that node
+    /// borrows from; an end older than this would end a link that handed
+    /// it one.
+    #[serde(default)]
+    pub hands: bool,
 }
 
 /// Which machines a node links with.
@@ -145,6 +151,7 @@ impl Membership for Realm {
             reopens: true,
             lends: true,
             parks: true,
+            hands: true,
         }
     }
 

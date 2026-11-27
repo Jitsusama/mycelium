@@ -5,6 +5,11 @@
 //!
 //! [`serve`] is the borrower's side, where pi's requests come in, and
 //! [`lender`] the lender's, where they are carried to its model relay.
+//!
+//! A lender may instead hand a machine it made a budget of its own, key
+//! and all, as [`Hands`], so that machine lends its own sessions' calls
+//! straight to its upstream rather than across the link: each call then
+//! goes up from the machine that made it, not through the lender's.
 
 pub mod forge;
 pub mod lender;
@@ -15,6 +20,29 @@ use serde::{Deserialize, Serialize};
 /// How many [`Lent`]s wait between a lend and its reader at most, at each
 /// step from the lender to whoever asked for it.
 pub const BACKLOG: usize = 4;
+
+/// A budget a lender hands a machine it made, to lend its own sessions
+/// from: a lend file's shape, naming that machine alone and one budget,
+/// with no key command in it, and the key that command printed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hands {
+    /// What may be lent, as a lend file says it.
+    pub lend: serde_json::Value,
+    /// The header's value its budget's requests carry.
+    pub key: Key,
+}
+
+/// A key, which says itself on the wire alone: never in a log, an error
+/// or a debug line.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Key(pub String);
+
+impl std::fmt::Debug for Key {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Key(..)")
+    }
+}
 
 /// A model call asked of the machine lending, as pi asked it, with none
 /// of pi's credentials.

@@ -19,7 +19,7 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 use crate::client::Client;
 use crate::hold::end::Asker;
 use crate::hold::start::Kit;
-use crate::lend::{Lend, Lent};
+use crate::lend::{Hands, Lend, Lent};
 use crate::link::dial::{Dial, Ssh};
 use crate::placement::Need;
 use crate::share::exchange::Places;
@@ -508,6 +508,8 @@ pub(super) enum RunSaid {
     Lent(u64, Lent),
     /// A lend asked of the other machine has been let go.
     Unlend(u64),
+    /// What this machine hands the other to lend itself from.
+    Hands(Hands),
 }
 
 /// A run the other end asked of this machine, while it runs.

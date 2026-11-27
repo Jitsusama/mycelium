@@ -164,7 +164,8 @@ same code, each line a JSON value:
 
 1. `{"Hello": {"machine", "realm", "version", "facts", "starts",
    "steers", "releases", "updates", "runs", "carries", "shows",
-   "ends", "ends_starts", "lends", "reopens", "parks"}}`, first,
+   "ends", "ends_starts", "lends", "reopens", "parks",
+   "hands"}}`, first,
    from each end. Each end's
    membership admits the other or refuses it, and nothing else crosses
    until it has. `facts` says the end hears and says what a machine is; an end
@@ -187,7 +188,8 @@ same code, each line a JSON value:
    keeps a session parked on the other machine as parked, its process
    gone and its address there to send to, which wakes it; only such an
    end is told of one, since an end older than it would take it as
-   running.
+   running. `hands` says it hands a lend it is handed to its node, as
+   below; an end older than it is handed none.
    `machine` is the name the end's machine goes by, one name for every
    command there: the node's `--machine`, else the system's name up to
    its first dot, which the node records in its folder's `machine` file
@@ -422,6 +424,13 @@ same code, each line a JSON value:
     `{"Unlend": {"ask"}}` says the asker let go, and the lend is let
     go; a link that drops lets go every lend it carried, and the
     asking end hears nothing more of them, which it judges itself.
+20. `{"Hands": {"lend", "key"}}`: lend the other end's sessions from
+    this, in place of all handed before (Borrowing a Lend). An end
+    whose node lends to the other end, its file naming a budget it
+    `hands` that machine, sends it to an end saying `hands`, as the
+    link comes up and every ten minutes after. The other end hands it
+    to its node as `{"Hands": {"from", "hands"}}`, `from` the link's
+    other end; a worker's end drops one, since only its maker hands.
 
 Two ends of one `version` link whichever of them is newer, for as
 long as each change keeps to three rules. A new field is optional, so
@@ -1634,6 +1643,7 @@ reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"EndStart": {"held", "from", "cell"}}` | as `End`, from a link proved to be machine `from`, ending for its starter `cell` a start relayed from there (A Held Session) |
 | `{"Run": {"work", "folder", "command", "by", "from", "asked_by"}}` | `{"Running": {"machine"}}`, then a `Ran` a line |
 | `{"Lend": {"budget", "method", "path", "headers", "body"}}` | a `Lent` a line, no reply first (Borrowing a Lend) |
+| `{"Hands": {"from", "hands"}}` | `"Handed"`, from a link to the machine this one borrows from, taking its lend as this machine's own (Borrowing a Lend) |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
 | `{"Send": {"from", "groups", "intent", "text", "re", "realm"}}` | `{"Sent": message}`, or refused |
@@ -3234,6 +3244,30 @@ refuses it 503. One whose link ends partway through its answer is
 refused 503 at once, since pi's answer has begun, as is one the link
 took but the lender never answered, which asking again might lend
 twice. A client that hangs up lets the lend go, waiting or not.
+
+A lender may hand a borrowing machine a budget of its own instead.
+Its file's vm entry names one as `"hands": NAME`, a budget whose
+`upstream` is a path on the borrowing machine, such as its own model
+relay, and whose `key` command prints its key on the lender. Over
+each link it lends by, to an end whose hello says `hands`, the
+lender's end sends a `"Hands"` frame as the link comes up and every
+ten minutes: `lend`, a lend file naming that machine alone, with the
+vm entry's `requests_a_day` and `usd_a_day` and that budget less its
+`key`, and `key`, the key the command printed. A file that names no
+budget to hand sends none, and one whose budget is missing, or whose
+key can't be had, sends none and says why in the lender's log, once
+for each reason. The borrowing node takes it only from the link to
+the machine `--lends-from` names, refusing any other, and only where
+its budgets name no `key` command, and keeps it in memory alone,
+never on disk or in a log; each it takes replaces the last whole, so
+a process asking in that machine's name can put its own budget and
+key in place but never read or spend the one handed. Its counts and
+cuts are kept in `lend/handed/` under the account's state folder.
+Once it holds one, each lend is lent by it first, as a lender lends
+its own, and borrowed from the lender as above only where that lend
+is refused 403 or 503 before anything is said, such as a budget
+asked that isn't the one handed, or an upstream that can't be
+reached; a refusal past the day's count stands.
 
 Where the lender dialled this machine, as a maker dials its workers,
 the link runs apart from the node, and the lend crosses the `"Carry"`
