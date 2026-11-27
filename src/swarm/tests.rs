@@ -951,6 +951,19 @@ fn width_is_counted_in_the_cells_a_terminal_draws() {
             4,
             "a wide mark joined to an emoji takes its own two",
         ),
+        (
+            "\u{263A}\u{200D}\u{1F469}",
+            3,
+            "a one-cell pictograph joined to an emoji takes its own cell beside the emoji's two",
+        ),
+        // Asked for as text, a wide emoji counts one cell, as Unicode's
+        // widths and a terminal that honours the selector draw it; one
+        // drawing each code point alone draws it two.
+        (
+            "\u{231A}\u{FE0E}",
+            1,
+            "a wide emoji asked for as text takes one",
+        ),
     ] {
         assert_eq!(drawn_width(text), wide, "{what}: {text:?}");
     }
