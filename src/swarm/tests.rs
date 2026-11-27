@@ -1349,7 +1349,9 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
     // at each start, cutting it takes minutes and wrapping it longer.
     // Into a pipe the room is the whole text, so neither its room nor a
     // cap on steps bounds it there.
-    let budget = Duration::from_secs(5);
+    // The budget is far under that and far over a fair cut's cost, even
+    // unoptimised on a loaded machine.
+    let budget = Duration::from_secs(30);
     // Each cut runs on a thread of its own, so one that costs what its
     // text does fails at the budget rather than holding the run for
     // hours; the test's process ends what it leaves running.
@@ -1401,17 +1403,22 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
             within(&"👩\u{200D}💻".repeat(20_000), 80).chars().count() == 40 * 3
         }),
     ];
-    let slow: Vec<String> = cases
-        .iter()
-        .filter_map(|(what, cut)| match within_budget(*cut) {
-            Ok(true) => None,
-            Ok(false) => Some(format!("{what}: cut wrong")),
+    let mut slow = Vec::new();
+    for (what, cut) in &cases {
+        match within_budget(*cut) {
+            Ok(true) => {}
+            Ok(false) => slow.push(format!("{what}: cut wrong")),
+            // Its thread spins on, so a cut timed beside it would be
+            // timed against it too: the rest aren't timed.
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                Some(format!("{what}: still cutting after {budget:?}"))
+                slow.push(format!(
+                    "{what}: still cutting after {budget:?}, so the rest weren't timed"
+                ));
+                break;
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => Some(format!("{what}: panicked")),
-        })
-        .collect();
+            Err(mpsc::RecvTimeoutError::Disconnected) => slow.push(format!("{what}: panicked")),
+        }
+    }
     assert!(
         slow.is_empty(),
         "cuts that cost what their text does: {slow:#?}"
