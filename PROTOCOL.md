@@ -1291,7 +1291,10 @@ A node run with `--eases` looks each minute at what its machine would
 do to ease itself, judging only by what it reads, and does none of it
 but where `--eases-carry` says to make its carries. It reads the
 realm's balance as `mycelium balance --follow` does and holds what
-is seen in most of the last ten readings. Once its readings have said
+is seen in most of the last ten readings. A machine kept lively is
+over there once past its ceiling, as placement judges it, so it
+carries to one with room though its queue is past no limit; past its
+ceiling alone, it puts none to sleep. Once its readings have said
 for ten minutes that its machine is over its limits, whether or not
 another has room, it would put its sessions that wait to sleep where
 they are while it is past its memory limit in eight of the last ten
