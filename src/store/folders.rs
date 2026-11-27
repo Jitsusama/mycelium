@@ -2575,6 +2575,23 @@ mod tests {
         );
     }
 
+    // A session may take away the record a link put, but the room gate asks
+    // the link's mark, which stays.
+    #[test]
+    fn a_worker_stays_one_though_its_record_is_removed() {
+        // Followup 544(4): a worker by its link's put stays one with its record gone.
+        let (dir, store) = store();
+        let mut tern = crate::placement::tests::machine("tern", "linux", 32, &[]);
+        tern.worker = true;
+        store.put_machine(&tern).expect("its link keeps it");
+        fs::remove_file(dir.path().join("claims").join(format!("tern{SAID}")))
+            .expect("a session takes it away");
+        assert!(
+            store.is_worker("tern"),
+            "a worker its link put stays one, its record taken away"
+        );
+    }
+
     #[tokio::test]
     async fn a_machine_saying_itself_again_is_told_by_its_name() {
         let (dir, store) = store();
