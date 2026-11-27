@@ -771,11 +771,8 @@ mod tests {
                 [vec![via.to_owned()], words.to_vec()].concat()
             });
             let (mut asked, _reaching) = asks.reach("kestrel", there);
-            let onward = asks.ask_onward_within(
-                ("kestrel", "wren"),
-                start.clone(),
-                START_ANSWERED_WITHIN,
-            );
+            let onward =
+                asks.ask_onward_within(("kestrel", "wren"), start.clone(), START_ANSWERED_WITHIN);
             let (reply, ()) = tokio::join!(onward, async {
                 let Ask { answer, .. } = asked.recv().await.expect("kestrel is asked");
                 let _ = answer.send(Ok(Response::Started(Started {

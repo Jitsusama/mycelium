@@ -1503,10 +1503,22 @@ pub(crate) mod tests {
             judged_there(&sprouting("x", folder, on), "skiff")
         };
         assert!(judged(Some("/world/trees/plants"), Some("tern")));
-        assert!(!judged(Some("/world/trees/plants"), Some("skiff")), "here is read here");
-        assert!(!judged(Some("/world/trees/plants"), None), "as is a start placed");
-        assert!(!judged(Some("src/plants"), Some("tern")), "a folder from here isn't whole");
-        assert!(!judged(Some("//areas/plants"), Some("tern")), "a zone is found here");
+        assert!(
+            !judged(Some("/world/trees/plants"), Some("skiff")),
+            "here is read here"
+        );
+        assert!(
+            !judged(Some("/world/trees/plants"), None),
+            "as is a start placed"
+        );
+        assert!(
+            !judged(Some("src/plants"), Some("tern")),
+            "a folder from here isn't whole"
+        );
+        assert!(
+            !judged(Some("//areas/plants"), Some("tern")),
+            "a zone is found here"
+        );
         assert!(!judged(None, Some("tern")), "nor is no folder");
         assert_eq!(
             Unseen.resolved(Path::new("/world/trees/../trees/plants")),

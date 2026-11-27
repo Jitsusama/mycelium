@@ -8948,7 +8948,9 @@ impl<S: Store> Shared<S> {
         let mut answered = Vec::new();
         for machine in through {
             let within = relayed_within(at, jiff::Timestamp::now().as_millisecond());
-            let asking = self.asks.ask_onward_within((&machine, unseen), asked.clone(), within);
+            let asking = self
+                .asks
+                .ask_onward_within((&machine, unseen), asked.clone(), within);
             match asking.await {
                 Ok(Ok(started)) => return Ok(started),
                 Ok(Err(why)) => answered.push(format!("{machine}: {why}")),
@@ -25293,8 +25295,16 @@ esac
             Some("wren"),
             "a machine never heard of here is asked of those it links to"
         );
-        assert_eq!(shared.names_unseen(&naming("tern")), None, "one heard isn't");
-        assert_eq!(shared.names_unseen(&naming("skiff")), None, "nor is this one");
+        assert_eq!(
+            shared.names_unseen(&naming("tern")),
+            None,
+            "one heard isn't"
+        );
+        assert_eq!(
+            shared.names_unseen(&naming("skiff")),
+            None,
+            "nor is this one"
+        );
     }
 
     #[tokio::test]
