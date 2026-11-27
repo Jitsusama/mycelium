@@ -3948,10 +3948,10 @@ hubs for a while, and nodes of two versions may keep different
 subjects for one cell and name different hubs for one subject. The
 kind is told as the sessions change, so a busy hour of talk moves the
 hubs with the next change, not a message at a time. Ten thousand cells
-as the networks are measured make their hub records within 47.2 MB,
-but ten thousand each saying 24 subjects of 120 characters outside
-ASCII spend about 840 MB, about 3.5 KB a subject, since a record holds
-its subject in several copies.
+as the networks are measured make their hub records within 11.75 MB,
+each made as the bytes it is sent as, but ten thousand each saying 24
+subjects of 120 characters outside ASCII spend about 525 MB, about
+2.2 KB a subject, since a record holds its subject in several copies.
 
 The `ended` kind holds each session of this machine's whose work
 stopped while its quest goes on, keyed `ended:<session>`, so whoever

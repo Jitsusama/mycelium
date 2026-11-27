@@ -20,9 +20,9 @@ The rest of the tests sit beside the code they prove, in `src/`.
 - `held.rs`: a holder told to end as its scope's stop tells it, with a
   window joined, ending as its program does
 - `hubs.rs`: the node's hub records made for `realm/`'s ten thousand
-  cells within 47.2 MB, in time that grows with them, and for ten
+  cells within 11.75 MB, in time that grows with them, and for ten
   thousand cells each saying 24 subjects of 120 characters outside
-  ASCII within 925 MB, so one more copy of each subject fails it
+  ASCII within 577 MB, so one more copy of each subject fails it
 - `made.rs`: a machine made for a start from a provider's offer, linked,
   started on and let go at its time or once it hands over, each node and
   link a process of its own; nothing of the asker's environment, or its

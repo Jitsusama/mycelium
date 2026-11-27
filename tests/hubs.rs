@@ -47,17 +47,16 @@ const GROWTH: realm::Growth = realm::Growth {
     within: None,
 };
 
-/// The most the realm's hubs may hold, in bytes: 42,909,892 measured in
-/// the room's Nix sandbox on 27 November 2026, plus about 10%. It is
-/// above the networks' 30 MB, so the hub kind costs more than the
-/// networks do on the same realm.
-const REALM_AT_MOST: usize = 47_200_000;
+/// The most the realm's hubs may hold, in bytes: 10,669,940 measured in
+/// a release build in the room's Nix sandbox on 27 November 2026, plus
+/// about 10%, so one more copy of each subject, 13,013,748, fails it.
+const REALM_AT_MOST: usize = 11_750_000;
 
 /// The most the hubs of every cell saying [`mycelium::networks::MOST_SUBJECTS`]
-/// of the longest subjects may hold, in bytes: 840,622,368 measured in
-/// the room's Nix sandbox on 27 November 2026, plus about 10%, so one
-/// more copy of each subject fails it.
-const LONGEST_AT_MOST: usize = 925_000_000;
+/// of the longest subjects may hold, in bytes: 524,542,208 measured as
+/// the realm's were, plus about 10%, so one more copy of each subject,
+/// 649,179,392, fails it.
+const LONGEST_AT_MOST: usize = 577_000_000;
 
 /// The characters of a longest subject, each four bytes, past ASCII.
 const LONGEST: usize = 120;

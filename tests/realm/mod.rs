@@ -127,7 +127,7 @@ pub fn holds_the_bar(
             "the records of {CELLS} cells took {all:?}, past {within:?}"
         );
     } else {
-        eprintln!("{all:?} for {CELLS} cells is held by growth alone, as a debug build");
+        eprintln!("{all:?} for {CELLS} cells is held by its growth alone, the test naming no time");
     }
 }
 
