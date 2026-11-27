@@ -2872,17 +2872,47 @@ struct Seen<'a> {
     held: &'a [hold::Held],
     /// The sessions carried away lately or waiting for their turn.
     coming_back: &'a HashSet<String>,
-    /// The park markers this boot wrote, as [`Shared::marked`] reads them.
-    marked: &'a [Marked],
-    /// Each holders' folder read for the markers, by its path, so a
-    /// park a presence names is judged from the same look
-    /// ([`Shared::parked_here`]).
-    folders: &'a HashMap<PathBuf, Vec<hold::Held>>,
+    /// The park markers and the holders' folders, read once for the
+    /// judgement ([`Shared::looked`]), so a park a presence names is
+    /// judged from the same look as a marker's ([`Shared::parked_here`]).
+    looked: &'a Looked,
+}
+
+/// What one judgement of parks reads, outside the node's lock: the park
+/// markers this boot wrote, read first, then each holders' folder that
+/// this node's own holders, the markers or the judged sessions' presences
+/// name, each once ([`Shared::looked`]). Read in that order, a holder that
+/// parks between the two is seen parked, so no marker is judged against a
+/// record older than it.
+#[derive(Default)]
+struct Looked {
+    /// The park markers, each with what its holder's records said of it.
+    marked: Vec<Marked>,
+    /// Each holders' folder read, by its path.
+    folders: HashMap<PathBuf, Vec<hold::Held>>,
+}
+
+impl Looked {
+    /// Whether the holder `id` in `folder` still runs, and if so whether
+    /// its own record says its program is parked
+    /// ([`steer::its_holder_among`]), as this look read it; a folder it
+    /// didn't read is read now.
+    fn holder(&self, folder: &Path, id: &str) -> Option<bool> {
+        match self.folders.get(folder) {
+            Some(holders) => steer::its_holder_among(id, holders),
+            None => steer::its_holder_among(id, &hold::held(folder)),
+        }
+    }
+
+    /// The holders of the folder `held`, as this look read it.
+    fn held(&self, held: &Path) -> &[hold::Held] {
+        self.folders.get(held).map_or(&[], Vec::as_slice)
+    }
 }
 
 /// A park marker this boot wrote, with what its holder's records said of
 /// it, read once per judgement outside the node's lock
-/// ([`Shared::marked`]), so the lock is never held over the markers'
+/// ([`Shared::looked`]), so the lock is never held over the markers'
 /// folder and the holders' records, once per session judged.
 struct Marked {
     /// The session it parks.
@@ -5474,7 +5504,7 @@ impl<S: Store> Shared<S> {
         let address = steer.address.clone();
         // The markers are read only where a session here neither runs nor
         // is parked by its presence, and then once, for the wake too.
-        let marked = std::cell::OnceCell::new();
+        let looked = std::cell::OnceCell::new();
         let sessions: Vec<Session> = self
             .lock()
             .state
@@ -5488,8 +5518,11 @@ impl<S: Store> Shared<S> {
                 matches!(session.state, SessionState::Busy | SessionState::Idle)
                     || parked_presence(session)
                     || (session.machine == self.machine
-                        && Self::marked_wake(session, marked.get_or_init(|| self.marked()))
-                            .is_some())
+                        && Self::marked_wake(
+                            session,
+                            &looked.get_or_init(|| self.looked(&sessions)).marked,
+                        )
+                        .is_some())
             })
             .map(|session| session.machine.clone())
             .collect();
@@ -5537,7 +5570,7 @@ impl<S: Store> Shared<S> {
             return steered;
         }
         self.keep_persons_carry(&steer, &sessions)?;
-        self.steer_here(&steer, &sessions, &marked)?;
+        self.steer_here(&steer, &sessions, &looked)?;
         if person {
             self.keep_word(&steer, &machine);
         }
@@ -5973,7 +6006,7 @@ impl<S: Store> Shared<S> {
         });
         if one.is_some_and(|one| one.state != SessionState::Ended) {
             Err(format!("{shown} is still live on {machine}{NOT_REOPENED}"))
-        } else if one.is_some_and(|one| self.parked_here(one, seen.marked, seen.folders)) {
+        } else if one.is_some_and(|one| self.parked_here(one, seen.looked)) {
             Err(format!(
                 "{shown} is parked on {machine}, and its holder wakes it{NOT_REOPENED}"
             ))
@@ -7336,14 +7369,16 @@ impl<S: Store> Shared<S> {
     /// Puts `steer` in its session's inbox here, unless it only wakes,
     /// then wakes the session where it is parked this boot: a wake that
     /// can't is refused, but a steer told and not woken is read at the
-    /// session's next wake, whatever wakes it. The park markers are read
-    /// only where no holder's own record wakes it, unless `marked` holds
-    /// them already.
+    /// session's next wake, whatever wakes it. The park markers and the
+    /// holders' folders are read, once, only where no holder's own record
+    /// names its wake, unless `looked` holds them already, so the wake is
+    /// found from one look exactly where a start would be refused for it
+    /// ([`Self::parked_here`]).
     fn steer_here(
         &self,
         steer: &Steer,
         sessions: &[Session],
-        marked: &std::cell::OnceCell<Vec<Marked>>,
+        looked: &std::cell::OnceCell<Looked>,
     ) -> Result<(), String> {
         let address = &steer.address;
         if !steer.only_wakes() {
@@ -7352,12 +7387,15 @@ impl<S: Store> Shared<S> {
                 .map_err(|error| format!("its inbox refused it: {error}"))?;
         }
         let boot = store::folders::boot_id();
+        let looked = || looked.get_or_init(|| self.looked(sessions));
         let waking = sessions
             .iter()
             .filter(|session| session.machine == self.machine)
             .find_map(|session| {
-                steer::wake_for(session, boot.as_deref(), &self.held)
-                    .or_else(|| Self::marked_wake(session, marked.get_or_init(|| self.marked())))
+                steer::wake_among(session, boot.as_deref(), &self.held, |folder, id| {
+                    looked().holder(folder, id)
+                })
+                .or_else(|| Self::marked_wake(session, &looked().marked))
             });
         match (waking, steer.only_wakes()) {
             (Some(file), true) => steer::wake(&file, address)
@@ -7871,9 +7909,7 @@ impl<S: Store> Shared<S> {
         let parked = brought
             .filter(|session| by != By::Person && session.machine == self.machine)
             .filter(|session| {
-                let mut folders = HashMap::new();
-                let marked = self.marked_among(&mut folders);
-                self.parked_here(session, &marked, &folders)
+                self.parked_here(session, &self.looked(std::slice::from_ref(*session)))
             })
             .map(|session| session.id.clone());
         Judged {
@@ -7958,47 +7994,59 @@ impl<S: Store> Shared<S> {
 
     /// Whether `session` is parked here with a holder that a steer would
     /// wake, so a start bringing it back would open its log beside the
-    /// one its holder wakes. It is judged as [`steer::wake_for`] judges
+    /// one its holder wakes. It is judged as [`steer::wake_among`] judges
     /// it, so a start is refused exactly where a steer would wake the
     /// session instead: a park of an earlier boot, or one whose holder
     /// has gone, has nothing to wake it and comes back by a start, as a
     /// restarted machine's wave does. A start bringing back one already
     /// coming back is refused by [`starts::Starts::admit`]. A park marker
     /// of this boot counts too, as [`Self::marked_wake`] finds it in
-    /// `marked`, the same marker a steer wakes through. A holders'
-    /// folder `folders` holds is judged as it was read for `marked`, and
-    /// any other is read now.
-    fn parked_here(
-        &self,
-        session: &Session,
-        marked: &[Marked],
-        folders: &HashMap<PathBuf, Vec<hold::Held>>,
-    ) -> bool {
-        let holder = |folder: &Path, id: &str| match folders.get(folder) {
-            Some(holders) => steer::its_holder_among(id, holders),
-            None => steer::its_holder_among(id, &hold::held(folder)),
-        };
+    /// `looked`, the same marker a steer wakes through. Every holder is
+    /// judged as `looked` read it.
+    fn parked_here(&self, session: &Session, looked: &Looked) -> bool {
+        let holder = |folder: &Path, id: &str| looked.holder(folder, id);
         session.machine == self.machine
             && (steer::wake_among(session, self.boot.id.as_deref(), &self.held, holder).is_some()
-                || Self::marked_wake(session, marked).is_some())
+                || Self::marked_wake(session, &looked.marked).is_some())
     }
 
-    /// The park markers this boot wrote, each with what its holder's
-    /// records say of it, read once for a judgement before the node's
-    /// lock is taken. The boot is the one read when the node started, so
-    /// no `sysctl` runs for it, and each holders' folder is read once
-    /// however many markers name a holder in it.
-    fn marked(&self) -> Vec<Marked> {
-        self.marked_among(&mut HashMap::new())
+    /// The look a judgement of `sessions`' parks reads, once, before or
+    /// apart from the node's lock: the park markers this boot wrote, then
+    /// this node's own holders, each holders' folder a marker names and
+    /// each one the wake of a presence here names, each folder once
+    /// however many name it. The boot is the one read when the node
+    /// started, so no `sysctl` runs for it.
+    fn looked(&self, sessions: &[Session]) -> Looked {
+        let parks = crate::wake::parked(&self.parked, self.boot.began);
+        let mut folders = HashMap::from([(self.held.clone(), hold::held(&self.held))]);
+        for session in sessions.iter().filter(|one| one.machine == self.machine) {
+            let named = session
+                .presence
+                .get("wake")
+                .and_then(serde_json::Value::as_str);
+            if let Some((folder, _)) =
+                named.and_then(|it| steer::holder_of(Path::new(it), &self.held))
+            {
+                folders
+                    .entry(folder.to_path_buf())
+                    .or_insert_with(|| hold::held(folder));
+            }
+        }
+        let marked = self.marked_among(parks, &mut folders);
+        Looked { marked, folders }
     }
 
-    /// The park markers as [`Self::marked`] reads them, each holders'
-    /// folder in `folders` taken as already read and each other one kept
-    /// there once read, so a judgement that read this node's own holders
-    /// reads the markers, and the parks presences name, against that
-    /// very look, not a second one that may disagree with it.
-    fn marked_among(&self, folders: &mut HashMap<PathBuf, Vec<hold::Held>>) -> Vec<Marked> {
-        crate::wake::parked(&self.parked, self.boot.began)
+    /// The park markers `parks`, each judged by its holder's records,
+    /// each holders' folder in `folders` taken as already read and each
+    /// other one kept there once read, so the markers are judged against
+    /// the very look the rest of a judgement reads, never a second one
+    /// that may disagree with it.
+    fn marked_among(
+        &self,
+        parks: Vec<crate::wake::Parked>,
+        folders: &mut HashMap<PathBuf, Vec<hold::Held>>,
+    ) -> Vec<Marked> {
+        parks
             .into_iter()
             .map(|parked| {
                 let holder = steer::holder_of(&parked.wake, &self.held).and_then(|(folder, id)| {
@@ -8025,7 +8073,7 @@ impl<S: Store> Shared<S> {
     /// waking one there would open a second pi on it.
     /// A marker outlasting its park, its holder running a program again,
     /// counts for nothing, so a session it named is reopened as any
-    /// ended one. Judged from `marked`, as [`Self::marked`] read them.
+    /// ended one. Judged from `marked`, as [`Self::looked`] read them.
     fn marked_wake(session: &Session, marked: &[Marked]) -> Option<PathBuf> {
         marked
             .iter()
@@ -8352,23 +8400,20 @@ impl<S: Store> Shared<S> {
         } else {
             self.hold_begun(begins, sessions, away.clone())?
         };
-        // The sessions are read first, then the holders' records and the
-        // park markers outside the lock, so neither is older than the
-        // state it is judged with: a holder that parks between the two
-        // reads is seen parked.
+        // The sessions are read first, then the park markers, then the
+        // holders' records outside the lock, so neither is older than
+        // what it is judged with: a holder that parks between two reads
+        // is seen parked (followup 477).
         let (known, coming_back) = {
             let inner = self.lock();
             let known = inner.state.sessions();
             (known, ended::coming_back(away, inner.turns.waiting()))
         };
-        let held = hold::held(&self.held);
-        let mut folders = HashMap::from([(self.held.clone(), held.clone())]);
-        let marked = self.marked_among(&mut folders);
+        let looked = self.looked(&known);
         let seen = Seen {
-            held: &held,
+            held: looked.held(&self.held),
             coming_back: &coming_back,
-            marked: &marked,
-            folders: &folders,
+            looked: &looked,
         };
         let judged = sessions.iter().try_for_each(|session| {
             if ended_here {
@@ -8408,12 +8453,11 @@ impl<S: Store> Shared<S> {
             let coming_back = ended::coming_back(away, inner.turns.waiting());
             // What begins a word is found whether or not it is parked, so
             // no marker is read.
-            let unread = HashMap::new();
+            let unread = Looked::default();
             let seen = Seen {
                 held: &held,
                 coming_back: &coming_back,
-                marked: &[],
-                folders: &unread,
+                looked: &unread,
             };
             let now = std::time::Instant::now();
             let mut begun = Vec::new();
@@ -22210,6 +22254,42 @@ esac
         );
     }
 
+    // Followup 481: a park its presence names, with no marker, in a
+    // sibling realm's holders' folder, is judged from the look the
+    // reopening took of that folder, which a presence's wake names.
+    #[tokio::test]
+    async fn a_presences_park_beside_is_judged_by_the_holders_of_its_folder() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        let beside = socket.with_file_name("home.held");
+        let now = jiff::Timestamp::now().to_string();
+        store.start_here(
+            "s-beside",
+            json!({"session": "s-beside", "addresses": ["BESIDE"], "at": now,
+                   "state": "parked", "wake": beside.join("e0r6.wake")}),
+            false,
+        );
+        let (holder, program) = holds_for_real(&beside, "e0r6");
+        let _let_go = LetGo(vec![holder, program]);
+        asks_below(&socket, 7001);
+        assert_eq!(
+            ask(
+                socket.clone(),
+                reopening(&["pi", "--session", "s-beside"], false)
+            )
+            .await,
+            Err(
+                "s-beside is parked on skiff, and its holder wakes it, so it isn't reopened"
+                    .to_owned()
+            ),
+            "a park its presence names beside, whose holder runs, holds the reopening back"
+        );
+    }
+
     // Our council's round 3 on the marks: an agent's start of a session
     // that ended here, whose park only a marker of this boot and its
     // holder's record tell, is left to that holder, as a reopening is,
@@ -24804,6 +24884,51 @@ esac
             shared.book_for(&made);
         }
         shared
+    }
+
+    // Followup 481: the markers are judged against the look a judgement
+    // already took of a holders' folder, never a second read of it that
+    // may disagree, however the disk has moved on since.
+    #[test]
+    fn a_marker_is_judged_by_the_look_already_taken_not_the_disk() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let mut given = bare("/nowhere/steer".into(), None);
+        given.held = dir.path().join("work.held");
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            given,
+            to_dial,
+        );
+        let beside = dir.path().join("home.held");
+        let parks = vec![crate::wake::Parked {
+            session: "s-beside".to_owned(),
+            addresses: vec!["BESIDE".to_owned()],
+            wake: beside.join("e0r7.wake"),
+        }];
+        let seen = hold::Held {
+            id: "e0r7".to_owned(),
+            command: vec!["pi".to_owned()],
+            folder: "/".into(),
+            holder: std::process::id(),
+            pid: 0,
+            parked: true,
+            since: "2026-11-26T18:00:00Z".to_owned(),
+            windows: Vec::new(),
+        };
+        let mut folders = HashMap::from([(beside.clone(), vec![seen])]);
+        let marked = shared.marked_among(parks, &mut folders);
+        assert_eq!(
+            marked[0].holder,
+            Some(true),
+            "the holder the look saw parked, though the disk holds none"
+        );
+        assert_eq!(folders[&beside].len(), 1, "and the look stands as taken");
     }
 
     #[test]
