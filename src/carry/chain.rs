@@ -466,10 +466,7 @@ impl Logs {
             return Ok(None);
         };
         let Some(log) = found else {
-            return Err(format!(
-                "two logs are named for {}, so which is its own can't be told",
-                shown(session)
-            ));
+            return Err(Vec::new());
         };
         Ok(Self::header_continues(log, session))
     }
@@ -503,9 +500,9 @@ impl Logs {
     }
 }
 
-/// What a session's log continues: the session, none, or why that can't
-/// be told.
-pub type Continued = Result<Option<String>, String>;
+/// What a session's log continues: the session or none, or, where its
+/// logs disagree, each session one of them names.
+pub type Continued = Result<Option<String>, Vec<String>>;
 
 /// What became of a claim whose session no longer stands, as
 /// [`Orchestrations::lapse`] tells it. Said in the node's log, so each
@@ -1141,20 +1138,61 @@ mod tests {
     }
 
     #[test]
-    fn every_lapsing_claim_is_kept_where_a_log_followed_back_cant_be_told() {
+    fn every_lapsing_claim_is_kept_where_a_log_followed_back_may_continue_it() {
         let mut record = nested();
         let before = record.clone();
         let standing = standing(&[("s-steward-2", Some("WCJQSG")), ("s-other", None)]);
         let said = record.lapse(&standing, || {
             Some(|session: &str| match session {
                 "s-steward-2" => Ok(Some("s-steward".to_owned())),
-                _ => Err("two logs are named for it".to_owned()),
+                "s-other" => Err(quests(&["s-steward", "s-weigh"])),
+                _ => Ok(None),
             })
         });
         assert_eq!(
             (record, said),
             (before, Vec::new()),
             "one log that can't be told may continue either, so neither is handed on or lost"
+        );
+    }
+
+    #[test]
+    fn a_log_that_cant_be_told_holds_back_only_the_claims_it_may_continue() {
+        let mut record = nested();
+        let weigh = record.sessions.get("s-weigh").cloned();
+        let standing = standing(&[
+            ("s-steward-2", Some("WCJQSG")),
+            ("s-other", None),
+            ("s-stray", None),
+        ]);
+        let said = record.lapse(&standing, || {
+            Some(|session: &str| match session {
+                "s-steward-2" => Ok(Some("s-steward".to_owned())),
+                // Its logs disagree, one through a log that claimed
+                // nothing and no longer stands.
+                "s-other" => Err(quests(&["s-elder", "s-gone"])),
+                "s-gone" => Ok(Some("s-weigh".to_owned())),
+                "s-stray" => Err(quests(&["s-elsewhere", "s-older"])),
+                _ => Ok(None),
+            })
+        });
+        assert_eq!(
+            said,
+            [Lapsed::Handed {
+                claimer: "s-steward".to_owned(),
+                heir: "s-steward-2".to_owned(),
+                heads: "QEST-20261007-WCJQSG".to_owned(),
+            }],
+            "a claim no doubtful log may lead to passes on, though others can't be told"
+        );
+        assert_eq!(
+            record.sessions.keys().collect::<Vec<_>>(),
+            ["s-steward-2", "s-weigh"],
+        );
+        assert_eq!(
+            record.sessions.get("s-weigh").cloned(),
+            weigh,
+            "and one a doubtful log may lead to is kept as it was, neither handed nor lost"
         );
     }
 
@@ -1385,8 +1423,8 @@ mod tests {
         );
         assert_eq!(
             found.follows("s-weigh"),
-            Err("two logs are named for s-weigh, so which is its own can't be told".to_owned()),
-            "and it says so, for a lapse to keep what it might continue"
+            Err(vec!["s-elder".to_owned(), "s-steward".to_owned()]),
+            "and it says what each may continue, for a lapse to keep those claims"
         );
         assert_eq!(found.doubled().collect::<Vec<_>>(), ["s-weigh"]);
         assert_eq!(
@@ -1394,6 +1432,37 @@ mod tests {
             Ok(None),
             "one with no log continues none"
         );
+    }
+
+    #[test]
+    fn a_session_whose_logs_agree_continues_what_they_name() {
+        let logs = tempfile::tempdir().expect("a temporary folder");
+        let (own, copied) = (
+            logs.path().join("--home-joel-src-mycelium--"),
+            logs.path().join("--home-joel--"),
+        );
+        for folder in [&own, &copied] {
+            fs::create_dir_all(folder).expect("made");
+        }
+        for folder in [&own, &copied] {
+            fs::write(
+                folder.join("2026-11-23T11-31-00-000Z_s-weigh.jsonl"),
+                "{\"id\":\"s-weigh\",\"parentSession\":\"s-elder\"}\n",
+            )
+            .expect("written");
+            fs::write(
+                folder.join("2026-11-23T11-00-00-000Z_s-steward.jsonl"),
+                "{\"id\":\"s-steward\"}\n",
+            )
+            .expect("written");
+        }
+        let found = Logs::scan(logs.path()).expect("scanned");
+        assert_eq!(
+            (found.follows("s-weigh"), found.follows("s-steward")),
+            (Ok(Some("s-elder".to_owned())), Ok(None)),
+            "a copy that says what the log says leaves nothing to tell apart"
+        );
+        assert_eq!(found.doubled().count(), 0, "so neither is doubted");
     }
 
     #[test]
