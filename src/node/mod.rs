@@ -901,6 +901,14 @@ fn held_here_already(why: &str, machine: &str, named: &[String]) -> bool {
         })
 }
 
+/// Whether `why`, `machine`'s refusal of a start naming `named`, is its
+/// own hold refusing it ([`held_here_already`]), alone or wrapped as a
+/// relay taken as an agent's ([`relayed_why`]), so it began nothing
+/// there.
+fn held_there_already(why: &str, machine: &str, named: &[String]) -> bool {
+    held_here_already(relayed_why(why, machine).unwrap_or(why), machine, named)
+}
+
 /// Whether `why`, a refusal of an agent's start a relay was taken as
 /// ([`relayed_why`]), was raised as it was admitted, before anything
 /// began: the person's stop, whether it stands unknown, or the limits
@@ -937,14 +945,14 @@ fn began_nowhere(answered: &Result<Reply, Unsent>, machine: &str, folder: Option
 /// only have been slower than what was left. A refusal of one session
 /// alone ([`refused_for_one_session`]) leaves it as it is, and where it
 /// started, or may only have been slow, a pass-over another start set
-/// meanwhile ends.
+/// meanwhile ends. The start names the sessions `named`.
 fn passed_over_for<'a>(
     answered: &'a Result<Reply, Unsent>,
     within: Duration,
-    machine: &str,
+    (machine, named): (&str, &[String]),
 ) -> PassOver<'a> {
     match answered {
-        Ok(Err(why)) if refused_for_one_session(answered, machine) => PassOver::Left(why),
+        Ok(Err(why)) if refused_for_one_session(answered, machine, named) => PassOver::Left(why),
         Ok(Err(why)) => PassOver::For(why),
         Err(Unsent { why, .. }) if within >= RELAYED_ANSWERED_LEAST => PassOver::For(why),
         Err(_) | Ok(Ok(_)) => PassOver::Ended,
@@ -970,12 +978,17 @@ enum PassOver<'a> {
 /// of the machine's other starts, so passes it over for none. Only its
 /// ending is read, as the session it names leads it and a relay taken as
 /// an agent's ([`relay_refused`]) leaves it last; only the held one's
-/// ending names the machine, and a node says the others only of its own.
-fn refused_for_one_session(answered: &Result<Reply, Unsent>, machine: &str) -> bool {
+/// ending names the machine, read as the unbooking reads it
+/// ([`held_there_already`]), and a node says the others only of its own.
+fn refused_for_one_session(
+    answered: &Result<Reply, Unsent>,
+    machine: &str,
+    named: &[String],
+) -> bool {
     let Ok(Err(said)) = answered else {
         return false;
     };
-    said.ends_with(&format!("{BEING_REOPENED}{machine} already"))
+    held_there_already(said, machine, named)
         || [NOT_REOPENED, STEER_IT, starts::UNLESS_RUNNING]
             .iter()
             .any(|ending| said.ends_with(ending))
@@ -9005,10 +9018,11 @@ impl<S: Store> Shared<S> {
         let fenced = (starts_in(fence, screen), within);
         let named = hold::turn::sessions_named(&asked.command);
         let reply = self.start_on(machine.clone(), asked.clone(), fenced).await;
-        // Refused by its machine's own hold, it began nothing there, so it
-        // weighs there no longer (followup 454).
+        // Refused by its machine's own hold, alone or as a relay taken as
+        // an agent's, it began nothing there, so it weighs there no longer
+        // (followups 454 and 495).
         if let Err(why) = &reply
-            && held_here_already(why, &machine, &named)
+            && held_there_already(why, &machine, &named)
         {
             self.lock().starts.unplaced(&machine, weighed);
         }
@@ -9030,7 +9044,10 @@ impl<S: Store> Shared<S> {
     /// Starts `asked`, asked at `at`, here where placement takes it here,
     /// placing it in `fence` behind `screen` as [`Self::placed`] does, so
     /// a start that couldn't begin elsewhere is held here to the same
-    /// ground as one placed here first.
+    /// ground as one placed here first. Refused by this machine's own
+    /// hold ([`held_here_already`]), or placed elsewhere and so never
+    /// asked, it began nothing, so it weighs where it was placed no
+    /// longer (followup 493).
     async fn placed_here(
         &self,
         (asked, at): (Start, i64),
@@ -9039,12 +9056,24 @@ impl<S: Store> Shared<S> {
         admits: &Admits,
     ) -> Reply {
         let within = relayed_within(at, jiff::Timestamp::now().as_millisecond());
-        match self.place(&asked.work, Counts::Always, fence, screen, admits) {
+        let (decision, weighed) = self.decided(&asked.work, Counts::Always, fence, screen, admits);
+        match decision.placement {
             Placement::Placed { machine, .. } if machine == self.machine => {
-                self.start_on(machine, asked, (starts_in(fence, screen), within))
-                    .await
+                let named = hold::turn::sessions_named(&asked.command);
+                let reply = self
+                    .start_on(machine.clone(), asked, (starts_in(fence, screen), within))
+                    .await;
+                if let Err(why) = &reply
+                    && held_here_already(why, &machine, &named)
+                {
+                    self.lock().starts.unplaced(&machine, weighed);
+                }
+                reply
             }
-            Placement::Placed { machine, .. } => Err(format!("it would go to {machine}")),
+            Placement::Placed { machine, .. } => {
+                self.lock().starts.unplaced(&machine, weighed);
+                Err(format!("it would go to {machine}"))
+            }
             Placement::Pending { misses } | Placement::Refused { misses } => Err(format!(
                 "{} doesn't take it now: {}",
                 self.machine,
@@ -9158,8 +9187,17 @@ impl<S: Store> Shared<S> {
             eprintln!("a start past every machine's room is placed as before, as {said}");
             return None;
         }
+        // Refused by that machine's own hold, it stands, as a second log
+        // of the session would follow elsewhere, but began nothing there,
+        // so it weighs there no longer (followup 494).
+        let named = hold::turn::sessions_named(&asked.command);
+        if let Ok(Err(why)) = &answered
+            && held_there_already(why, machine, &named)
+        {
+            self.lock().starts.unplaced(machine, weighed);
+        }
         let answered_at = jiff::Timestamp::now().as_millisecond();
-        match passed_over_for(&answered, within, machine) {
+        match passed_over_for(&answered, within, (machine, &named)) {
             PassOver::Left(why) => {
                 let said = why.escape_debug();
                 eprintln!(
@@ -26677,6 +26715,40 @@ esac
             0,
             "nothing begun here weighs here"
         );
+        let elsewhere = Start {
+            folder: Some(dir.path().join("gone")),
+            command: ["pi", "--session", "s-other"].map(str::to_owned).to_vec(),
+            ..start_of_skiff()
+        };
+        let at = jiff::Timestamp::now().as_millisecond();
+        let refused = skiff
+            .placed((elsewhere, at), None, Screen::Ground, false)
+            .await;
+        assert!(refused.is_err(), "its folder isn't here: {refused:?}");
+        let loads =
+            skiff
+                .lock()
+                .starts
+                .loads(&machines, std::iter::empty(), jiff::Timestamp::now());
+        assert_eq!(
+            loads.get("skiff").map_or(0, |load| load.placed),
+            1,
+            "a refusal that isn't the hold's keeps what it booked, so only the hold's is \
+             forgotten"
+        );
+    }
+
+    /// A start pinned to skiff that names no folder, as a hold's tests ask it.
+    fn start_of_skiff() -> Start {
+        Start {
+            work: work(vec![Need::Machine("skiff".to_owned())]),
+            folder: None,
+            strict: false,
+            command: ["pi"].map(str::to_owned).to_vec(),
+            may_cost: false,
+            carries: false,
+            once: None,
+        }
     }
 
     // Followup 457: the person's start of a session ended here, asked as
@@ -27875,17 +27947,32 @@ esac
         ];
         for (why, for_one, case) in cases {
             assert_eq!(
-                refused_for_one_session(&said(why), "wren"),
+                refused_for_one_session(&said(why), "wren", &[]),
                 for_one,
                 "{case}"
             );
         }
+        let being = "s-1 is being reopened on wren already";
+        let relayed_hold = Ok(Err(relay_refused("wren", false, "an agent's", being)));
+        assert!(
+            refused_for_one_session(&relayed_hold, "wren", &[]),
+            "a relay's of its hold, read as the unbooking reads it"
+        );
+        let spaced = "my notes is being reopened on wren already";
+        assert!(
+            !refused_for_one_session(&said(spaced), "wren", &[]),
+            "a word with a space the start never named"
+        );
+        assert!(
+            refused_for_one_session(&said(spaced), "wren", &["my notes".to_owned()]),
+            "one the start named"
+        );
         let held = "s-1 is held on wren already, so it isn't reopened";
         let relayed = Ok(Err(relay_refused("wren", true, "", held)));
-        assert!(refused_for_one_session(&relayed, "wren"), "a relay's");
+        assert!(refused_for_one_session(&relayed, "wren", &[]), "a relay's");
         let wrapped = relay_refused("wren", true, "", held);
         assert_eq!(
-            passed_over_for(&relayed, RELAYED_ANSWERED_LEAST, "wren"),
+            passed_over_for(&relayed, RELAYED_ANSWERED_LEAST, ("wren", &[])),
             PassOver::Left(wrapped.as_str()),
             "its pass-over left as it is"
         );
@@ -27893,7 +27980,10 @@ esac
             why: held.to_owned(),
             sent: true,
         });
-        assert!(!refused_for_one_session(&lost, "wren"), "a lost answer");
+        assert!(
+            !refused_for_one_session(&lost, "wren", &[]),
+            "a lost answer"
+        );
     }
 
     #[test]
@@ -27929,7 +28019,7 @@ esac
         let refused: Result<Reply, Unsent> = Ok(Err("its program failed".to_owned()));
         let fair = RELAYED_ANSWERED_LEAST;
         assert_eq!(
-            passed_over_for(&refused, fair, "wren"),
+            passed_over_for(&refused, fair, ("wren", &[])),
             PassOver::For("its program failed")
         );
         let lost = Err(Unsent {
@@ -27937,13 +28027,13 @@ esac
             sent: true,
         });
         assert_eq!(
-            passed_over_for(&lost, fair, "wren"),
+            passed_over_for(&lost, fair, ("wren", &[])),
             PassOver::For("wren didn't answer"),
             "a hung node"
         );
         let short = RELAYED_ANSWERED_LEAST.saturating_sub(Duration::from_millis(1));
         assert_eq!(
-            passed_over_for(&lost, short, "wren"),
+            passed_over_for(&lost, short, ("wren", &[])),
             PassOver::Ended,
             "slower than what was left"
         );
@@ -27954,7 +28044,7 @@ esac
             attach: Vec::new(),
         })));
         assert_eq!(
-            passed_over_for(&started, fair, "wren"),
+            passed_over_for(&started, fair, ("wren", &[])),
             PassOver::Ended,
             "it took one, so no longer"
         );
