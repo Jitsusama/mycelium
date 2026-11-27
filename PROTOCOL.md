@@ -2552,16 +2552,19 @@ make wrote. Any run the person asks naming one machine alone, a room
 not booked here for the person or for no asker (an agent's make booked
 it, or this node never booked it but its link reached it as a worker,
 since each node keeps its own bookings), runs there as an agent's, in
-the agent fence. So the
-person's safe word reaches every room though no session asks it, and
-the person's own login still never runs in a worker home an agent
-wrote. Such a run is placed as an agent's run is: the asking machine
-must declare the agent fence and the room must say it runs commands in
-it, or the run is refused, its refusal saying the person asked it and
-it was sent as an agent's; a refusal the room itself sends back reads
-as an agent's. The run says `"asked_by": "Person"`, which only a node
-says: one an asker puts there without naming a machine it comes from
-is cleared. The room runs it through `/bin/sh -c`, never the login
+the agent fence. So the person's safe word reaches every room though
+no session asks it, and the person's own login still never runs in a
+worker home an agent wrote. Such a run is placed as an agent's run is,
+and a `"Place"` the person asks of it the same way, so where it is told
+the run would go is where it runs: the asking machine must declare the
+agent fence and the room must say it runs commands in it, or the run is
+refused, its refusal saying the person asked it and it was sent as an
+agent's, and, where no booking on this node names the room, that none
+does: a node holds a booking again after a restart only once its make
+redials. A refusal the room itself sends back reads as an agent's. The
+run says `"asked_by": "Person"`, which only a node says: one an asker
+puts there without naming a machine it comes from is cleared. The room
+runs it through `/bin/sh -c`, never the login
 shell, so no profile of the home the agent wrote runs before it, and
 takes every folder of that home off its path, by name or by where it
 leads, before the kit's tools go first, so nothing the home holds

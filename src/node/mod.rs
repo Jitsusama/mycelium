@@ -10164,10 +10164,10 @@ impl<S: Store> Shared<S> {
             By::Person => By::Person,
         };
         let who_asked = by;
-        let (by, admits) = self.as_a_room_takes(by, &asked.work, self.admits().await);
-        let recast = by != who_asked;
+        let recast = self.recasts(by, &asked.work);
+        let (by, admits) = taken_as(recast, by, self.admits().await);
         asked.by = Some(by);
-        asked.asked_by = asked_by(recast, who_asked, &asked);
+        asked.asked_by = asked_by(recast.is_some(), who_asked, &asked);
         let fence = match by {
             By::Agent(kind) => Some(kind),
             By::Person => None,
@@ -10260,27 +10260,34 @@ impl<S: Store> Shared<S> {
     /// which it never books, stays the person's whatever the file says.
     /// Any other run is held to who asks it.
     fn as_a_room_takes(&self, by: By, work: &Work, admits: Admits) -> (By, Admits) {
+        taken_as(self.recasts(by, work), by, admits)
+    }
+
+    /// Why a run asked `by` for `work` is recast as an agent's, as
+    /// [`Shared::as_a_room_takes`] says which are; none where it isn't.
+    fn recasts(&self, by: By, work: &Work) -> Option<Recast> {
+        if by != By::Person {
+            return None;
+        }
         let mut named = work.needs.iter().filter_map(|need| match need {
             Need::Machine(name) => Some(name),
             _ => None,
         });
-        let Some(room) = named.next() else {
-            return (by, admits);
-        };
+        let room = named.next()?;
         if *room == self.machine || named.any(|other| other != room) {
-            return (by, admits);
+            return None;
         }
         let booked = self.lock().booked.get(room).map(|(_, booked)| {
             booked
                 .as_deref()
                 .is_some_and(|booked| booked != made::PERSON)
         });
-        let an_agents = booked.unwrap_or_else(|| self.store.is_worker(room));
-        if by == By::Person && an_agents && self.book.agent_rooms().contains(room) {
-            (By::Agent(crate::declared::Kind::Fence), Admits::Rooms)
-        } else {
-            (by, admits)
-        }
+        let recast = match booked {
+            Some(true) => Recast::AnAgentsBooking,
+            Some(false) => return None,
+            None => self.store.is_worker(room).then_some(Recast::NoBooking)?,
+        };
+        self.book.agent_rooms().contains(room).then_some(recast)
     }
 
     /// Where a machine made is kept: this node's book and store, and its
@@ -10458,6 +10465,28 @@ impl<S: Store> Shared<S> {
         }
     }
 
+    /// The fence, screen and machines `work` asked `by` is placed in and
+    /// among, `admits` as its asker is told. A run (`counts` of
+    /// [`Counts::Never`]) is first recast as [`Shared::run`] recasts it
+    /// ([`Shared::as_a_room_takes`]), so a person's run naming an agent's
+    /// room is placed on rooms in the agent fence, where it will run,
+    /// rather than told no machine takes it; work placed to start is held
+    /// to who asks.
+    fn placing_asked(
+        &self,
+        work: &Work,
+        counts: Counts,
+        by: By,
+        admits: Admits,
+    ) -> (Option<crate::declared::Kind>, Screen, Admits) {
+        if counts == Counts::Never {
+            let (by, admits) = self.as_a_room_takes(by, work, admits);
+            (fence_of(by), Screen::Run, admits)
+        } else {
+            (fence_of(by), held_screen(fence_of(by)), admits)
+        }
+    }
+
     /// Places `work` as [`Node::place`] does for whoever asks, held to an
     /// agent's ground where an agent asks, as a run of its would be, so
     /// what it is told would take the work is where the work can run. Work
@@ -10473,14 +10502,8 @@ impl<S: Store> Shared<S> {
         } else {
             declaring
         };
-        let fence = fence_of(by);
         // Held to the machines booked for whoever asks, as its run is.
-        let admits = self.admits().await;
-        let screen = if counts == Counts::Never {
-            Screen::Run
-        } else {
-            held_screen(fence)
-        };
+        let (fence, screen, admits) = self.placing_asked(work, counts, by, self.admits().await);
         let placement = self.place(work, counts, fence, screen, &admits);
         if counts != Counts::Here {
             return Ok(Response::Placement(placement));
@@ -11064,17 +11087,44 @@ fn shell_for(asked_by: Option<By>, home: &Path) -> run::Shell<'_> {
     }
 }
 
+/// Why the person's run naming one room is recast as an agent's
+/// ([`Shared::recasts`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Recast {
+    /// An agent's make booked the room here.
+    AnAgentsBooking,
+    /// No booking here names the room, which this node's link reached
+    /// as a worker: one another node made, or one this node's booking
+    /// of is lost, or not back yet after a restart.
+    NoBooking,
+}
+
+/// Who a run asked `by` runs as, and the machines it may be placed on,
+/// `admits` as its asker is told, where it is `recast` or not
+/// ([`Shared::as_a_room_takes`]).
+fn taken_as(recast: Option<Recast>, by: By, admits: Admits) -> (By, Admits) {
+    match recast {
+        Some(_) => (By::Agent(crate::declared::Kind::Fence), Admits::Rooms),
+        None => (by, admits),
+    }
+}
+
 /// Why a run is refused, `why`, saying where it was `recast` that the
 /// person asked it and it was sent to a room as an agent's, so the person
 /// isn't left reading an agent's refusal of a run they never asked as one.
-fn sent_as(recast: bool, why: String) -> String {
-    if recast {
-        format!(
-            "the person's run naming a room made for agents is sent there as an agent's, in \
-             the agent fence, and {why}"
-        )
-    } else {
-        why
+/// Where no booking here names the room, it says so, since one the person
+/// made is held here again after a restart only once its make redials.
+fn sent_as(recast: Option<Recast>, why: String) -> String {
+    let sent = "the person's run naming a room made for agents is sent there as an agent's, \
+                in the agent fence,";
+    match recast {
+        Some(Recast::AnAgentsBooking) => format!("{sent} and {why}"),
+        Some(Recast::NoBooking) => format!(
+            "{sent} since no booking on this node says the room is the person's (each node \
+             keeps its own, and holds one again after a restart only once its make redials), \
+             and {why}"
+        ),
+        None => why,
     }
 }
 
@@ -19869,7 +19919,8 @@ esac
         let recast = run_through(socket.clone(), run_of("kestrel", "true")).await;
         assert!(
             recast.as_ref().is_err_and(|why| why
-                .starts_with("the person's run naming a room made for agents is sent there")),
+                .starts_with("the person's run naming a room made for agents is sent there")
+                && why.contains("since no booking on this node says the room is the person's")),
             "the person's run sent to a room as an agent's and refused says the person asked it: \
              {recast:?}"
         );
@@ -26556,6 +26607,13 @@ esac
             (By::Agent(Kind::Fence), Admits::Rooms),
             "and one room named twice is one room, so naming it again keeps no login unfenced"
         );
+        // Followup 501: the rooms-only admits the recast run carries take
+        // a worker booked nowhere here, as every admits take one.
+        assert_eq!(
+            placed(&naming(&["tern"]), &Admits::Rooms).as_deref(),
+            Some("tern"),
+            "so the person's run recast for tern reaches tern"
+        );
         let mut unasked = made_by("/usr/bin/lend", "tern", a_day_out());
         unasked.asker = None;
         shared.book_for(&unasked);
@@ -26607,6 +26665,28 @@ esac
         );
     }
 
+    // Followup 534: kept as a worker and named a room, this node's own
+    // machine is held the person's by its guard alone.
+    #[tokio::test]
+    async fn the_persons_run_naming_this_machine_kept_as_a_worker_stays_the_persons() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        fs::write(dir.path().join(made::AGENT_ROOMS), "skiff\n").expect("named");
+        let mut skiff = placement::tests::machine("skiff", "linux", 32, &["basin"]);
+        skiff.worker = true;
+        shared.store.put_machine(&skiff).expect("kept");
+        let person = || Admits::Asker(made::PERSON.to_owned());
+        assert_eq!(
+            shared.as_a_room_takes(
+                By::Person,
+                &work(vec![Need::Machine("skiff".to_owned())]),
+                person()
+            ),
+            (By::Person, person()),
+            "this node's own machine, which no booking here names, is held to who asks"
+        );
+    }
+
     #[tokio::test]
     async fn the_persons_run_naming_a_machine_booked_nowhere_is_fenced_on_a_worker_alone() {
         use crate::declared::Kind;
@@ -26635,6 +26715,53 @@ esac
                 "but a machine that is no worker stays the person's, though a session listed it"
             );
         }
+    }
+
+    // Followup 499: where a run would go is asked as the run is placed.
+    #[tokio::test]
+    async fn where_the_persons_run_would_go_is_placed_as_its_run_is_recast() {
+        use crate::declared::Kind;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[("wren", made::PERSON), ("reef", "P9R1KI")]);
+        fs::write(dir.path().join(made::AGENT_ROOMS), "reef\nwren\ntern\n").expect("named");
+        // tern is booked nowhere here, a worker this node's link reached.
+        let mut tern = placement::tests::machine("tern", "linux", 32, &["basin"]);
+        tern.worker = true;
+        shared.store.put_machine(&tern).expect("kept");
+        let person = || Admits::Asker(made::PERSON.to_owned());
+        let naming = |name: &str| work(vec![Need::Machine(name.to_owned())]);
+        for room in ["reef", "tern"] {
+            assert_eq!(
+                shared.placing_asked(&naming(room), Counts::Never, By::Person, person()),
+                (Some(Kind::Fence), Screen::Run, Admits::Rooms),
+                "the person's run naming {room} is placed as its run is, on rooms, fenced"
+            );
+            assert_eq!(
+                shared.placing_asked(&naming(room), Counts::Here, By::Person, person()),
+                (None, held_screen(None), person()),
+                "but the person's start naming {room} is held to who asks"
+            );
+        }
+        assert_eq!(
+            shared.placing_asked(&naming("wren"), Counts::Never, By::Person, person()),
+            (None, Screen::Run, person()),
+            "and the person's run naming their own room is theirs"
+        );
+        assert_eq!(
+            ["reef", "tern", "wren"].map(|room| shared.recasts(By::Person, &naming(room))),
+            [Some(Recast::AnAgentsBooking), Some(Recast::NoBooking), None],
+            "each recast says why: an agent's booking, or none here"
+        );
+        assert_eq!(
+            shared.placing_asked(
+                &naming("reef"),
+                Counts::Never,
+                By::Agent(Kind::Strict),
+                person()
+            ),
+            (Some(Kind::Strict), Screen::Run, person()),
+            "and an agent's run is held to who asks, as before"
+        );
     }
 
     // Followup 487: who asked a run recast to a room is said only by a
@@ -26688,13 +26815,25 @@ esac
     #[test]
     fn a_recast_run_refused_says_the_person_asked_it() {
         assert_eq!(
-            sent_as(true, "nowhere: reef is gone".to_owned()),
+            sent_as(
+                Some(Recast::AnAgentsBooking),
+                "nowhere: reef is gone".to_owned()
+            ),
             "the person's run naming a room made for agents is sent there as an agent's, in \
              the agent fence, and nowhere: reef is gone",
             "a recast run's refusal says whose it was"
         );
+        // Followup 503: a booking lost or not yet back is named.
         assert_eq!(
-            sent_as(false, "nowhere: reef is gone".to_owned()),
+            sent_as(Some(Recast::NoBooking), "nowhere: tern is gone".to_owned()),
+            "the person's run naming a room made for agents is sent there as an agent's, in \
+             the agent fence, since no booking on this node says the room is the person's \
+             (each node keeps its own, and holds one again after a restart only once its make \
+             redials), and nowhere: tern is gone",
+            "and where no booking here names the room, it says so"
+        );
+        assert_eq!(
+            sent_as(None, "nowhere: reef is gone".to_owned()),
             "nowhere: reef is gone",
             "any other run's is as it was"
         );

@@ -3184,6 +3184,32 @@ mod tests {
         );
     }
 
+    // Followup 507(b): a recast run's asker crosses the link as its node
+    // said it, so the room runs it reading no profile.
+    #[test]
+    fn a_recast_runs_asker_crosses_a_link_as_said() {
+        let said: Run = serde_json::from_value(json!({
+            "work": {"needs": [], "prefers": [], "tolerates": [], "may_wait": false},
+            "command": ["true"],
+            "by": {"Agent": "fence"},
+            "asked_by": "Person"
+        }))
+        .expect("a recast run as a node says it");
+        assert_eq!(
+            (said.by, said.asked_by),
+            (Some(By::Agent(Kind::Fence)), Some(By::Person)),
+            "both read as PROTOCOL.md writes them"
+        );
+        let frame = Frame::Run { ask: 7, run: said };
+        let written = serde_json::to_string(&frame).expect("a frame writes");
+        assert!(written.contains(r#""asked_by":"Person""#), "{written}");
+        assert_eq!(
+            serde_json::from_str::<Frame>(&written).expect("a frame reads"),
+            frame,
+            "and the far end reads it back whole"
+        );
+    }
+
     /// How long a test waits for a link to carry something before failing.
     /// Each waits on what it waits for, so this only bounds how long a
     /// failure takes to say so; a narrow pipe's backlog, carried a few
