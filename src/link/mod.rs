@@ -5294,6 +5294,9 @@ mod tests {
         until(&skiff, |store| !store.presences().is_empty()).await;
 
         let _second = linked(&skiff, &kestrel, 1 << 16);
+        // Asked to let go, the older end ends within a look, so one still
+        // running past the patience never was, and fails here rather than
+        // holding the run.
         let ended = tokio::time::timeout(PATIENCE, first)
             .await
             .expect("the first link's end lets its claim go in time")
