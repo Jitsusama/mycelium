@@ -2204,6 +2204,27 @@ struct Vouched {
     unfenced: Option<Vec<(String, serde_json::Value)>>,
 }
 
+/// The machine a rooms ask names, trimmed, where it reads as a machine's
+/// name does: letters, digits, `.`, `-` and `_` alone, so what is
+/// written in `agent-rooms` is the machine judged and no other, never a
+/// `#` or a line's end that would read as something else.
+fn room_named(machine: Option<String>) -> Result<String, String> {
+    let name = machine
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "name the machine".to_owned())?;
+    let plain = |one: char| one.is_ascii_alphanumeric() || matches!(one, '.' | '-' | '_');
+    if name.len() > 253 || !name.chars().all(plain) {
+        return Err(format!(
+            "\"{}\" isn't a machine's name, which holds only letters, digits, '.', '-' and \
+             '_'",
+            name.escape_debug()
+        ));
+    }
+    Ok(name.to_owned())
+}
+
 /// What the node's loop and every client share.
 struct Shared<S> {
     store: S,
@@ -6815,71 +6836,107 @@ impl<S: Store> Shared<S> {
     }
 
     /// Names `machine` a room for agents to share, or takes it out, or
-    /// only says which machines are, as `act` asks, whoever asks. This
-    /// node alone writes `agent-rooms`, and names a machine a room only
-    /// where its own book holds it standing, made by this realm's node
-    /// for an agent: never one made for the person, whose own sessions
-    /// run there, nor one another node made or nobody did, since naming
-    /// one lets every agent's work go there.
+    /// only says which machines are, as `act` asks, for whoever asks, as
+    /// [`Self::rooms_asked_by`] judges it.
     async fn rooms_asked(&self, act: crate::wire::RoomsAct, machine: Option<String>) -> Reply {
-        use crate::wire::RoomsAct;
-        let named = |machine: Option<String>| {
-            machine
-                .filter(|name| !name.trim().is_empty())
-                .ok_or_else(|| "name the machine".to_owned())
+        let who = match act {
+            crate::wire::RoomsAct::List => String::new(),
+            _ => self.asker_of_a_make().await.told,
         };
-        match act {
-            RoomsAct::List => {}
-            RoomsAct::Add => {
-                let machine = named(machine)?;
-                let standing = match self.book.standing() {
-                    Ok(standing) => standing,
-                    Err(error) => return Err(format!("the book can't be read: {error}")),
-                };
-                let made = standing
-                    .made
-                    .iter()
-                    .rev()
-                    .find(|made| made.machine == machine);
-                match made.map(|made| made.asker.as_deref()) {
-                    None => {
-                        return Err(format!(
-                            "{machine} isn't named a room, since this node's book holds no \
-                             such machine made and standing: one another node made, or the \
-                             person's own, is never one"
-                        ));
-                    }
-                    Some(None | Some(made::PERSON)) => {
-                        return Err(format!(
-                            "{machine} isn't named a room, since it was made for the person"
-                        ));
-                    }
-                    Some(Some(_)) => {}
-                }
-                let who = self.asker_of_a_make().await.told;
-                let added = self
-                    .book
-                    .name_room(&machine)
-                    .map_err(|error| format!("{machine} isn't named a room: {error}"))?;
-                if added {
-                    eprintln!("{machine} is named a room, for {who}");
-                }
+        self.rooms_asked_by(act, machine, &who).await
+    }
+
+    /// As [`Self::rooms_asked`], asked by `who`, as [`Self::asker_of_a_make`]
+    /// tells it. This node alone writes `agent-rooms`, and names a machine
+    /// a room only where its own book holds it standing, made by this
+    /// realm's node for a proven agent, and only for that agent or the
+    /// person: never one made for the person, whose own sessions run
+    /// there, nor one another node made or nobody did, since naming one
+    /// lets every agent's work go there, and never another agent's, since
+    /// its booking kept others' work out of the home its make wrote. A
+    /// machine released is taken out ([`Book::released`]), so a name never
+    /// outlives what it was judged on. Taking one out sends work back to
+    /// the machines it would go to anyway, so anyone may.
+    async fn rooms_asked_by(
+        &self,
+        act: crate::wire::RoomsAct,
+        machine: Option<String>,
+        who: &str,
+    ) -> Reply {
+        use crate::wire::RoomsAct;
+        let naming = match act {
+            RoomsAct::List => None,
+            RoomsAct::Add => Some(true),
+            RoomsAct::Remove => Some(false),
+        };
+        if let Some(naming) = naming {
+            let machine = room_named(machine)?;
+            if naming && let Err(why) = self.may_name_room(&machine, who) {
+                eprintln!("{who} asked to name {machine} a room, refused: {why}");
+                return Err(why);
             }
-            RoomsAct::Remove => {
-                let machine = named(machine)?;
-                let who = self.asker_of_a_make().await.told;
-                let taken = self
-                    .book
-                    .unname_room(&machine)
-                    .map_err(|error| format!("{machine} stays a room: {error}"))?;
-                if taken {
-                    eprintln!("{machine} is a room no longer, for {who}");
+            let book = self.book.clone();
+            let name = machine.clone();
+            let rewritten = tokio::task::spawn_blocking(move || {
+                if naming {
+                    book.name_room(&name)
+                } else {
+                    book.unname_room(&name)
                 }
+            })
+            .await
+            .map_err(|error| format!("its rewrite stopped: {error}"))?;
+            let changed = rewritten.map_err(|error| {
+                if naming {
+                    format!("{machine} isn't named a room: {error}")
+                } else {
+                    format!("{machine} stays a room: {error}")
+                }
+            })?;
+            match (changed, naming) {
+                (true, true) => eprintln!("{machine} is named a room, for {who}"),
+                (true, false) => eprintln!("{machine} is a room no longer, for {who}"),
+                (false, _) => {}
             }
         }
         Ok(Response::Rooms {
             rooms: self.book.agent_rooms().into_iter().collect(),
         })
+    }
+
+    /// Whether `who` may name `machine` a room, as
+    /// [`Self::rooms_asked_by`] says, or why not.
+    fn may_name_room(&self, machine: &str, who: &str) -> Result<(), String> {
+        let standing = self
+            .book
+            .standing()
+            .map_err(|error| format!("the book can't be read: {error}"))?;
+        let made = standing
+            .made
+            .iter()
+            .rev()
+            .find(|made| made.machine == machine);
+        match made.map(|made| made.asker.as_deref()) {
+            None => Err(format!(
+                "{machine} isn't named a room, since this node's book holds no such machine \
+                 made and standing: one another node made, or the person's own, is never one"
+            )),
+            Some(None | Some(made::PERSON)) => Err(format!(
+                "{machine} isn't named a room, since it was made for the person"
+            )),
+            Some(Some(made::UNKNOWN)) => Err(format!(
+                "{machine} isn't named a room, since no proven agent asked for it: its make is \
+                 booked for {}",
+                made::UNKNOWN
+            )),
+            Some(Some(asker)) if who != made::PERSON && !who.eq_ignore_ascii_case(asker) => {
+                Err(format!(
+                    "{machine} isn't named a room for {who}, since it was made for {asker}: \
+                     only its asker or the person names it one"
+                ))
+            }
+            Some(Some(_)) => Ok(()),
+        }
     }
 
     /// Frees `quest` from the session holding it by this node's record of
@@ -25383,6 +25440,7 @@ esac
             ("tern", Some("ASKER1")),
             ("wren", Some(made::PERSON)),
             ("osprey", None),
+            ("harbour", Some(made::UNKNOWN)),
         ] {
             let mut made = made_by("/usr/bin/lend", name, a_day_out());
             made.asker = asker.map(str::to_owned);
@@ -25395,18 +25453,23 @@ esac
             .of_realm("home")
             .made(&theirs)
             .expect("the make is kept");
-        for (machine, why) in [
-            ("wren", "made for the person"),
-            ("osprey", "made for the person"),
-            ("kestrel", "holds no such machine"),
-            ("harbour", "holds no such machine"),
+        for (machine, who, why) in [
+            ("wren", made::PERSON, "made for the person"),
+            ("osprey", made::PERSON, "made for the person"),
+            ("harbour", made::UNKNOWN, "no proven agent asked for it"),
+            ("kestrel", "ASKER1", "holds no such machine"),
+            ("skiff", "ASKER1", "holds no such machine"),
+            ("tern", "ASKER2", "only its asker or the person"),
+            ("tern", made::UNKNOWN, "only its asker or the person"),
+            ("tern #all", "ASKER1", "isn't a machine's name"),
+            ("tern\nwren", "ASKER1", "isn't a machine's name"),
         ] {
             let refused = shared
-                .rooms_asked(RoomsAct::Add, Some(machine.to_owned()))
+                .rooms_asked_by(RoomsAct::Add, Some(machine.to_owned()), who)
                 .await;
             assert!(
                 refused.as_ref().is_err_and(|said| said.contains(why)),
-                "{machine} isn't named a room, saying why: {refused:?}"
+                "{machine:?} isn't named a room for {who}, saying why: {refused:?}"
             );
         }
         let rooms = |reply: Reply| match reply {
@@ -25414,21 +25477,70 @@ esac
             other => panic!("no rooms: {other:?}"),
         };
         let added = shared
-            .rooms_asked(RoomsAct::Add, Some("tern".to_owned()))
+            .rooms_asked_by(RoomsAct::Add, Some(" tern ".to_owned()), "asker1")
             .await;
-        assert_eq!(rooms(added), ["tern"], "the agent's is named one");
+        assert_eq!(
+            rooms(added),
+            ["tern"],
+            "its asker's is named one, trimmed"
+        );
         assert_eq!(
             shared.book.agent_rooms(),
             std::collections::BTreeSet::from(["tern".to_owned()]),
             "in the file placement reads"
         );
         let removed = shared
-            .rooms_asked(RoomsAct::Remove, Some("tern".to_owned()))
+            .rooms_asked_by(RoomsAct::Remove, Some("osprey".to_owned()), "ASKER2")
             .await;
-        assert!(rooms(removed).is_empty(), "and taken out again");
+        assert_eq!(
+            rooms(removed),
+            ["tern"],
+            "taking out one never named changes nothing"
+        );
+        let removed = shared
+            .rooms_asked_by(RoomsAct::Remove, Some("tern".to_owned()), "ASKER2")
+            .await;
+        assert!(rooms(removed).is_empty(), "and anyone takes it out again");
         assert!(
-            shared.rooms_asked(RoomsAct::Add, None).await.is_err(),
+            shared
+                .rooms_asked_by(RoomsAct::Add, None, "ASKER1")
+                .await
+                .is_err(),
             "an add names its machine"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_room_released_is_a_room_no_longer() {
+        use crate::wire::RoomsAct;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        let mut tern = made_by("/usr/bin/lend", "tern", a_day_out());
+        tern.asker = Some("ASKER1".to_owned());
+        shared.book.made(&tern).expect("the make is kept");
+        let added = shared
+            .rooms_asked_by(RoomsAct::Add, Some("tern".to_owned()), made::PERSON)
+            .await;
+        assert!(
+            matches!(added, Ok(Response::Rooms { ref rooms }) if rooms == &["tern"]),
+            "the person names an agent's one too: {added:?}"
+        );
+        shared
+            .book
+            .released(&tern, "its work ended")
+            .expect("the release is kept");
+        assert!(
+            shared.book.agent_rooms().is_empty(),
+            "released, it is a room no longer"
+        );
+        let refused = shared
+            .rooms_asked_by(RoomsAct::Add, Some("tern".to_owned()), "ASKER1")
+            .await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|said| said.contains("holds no such machine")),
+            "nor named one again: {refused:?}"
         );
     }
 
