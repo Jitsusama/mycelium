@@ -38,7 +38,9 @@ use mycelium::ssh::Asked as KeyAsked;
 use mycelium::store::Store as _;
 use mycelium::store::folders::Folders;
 use mycelium::web::Said;
-use mycelium::wire::{Answer, Draft, Ran, Reply, Request, Response, Run, Sprout, Start, StartsAct};
+use mycelium::wire::{
+    Answer, Draft, Ran, Reply, Request, Response, RoomsAct, Run, Sprout, Start, StartsAct,
+};
 use mycelium::{carry, hold, hosted_attach, install, link, node, place, rejoin, served};
 
 /// What `mycelium starts` is asked to do.
@@ -50,6 +52,27 @@ enum StartsAsked {
     Resume,
     /// Only say how they stand.
     List,
+}
+
+/// What `mycelium rooms` is asked to do.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum RoomsAsked {
+    /// Name a machine a room.
+    Add,
+    /// Take a machine out of the rooms.
+    Remove,
+    /// Only say which machines are rooms.
+    List,
+}
+
+impl From<RoomsAsked> for RoomsAct {
+    fn from(asked: RoomsAsked) -> Self {
+        match asked {
+            RoomsAsked::Add => Self::Add,
+            RoomsAsked::Remove => Self::Remove,
+            RoomsAsked::List => Self::List,
+        }
+    }
 }
 
 impl From<StartsAsked> for StartsAct {
@@ -378,6 +401,20 @@ enum Action {
         /// What to do.
         #[arg(value_enum, default_value = "list")]
         act: StartsAsked,
+    },
+    /// Lists the machines made for agents to share, or names one a room
+    /// or takes one out.
+    ///
+    /// Only the node writes the rooms' list, and it names only a machine
+    /// its own book holds as made for an agent: never the person's own,
+    /// nor one another node made.
+    #[command(after_help = "Example:\n  mycelium rooms add tern")]
+    Rooms {
+        /// What to do.
+        #[arg(value_enum, default_value = "list")]
+        act: RoomsAsked,
+        /// The machine, such as `tern`, for `add` and `remove`.
+        machine: Option<String>,
     },
     /// Prints the latest messages on the mesh.
     ///
@@ -1791,6 +1828,10 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Place(asked) => print_reply(&socket, &Request::Place(asked.into())),
         Action::Update { machine } => print_reply(&socket, &Request::Update { machine }),
         Action::Starts { act } => print_reply(&socket, &Request::Starts { act: act.into() }),
+        Action::Rooms { act, machine } => {
+            let act = act.into();
+            print_reply(&socket, &Request::Rooms { act, machine })
+        }
         Action::Start(asked) => start(&socket, asked),
         Action::Sprout(asked) => sprout(&socket, asked),
         Action::Places { output } => places(&socket, &output),

@@ -1610,6 +1610,7 @@ reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
 | `{"Free": {"quest"}}` | `"Orchestrated"`, freed, from the person's own login |
 | `{"Starts": {"act"}}` | `{"Starts": {"stopped", "newest"}}`, `stop`, `resume` or `list` from the person's own login |
+| `{"Rooms": {"act", "machine"}}` | `{"Rooms": {"rooms"}}`, after `add` or `remove` names `machine` a room or takes it out, or `list`, as the rooms below say |
 | `{"Update": {"machine"}}` | `{"Updated": ending}`, as its updater said it |
 | `{"End": {"held"}}` | `{"Ended": {"machine", "held", "ending"}}`, `ending` `gently` or `killed` (A Held Session) |
 | `{"Run": {"work", "folder", "command", "by", "from"}}` | `{"Running": {"machine"}}`, then a `Ran` a line |
@@ -2499,9 +2500,16 @@ which runs as the same account; an agent's process left with no agent
 above it is judged the person's. A machine named in `agent-rooms`,
 beside the node's book of makes, a name a line, past blank lines and
 what follows a `#` on any line, is a room made for agents to share:
-already up and
-paid for by being so. Every agent's start or run may be placed there,
-a granted session's and one from no one known included, whoever it is
+already up and paid for by being so. The node alone writes it, as
+`mycelium rooms add` and `rooms remove` ask, holding
+`agent-rooms.lock` beside it and putting the new file in place whole,
+every other line kept as it stood. It names a machine a room only
+where its own realm's lines in the book hold it made and standing
+for an agent, refusing one made for the person, or before makes said
+for whom, and one another node made or nobody did, since naming one
+lets every agent's work go there; whoever asks, it says on its log
+who. A file past the most read is never written again. Every agent's
+start or run may be placed there, a granted session's and one from no one known included, whoever it is
 booked for, since its booking says who pays for it and may let it go,
 not who may use it; the person's own go there only where it is booked
 for the person or for no asker, never into a worker home an agent's

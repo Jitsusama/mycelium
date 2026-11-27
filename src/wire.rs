@@ -146,6 +146,17 @@ pub enum Request {
         /// What to do.
         act: StartsAct,
     },
+    /// The machines named rooms for agents to share, after naming
+    /// `machine` one or taking it out, as `act` asks: the node alone
+    /// writes `agent-rooms`, and names only a machine its own book holds
+    /// as made for an agent.
+    Rooms {
+        /// What to do.
+        act: RoomsAct,
+        /// The machine named or taken out, which a list needs none of.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machine: Option<String>,
+    },
     /// What the session asking, as the kernel and pi's records prove it,
     /// orchestrates by the node's record, changing nothing. Its own
     /// request, so a node too old to know it refuses it rather than
@@ -338,6 +349,18 @@ pub enum StartsAct {
     /// Let agents start again, within their limits.
     Resume,
     /// Only say how they stand.
+    List,
+}
+
+/// What is asked of the rooms made for agents to share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomsAct {
+    /// Name a machine a room.
+    Add,
+    /// Take a machine out of the rooms.
+    Remove,
+    /// Only say which machines are rooms.
     List,
 }
 
@@ -543,6 +566,11 @@ pub enum Response {
         stopped: bool,
         /// The newest starts.
         newest: Vec<serde_json::Value>,
+    },
+    /// The machines named rooms for agents to share, after the act asked.
+    Rooms {
+        /// Each, by name, in order.
+        rooms: Vec<String>,
     },
     /// Events follow, one per line.
     Watching,

@@ -11,6 +11,9 @@
 //! Each make and release is kept, a JSON line each, in the node's book
 //! ([`Book`]), so what was made, for how long and at what rate can always
 //! be read back and summed.
+//!
+//! Long because its tests, nearly half of it, walk each way a make, its
+//! book and the rooms' list are read and written.
 
 use std::collections::BTreeSet;
 use std::fs::OpenOptions;
@@ -146,6 +149,10 @@ pub const GRANTS: &str = "grants.json";
 /// share ([`Book::agent_rooms`]).
 pub const AGENT_ROOMS: &str = "agent-rooms";
 
+/// The file beside the rooms file held while it is written again, so two
+/// changes at once never lose one.
+const ROOMS_LOCK: &str = "agent-rooms.lock";
+
 /// The person's word that a session may have machines made and placed for
 /// it as though the person asked, until `until`: its makes are told to
 /// the provider as [`PERSON`] and booked for the person, so the person's
@@ -267,11 +274,88 @@ impl Book {
         drop(last);
         read.unwrap_or_default()
             .lines()
-            .filter_map(|line| line.split('#').next())
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
+            .filter_map(room_of)
             .map(str::to_owned)
             .collect()
+    }
+
+    /// Names `machine` a room in `agent-rooms`, keeping every other line
+    /// as it stands, and says whether it wasn't one already. Only the
+    /// node calls it, once it has judged the machine may be one.
+    ///
+    /// # Errors
+    ///
+    /// When the file can't be read whole or written again.
+    pub fn name_room(&self, machine: &str) -> io::Result<bool> {
+        self.rewrite_rooms(|lines| {
+            if lines.iter().any(|line| room_of(line) == Some(machine)) {
+                return false;
+            }
+            lines.push(machine.to_owned());
+            true
+        })
+    }
+
+    /// Takes `machine` out of `agent-rooms`, keeping every other line as
+    /// it stands, and says whether it was one.
+    ///
+    /// # Errors
+    ///
+    /// When the file can't be read whole or written again.
+    pub fn unname_room(&self, machine: &str) -> io::Result<bool> {
+        self.rewrite_rooms(|lines| {
+            let before = lines.len();
+            lines.retain(|line| room_of(line) != Some(machine));
+            lines.len() != before
+        })
+    }
+
+    /// Writes `agent-rooms` again as `change` leaves its lines, where it
+    /// says it changed them, holding the lock beside it meanwhile, and
+    /// putting the new file in place whole, so a placement never reads
+    /// half of one. A file past [`ROOMS_AT_MOST`] is refused, since what
+    /// lay past it would be lost.
+    fn rewrite_rooms(&self, change: impl FnOnce(&mut Vec<String>) -> bool) -> io::Result<bool> {
+        let path = self.path.with_file_name(AGENT_ROOMS);
+        if let Some(folder) = path.parent() {
+            std::fs::create_dir_all(folder)?;
+        }
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path.with_file_name(ROOMS_LOCK))?;
+        rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)?;
+        let said = match rooms_said(&path) {
+            Ok(said) => said,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error),
+        };
+        if said.len() as u64 >= ROOMS_AT_MOST {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("it holds {ROOMS_AT_MOST} bytes or more, so it isn't written again"),
+            ));
+        }
+        let mut lines: Vec<String> = said.lines().map(str::to_owned).collect();
+        if !change(&mut lines) {
+            return Ok(false);
+        }
+        let next = path.with_file_name(format!("{AGENT_ROOMS}.next"));
+        if let Err(error) = std::fs::remove_file(&next)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            return Err(error);
+        }
+        let mut text = lines.join("\n");
+        text.push('\n');
+        OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&next)?
+            .write_all(text.as_bytes())?;
+        std::fs::rename(&next, &path)?;
+        Ok(true)
     }
 
     /// Keeps that `made` was made.
@@ -386,6 +470,15 @@ fn kept(line: &str) -> (Option<Kept>, bool) {
 struct Released {
     machine: String,
     place: String,
+}
+
+/// The machine a line of the rooms file names, if any: what precedes a
+/// `#`, trimmed.
+fn room_of(line: &str) -> Option<&str> {
+    line.split('#')
+        .next()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
 }
 
 /// What the rooms file at `path` says, read only where it is a plain
@@ -516,6 +609,68 @@ mod tests {
                 .unwrap_or_else(PoisonError::into_inner)
                 .is_some(),
             "and why is kept, so it is said once"
+        );
+    }
+
+    #[test]
+    fn a_room_named_or_taken_out_leaves_every_other_line_as_it_stood() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let book = Book::at(dir.path().join("made.jsonl"));
+        assert!(
+            book.name_room("wren").expect("named"),
+            "a file not there is made"
+        );
+        fs::write(
+            dir.path().join(AGENT_ROOMS),
+            "# rooms for agents\nwren # the big one\n",
+        )
+        .expect("written");
+        assert!(
+            !book.name_room("wren").expect("read"),
+            "a room already is one"
+        );
+        assert!(book.name_room("tern").expect("named"), "is named");
+        assert_eq!(
+            fs::read_to_string(dir.path().join(AGENT_ROOMS)).expect("read"),
+            "# rooms for agents\nwren # the big one\ntern\n",
+            "at the end, the rest as they stood"
+        );
+        assert!(
+            book.unname_room("wren").expect("taken out"),
+            "a room is taken out"
+        );
+        assert!(
+            !book.unname_room("skiff").expect("read"),
+            "what isn't one stays so"
+        );
+        assert_eq!(
+            book.agent_rooms(),
+            BTreeSet::from(["tern".to_owned()]),
+            "only the rest are rooms"
+        );
+        assert!(
+            fs::read_to_string(dir.path().join(AGENT_ROOMS))
+                .expect("read")
+                .starts_with("# rooms for agents\n"),
+            "and its comment stays"
+        );
+    }
+
+    #[test]
+    fn a_rooms_list_too_long_to_read_whole_is_never_written_again() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let book = Book::at(dir.path().join("made.jsonl"));
+        let times = usize::try_from(ROOMS_AT_MOST).expect("small");
+        let long = "tern\n".repeat(times);
+        fs::write(dir.path().join(AGENT_ROOMS), &long).expect("written");
+        assert!(
+            book.name_room("wren").is_err(),
+            "what lay past it would be lost"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join(AGENT_ROOMS)).expect("read"),
+            long,
+            "so it stands as it was"
         );
     }
 
