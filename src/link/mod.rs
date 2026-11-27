@@ -2449,7 +2449,7 @@ impl<S: Store> End<S> {
             Ok(node) => node,
             Err(why) => {
                 eprintln!(
-                    "{} asked {} to end {held} for its starter {cell}, refused: {why}",
+                    "{} asked {} to end {held:?} for its starter {cell:?}, refused: {why}",
                     self.other, self.here
                 );
                 // The link outlives this call, so its loop is there to send it.

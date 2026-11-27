@@ -5806,15 +5806,24 @@ impl<S: Store> Shared<S> {
     /// with its hold, cell and relaying machine.
     async fn end_start(&self, held: &str, from: &str, cell: &str) -> Reply {
         let (by, _) = self.judged().await?;
-        if !asker::relays(self.client, by) {
+        // Taken from the asker a start is booked relayed from
+        // ([`Self::relayed_start`]): on a machine no person works on that
+        // is any asker, since its sessions ask on the worker socket and
+        // only the node's own account reaches this one, as the link's
+        // end does; where they run as that account they may signal any
+        // hold themselves, so taking their ask gains them nothing. Where a person
+        // works, the link's end is judged the person's and books no start
+        // as relayed, so only the node's own process is taken.
+        if !(self.processes.is_unattended() || asker::relays(self.client, by)) {
             return Err(format!(
-                "a starter's end is asked only by a link's end, and this asker is judged \
-                 {by}"
+                "{} takes a starter's end only where no person works, as from a link's end, \
+                 and a person works here, so this asker, judged {by}, isn't taken",
+                self.machine
             ));
         }
         let relayed = self.starts.relayed_from(held, &self.machine);
         if relayed.as_deref() != Some(from) {
-            eprintln!("{from:?} asked to end {held} for {cell:?}, refused: not its start");
+            eprintln!("{from:?} asked to end {held:?} for {cell:?}, refused: not its start");
             return Err(format!(
                 "{} ends {held} for its starter only where it took it as an agent's start \
                  relayed from {from}, and its book says no such start landed as it",
@@ -5828,7 +5837,7 @@ impl<S: Store> Shared<S> {
                 .await
                 .map_err(|error| format!("its end stopped: {error}"))?
                 .map_err(|error| format!("{held} didn't end: {error}"))?;
-        eprintln!("ended {held}, held here, for {cell:?}, whose start {from:?} relayed");
+        eprintln!("ended {held:?}, held here, for {cell:?}, whose start {from:?} relayed");
         Ok(Response::Ended {
             machine: self.machine.clone(),
             held: held.to_owned(),
@@ -5972,8 +5981,8 @@ impl<S: Store> Shared<S> {
         }
         let session = self.asking_session().await.map_err(|why| {
             format!(
-                "only the person or the orchestrator of the session it holds ends a hold, \
-                 and neither asks: {why}"
+                "only the person, the session a hold runs, its orchestrator or its starter \
+                 ends a hold, and none asks: {why}"
             )
         })?;
         let sessions = self.lock().state.sessions();
@@ -14056,6 +14065,42 @@ esac
         );
     }
 
+    // A link's far end asks as a process that isn't the node's, judged
+    // an agent's where no person works, as it was when its start was
+    // booked relayed: there its starter's end is taken from it, and where
+    // a person works it isn't, since there no start is booked so.
+    #[tokio::test]
+    async fn a_starters_end_is_taken_from_the_asker_its_start_was_booked_from() {
+        for (processes, unattended) in [
+            (Processes::Folder("/nowhere/proc".into()).unattended(), true),
+            (Processes::Folder("/nowhere/proc".into()), false),
+        ] {
+            let dir = tempfile::tempdir().expect("a temporary folder");
+            let at = jiff::Timestamp::now().as_millisecond();
+            let line = json!({"at": at, "by": {"Agent": "fence"}, "started_by": "HARBOR",
+                              "machine": "skiff", "held": "e0d4", "relayed_from": "wren"});
+            fs::write(dir.path().join("starts.jsonl"), format!("{line}\n")).expect("a book");
+            let mut link = holding_skiff(dir.path(), Memory::default(), None, processes);
+            link.client = Some(1);
+            let refused = link
+                .end_start("e0d4", "wren", "HARBOR")
+                .await
+                .expect_err("nothing is held as e0d4, or the asker isn't taken");
+            if unattended {
+                assert!(
+                    refused.starts_with("e0d4 didn't end: nothing is held as e0d4"),
+                    "where no person works, the link's end is taken and its end is tried: \
+                     {refused}"
+                );
+            } else {
+                assert!(
+                    refused.starts_with("skiff takes a starter's end only where no person works"),
+                    "where a person works, an asker that isn't the node's isn't taken: {refused}"
+                );
+            }
+        }
+    }
+
     /// A node on `socket` as [`orchestrated_in`] runs it, keeping its
     /// sessions in `store`, but HARBOR's quest has ended, orchestrated by
     /// `orchestrator` as the harness's record of ended quests says, and
@@ -19252,8 +19297,8 @@ esac
 
         assert!(
             refused.as_ref().is_err_and(|why| why.starts_with(
-                "only the person or the orchestrator of the session it holds ends a hold, and \
-                 neither asks: "
+                "only the person, the session a hold runs, its orchestrator or its starter \
+                 ends a hold, and none asks: "
             )),
             "a stranger is refused, saying why: {refused:?}"
         );
