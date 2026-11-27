@@ -495,6 +495,28 @@ fn drawn_whole_a_member_s_name_keeps_every_mark_it_was_written_with() {
 }
 
 #[test]
+fn a_wide_short_name_keeps_every_title_in_line() {
+    let mut swarm = swarm();
+    // Four characters, wider in cells than the other's four and as wide
+    // counted by character, so counting characters shows.
+    swarm.teams[0]["swarm"] = json!("港湾港湾");
+    swarm.teams[1]["swarm"] = json!("tide");
+    let shown = overview(&swarm, &look());
+    // Measured by Unicode's widths directly, not by the code under test,
+    // as nothing here is coloured.
+    let at = |title: &str| {
+        shown.lines().find_map(|line| {
+            line.find(title)
+                .map(|at| <str as unicode_width::UnicodeWidthStr>::width(&line[..at]))
+        })
+    };
+    assert!(
+        at("Reef").is_some() && at("Reef") == at("Harbour"),
+        "a wide short name moved its title:\n{shown}"
+    );
+}
+
+#[test]
 fn a_short_name_that_is_another_s_address_is_never_drawn_or_offered() {
     // Typed, it would reach the session BUSY, not Reef.
     let mut swarm = swarm();
