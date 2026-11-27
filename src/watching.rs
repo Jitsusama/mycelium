@@ -86,13 +86,17 @@ pub fn watch_all(
 /// a path watched again unchanged alters nothing, and a batch stops at
 /// the first path that fails: one not there, or one given back unwatched.
 /// A path that fails alters nothing, as notify 9.0.0-rc.7's macOS watcher
-/// refuses it before holding it. That watcher starts a batch's stream
-/// again only when a root's path, device or inode changes, and a single
-/// watch or unwatch only when no folder it watches recursively holds the
-/// path and, for a watch, the path's file or mode changed. This
-/// counts a start for any path whose file or mode changed, held inside a
-/// recursive root or not, so it counts a start at least as often as macOS
-/// does. It lists what it holds, as notify's own watchers do.
+/// refuses it before holding it, and refuses to give back a path it
+/// doesn't hold before stopping anything.
+///
+/// That watcher starts a batch's stream again only when a root's path,
+/// device or inode changes. It starts a single watch's again only when no
+/// folder it watches recursively holds the path and the path's file or
+/// mode changed, and a single unwatch's only when no such folder holds it.
+/// This counts a start for any path watched anew or another way and any
+/// path given back, held inside a recursive root or not, in a batch or
+/// alone, so it counts a start at least as often as macOS does. It lists
+/// what it holds, as notify's own watchers do.
 #[cfg(test)]
 pub mod counting {
     use std::collections::BTreeMap;
@@ -330,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn a_path_watched_again_another_way_starts_the_stream_again() {
+    fn the_counting_watcher_counts_a_path_watched_another_way_as_a_start() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let (mut watcher, starts) = Counting::made();
         watcher
@@ -342,7 +346,7 @@ mod tests {
         assert_eq!(
             starts.load(Ordering::SeqCst),
             2,
-            "macOS starts again for a path watched in another mode"
+            "a single watch in another mode starts macOS's stream again, so it counts"
         );
         assert_eq!(
             watcher.watched_paths().expect("its paths listed"),
