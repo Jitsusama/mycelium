@@ -65,3 +65,5 @@ The rest of the tests sit beside the code they prove, in `src/`.
   JSON lines with `-o json` or `--json`
 - `unread.rs`: a command's failure said to a pipe nobody reads any more
   ending as a failure, not a panic
+- `zone/`: the zone `piped.rs` and `unanswered.rs` draw their stamped
+  times in, a POSIX rule needing no zone database

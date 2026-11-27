@@ -11,8 +11,10 @@ use std::time::Duration;
 
 use process::{made, mycelium};
 use serde_json::{Value, json};
+use zone::ZONE;
 
 mod process;
+mod zone;
 
 /// A hold's first line, wider than any terminal a test might run in, so a
 /// pipe drawn as one would cut or wrap it.
@@ -68,11 +70,9 @@ fn a_pipe_reads_text_and_json_is_asked_for() {
         &home.join("r").join("mycelium").join("work.sock"),
         PATIENCE,
     );
-    // A POSIX rule needs no zone database, which the build's sandbox
-    // lacks, and half an hour off UTC it fails a stamp drawn in UTC.
     let printed = |args: &[&str]| {
         let ran = mycelium(home, args)
-            .env("TZ", "<+0530>-5:30")
+            .env("TZ", ZONE)
             .output()
             .expect("mycelium runs");
         assert!(ran.status.success(), "{args:?} failed: {ran:?}");
@@ -94,6 +94,7 @@ fn a_pipe_reads_text_and_json_is_asked_for() {
     assert_eq!(
         lines
             .get(1)
+            // The zone as each time drawn in ZONE says it.
             .map(|line| line.matches(" +0530 (+05:30)").count()),
         Some(2),
         "into a pipe, when the hold was put and until when weren't both stamped:\n{text}"
