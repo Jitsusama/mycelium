@@ -596,7 +596,7 @@ fn session_cell(session: &Value) -> Option<Cell> {
         asks: session["wants"]["said"].as_str().map(str::to_owned),
         asked: session["wants"]["asked"].as_str().and_then(asked_whole),
         repo: session["presence"]["repo"].as_str().map(str::to_owned),
-        subjects: Subjects::from(subjects(&session["presence"]["subjects"])),
+        subjects: Subjects::kept(subjects(&session["presence"]["subjects"])),
         usage: Usage::of(session),
         leads: Vec::new(),
         machine: text("machine"),
