@@ -410,8 +410,9 @@ mod tests {
     fn an_answer_the_rules_since_would_refuse_is_left_out_of_what_the_weights_change() {
         // Placed on a paid machine before a worker refused work that
         // doesn't name it: no weights would draw it there now, which is
-        // the rule's doing, not theirs.
-        let mut cloud = machine("osprey", "linux", 32, &["internet"]);
+        // the rule's doing, not theirs. Aquifer's, so a worker rather than
+        // the person's own cloud machine.
+        let mut cloud = machine("osprey", "linux", 32, &["internet", "aquifer"]);
         cloud.declared.as_mut().expect("declared").costs_money = true;
         let home = pressed(machine("kestrel", "linux", 32, &["internet"]), 90.0);
         let realm = vec![home, cloud];

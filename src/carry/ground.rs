@@ -83,19 +83,26 @@ pub enum Lent {
 }
 
 impl Lent {
-    /// What `machine` is, as the realm last knew it.
+    /// What `machine` is, as the realm last knew it. One of the person's
+    /// own cloud machines is no worker, as placement judges it now, so a
+    /// carry goes there as to any of theirs.
     #[must_use]
     pub fn of(machine: &Machine) -> Self {
         Self::at(machine, jiff::Timestamp::now())
     }
 
-    /// What `machine` is at `now`, as the realm last knew it.
+    /// What `machine` is at `now`, as the realm last knew it. The person
+    /// ruled on 26 November that one of their own cloud machines is a
+    /// full place for sessions, as the Mac is, with no word of its own
+    /// needed; it is held to the same realm, reach and fences as any of
+    /// theirs, and judged as placement judges it
+    /// ([`crate::placement::is_the_persons_cloud`]).
     #[must_use]
     pub fn at(machine: &Machine, now: jiff::Timestamp) -> Self {
         let declared = machine.declared.as_ref();
         if !(machine.worker || declared.is_some_and(Declared::is_worker))
-            || declared
-                .is_some_and(|said| in_the_cloud(machine, said, now) || a_room(machine, said))
+            || crate::placement::is_the_persons_cloud(machine, now)
+            || declared.is_some_and(|said| a_room(machine, said))
         {
             Self::Not
         } else if declared.is_some_and(|said| said.takes_carries) {
@@ -104,25 +111,6 @@ impl Lent {
             Self::TakesNone
         }
     }
-}
-
-/// How long a machine in the cloud must yet stay for a carry to take it
-/// as one of the person's own, since a carried session lasts.
-const STAYS_FOR: jiff::SignedDuration = jiff::SignedDuration::from_hours(24 * 30);
-
-/// Whether `machine`, as it `said` itself, is one of the person's own in
-/// the cloud at `now`: paid for, perhaps, but linked as one of theirs
-/// rather than lent by a provider's link, reaching no network only a
-/// lent machine reaches, and staying a month at least. The person ruled
-/// on 26 November that such a machine is a full place for sessions, as
-/// the Mac is, with no word of its own needed; it is held to the same
-/// realm, reach and fences as any of theirs.
-fn in_the_cloud(machine: &Machine, said: &Declared, now: jiff::Timestamp) -> bool {
-    !machine.worker
-        && !reaches_aquifer(said)
-        && said
-            .leaves_at
-            .is_none_or(|leaves| now.checked_add(STAYS_FOR).is_ok_and(|month| leaves > month))
 }
 
 /// Whether `machine`, as it `said` itself, is a room its node names for
@@ -809,6 +797,29 @@ mod tests {
             ),
             "a machine that reaches what only a lent one does is a worker, whatever its link \
              says"
+        );
+        let theirs = Machine {
+            declared: Some(Declared {
+                leaves_at: Some("9999-01-01T00:00:00Z".parse().expect("a time")),
+                reach: Vec::new(),
+                ..lent.declared.clone().expect("declared")
+            }),
+            ..lent.clone()
+        };
+        for kind in [Kind::Fence, Kind::Strict] {
+            assert_eq!(
+                worker_takes(Some(kind), "tern", &theirs),
+                Ok(()),
+                "one of the person's own cloud machines takes a {kind} session"
+            );
+        }
+        assert_eq!(
+            Lent::of(&Machine {
+                worker: true,
+                ..theirs
+            }),
+            Lent::TakesNone,
+            "unless its link marks it a worker"
         );
         assert_eq!(
             worker_takes(Some(Kind::Strict), "tern", &tern(None, Readiness::Ready)),

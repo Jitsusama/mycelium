@@ -363,10 +363,13 @@ impl Watching for Node {
     fn withholds_above(&mut self, machine: &str) -> bool {
         let answer =
             Client::connect(&self.socket).and_then(|mut client| client.ask(&Request::Machines));
-        // As the link judges it: unknown, or a worker, is withheld.
+        // As the link judges it: unknown, or a worker other than one of
+        // the person's own cloud machines, is withheld.
+        let now = jiff::Timestamp::now();
         !matches!(answer, Ok(Ok(Response::Machines(machines)))
             if machines.iter().skip(1).any(|one| one.name == machine
-                && one.declared.as_ref().is_some_and(|said| !said.is_worker())))
+                && one.declared.as_ref().is_some_and(|said| !said.is_worker()
+                    || crate::placement::is_the_persons_cloud(one, now))))
     }
 
     fn waited(&self) -> Duration {

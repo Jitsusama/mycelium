@@ -628,18 +628,22 @@ pub fn headroom(
         }
     }
     let room = machine.room.as_ref().filter(|_| heard);
-    let cpu = room.map_or(0.0, |room| {
-        let pressed = room.pressure.cpu / 100.0;
-        let processor = machine.cpu.busy.map_or(pressed, |busy| busy.max(pressed));
-        // A reading that isn't a number says nothing, so it counts as
-        // none: a NaN would rank by nothing and leave no machine near
-        // the best.
-        if processor.is_nan() {
-            0.0
-        } else {
-            (1.0 - processor).clamp(0.0, 1.0)
-        }
-    });
+    // A machine heard by its facts alone, saying no room, has its
+    // processors' own word.
+    let pressed = room.map(|room| room.pressure.cpu / 100.0);
+    let cpu = pressed
+        .or(machine.cpu.busy.filter(|_| heard))
+        .map_or(0.0, |pressed| {
+            let processor = machine.cpu.busy.map_or(pressed, |busy| busy.max(pressed));
+            // A reading that isn't a number says nothing, so it counts as
+            // none: a NaN would rank by nothing and leave no machine near
+            // the best.
+            if processor.is_nan() {
+                0.0
+            } else {
+                (1.0 - processor).clamp(0.0, 1.0)
+            }
+        });
     let memory = share(room.map(|room| room.memory_available), machine.memory);
     let disk = share(machine.disk_free, machine.disk);
     let cores = machine
@@ -961,15 +965,18 @@ fn decide_at(
     pick: &mut dyn FnMut(usize) -> usize,
     weights: &Weights,
 ) -> Decision {
-    let lasting = lasting_reach(machines);
+    let lasting = lasting_reach(machines, now);
     let judged: Vec<Judged> = machines
         .iter()
         .map(|one| {
             let load = loads.get(&one.name).copied().unwrap_or_default();
             let mut judged = judge(work, one, load, now, weights);
-            // A room made for agents to share is paid for by being up, so
-            // it takes work that names none of the workers.
+            // One of the person's own cloud machines is paid for by being
+            // up, and so is a room made for agents to share, so either
+            // takes work that names none of the workers: only a machine
+            // lent for a while, or Aquifer's, keeps to work that names it.
             if one.declared.as_ref().is_some_and(Declared::is_worker)
+                && judged.pays == Pays::Apart
                 && one.held_for != HeldFor::Agents
                 && !names_worker(work, &lasting)
                 && !work.needs.contains(&Need::Machine(one.name.clone()))
@@ -996,6 +1003,7 @@ fn decide_at(
         let (one, other) = (&judged[one], &judged[other]);
         rank(one)
             .cmp(&rank(other))
+            .then_with(|| other.pays.cmp(&one.pays))
             .then_with(|| other.preferred.cmp(&one.preferred))
             .then_with(|| other.headroom.total_cmp(&one.headroom))
             .then_with(|| one.name.cmp(&other.name))
@@ -1008,6 +1016,7 @@ fn decide_at(
             .take_while(|&at| {
                 let one = &judged[at];
                 rank(one) == rank(best)
+                    && one.pays == best.pays
                     && one.preferred == best.preferred
                     && one.headroom >= best.headroom - weights.near_best
             })
@@ -1055,7 +1064,8 @@ const fn tier(one: &Judged) -> u8 {
     }
 }
 
-/// Where `one` ranks, first first: by its [`tier`], but a machine kept
+/// Where `one` ranks, first first: by its [`tier`], a cloud machine first
+/// within it (as [`decide_at`] sorts), but a machine kept
 /// lively within its ceiling and its queue's limits after every other
 /// heard machine with room and before those over, whatever limit they
 /// are over: one within its ceiling is light by the ceiling's own
@@ -1150,7 +1160,7 @@ pub fn to_make<'a>(
     offers: &'a [Offer],
     machines: &[Machine],
 ) -> Result<&'a Offer, Vec<Miss>> {
-    let named = names_worker(work, &lasting_reach(machines));
+    let named = names_worker(work, &lasting_reach(machines, jiff::Timestamp::now()));
     let judged: Vec<(Judged, &Offer)> = offers
         .iter()
         .map(|offer| {
@@ -1235,6 +1245,7 @@ fn judge_offer(work: &Work, offer: &Offer) -> Judged {
         unheard: false,
         saturated: false,
         kept: Kept::Not,
+        pays: Pays::Apart,
     }
 }
 
@@ -1336,6 +1347,17 @@ pub fn taints(machine: &Machine) -> Vec<Taint> {
     taints
 }
 
+/// How a machine is paid for, as ranking reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Pays {
+    /// Apart from being up: the person's own at home, or one lent for a
+    /// while.
+    Apart,
+    /// By being up: one of the person's own cloud machines, so ranked
+    /// before those paid for apart in its tier.
+    ByBeingUp,
+}
+
 /// One machine, as work sees it.
 struct Judged {
     name: String,
@@ -1355,6 +1377,9 @@ struct Judged {
     saturated: bool,
     /// Whether it is kept lively, so ranked after machines that aren't.
     kept: Kept,
+    /// How it is paid for, so a cloud machine ranks before the person's
+    /// own machines in its tier.
+    pays: Pays,
 }
 
 /// Why a machine kept lively to `lively` is past its ceiling, as `room`
@@ -1391,11 +1416,34 @@ fn past_lively(lively: Lively, room: &Room) -> Option<String> {
 /// The networks the person's own lasting machines reach, always or by a
 /// probe: what a worker alone reaches is the worker's, so work needing it
 /// names the worker, and what one of the person's own reaches names none.
-fn lasting_reach(machines: &[Machine]) -> BTreeSet<&str> {
+/// The person's own cloud machines, as they are at `now`, are theirs here
+/// too, so what they reach names no worker.
+fn lasting_reach(machines: &[Machine], now: jiff::Timestamp) -> BTreeSet<&str> {
+    reach_of(machines, |one| {
+        declares_no_worker(one) || is_the_persons_cloud(one, now)
+    })
+}
+
+/// The networks the machines that declare themselves none of the workers
+/// reach, always or by a probe, as a machine's own node judges what work
+/// asked on it names ([`asked_on`]).
+fn declared_lasting_reach(machines: &[Machine]) -> BTreeSet<&str> {
+    reach_of(machines, declares_no_worker)
+}
+
+fn declares_no_worker(one: &Machine) -> bool {
+    one.declared
+        .as_ref()
+        .is_some_and(|declared| !declared.is_worker())
+}
+
+/// The networks the machines `lasting` says last reach, always or by a
+/// probe.
+fn reach_of(machines: &[Machine], lasting: impl Fn(&Machine) -> bool) -> BTreeSet<&str> {
     machines
         .iter()
+        .filter(|one| lasting(one))
         .filter_map(|one| one.declared.as_ref())
-        .filter(|declared| !declared.is_worker())
         .flat_map(|declared| {
             let always = declared.reach.iter().map(String::as_str);
             always.chain(declared.probes.keys().map(String::as_str))
@@ -1429,15 +1477,25 @@ fn worker_refuses() -> Because {
     })
 }
 
-/// `work` asked on `here`, as it is to be placed: where `here` is a worker
-/// and the work names no worker of `machines`, it stays on `here`, so an
-/// agent on a machine lent for its work runs that work where it was lent,
-/// never on the person's own machines, which it was never given.
+/// `work` asked on `here`, as it is to be placed: where `here` is a
+/// worker and the work names no worker of `machines`, it stays on `here`,
+/// so an agent on a machine lent for its work runs that work where it
+/// was lent, never on the person's own machines, which it was never
+/// given. Each machine is judged by what it declares alone, as before the
+/// person's own cloud machines took sessions: `here`'s own node never
+/// hears a link mark it a worker, so a machine lent for agents that says
+/// it stays reads as one of the person's own cloud machines, and only
+/// pinning every paid machine's work keeps a lent one's there. Work asked
+/// on one of the person's own stays there too, which is the first place
+/// it would go, unless it names another paid machine: by name, by a
+/// network only paid machines reach, or by needing a cloud machine
+/// ([`names_worker`]), so a start on one of theirs may go to a sibling,
+/// and one past its room is asked of the cloud beyond it.
 #[must_use]
 pub fn asked_on(work: &Work, here: &Machine, machines: &[Machine]) -> Work {
     let mut work = work.clone();
     let is_worker = |one: &Machine| one.declared.as_ref().is_some_and(Declared::is_worker);
-    let names_one = names_worker(&work, &lasting_reach(machines))
+    let names_one = names_worker(&work, &declared_lasting_reach(machines))
         || work.needs.iter().any(|need| {
             machines
                 .iter()
@@ -1491,8 +1549,21 @@ fn judge(
         |taint: &&Taint| [MEMORY_PRESSURE, CPU_PRESSURE, KEPT_LIVELY].contains(&taint.key.as_str());
     // Over is read from the room even where it is unheard, and harmlessly:
     // a machine unheard ranks with those over either way.
-    let over = rather_not.iter().any(|taint| is_over(&taint));
-    let lately = heard(machine, now);
+    let cloud = is_the_persons_cloud(machine, now);
+    let busy = machine.cpu.busy.filter(|busy| busy.is_finite());
+    // A cloud machine with no queue's room is heard by its facts only
+    // where they say how busy it is, so one too old or too new to say
+    // ranks with the unheard rather than taking every start unweighed.
+    let by_its_facts =
+        cloud && busy.is_some() && !heard(machine, now) && heard_by_its_facts(machine, now);
+    // A cloud machine ranks ahead of headroom, and a felt room is over
+    // only at the kernel's pressure, so its processors are weighed too,
+    // whatever its room says: busy past what balance counts as room, it
+    // ranks with those over, after every machine with room, rather than
+    // taking every start however loaded.
+    let over = rather_not.iter().any(|taint| is_over(&taint))
+        || (cloud && busy.is_some_and(|busy| busy >= crate::balance::ROOM_PROCESSOR));
+    let lately = heard(machine, now) || by_its_facts;
     // A room unheard says nothing of its processors now, so it neither
     // ranks the machine saturated nor is given as why it was passed.
     if !lately {
@@ -1528,7 +1599,45 @@ fn judge(
         unheard: !lately,
         saturated,
         kept,
+        pays: if cloud { Pays::ByBeingUp } else { Pays::Apart },
     }
+}
+
+/// How long past now a machine that costs money must stay to be one of
+/// the person's own cloud machines rather than one lent for a while.
+const LASTS_AS_THE_PERSONS: jiff::SignedDuration = jiff::SignedDuration::from_hours(30 * 24);
+
+/// Whether `machine` is one of the person's own cloud machines: it costs
+/// money while it is up, stays a month or more past `now`, and isn't one
+/// of Aquifer's, so it is where agents' sessions go first, as the person
+/// asked on 26 November. A machine lent for a while, or Aquifer's, is a
+/// worker still, taking only work that names it, and so is one its link
+/// marks a worker, whatever it declares of itself, since the link is this
+/// node's own word and the declaration the machine's.
+#[must_use]
+pub fn is_the_persons_cloud(machine: &Machine, now: jiff::Timestamp) -> bool {
+    let lasting = now.checked_add(LASTS_AS_THE_PERSONS).ok();
+    !machine.worker
+        && machine.declared.as_ref().is_some_and(|declared| {
+            declared.costs_money
+                && !declared.reach.iter().any(|network| network == "aquifer")
+                && declared
+                    .leaves_at
+                    .is_none_or(|leaves| lasting.is_some_and(|lasting| leaves > lasting))
+        })
+}
+
+/// Whether `machine`, saying no room, was measured within
+/// [`ROOM_HEARD_WITHIN`] of `now`: a cloud machine keeps no queue, a node
+/// from before it said its kernel's room says none, and one whose queue
+/// has gone quiet says none either, yet its facts still come each
+/// minute, measured afresh, so it isn't silent.
+fn heard_by_its_facts(machine: &Machine, now: jiff::Timestamp) -> bool {
+    machine.room.is_none()
+        && machine
+            .measured_at
+            .parse::<jiff::Timestamp>()
+            .is_ok_and(|measured| now.duration_since(measured).abs() <= ROOM_HEARD_WITHIN)
 }
 
 /// Whether `machine` is what `need` asks, or unknown.
@@ -2777,10 +2886,12 @@ pub(crate) mod tests {
             placed(&judged_now(&anything, &[kestrel.clone(), wren.clone()]).placement)
                 .map(str::to_owned)
         };
+        wren.declared.as_mut().expect("declared").leaves_at =
+            Some(now() + jiff::SignedDuration::from_hours(8));
         assert_eq!(
             chosen_of(&wren).as_deref(),
             Some("kestrel"),
-            "a machine that costs money, not made for agents, takes none of it"
+            "a machine lent for a while, not made for agents, takes none of it"
         );
         wren.held_for = HeldFor::Agents;
         assert_eq!(
@@ -3377,7 +3488,10 @@ pub(crate) mod tests {
     #[test]
     fn a_machine_refused_still_counts_where_the_persons_machines_reach() {
         let mut cloud = machine("cloud", "linux", 60, &["home", "internet"]);
-        cloud.declared.as_mut().expect("declared").costs_money = true;
+        let declared = cloud.declared.as_mut().expect("declared");
+        declared.costs_money = true;
+        // Lent for days, so a worker rather than the person's own.
+        declared.leaves_at = Some(now() + jiff::SignedDuration::from_hours(240));
         let realm = [
             machine("kestrel", "linux", 2, &["internet"]),
             machine("osprey", "linux", 60, &["home", "internet"]),
@@ -3404,7 +3518,7 @@ pub(crate) mod tests {
             "the refused machine says why, whatever the work tolerates: {said}"
         );
         assert!(
-            said.contains("cloud refuses"),
+            said.contains("refuses: it is lent or paid for, so it takes only work that names it"),
             "and a worker still refuses work for a network the person's refused machine \
              reaches: {said}"
         );
@@ -3515,7 +3629,9 @@ pub(crate) mod tests {
         let mut cloud = machine("cloud", "linux", 2, &["aquifer", "internet"]);
         cloud.declared.as_mut().expect("declared").costs_money = true;
         let mut lent = machine("lent", "linux", 60, &["lent-net"]);
-        lent.declared.as_mut().expect("declared").costs_money = true;
+        let declared = lent.declared.as_mut().expect("declared");
+        declared.costs_money = true;
+        declared.leaves_at = Some(now() + jiff::SignedDuration::from_hours(240));
         let realm = [
             cloud.clone(),
             machine("skiff", "linux", 60, &["home", "internet"]),
@@ -3544,6 +3660,57 @@ pub(crate) mod tests {
             asked_on(&at_home, &realm[1], &realm),
             at_home,
             "work asked on the person's own machine is placed as asked"
+        );
+        let mut theirs = machine("wren", "linux", 30, &["internet"]);
+        let declared = theirs.declared.as_mut().expect("declared");
+        declared.costs_money = true;
+        declared.leaves_at = Some("9999-01-01T00:00:00Z".parse().expect("a time"));
+        let mut kept_room = theirs.clone();
+        kept_room.name = "harbour".to_owned();
+        assert!(
+            asked_on(&at_home, &kept_room, &realm)
+                .needs
+                .contains(&Need::Machine("harbour".to_owned())),
+            "a paid machine that says it stays, as a lent room may, keeps the work asked on it"
+        );
+        // A network only the person's own cloud machine reaches, or
+        // needing a cloud machine, names a paid machine as its declaration
+        // says, so such work asked on a sibling, or on one past its room,
+        // goes where it is met, as before they took sessions.
+        let declared = theirs.declared.as_mut().expect("declared");
+        declared.reach.push("their-net".to_owned());
+        let mut with_theirs = realm.to_vec();
+        with_theirs.push(theirs);
+        with_theirs.push(kept_room.clone());
+        for need in [vec![Need::Cloud], vec![Need::Reach("their-net".to_owned())]] {
+            let work = needing(need.clone());
+            assert_eq!(
+                asked_on(&work, &kept_room, &with_theirs),
+                work,
+                "work needing {need:?} asked on a paid machine isn't kept there"
+            );
+        }
+        assert_eq!(
+            placed(&place(
+                &needing(vec![Need::Reach("their-net".to_owned())]),
+                &with_theirs
+            )),
+            Some("wren"),
+            "and goes to the sibling that reaches its network"
+        );
+        // Work naming one of the person's own cloud machines goes there,
+        // so a start on a sibling may name it, as before they took
+        // sessions.
+        let named = needing(vec![Need::Machine("wren".to_owned())]);
+        assert_eq!(
+            asked_on(&named, &kept_room, &with_theirs),
+            named,
+            "work asked on one of the person's cloud machines may name a sibling"
+        );
+        assert_eq!(
+            placed(&place(&named, &with_theirs)),
+            Some("wren"),
+            "and is placed there"
         );
     }
 
@@ -3703,8 +3870,76 @@ pub(crate) mod tests {
 
         assert_eq!(
             placed(&place(&needing(Vec::new()), &realm)),
-            Some("skiff"),
-            "work that says nothing still never goes to one that costs money"
+            Some("wren"),
+            "work that says nothing goes there first too, since it is one of the person's own \
+             cloud machines"
+        );
+    }
+
+    #[test]
+    fn work_naming_nothing_goes_to_the_persons_cloud_machine_before_the_mac_or_the_laptop() {
+        let laptop = lively(machine("kestrel", "linux", 60, &[]), 28, None);
+        let mac = machine("osprey", "macos", 60, &[]);
+        // As the person's cloud machines say themselves today: no room,
+        // since their nodes keep no queue, but facts a minute fresh.
+        let mut cloud = machine("wren", "linux", 30, &["gcp-experiments"]);
+        cloud.room = None;
+        cloud.measured_at = "2026-10-29T06:00:00Z".to_owned();
+        cloud.cpu.busy = Some(0.0);
+        let declared = cloud.declared.as_mut().expect("declared");
+        declared.costs_money = true;
+        declared.leaves_at = Some("9999-01-01T00:00:00Z".parse().expect("a time"));
+        let anything = needing(Vec::new());
+        let realm = [laptop.clone(), mac.clone(), cloud.clone()];
+        assert_eq!(
+            placed(&place(&anything, &realm)),
+            Some("wren"),
+            "the cloud machine takes it, heard by its facts, ahead of the Mac with more room"
+        );
+        let mut silent = cloud.clone();
+        silent.measured_at = "2026-10-29T05:50:00Z".to_owned();
+        assert_eq!(
+            placed(&place(&anything, &[laptop.clone(), mac.clone(), silent])),
+            Some("osprey"),
+            "a cloud machine unheard for ten minutes ranks with the unheard"
+        );
+        let mut busy = cloud.clone();
+        busy.cpu.busy = Some(crate::balance::ROOM_PROCESSOR);
+        assert_eq!(
+            placed(&place(
+                &anything,
+                &[laptop.clone(), mac.clone(), busy.clone()]
+            )),
+            Some("osprey"),
+            "one heard by its facts and busy past room ranks after a machine with room"
+        );
+        let mut felt = busy;
+        felt.room.clone_from(&mac.room);
+        assert_eq!(
+            placed(&place(&anything, &[laptop.clone(), mac.clone(), felt])),
+            Some("osprey"),
+            "and so does one saying the room its kernel feels, busy past room"
+        );
+        let mut unsaid = cloud.clone();
+        unsaid.cpu.busy = None;
+        assert_eq!(
+            placed(&place(&anything, &[laptop.clone(), mac.clone(), unsaid])),
+            Some("osprey"),
+            "one heard by its facts that says nothing of how busy it is ranks unheard"
+        );
+        let mut lent = cloud.clone();
+        lent.worker = true;
+        assert_eq!(
+            placed(&place(&anything, &[laptop.clone(), mac.clone(), lent])),
+            Some("osprey"),
+            "one its link marks a worker is a worker, whatever it declares"
+        );
+        let mut aquifers = cloud.clone();
+        aquifers.declared.as_mut().expect("declared").reach = vec!["aquifer".to_owned()];
+        assert_eq!(
+            placed(&place(&anything, &[laptop, mac, aquifers])),
+            Some("osprey"),
+            "one of Aquifer's is a worker still, taking only work that names it"
         );
     }
 

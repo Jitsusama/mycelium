@@ -564,8 +564,10 @@ orchestrates it. One shared only so carries its `README.md` alone, none
 of its attachments, journey, other documents or scratch, and no
 `Shares` names its scratch or clones; it carries its whole record once
 either end shares it on its own. Nothing above is carried to a worker,
-and an end is taken for one until its `Machine` frame declares it is
-not, so an end that takes no facts, saying no `Machine` frame, is sent
+though it is to one of the person's own cloud machines, as placement
+judges one, since sessions go there as to any of theirs, and an end is
+taken for a worker until its `Machine` frame declares it is not, so an
+end that takes no facts, saying no `Machine` frame, is sent
 none, and the node withholding logs so unless it links that end as a
 worker. A hold lifted takes up what the other end said of its scratch
 while withheld. One shared only so stops being shared, at both ends,
@@ -1893,10 +1895,11 @@ share of the last minute some work waited on a processor, machine-wide,
 in percent, as its own kernel says it (`some avg60` of
 `/proc/pressure/cpu`), which no queue's record carries; it is left out
 where the kernel says none, as a Mac's, or by a node too old to read
-it. The room is `null` where
-no harness keeps a queue, or where the queue's record is of another
-shape or unwritten for two minutes. A machine keeps no reserve of
-mycelium's: its own slices keep its person's share.
+it. Where no harness keeps a queue, no queue's file being there, the
+room is the one its kernel feels, judged by the same lines; it is
+`null` where the kernel says none, as a Mac's, or where the queue's
+record is of another shape or unwritten for two minutes. A machine
+keeps no reserve of mycelium's: its own slices keep its person's share.
 
 Its `declared` is what its configuration says of it, which can't be
 measured: `reach`, the networks work there always reaches, such as
@@ -2123,9 +2126,14 @@ meets none), and carries no `never` taint the work doesn't tolerate.
 Those rank in four tiers, each after the one before: heard and neither
 over nor saturated; heard and over; heard and saturated; then unheard.
 Heard, its `room` was said within three minutes either way (three of
-the minutes a link carries it in); an unheard room earns no processor
-or memory headroom. Over, it carries a `memory-pressure` or
-`cpu-pressure` the work doesn't tolerate. Saturated, it carries a
+the minutes a link carries it in); a cloud machine saying no `room`,
+as a node from before it said its kernel's room does, or one whose
+queue went quiet, is heard while its facts were measured within three
+minutes and say its `cpu`'s `busy`, which stands for its processor.
+A cloud machine whose `busy` is at least 0.75 is over, whatever its
+room says, since cloud ranks ahead of headroom; an unheard room earns
+no processor or memory headroom. Over, it carries a `memory-pressure`
+or `cpu-pressure` the work doesn't tolerate. Saturated, it carries a
 `cpu-saturated` the work doesn't tolerate, so work starts where it runs
 at once, and still goes to the roomiest where every machine is
 saturated, never refused; an unheard room is never saturated, nor
@@ -2147,8 +2155,9 @@ still does, and a start placed on it heard is past room, as the cloud's
 paragraph below says, so the person's start goes to a cloud machine
 with room before it. Work tolerating `kept-lively` ranks it as any
 machine. A ceiling in another shape spoils only itself, and a node
-older than the field ranks it as any machine. Within a tier, the most
-preferences met goes first,
+older than the field ranks it as any machine. Within a tier, a cloud
+machine goes first, since it is paid for by being up, then the most
+preferences met,
 then the most headroom, then by name; of the first and each as good but
 for headroom within 0.05 of it (`NEAR_BEST`), one is chosen at random,
 so asks alike spread rather than herd. Headroom is one sum, its weights
@@ -2461,13 +2470,22 @@ where the variable is missing too, as it is from a node older than it,
 though `offers`, `link` and `release` never carry it. A machine made
 is booked, before it is dialled, for the asker its make was told: once
 it links, a start or run is placed there only when that asker asks, so
-another agent's work goes elsewhere or waits, and a machine whose book
-line names no asker takes only the person's. The person's own starts
-go only to a machine booked for the person or for no asker, never to
-one an agent's make booked, whose worker home that agent wrote. A
-preview is held to it as its run would be, and an ordered carry there
-of another's session is refused; only a start pinned to the machine
-made for it is not held to it. The booking is the making node's, kept
+another agent's work goes elsewhere or waits, where that asker is an
+agent; a machine booked for the person is the person's, and takes every
+agent's start as well as the person's, as the person asked on 26
+November, while one whose book line names no asker takes only the
+person's, since nothing says whose it is. The person's own starts go
+only to a machine booked for the person or for no asker, never to one
+an agent's make booked, whose worker home that agent wrote. An agent's
+start on the person's leaves the person the last session it holds, as
+a granted session's does below. A
+preview is held to it as its run would be, and an ordered carry to a
+machine an agent's make booked, of another's session, is refused. A
+carry to one booked for the person takes any session, as its starts
+do, but keeps the person no session there, since a carry is ordered
+to that machine by name, to spread load onto it. Only a start pinned
+to the machine made for it is not held to it. The booking is the
+making node's, kept
 while it runs and made again as it redials its book. Like the judging
 of a run, this fences habit, not an agent set on passing as another,
 which runs as the same account; an agent's process left with no agent
@@ -2491,9 +2509,9 @@ it is over a limit. The node marks each one `"held_for": "agents"` as it
 places, from its own file, and every other as booked, never from what
 the machine says, and a link keeps nothing a machine says of it. A
 session the person granted is booked as the person but isn't one: its
-starts go to a machine booked for the person or for no asker, and not
-named in the file, only where they name it, never to one an agent's
-make booked, and even then that machine is full one session short of
+starts go to a machine booked for the person, as every agent's do,
+never to one an agent's make booked or whose book names no asker, and
+even then that machine is full one session short of
 the most it holds, kept for the person, where it says or was promised
 a most. A start of its that no machine takes goes on to a make. A
 carry takes no account of rooms, since it asks as its session, which
