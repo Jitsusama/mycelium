@@ -245,14 +245,20 @@ pub trait Store: Clone + Send + Sync + 'static {
     fn present(&self, pid: i32);
 
     /// What each other machine last said it is, by name. One is a worker
-    /// only where this store's own last put of it said so since it
-    /// opened, as its node's link does, whatever its record says: the
-    /// records outlive the node, and a session may write them.
+    /// only where this store last heard so from its node's link since it
+    /// opened, by the link's admission ([`Store::mark_worker`]) or its
+    /// last put of it, whatever its record says: the records outlive the
+    /// node, and a session may write them.
     fn machines(&self) -> Vec<Machine>;
 
     /// Keeps what another machine, `machine.name`, says it is, in place of
     /// what it said before.
     fn put_machine(&self, machine: &Machine) -> io::Result<()>;
+
+    /// Keeps that a link let in with `machine` reached it as a worker, as
+    /// its way in alone says, so it reads as one from now until a put of
+    /// it says otherwise, whether or not it has said what it is.
+    fn mark_worker(&self, machine: &str);
 
     /// The carries each machine's node last told of, by machine: this
     /// machine's own as its node put them, and each other's as its link

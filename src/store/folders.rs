@@ -105,11 +105,12 @@ pub struct Folders {
     kept: Arc<Mutex<BTreeMap<PathBuf, Kept>>>,
     /// Whether each session's process lives, as last judged.
     judged: Arc<Judged>,
-    /// The machines this store's own puts last said a link reached as a
-    /// worker, since it opened. That is the link's alone to say, and
-    /// every link that says it runs in the node, so a machine read back
-    /// is a worker only where it is named here, never by its file, which
-    /// any session running as this account could write.
+    /// The machines a link last said it reached as a worker since this
+    /// store opened, by its admission or its puts. That is the link's
+    /// alone to say, and every link that says it runs in the node, so a
+    /// machine read back is a worker only where it is named here, never
+    /// by its file, which any session running as this account could
+    /// write.
     workers: Arc<Mutex<BTreeSet<String>>>,
 }
 
@@ -761,6 +762,13 @@ impl Store for Folders {
         drop(workers);
         let body = serde_json::to_value(machine).map_err(io::Error::other)?;
         write_whole(&self.claims, &file, &body)
+    }
+
+    fn mark_worker(&self, machine: &str) {
+        self.workers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(machine.to_owned());
     }
 
     fn told_carries(&self) -> BTreeMap<String, Vec<Value>> {
@@ -2547,6 +2555,15 @@ mod tests {
             worker(&store),
             Some(false),
             "its link saying it is none unmakes one"
+        );
+        // A node opening again knows a worker by its link's admission, so
+        // one that hasn't said what it is yet is one all the same.
+        again.mark_worker("tern");
+        fs::write(&record, serde_json::to_vec(&unsaid).expect("JSON")).expect("a session writes");
+        assert_eq!(
+            worker(&again),
+            Some(true),
+            "its link's admission makes one, whatever a session writes of it"
         );
     }
 

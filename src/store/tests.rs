@@ -57,6 +57,45 @@ async fn a_flood_of_changes_is_taken_in_parts() {
     );
 }
 
+/// A machine is a worker as its link last said, by its admission or a
+/// put, over the fake as over folders: a link's drop and its machine's
+/// leaving put it back as they read it, so it stays one through both,
+/// and only a put saying it is none unmakes it.
+#[test]
+fn a_worker_stays_one_until_its_link_says_it_is_none() {
+    let store = memory::Memory::default();
+    let worker = |store: &memory::Memory| {
+        store
+            .machines()
+            .into_iter()
+            .find(|one| one.name == "tern")
+            .map(|one| one.worker)
+    };
+    let mut tern = crate::placement::tests::machine("tern", "linux", 32, &[]);
+    tern.worker = false;
+    store.put_machine(&tern).expect("kept");
+    assert_eq!(worker(&store), Some(false), "a put saying none makes none");
+    store.mark_worker("tern");
+    assert_eq!(
+        worker(&store),
+        Some(true),
+        "its link's admission makes one, whatever its record said"
+    );
+    out_of_reach(&store, "tern", 1_793_305_804_647, None);
+    left(&store, "tern", jiff::Timestamp::UNIX_EPOCH);
+    assert_eq!(
+        worker(&store),
+        Some(true),
+        "a link's drop and its leaving keep it one"
+    );
+    store.put_machine(&tern).expect("kept");
+    assert_eq!(
+        worker(&store),
+        Some(false),
+        "a put saying it is none unmakes one"
+    );
+}
+
 /// A machine whose last link was let in after its mark, as a new one
 /// holding the mark back until its catch-up stands is, and that no
 /// link carries now, as after a node killed in that link's first

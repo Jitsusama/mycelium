@@ -368,7 +368,7 @@ pub async fn run(
     let reach = reach_start(&store, &other.machine);
     // As it stood before admission, which marks a machine never linked
     // as of now.
-    let began = admitted(&store, &other.machine)?;
+    let began = admitted(&store, &other.machine, worker)?;
     let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine).await;
     let (answering, mut answered) = mpsc::unbounded_channel();
     let (runs, mut run_said) = Runs::new();
@@ -1084,9 +1084,14 @@ async fn superseded(store: &impl Store, machine: &str, claimed_at: i64) {
 /// ([`Hearing::linked_until`]), and a node killed before either leaves
 /// it there too, so the next link still reaches back that far. When it
 /// was let in is kept apart, as when the machine was last linked
-/// ([`store::last_linked`]). Answers the mark as it stood before, none
-/// for a machine never linked.
-fn admitted(store: &impl Store, machine: &str) -> io::Result<Option<i64>> {
+/// ([`store::last_linked`]). A `worker`'s machine is kept as one from
+/// now, by this end's way in alone, so what it says of itself, or
+/// leaves unsaid, decides nothing. Answers the mark as it stood before,
+/// none for a machine never linked.
+fn admitted(store: &impl Store, machine: &str, worker: bool) -> io::Result<Option<i64>> {
+    if worker {
+        store.mark_worker(machine);
+    }
     let before = store.linked_until(machine);
     let at = now();
     if before.is_none() {
@@ -5579,7 +5584,7 @@ mod tests {
     #[test]
     fn a_link_admitted_keeps_the_mark_its_reach_comes_from() {
         let store = Memory::default();
-        admitted(&store, "kestrel").expect("a memory store admits");
+        admitted(&store, "kestrel", false).expect("a memory store admits");
         let first = store
             .linked_until("kestrel")
             .expect("a first link is marked");
@@ -5591,12 +5596,48 @@ mod tests {
         store
             .mark_linked("kestrel", days_ago)
             .expect("a memory store marks");
-        admitted(&store, "kestrel").expect("a memory store admits");
+        admitted(&store, "kestrel", false).expect("a memory store admits");
         assert_eq!(
             store.linked_until("kestrel"),
             Some(days_ago),
             "a link admitted leaves the mark it reaches from, so a node killed before its \
              first keep loses nothing"
+        );
+    }
+
+    // A worker's link is one by its way in, from its admission, so a
+    // worker that never says what its machine is, after a restart or a
+    // record a session wrote of it ready, still reads as a worker.
+    #[tokio::test]
+    async fn a_worker_saying_nothing_of_its_machine_is_one_from_its_admission() {
+        let skiff = Memory::default();
+        let mut kept = crate::placement::tests::machine("tern", "linux", 32, &[]);
+        kept.worker = false;
+        skiff.put_machine(&kept).expect("a record from before");
+        let (_skiff_end, _far_reading, mut far_writing) = skiff_over(
+            skiff.clone(),
+            |connection| Connection {
+                worker: true,
+                ..connection
+            },
+            None,
+        );
+        says(&mut far_writing, &[Frame::Hello(realm("tern").hello())]).await;
+        let worker = |store: &Memory| {
+            store
+                .machines()
+                .iter()
+                .any(|machine| machine.name == "tern" && machine.worker)
+        };
+        let waited = tokio::time::timeout(PATIENCE, async {
+            while !worker(&skiff) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(
+            waited.is_ok(),
+            "a worker's machine read as one within {PATIENCE:?} of its hello alone"
         );
     }
 
