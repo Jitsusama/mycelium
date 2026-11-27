@@ -2091,7 +2091,11 @@ fn a_cell_declares_plain_subjects_alone_each_bad_one_passed_over() {
     // cap while sharing the first one's hub.
     assert_eq!(
         subjects(&json!(["école", "ÉCOLE", "Straße", "STRASSE"])),
-        vec!["école".to_owned(), "Straße".to_owned(), "STRASSE".to_owned()],
+        vec![
+            "école".to_owned(),
+            "Straße".to_owned(),
+            "STRASSE".to_owned()
+        ],
         "a repeat is one whose lower case matches, as the hub reads it"
     );
 }
