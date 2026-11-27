@@ -656,6 +656,37 @@ fn a_folder_two_cells_share_by_key_is_a_network_named_for_what_it_is_for() {
 }
 
 #[test]
+fn a_cell_s_own_folder_titled_wide_is_cut_to_its_room_in_cells() {
+    // A key is ASCII, so it pads alike in characters and cells, but a
+    // title of Han and kana takes two cells to a character, and cut by
+    // its characters it would run past the terminal's edge.
+    let about = "港湾の見張り ".repeat(12);
+    let sessions = [sharing(
+        "KELP01",
+        4,
+        &json!([{"key": "quest:QEST-20261112-KELPED", "for": about, "folder": "/k"}]),
+    )];
+    let mycelium = Mycelium::of("home", &[], &sessions, &[]);
+    let kelped = mycelium.cell("KELP01").expect("Kelp");
+    // The key and its gap take 30 cells, so the title has 30 at 60 and
+    // 50 at 80, a cell of each for its mark. Each part of it takes 13
+    // cells, so at 60 the next character would straddle the edge and
+    // goes, leaving the line a cell short.
+    let unit = "港湾の見張り ";
+    for (width, kept) in [
+        (60, format!("{}港", unit.repeat(2))),
+        (80, format!("{}港湾の見張", unit.repeat(3))),
+    ] {
+        let drawn = cell(&mycelium, kelped, &Look { width, ..look() });
+        assert_eq!(
+            drawn.lines().last(),
+            Some(format!("  quest:qest-20261112-kelped  {kept}\u{2026}").as_str()),
+            "at {width} the title wasn't cut to its room:\n{drawn}"
+        );
+    }
+}
+
+#[test]
 fn a_shared_folder_is_titled_by_what_most_of_its_cells_say_it_is_for() {
     let titled = |address: &str, n: u8, about: &str| {
         let share = json!({"key": "quest:QEST-20261112-HARBOR", "for": about, "folder": "/q"});
@@ -2011,6 +2042,76 @@ fn a_wide_machine_name_keeps_what_follows_in_line() {
     assert!(
         at("skiff").is_some() && at("skiff") == at("港湾港"),
         "a wide machine name moved what follows it:\n{shown}"
+    );
+}
+
+#[test]
+fn a_wide_team_short_keeps_what_follows_in_line() {
+    let [mut teams, sessions, machines] = records();
+    // A team's short name is its quest's, so it may be Han, two cells
+    // a character; the column it sets is as wide as it draws.
+    teams[1]["title"] = json!("港湾見張り: 潮");
+    let mycelium = Mycelium::of("work", &teams, &sessions, &machines);
+    let shown = overview(&mycelium, &look(), false, true);
+    // Measured by Unicode's widths directly, not by the code under test,
+    // as this draw has no colour.
+    let cells = <str as unicode_width::UnicodeWidthStr>::width;
+    let line = |start: &str| {
+        shown
+            .lines()
+            .find(|line| line.starts_with(start))
+            .unwrap_or_else(|| panic!("no line starts {start:?}:\n{shown}"))
+    };
+    let before = |start: &str, word: &str| {
+        let line = line(start);
+        line.find(word).map(|at| cells(&line[..at]))
+    };
+    assert!(
+        shown.lines().all(|line| cells(line) <= 80),
+        "a line passed 80 cells:\n{shown}"
+    );
+    // The short takes ten cells, so what follows it starts at 14 in the
+    // rows at the top, the machines' among them, and a step further in
+    // for the wide short's own row, a level down.
+    assert_eq!(
+        before("  harbor ", "Harbour Ships"),
+        Some(2 + cells("港湾見張り") + 2),
+        "the short's column isn't as wide as it draws:\n{shown}"
+    );
+    assert_eq!(
+        before("  dinghy ", "ready"),
+        before("  harbor ", "Harbour Ships"),
+        "a machine's row left the column:\n{shown}"
+    );
+    assert_eq!(
+        before("    港湾見張り ", "港湾見張り: 潮"),
+        Some(4 + cells("港湾見張り") + 2),
+        "the wide short's own title left the column:\n{shown}"
+    );
+    // Kelp's one count is under "need you", the first heading, and the
+    // blank columns after it are trimmed, so its row ends where "  stuck"
+    // starts.
+    assert_eq!(
+        Some(cells(line("    港湾見張り "))),
+        before("     ", "  stuck"),
+        "the wide row's count left its heading:\n{shown}"
+    );
+    // In colour, the title is faint from the column's edge on, a cut in
+    // cells too: none of the short, nor the gap, is drawn faint.
+    let coloured = overview(
+        &mycelium,
+        &Look {
+            colour: true,
+            ..look()
+        },
+        false,
+        true,
+    );
+    assert!(
+        coloured
+            .lines()
+            .any(|line| line.starts_with("    港湾見張り  \x1b[2m港湾見張り: 潮")),
+        "the faint title doesn't start at the column's edge:\n{coloured:?}"
     );
 }
 

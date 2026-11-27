@@ -988,9 +988,49 @@ mod tests {
                 .expect("the question's line");
             assert!(
                 heading.ends_with(", 25 min so far  [c0cd280e]")
-                    && crate::swarm::drawn_width(heading) <= width
+                    && heading.chars().count() <= width
                     && !heading.contains("deadbeef"),
                 "the wait or the id was lost at {width}:\n{drawn}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wide_name_is_cut_in_cells_before_the_wait_and_the_id() {
+        // A name of Han characters takes two cells each, so cut by its
+        // characters it would push the wait and the id past the edge. At
+        // 50 the lead leaves one cell, too few for one, so none is drawn;
+        // at 51 the lead leaves two, room for one exactly, so a room a
+        // cell short draws none; at 80 fifteen are, and a sixteenth would
+        // straddle the mark. A room a cell long draws one at 50 and a
+        // sixteenth at 80, so each row bounds a side.
+        let mut wide = asked_of(&["SKIFF1"], 5, "c0cd280e");
+        wide["waiting_on"] = json!(["港湾".repeat(20)]);
+        for (width, expected) in [
+            (
+                50,
+                "  12:05  TERN01 asks\u{2026}, 25 min so far  [c0cd280e]".to_owned(),
+            ),
+            (
+                51,
+                "  12:05  TERN01 asks 港\u{2026}, 25 min so far  [c0cd280e]".to_owned(),
+            ),
+            (
+                80,
+                format!(
+                    "  12:05  TERN01 asks {}港\u{2026}, 25 min so far  [c0cd280e]",
+                    "港湾".repeat(7)
+                ),
+            ),
+        ] {
+            let drawn = drawn(&[wide.clone()], &look(), Some(width));
+            let heading = drawn
+                .lines()
+                .find(|line| line.starts_with("  12:05"))
+                .expect("the question's line");
+            assert_eq!(
+                heading, expected,
+                "at {width} the name wasn't cut to its cells:\n{drawn}"
             );
         }
     }
