@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::json;
 
-use crate::daemon;
+use crate::{daemon, networks};
 
 /// The kind of a subject's hubs' record.
 pub const KIND: &str = "hub";
@@ -62,14 +62,17 @@ pub struct Holder {
     pub heard: f64,
 }
 
-/// Each declared subject's hubs, by key, a subject read in lower case so
-/// two cells saying it differently hold the same one.
+/// Each declared subject's hubs, by key, a subject read by
+/// [`networks::subject_key`] so two cells saying it differently hold the
+/// same one, as the cap counts it.
 #[must_use]
 pub fn records(holders: &[Holder]) -> BTreeMap<String, serde_json::Value> {
     let mut held: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
     for (at, holder) in holders.iter().enumerate() {
         for subject in &holder.subjects {
-            held.entry(subject.to_lowercase()).or_default().insert(at);
+            held.entry(networks::subject_key(subject))
+                .or_default()
+                .insert(at);
         }
     }
     // Each subject's holders, least heard first, the rarest subject first.
@@ -188,6 +191,21 @@ mod tests {
             json!({"hub": "OSPREY", "fits": record["fits"]})
         );
         assert_eq!(record["kind"], KIND);
+    }
+
+    #[test]
+    fn a_subject_the_cap_keeps_apart_is_a_hub_apart_and_a_repeat_is_not() {
+        let said = networks::subjects(&json!(["école", "ÉCOLE", "Straße", "STRASSE"]));
+        let made = records(&[Holder {
+            address: "KESTRL".to_owned(),
+            subjects: said,
+            heard: 0.0,
+        }]);
+        assert_eq!(
+            made.keys().cloned().collect::<Vec<_>>(),
+            ["hub:strasse", "hub:straße", "hub:école"],
+            "each subject the cap keeps is one hub, and a repeat it passed over none"
+        );
     }
 
     #[test]

@@ -3799,8 +3799,10 @@ text its want asks in, where the session says one: its lines and
 paragraphs kept, nothing else that steers a terminal, cut past 4096
 characters to end in a space and `[...]`), `repo`,
 the `subjects` its presence declares (the first 24 strings of at most
-120 characters a terminal draws as plain text, a repeat in any case
-passed over like any other entry; the rest are dropped without a word,
+120 characters a terminal draws as plain text, a repeat (one whose
+lower case matches an earlier one's) passed over like any other entry,
+and no accent composed first, so one written as its own mark is a
+subject apart; the rest are dropped without a word,
 though the session's presence keeps them all), `usage`, the networks it
 `leads`, `machine`, `since`, `quest`, `started_by` (the cell its
 session's record says a book of starts names, else the orchestrator it
@@ -3826,9 +3828,11 @@ only the fields that moved. A node holds each record of every kind as
 the bytes it is sent as, and reads only the fields that moved, so ten
 thousand cells make their records within 30 MB while each holds two
 trees and three in ten say from 1 to 24 subjects of about 30
-characters each, in time that grows with them. Each subject a cell says
-adds about 33 bytes to that peak, so the 30 MB holds about six a cell
-on the whole, and every cell saying 24 would take about 36 MB.
+characters each, in time that grows with them. Each such subject a
+cell says adds about 33 bytes to that peak, so the 30 MB holds about six
+a cell on the whole, and every cell saying 24 took about 36 MB. A
+subject costs about a byte for each of its bytes, so one of 120
+characters outside ASCII may cost up to about 480 bytes.
 
 The `tie` kind holds who talked with whom in the last day, made from the
 messages the node holds: never what a message said, nor its id, only
@@ -3871,10 +3875,12 @@ make. A record says its `subject`, its `hubs`, each `{"hub", "fits"}`,
 and the first of them again as `hub` and `fits`, for a reader of one
 hub. A hub is made by the node's own count and grants nothing: it is
 where a need is sent first, never a cell that may do more. A cell's
-subjects are its own word, checked by nobody, so a newcomer heard
-least sits first among the fits of every subject it says. Each node
-makes the kind by its own rules, so while nodes of two versions share
-a realm, they may name different hubs for one subject. The kind
+subjects are its own word, checked by nobody, so a cell heard least,
+new or silent, is among the first made a hub or named a fit of each
+subject it says. Each node names hubs from the messages and sessions
+it holds, so two nodes may name different hubs for a while, and nodes
+of two versions may keep different subjects for one cell and name
+different hubs for one subject. The kind
 is told as the sessions change, so a busy hour of talk moves the hubs
 with the next change, not a message at a time.
 

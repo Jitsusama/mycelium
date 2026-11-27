@@ -29,7 +29,7 @@ mod made;
 mod shown;
 mod subjects;
 
-pub use made::{FORMED, MOST_SUBJECTS, read, subjects};
+pub use made::{FORMED, MOST_SUBJECTS, read, subject_key, subjects};
 pub use shown::{cell, cells, network, overview};
 pub use subjects::Subjects;
 
