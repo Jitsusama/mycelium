@@ -857,7 +857,9 @@ in order and says each step:
    that isn't a bundle, patch, log or done file. One that is refuses
    the carry, naming it. What a bundle or a log holds isn't read. The
    node logs each carried session started on a worker, naming it, its
-   quest and the worker.
+   quest and the worker. A machine gone out of reach since the find, or
+   whose node restarted and hasn't heard it since, is refused as the
+   find refuses it, so nothing is shared unscreened.
 4. `start`: each carried session starts again on the machine, held:
    those told to carry first, then the quest's own, then those the find
    couldn't ask of, so a refusal the ask couldn't foresee meets no
@@ -2563,24 +2565,36 @@ make wrote. Any run the person asks naming one machine alone, a room
 not booked here for the person or for no asker (an agent's make booked
 it, or this node never booked it but its link reached it as a worker,
 since each node keeps its own bookings), runs there as an agent's, in
-the agent fence. So the
-person's safe word reaches every room though no session asks it, and
-the person's own login still never runs in a worker home an agent
-wrote. Such a run is placed as an agent's run is: the asking machine
-must declare the agent fence and the room must say it runs commands in
-it, or the run is refused, its refusal saying the person asked it and
-it was sent as an agent's; a refusal the room itself sends back reads
-as an agent's. The run says `"asked_by": "Person"`, which only a node
-says: one an asker puts there without naming a machine it comes from
-is cleared. The room runs it through `/bin/sh -c`, never the login
+the agent fence. So the person's safe word reaches every room though
+no session asks it, and the person's own login still never runs in a
+worker home an agent wrote. Such a run is placed as an agent's run is,
+and a `"Place"` the person asks of it the same way, so where it is told
+the run would go is where it runs: the asking machine must declare the
+agent fence and the room must say it runs commands in it, or the run is
+refused, its refusal saying the person asked it and it was sent as an
+agent's, and, where no booking on this node names the room, that none
+does: a node holds a booking again after a restart only once its make
+redials. A refusal the room itself sends back reads as an agent's. The
+run says `"asked_by": "Person"`, which only a node says: one an asker
+puts there without naming a machine it comes from is cleared. The room
+runs it through `/bin/sh -c`, never the login
 shell, so no profile of the home the agent wrote runs before it, and
 takes every folder of that home off its path, by name or by where it
 leads, before the kit's tools go first, so nothing the home holds
-shadows its command: one found only there isn't found. Each folder
-kept is named by where it leads, one that can't be entered goes, and
-a path left with nothing is `/usr/bin:/bin`, never empty. The home is
-the one the node runs it in, and the `HOME` its launcher gives it
-too, so a launcher that takes `HOME` away or points it elsewhere
+shadows its command: one found only there isn't found, and for a name
+with no slash the run says so on its error output, naming the path it
+had, and ends 127, as the shell would. Each folder kept is named by
+where it leads, one that can't be entered goes, and a path left with
+nothing is `/usr/bin:/bin`, never empty. The node starts the run, and
+any fence launcher before its shell, without the variables that load
+code as a program starts, which the node's environment could name in
+the home: `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `GCONV_PATH`,
+the five `DYLD_` ones, `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `NODE_PATH`,
+`NODE_COMPILE_CACHE`, `OPENSSL_CONF`, `OPENSSL_MODULES`, `PYTHONPATH`,
+`PYTHONSTARTUP`, `PERL5LIB`, `PERL5OPT`, `RUBYLIB`, `RUBYOPT` and
+`LUA_INIT`. A program that needs one of them there sets it itself. The
+home is the one the node runs it in, and the `HOME` its launcher gives
+it too, so a launcher that takes `HOME` away or points it elsewhere
 leaves neither on the path. `HOME` still names that home, so a
 program the command runs that reads its own files from there reads
 what the agent left. Each run's journal keeps `asked_by` beside its

@@ -507,3 +507,43 @@ fn a_figure_wider_than_its_header_widens_its_column() {
         "busy right-aligned over its widest figure, idle still under its own:\n{shown}"
     );
 }
+
+#[test]
+fn a_machine_over_by_its_lively_ceiling_alone_says_so_and_why() {
+    let mut queued = machine("kestrel", 0.9, 28, 1.75);
+    queued.over = true;
+    queued.past = vec![crate::room::Limit::Cpu];
+    let mut lively = machine("tern", 0.45, 4, 0.25);
+    lively.over = true;
+    lively.lively = Some(
+        "it is kept lively, at processor pressure 30 at most, and is at 45 over ten seconds"
+            .to_owned(),
+    );
+    let shown = said(
+        &reading(vec![queued, lively], None, vec![]),
+        "work",
+        crate::swarm::WHOLE,
+        false,
+    );
+    let lines: Vec<&str> = shown.lines().collect();
+    assert!(
+        lines[3].starts_with("  kestrel  over ") && lines[4].starts_with("  tern     lively "),
+        "past its queue's limit it stands over, past its ceiling alone lively:\n{shown}"
+    );
+    assert_eq!(
+        lines[3].find('%'),
+        lines[4].find('%'),
+        "the column stays as wide as its longest word:\n{shown}"
+    );
+    assert!(
+        shown.contains(
+            "lively: tern is over though its queue is past no limit, since it is kept \
+             lively, at processor pressure 30 at most, and is at 45 over ten seconds"
+        ),
+        "the line under the table says why:\n{shown}"
+    );
+    assert!(
+        !shown.contains("lively: kestrel"),
+        "one past its queue's limit needs no word on its ceiling:\n{shown}"
+    );
+}

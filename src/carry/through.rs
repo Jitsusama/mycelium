@@ -130,6 +130,19 @@ impl Through {
             other => Err(format!("the node answered {other:?} for its machines")),
         }
     }
+
+    /// Machine `to` as [`Through::linked`] knows it, refused where it is
+    /// out of reach: whether it is a worker is its link's word, which a
+    /// node opened again hasn't heard until it is in reach again, as an
+    /// eased carry's ground holds ([`ground::firm`]).
+    fn reached(&self, to: &str) -> Result<Option<crate::facts::Machine>, String> {
+        match self.linked(to)? {
+            Some(one) if one.state == crate::facts::Readiness::Unreachable => Err(format!(
+                "{to} is out of reach, so nothing is carried there now"
+            )),
+            linked => Ok(linked),
+        }
+    }
 }
 
 impl Hands for Through {
@@ -144,15 +157,7 @@ impl Hands for Through {
     }
 
     fn lent(&mut self, to: &str) -> Result<Lent, String> {
-        match self.linked(to)? {
-            // Whether it is a worker is its link's word, which a node
-            // opened again hasn't heard until it is in reach again, as
-            // an eased carry's ground holds ([`ground::firm`]).
-            Some(one) if one.state == crate::facts::Readiness::Unreachable => Err(format!(
-                "{to} is out of reach, so nothing is carried there now"
-            )),
-            linked => Ok(linked.map_or(Lent::Not, |one| Lent::of(&one))),
-        }
+        Ok(self.reached(to)?.map_or(Lent::Not, |one| Lent::of(&one)))
     }
 
     fn sessions(&mut self) -> Result<Vec<Session>, String> {
@@ -251,7 +256,9 @@ impl Hands for Through {
     fn share(&mut self, quest: &str, to: &str) -> Result<(), String> {
         debug_assert_eq!(quest, self.quest, "a carry shares its own quest");
         let scratch = ["handover".to_owned()];
-        let linked = self.linked(to)?;
+        // Asked again, since the node may have opened again since the
+        // carry found `to` in reach, and knows no worker till it is back.
+        let linked = self.reached(to)?;
         let shared = match linked.as_ref().map_or(Lent::Not, Lent::of) {
             // A room is one of the person's own to a carry, but its link is
             // a worker's, which serves only what it was given.
@@ -660,9 +667,28 @@ fn failed_why(output: &[u8], errors: &[u8], ended: ExitStatus) -> String {
         (None, None) => "it ended".to_owned(),
     };
     match output.lines().map(str::trim).rfind(|line| !line.is_empty()) {
-        Some(last) => format!("{how}, saying nothing of why; its last line was {last}"),
+        Some(last) => format!(
+            "{how}, saying nothing of why; its last line was {}",
+            last_said(last)
+        ),
         None => format!("{how}, saying nothing"),
     }
+}
+
+/// The most of `pi-carry`'s last line [`failed_why`] quotes: enough for
+/// one of its JSON lines, short of one swamping the node's log.
+const LAST_SAID: usize = 200;
+
+/// `last`, the last line `pi-carry` printed, as [`failed_why`] quotes
+/// it: its control characters escaped, so it can't pass as the node's
+/// own words or break the log's one line, and cut to [`LAST_SAID`].
+fn last_said(last: &str) -> String {
+    let escaped = crate::declared::controls_escaped(last);
+    if escaped.chars().count() <= LAST_SAID {
+        return escaped;
+    }
+    let cut: String = escaped.chars().take(LAST_SAID).collect();
+    format!("{cut}...")
 }
 
 /// Whether the node's `answer` to `"Takes"` finds the starts taken: only
@@ -1196,6 +1222,11 @@ mod tests {
             "whether it is a worker can't be told until its link is back"
         );
         assert_eq!(
+            hands.share("QEST-20261115-HARBOR", "tern"),
+            Err("tern is out of reach, so nothing is carried there now".to_owned()),
+            "nor is it shared, as one of the person's own, after the carry found it"
+        );
+        assert_eq!(
             hands.lent("wren"),
             Ok(super::Lent::Not),
             "one in reach is what it said"
@@ -1449,6 +1480,25 @@ mod tests {
             failed_why(b"", b"", ExitStatus::from_raw(9)),
             "it was ended by signal 9, saying nothing",
             "a signal, where it said nothing at all"
+        );
+    }
+
+    #[test]
+    fn pi_carry_failing_silently_quotes_its_last_line_escaped_and_cut() {
+        let last = format!("\u{1b}[2J{}", "x".repeat(4000));
+        let why = failed_why(last.as_bytes(), b"", ExitStatus::from_raw(1 << 8));
+        assert!(
+            !why.contains('\u{1b}'),
+            "what it printed can't pass as the node's own words: {why:?}"
+        );
+        assert!(
+            why.starts_with("it exited 1, saying nothing of why; its last line was \\u{1b}[2J"),
+            "escaped, not dropped: {why:?}"
+        );
+        assert!(
+            why.ends_with("...") && why.chars().count() < 400,
+            "and cut, so one line can't swamp the node's log: {} characters",
+            why.chars().count()
         );
     }
 }

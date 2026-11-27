@@ -393,6 +393,18 @@ const IN_ITS_REALM: &str = r#"export MYCELIUM_REALM="$1"; if [ -n "$2" ]; then P
 /// home, or `/` for one, only the relative and the missing go.
 const OUT_OF_ITS_HOME: &str = r#"homes=; for at in "$1" "${HOME-}"; do case $at in /?*) at=${at%/}; homes=$homes$at:; led=$(cd -P "$at" 2>/dev/null && pwd -P) && homes=$homes$led:;; esac; done; shift; kept=; set -f; IFS=:; for dir in ${PATH-}; do case $dir in /*) ;; *) continue;; esac; led=$(cd -P "$dir" 2>/dev/null && pwd -P) || continue; for at in $homes; do case $dir/ in "$at"/*) led=;; esac; case $led/ in "$at"/*) led=;; esac; done; [ -z "$led" ] || kept=${kept:+$kept:}$led; done; unset IFS; set +f; PATH=${kept:-/usr/bin:/bin}; export PATH; "#;
 
+/// How [`IN_ITS_REALM`] ends: by running the program it was given.
+const RUNS: &str = r#"exec "$@""#;
+
+/// The shell's script that, before a plain run's program runs, says
+/// where a program named bare wasn't found, rather than the shell's bare
+/// `not found`: on a path holding no folder of its home
+/// ([`OUT_OF_ITS_HOME`]), so a tool there alone isn't one it finds. It
+/// says only that, since a name mistyped or missing everywhere isn't
+/// found either, and ends as the shell would, with 127. A name with a
+/// slash is looked for by no path, so the shell says its own.
+const FOUND_OR_SAID: &str = r#"case $1 in */*) ;; *) command -v "$1" >/dev/null 2>&1 || { printf 'mycelium: %s is not found on this run'\''s path, %s, which holds no folder of its home\n' "$1" "$PATH" >&2; exit 127; };; esac; "#;
+
 /// The words that run a program held in `realm` through the person's
 /// login shell, as a terminal would run it, so it has their environment
 /// rather than a service's: a pi started without it has no model token
@@ -453,12 +465,17 @@ fn in_its_realm(
 /// it, but with no folder of `home`, the home it runs in, nor of the
 /// `HOME` it is given, on its path ([`OUT_OF_ITS_HOME`]), and the kit's
 /// tools first. A command found only in the home isn't found, rather
-/// than found as the home's writer left it. `HOME` still names the
+/// than found as the home's writer left it, and the run says where it
+/// looked ([`FOUND_OR_SAID`]). The node starts it with no variable that
+/// loads code ([`crate::run::Shell::unsets`]). `HOME` still names the
 /// home, though, so a program that reads its own files from there, as
 /// an interpreter may, reads what that writer left.
 #[must_use]
 pub fn plain_run(realm: &str, kit: Option<&Path>, home: &Path) -> Vec<String> {
-    let script = format!("{OUT_OF_ITS_HOME}{IN_ITS_REALM}");
+    let realmed = IN_ITS_REALM
+        .strip_suffix(RUNS)
+        .expect("the realm's script ends by running the program");
+    let script = format!("{OUT_OF_ITS_HOME}{realmed}{FOUND_OR_SAID}{RUNS}");
     let mut words = in_its_realm("/bin/sh".to_owned(), "-c", script, realm, kit).to_vec();
     // After the shell's own name, as the script's first word.
     words.insert(4, home.display().to_string());
@@ -931,10 +948,25 @@ mod tests {
             run_through(
                 &plain,
                 print,
-                &[("HOME", "/"), ("PATH", &format!("{first}:.:{last}"))]
+                &[
+                    ("HOME", "/"),
+                    ("PATH", &format!("{first}:.:{first}/missing:{last}"))
+                ]
             ),
             format!("{first}:{last}"),
             "a home of / takes off only the relative and the missing"
+        );
+        // A folder named with a pattern is that name alone, never the
+        // folders it would match, so it is missing, and goes.
+        let pattern = shown(&at.join("*"));
+        assert_eq!(
+            run_through(
+                &plain,
+                print,
+                &[("HOME", "/"), ("PATH", &format!("{pattern}:{last}"))]
+            ),
+            last,
+            "a folder named {pattern} matches nothing"
         );
         // A path left with nothing, and no kit, is never empty, which a
         // shell would read as the run's folder, in the home.
@@ -950,6 +982,69 @@ mod tests {
                 "a path of {given:?} left with nothing is the system's alone"
             );
         }
+    }
+
+    /// A plain run's program found only in its home isn't found, and the
+    /// run says where it looked, rather than the shell's bare `not
+    /// found`; one its kit holds, named bare, runs as before.
+    #[test]
+    fn a_plain_run_says_why_a_program_only_its_home_holds_isnt_found() {
+        let made = tempfile::tempdir().expect("a temporary folder");
+        let home = fs::canonicalize(made.path()).expect("the folder's place");
+        let tool = |folder: &Path| {
+            fs::create_dir_all(folder).expect("a folder of tools");
+            let tool = folder.join("tide-gauge");
+            let script = format!("#!{}\nexit 0\n", the_shell().display());
+            fs::write(&tool, script).expect("a tool");
+            fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .expect("a tool that runs");
+        };
+        let tools = home.join(".local/bin");
+        tool(&tools);
+        let run = |kit: Option<&Path>, program: &str| {
+            let words = plain_run("harbour", kit, &home);
+            Command::new(the_shell())
+                .arg("-c")
+                .args(&words[2..])
+                .arg(program)
+                .env_remove("MYCELIUM_AGENT")
+                .env("HOME", &home)
+                .env("PATH", &tools)
+                .output()
+                .expect("the stand-in shell runs")
+        };
+        let said = run(None, "tide-gauge");
+        assert_eq!(
+            said.status.code(),
+            Some(127),
+            "not found, as the shell says it"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&said.stderr),
+            "mycelium: tide-gauge is not found on this run's path, /usr/bin:/bin, \
+             which holds no folder of its home\n",
+            "it says where it looked"
+        );
+        // A kit outside the home, holding the tool, goes first on the path,
+        // so the tool named bare is found there and runs.
+        let kit = tempfile::tempdir().expect("a kit");
+        tool(&kit.path().join("bin"));
+        let said = run(Some(kit.path()), "tide-gauge");
+        assert!(
+            said.status.success() && said.stderr.is_empty(),
+            "a tool the kit holds runs: {}",
+            String::from_utf8_lossy(&said.stderr)
+        );
+        // A name with a slash is looked for by no path, so the run says
+        // nothing of one, and the shell says its own, under the script's
+        // name, `mycelium`, as its $0.
+        let said = run(None, "./tide-gauge");
+        assert!(
+            !said.status.success()
+                && !String::from_utf8_lossy(&said.stderr).contains("not found on this run's path"),
+            "a missing ./tide-gauge is the shell's to say: {}",
+            String::from_utf8_lossy(&said.stderr)
+        );
     }
 
     #[test]
@@ -1008,6 +1103,57 @@ mod tests {
             !words.contains(&kit[0]),
             "a refused kit is named to no holder: {words:?}"
         );
+    }
+
+    // Followup 507(c): a plain run is for a home another may have written,
+    // so no shell start file there may run before its command: not the
+    // home's .profile, nor a file ENV or BASH_ENV names.
+    #[test]
+    fn a_plain_run_reads_no_start_file_in_its_home() {
+        let made = tempfile::tempdir().expect("a temporary home");
+        // Where it leads, as a Mac's temporary folder is behind a link.
+        let home = fs::canonicalize(made.path()).expect("the home's place");
+        let marker = |file: &str| home.join(format!("{file}.read"));
+        // Each start file, if read, leaves a marker of its own in the home.
+        let start_files = [
+            (".profile", "the home's .profile"),
+            ("env.sh", "the file ENV names"),
+            ("bash_env.sh", "the file BASH_ENV names"),
+        ];
+        for (file, _) in start_files {
+            let leave = format!(": > '{}'\n", marker(file).display());
+            fs::write(home.join(file), leave).expect("a start file");
+        }
+        let plain = plain_run("harbour", None, &home);
+        let ran = Command::new(&plain[0])
+            .args(&plain[1..])
+            .arg("true")
+            .env("HOME", &home)
+            .env("ENV", home.join("env.sh"))
+            .env("BASH_ENV", home.join("bash_env.sh"))
+            .output()
+            .expect("the plain run starts");
+        assert!(
+            ran.status.success(),
+            "the plain run of true ends well: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        for (file, named) in start_files {
+            assert!(!marker(file).exists(), "a plain run read {named}");
+        }
+        // Each start file does leave its marker when read, so no marker
+        // above means none was.
+        for (file, named) in start_files {
+            let read = Command::new(the_shell())
+                .args(["-c", r#". "$1""#, "sh"])
+                .arg(home.join(file))
+                .status()
+                .expect("a shell reads the start file");
+            assert!(
+                read.success() && marker(file).exists(),
+                "{named} leaves its marker when read"
+            );
+        }
     }
 
     #[test]

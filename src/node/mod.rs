@@ -539,12 +539,13 @@ fn plain_quest(quest: &str) -> bool {
 /// What each log under `logs` continues, the folder scanned once, as a
 /// lapse of the record of orchestrations asks only where a claim lapses;
 /// none where the folder can't be read, so what lapses is kept until it
-/// can be. That, and each folder in it passed over as unreadable, is said
-/// once, so claims kept with no end name their cause; a claim kept as
-/// logs disagree is said by the lapse itself ([`said_lapsed`]).
+/// can be. That, each folder in it passed over as unreadable, and the
+/// paths of each session's logs that disagree are said once, so claims
+/// kept with no end name their cause and where to mend it; a claim kept
+/// as logs disagree is said by the lapse itself ([`said_lapsed`]).
 fn continuing(
     logs: &Path,
-    unreadable: &through::Unreadable,
+    unreadable: &Arc<through::Unreadable>,
 ) -> Option<impl Fn(&str) -> chain::Continued + use<>> {
     let say = |why: String| {
         if unreadable.first(&why) {
@@ -564,7 +565,17 @@ fn continuing(
             "the sessions logged in a folder that can't be read continue none: {why}"
         ));
     }
-    Some(move |session: &str| found.follows(session))
+    let unreadable = Arc::clone(unreadable);
+    Some(move |session: &str| {
+        let follows = found.follows(session);
+        if follows.is_err()
+            && let Some(why) = found.disagreeing(session)
+            && unreadable.first(&why)
+        {
+            eprintln!("{why}");
+        }
+        follows
+    })
 }
 
 /// Says what became of each claim in `lapsed` in the node's log, where
@@ -573,16 +584,27 @@ fn continuing(
 /// once each, through `unreadable`, as it's held again at every lapse
 /// until the logs can tell.
 fn said_lapsed(lapsed: &[chain::Lapsed], kept: bool, unreadable: &through::Unreadable) {
-    for lapsed in lapsed {
-        let line = lapsed.to_string();
-        let said = match lapsed {
-            chain::Lapsed::Held { .. } => unreadable.first(&line),
-            chain::Lapsed::Handed { .. } | chain::Lapsed::Forgotten { .. } => kept,
-        };
-        if said {
-            eprintln!("{line}");
-        }
+    for line in lapsed_lines(lapsed, kept, unreadable) {
+        eprintln!("{line}");
     }
+}
+
+/// The lines [`said_lapsed`] says of `lapsed`, in order.
+fn lapsed_lines(
+    lapsed: &[chain::Lapsed],
+    kept: bool,
+    unreadable: &through::Unreadable,
+) -> Vec<String> {
+    lapsed
+        .iter()
+        .map(ToString::to_string)
+        .zip(lapsed)
+        .filter(|(line, lapsed)| match lapsed {
+            chain::Lapsed::Held { .. } => unreadable.first(line),
+            chain::Lapsed::Handed { .. } | chain::Lapsed::Forgotten { .. } => kept,
+        })
+        .map(|(line, _)| line)
+        .collect()
 }
 
 /// Whether `session` stands where a carry reaches it: running, or parked
@@ -4328,8 +4350,13 @@ impl<S: Store> Shared<S> {
     }
 
     /// The carries this node ordered that are shown at `since`
-    /// (`kept::shown`), newest first.
+    /// (`kept::shown`), newest first; none where they can't be read.
     fn carries_here(&self, since: jiff::Timestamp) -> Vec<kept::Kept> {
+        self.carries_here_read(since).unwrap_or_default()
+    }
+
+    /// As [`Shared::carries_here`], or why they can't be read.
+    fn carries_here_read(&self, since: jiff::Timestamp) -> io::Result<Vec<kept::Kept>> {
         let settled = match self.settles.as_ref().map(|settler| settler.settled()) {
             Some(Ok(settled)) => settled,
             Some(Err(error)) => {
@@ -4341,7 +4368,8 @@ impl<S: Store> Shared<S> {
             }
             None => HashMap::new(),
         };
-        self.carries_looked_at()
+        Ok(self
+            .carries_looked_at_read()?
             .into_iter()
             .map(|mut carry| {
                 if let (Some(said), Some(line)) =
@@ -4352,15 +4380,21 @@ impl<S: Store> Shared<S> {
                 carry
             })
             .filter(|carry| kept::shown(carry, since))
-            .collect()
+            .collect())
     }
 
     /// The carries this node ordered as far back as settling looks
-    /// (`settle::LOOKED_FOR`), newest first.
+    /// (`settle::LOOKED_FOR`), newest first; none where they can't be
+    /// read.
     fn carries_looked_at(&self) -> Vec<kept::Kept> {
+        self.carries_looked_at_read().unwrap_or_default()
+    }
+
+    /// As [`Shared::carries_looked_at`], or why they can't be read.
+    fn carries_looked_at_read(&self) -> io::Result<Vec<kept::Kept>> {
         let now = jiff::Timestamp::now();
         let since = now.checked_sub(settle::LOOKED_FOR).unwrap_or(now);
-        kept::read(&self.carries, since).unwrap_or_default()
+        kept::read(&self.carries, since)
     }
 
     /// Settles each carry ordered from here that is due (`settle::due`),
@@ -4622,13 +4656,31 @@ impl<S: Store> Shared<S> {
     /// yet, each judged as the person sees it, for easing to wait on. One
     /// ordered longer ago than [`kept::STUCK_AFTER`] stands stuck, so it
     /// isn't read.
-    fn easing_on_way(&self, now: jiff::Timestamp) -> Vec<ease::Moved> {
+    ///
+    /// # Errors
+    ///
+    /// Where the carries can't be read, saying why, as the node also says
+    /// once on its standard error, since which are on their way can't
+    /// be told then.
+    fn easing_on_way(&self, now: jiff::Timestamp) -> Result<Vec<ease::Moved>, String> {
         let sightings = self.sightings();
-        let carries = self.carries_here(now - kept::STUCK_AFTER);
-        easing::on_way(&carries, &self.machine, |carry| {
+        let carries = self
+            .carries_here_read(now - kept::STUCK_AFTER)
+            .map_err(|error| {
+                let why = format!(
+                    "the carries kept here can't be read ({error}), so which of {}'s carries \
+                     are on their way can't be told",
+                    self.machine
+                );
+                if self.unreadable.first(&why) {
+                    eprintln!("{why}");
+                }
+                why
+            })?;
+        Ok(easing::on_way(&carries, &self.machine, |carry| {
             let seen = sightings.seen(carry, self.handed(carry));
             kept::judged(carry, &seen, now)
-        })
+        }))
     }
 
     /// The sessions here that ended while their quest goes on, as
@@ -5262,6 +5314,26 @@ impl<S: Store> Shared<S> {
             .collect()
     }
 
+    /// `machines`, each this node booked for an agent's make marked a
+    /// worker, as its link marks it ([`Shared::book_for`]), so one isn't
+    /// listed as the person's own while its link is down, as it is from
+    /// this node's start till the link returns, since the store knows a
+    /// worker only by a link's word this run. The booking only ever adds
+    /// the mark, so nothing a session writes takes it away. A worker this
+    /// node made none of, as one dialling in that another node made, is
+    /// still unmarked while its link is down.
+    fn with_makes_marked(&self, mut machines: Vec<facts::Machine>) -> Vec<facts::Machine> {
+        let inner = self.lock();
+        for machine in &mut machines {
+            machine.worker |= inner
+                .booked
+                .get(&machine.name)
+                .is_some_and(|(_, asker)| asker.as_deref() != Some(made::PERSON));
+        }
+        drop(inner);
+        machines
+    }
+
     /// `machines` as a carry reads them: each this node made leaving no
     /// later than its make ends ([`leaving_as_made`]), since a carried
     /// session lasts. Only carries read them so: a make lives as long as
@@ -5278,7 +5350,7 @@ impl<S: Store> Shared<S> {
     /// passed is gone, as one past its own leaving is. Where the book
     /// may have lost a machine's make ([`made::Doubt`]), that machine is
     /// carried to only if it costs nothing or an end is known for it,
-    /// since one whose make was lost can't be told apart from one kept
+    /// its make's or the one it says itself, since one whose make was lost can't be told apart from one kept
     /// for good. The book is read again
     /// only once it changes ([`made::Book::ends`]). This
     /// machine is always kept, first where it was, since every reader
@@ -5295,7 +5367,9 @@ impl<S: Store> Shared<S> {
             .map(|one| leaving_as_made(one, &ends))
             .filter(|one| {
                 let said = one.declared.as_ref();
-                let end_known = !doubt.of(&one.name) || ends.contains_key(&one.name);
+                let end_known = !doubt.of(&one.name)
+                    || ends.contains_key(&one.name)
+                    || said.is_some_and(|said| said.leaves_at.is_some());
                 one.name == self.machine
                     || (end_known || !said.is_some_and(|said| said.costs_money))
                         && !said.is_some_and(|said| said.has_left(now))
@@ -5600,7 +5674,9 @@ impl<S: Store> Shared<S> {
             Request::Machine => Ok(Response::Machine(Box::new(self.measure()))),
             // A carry's hands read the realm through this, so it answers
             // each machine as a carry reads it.
-            Request::Machines => Ok(Response::Machines(self.as_carried(self.machines()))),
+            Request::Machines => Ok(Response::Machines(
+                self.with_makes_marked(self.as_carried(self.machines())),
+            )),
             Request::Builders => Ok(Response::Builders(self.builders.builders())),
             Request::StartedBy(held) => {
                 let sessions = self.lock().state.sessions();
@@ -6800,6 +6876,7 @@ impl<S: Store> Shared<S> {
             .unwrap_or_else(|| Err("this node serves no quests' record".to_owned()))
             .map(|quests| quests.into_values().collect());
         let machine = self.machine.clone();
+        let node = self.clone();
         let read = tokio::task::spawn_blocking(move || {
             let easing::Records {
                 orchestrators,
@@ -6819,14 +6896,17 @@ impl<S: Store> Shared<S> {
             let holds = procs
                 .map(|procs| sampler.take(&procs, &pids, now))
                 .unwrap_or_default();
+            // Here too, off the node's thread, as it reads the carries and
+            // their handovers.
+            let on_way = node.easing_on_way(now);
             let looked = (holdings, queued, sizes, orchestrators);
-            (looked, holds, kept_eases, sampler)
+            (looked, holds, kept_eases, on_way, sampler)
         })
         .await;
-        let Ok(((holdings, queued, sizes, orchestrators), holds, kept_eases, sampler)) = read
-        else {
+        let Ok((looked, holds, kept_eases, on_way, sampler)) = read else {
             return (None, easing::Sampler::default());
         };
+        let (holdings, queued, sizes, orchestrators) = looked;
         let looked = easing::Looked {
             sessions: &sessions,
             fences: &fences,
@@ -6842,7 +6922,7 @@ impl<S: Store> Shared<S> {
         let here = ease::Here::of(&self.machine, &machines, &loads, onto);
         let reading = crate::balance::read(&machines, &sessions, now);
         easing.doubt(orchestrators.err());
-        easing.on_way(self.easing_on_way(now));
+        easing.on_way(on_way, now);
         let line = easing.look(&here, reading, cells, &holds, kept_eases, now);
         (line, sampler)
     }
@@ -10166,10 +10246,10 @@ impl<S: Store> Shared<S> {
             By::Person => By::Person,
         };
         let who_asked = by;
-        let (by, admits) = self.as_a_room_takes(by, &asked.work, self.admits().await);
-        let recast = by != who_asked;
+        let recast = self.recasts(by, &asked.work);
+        let (by, admits) = taken_as(recast, by, self.admits().await);
         asked.by = Some(by);
-        asked.asked_by = asked_by(recast, who_asked, &asked);
+        asked.asked_by = asked_by(recast.is_some(), who_asked, &asked);
         let fence = match by {
             By::Agent(kind) => Some(kind),
             By::Person => None,
@@ -10214,6 +10294,7 @@ impl<S: Store> Shared<S> {
             let (folder, ground) = self.ground(folder, by, asked.from.as_deref()).await?;
             let launcher = self.launcher(by, ground.as_ref(), &from, &mut started)?;
             let shell = shell_for(asked.asked_by, &home);
+            let unset = shell.unsets();
             let words = run::words(launcher, &self.realm, self.kit(), asked.command, shell);
             // An agent's fence grants the work trees its session holds, so
             // the run is told the session the kernel and pi's records prove
@@ -10237,7 +10318,7 @@ impl<S: Store> Shared<S> {
             let (ran, said) = mpsc::channel(run::BACKLOG);
             // It signs as who asks, not as the session proved: an agent's
             // run gets the agents' proxy whether or not one is.
-            tokio::spawn(run::here(words, folder, session, by, ran));
+            tokio::spawn(run::here_without(words, folder, session, by, unset, ran));
             said
         } else {
             self.asks.run(&machine, asked).await?
@@ -10262,27 +10343,34 @@ impl<S: Store> Shared<S> {
     /// which it never books, stays the person's whatever the file says.
     /// Any other run is held to who asks it.
     fn as_a_room_takes(&self, by: By, work: &Work, admits: Admits) -> (By, Admits) {
+        taken_as(self.recasts(by, work), by, admits)
+    }
+
+    /// Why a run asked `by` for `work` is recast as an agent's, as
+    /// [`Shared::as_a_room_takes`] says which are; none where it isn't.
+    fn recasts(&self, by: By, work: &Work) -> Option<Recast> {
+        if by != By::Person {
+            return None;
+        }
         let mut named = work.needs.iter().filter_map(|need| match need {
             Need::Machine(name) => Some(name),
             _ => None,
         });
-        let Some(room) = named.next() else {
-            return (by, admits);
-        };
+        let room = named.next()?;
         if *room == self.machine || named.any(|other| other != room) {
-            return (by, admits);
+            return None;
         }
         let booked = self.lock().booked.get(room).map(|(_, booked)| {
             booked
                 .as_deref()
                 .is_some_and(|booked| booked != made::PERSON)
         });
-        let an_agents = booked.unwrap_or_else(|| self.store.is_worker(room));
-        if by == By::Person && an_agents && self.book.agent_rooms().contains(room) {
-            (By::Agent(crate::declared::Kind::Fence), Admits::Rooms)
-        } else {
-            (by, admits)
-        }
+        let recast = match booked {
+            Some(true) => Recast::AnAgentsBooking,
+            Some(false) => return None,
+            None => self.store.is_worker(room).then_some(Recast::NoBooking)?,
+        };
+        self.book.agent_rooms().contains(room).then_some(recast)
     }
 
     /// Where a machine made is kept: this node's book and store, and its
@@ -10460,6 +10548,28 @@ impl<S: Store> Shared<S> {
         }
     }
 
+    /// The fence, screen and machines `work` asked `by` is placed in and
+    /// among, `admits` as its asker is told. A run (`counts` of
+    /// [`Counts::Never`]) is first recast as [`Shared::run`] recasts it
+    /// ([`Shared::as_a_room_takes`]), so a person's run naming an agent's
+    /// room is placed on rooms in the agent fence, where it will run,
+    /// rather than told no machine takes it; work placed to start is held
+    /// to who asks.
+    fn placing_asked(
+        &self,
+        work: &Work,
+        counts: Counts,
+        by: By,
+        admits: Admits,
+    ) -> (Option<crate::declared::Kind>, Screen, Admits) {
+        if counts == Counts::Never {
+            let (by, admits) = self.as_a_room_takes(by, work, admits);
+            (fence_of(by), Screen::Run, admits)
+        } else {
+            (fence_of(by), held_screen(fence_of(by)), admits)
+        }
+    }
+
     /// Places `work` as [`Node::place`] does for whoever asks, held to an
     /// agent's ground where an agent asks, as a run of its would be, so
     /// what it is told would take the work is where the work can run. Work
@@ -10475,14 +10585,8 @@ impl<S: Store> Shared<S> {
         } else {
             declaring
         };
-        let fence = fence_of(by);
         // Held to the machines booked for whoever asks, as its run is.
-        let admits = self.admits().await;
-        let screen = if counts == Counts::Never {
-            Screen::Run
-        } else {
-            held_screen(fence)
-        };
+        let (fence, screen, admits) = self.placing_asked(work, counts, by, self.admits().await);
         let placement = self.place(work, counts, fence, screen, &admits);
         if counts != Counts::Here {
             return Ok(Response::Placement(placement));
@@ -11070,17 +11174,44 @@ fn shell_for(asked_by: Option<By>, home: &Path) -> run::Shell<'_> {
     }
 }
 
+/// Why the person's run naming one room is recast as an agent's
+/// ([`Shared::recasts`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Recast {
+    /// An agent's make booked the room here.
+    AnAgentsBooking,
+    /// No booking here names the room, which this node's link reached
+    /// as a worker: one another node made, or one this node's booking
+    /// of is lost, or not back yet after a restart.
+    NoBooking,
+}
+
+/// Who a run asked `by` runs as, and the machines it may be placed on,
+/// `admits` as its asker is told, where it is `recast` or not
+/// ([`Shared::as_a_room_takes`]).
+fn taken_as(recast: Option<Recast>, by: By, admits: Admits) -> (By, Admits) {
+    match recast {
+        Some(_) => (By::Agent(crate::declared::Kind::Fence), Admits::Rooms),
+        None => (by, admits),
+    }
+}
+
 /// Why a run is refused, `why`, saying where it was `recast` that the
 /// person asked it and it was sent to a room as an agent's, so the person
 /// isn't left reading an agent's refusal of a run they never asked as one.
-fn sent_as(recast: bool, why: String) -> String {
-    if recast {
-        format!(
-            "the person's run naming a room made for agents is sent there as an agent's, in \
-             the agent fence, and {why}"
-        )
-    } else {
-        why
+/// Where no booking here names the room, it says so, since one the person
+/// made is held here again after a restart only once its make redials.
+fn sent_as(recast: Option<Recast>, why: String) -> String {
+    let sent = "the person's run naming a room made for agents is sent there as an agent's, \
+                in the agent fence,";
+    match recast {
+        Some(Recast::AnAgentsBooking) => format!("{sent} and {why}"),
+        Some(Recast::NoBooking) => format!(
+            "{sent} since no booking on this node says the room is the person's (each node \
+             keeps its own, and holds one again after a restart only once its make redials), \
+             and {why}"
+        ),
+        None => why,
     }
 }
 
@@ -11389,7 +11520,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let logs = dir.path().join("sessions");
         fs::write(&logs, "not a folder\n").expect("written");
-        let unreadable = through::Unreadable::default();
+        let unreadable = Arc::new(through::Unreadable::default());
         assert!(
             continuing(&logs, &unreadable).is_none(),
             "read as empty, a claim that should pass on would lapse"
@@ -11403,6 +11534,45 @@ mod tests {
     }
 
     #[test]
+    fn a_held_claim_is_said_once_and_a_passed_one_only_where_its_record_is_kept() {
+        let lapsed = [
+            chain::Lapsed::Held {
+                claimer: "s-steward".to_owned(),
+                heads: "QEST-20261007-WCJQSG".to_owned(),
+                doubting: "s-other".to_owned(),
+            },
+            chain::Lapsed::Handed {
+                claimer: "s-weigh".to_owned(),
+                heir: "s-weigh-2".to_owned(),
+                heads: "QEST-20261111-OSPHT4".to_owned(),
+            },
+            chain::Lapsed::Forgotten {
+                claimer: "s-elder".to_owned(),
+                heads: "QEST-20261122-1OGSE7".to_owned(),
+                why: "no standing session continues it".to_owned(),
+            },
+        ];
+        let unreadable = through::Unreadable::default();
+        let all: Vec<String> = lapsed.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            lapsed_lines(&lapsed, true, &unreadable),
+            all,
+            "each, where the record keeping the change was kept"
+        );
+        assert_eq!(
+            lapsed_lines(&lapsed, true, &unreadable),
+            all[1..],
+            "a held claim, held again at every lapse, is said only the first time"
+        );
+        assert_eq!(
+            lapsed_lines(&lapsed, false, &through::Unreadable::default()),
+            all[..1],
+            "where the record was only read, a claim passed on or let go of isn't said, \
+             as nothing changed"
+        );
+    }
+
+    #[test]
     fn logs_that_read_say_what_each_continues() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let session = "01a1667f-f5bc-7ba6-9290-033e899fff34";
@@ -11413,8 +11583,7 @@ mod tests {
             format!("{{\"id\":\"{session}\",\"parentSession\":\"s-steward\"}}\n"),
         )
         .expect("written");
-        let continues = continuing(dir.path(), &through::Unreadable::default())
-            .expect("logs that read are read");
+        let continues = continuing(dir.path(), &Arc::default()).expect("logs that read are read");
         assert_eq!(continues(session), Ok(Some("s-steward".to_owned())));
     }
 
@@ -19837,7 +20006,8 @@ esac
         let recast = run_through(socket.clone(), run_of("kestrel", "true")).await;
         assert!(
             recast.as_ref().is_err_and(|why| why
-                .starts_with("the person's run naming a room made for agents is sent there")),
+                .starts_with("the person's run naming a room made for agents is sent there")
+                && why.contains("since no booking on this node says the room is the person's")),
             "the person's run sent to a room as an agent's and refused says the person asked it: \
              {recast:?}"
         );
@@ -26275,6 +26445,40 @@ esac
     }
 
     #[test]
+    fn a_paid_machine_saying_when_it_leaves_is_carried_to_though_the_book_is_unsure() {
+        use std::collections::BTreeSet;
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        for (name, leaves) in [("tern", Some(soon)), ("wren", None)] {
+            let mut other = placement::tests::machine(name, "linux", 32, &["basin"]);
+            let said = other.declared.as_mut().expect("declared");
+            said.costs_money = true;
+            said.leaves_at = leaves;
+            shared
+                .store
+                .put_machine(&other)
+                .expect("the machine is kept");
+        }
+        fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("made.jsonl"))
+            .or_else(|_| fs::File::create(dir.path().join("made.jsonl")))
+            .expect("the book opens")
+            .write_all(b"{\"at\": \"cut sh\n")
+            .expect("a line cut short is written");
+        let carried = shared.as_carried(shared.others());
+        let names: BTreeSet<&str> = carried.iter().map(|one| one.name.as_str()).collect();
+        assert_eq!(
+            names,
+            BTreeSet::from(["tern"]),
+            "a machine that says when it leaves has an end known, though the \
+             book may have lost its make"
+        );
+    }
+
+    #[test]
     fn this_machine_heads_the_carried_machines_while_the_book_cant_be_read() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let shared = made_for(dir.path(), &[]);
@@ -26495,6 +26699,13 @@ esac
             (By::Agent(Kind::Fence), Admits::Rooms),
             "and one room named twice is one room, so naming it again keeps no login unfenced"
         );
+        // Followup 501: the rooms-only admits the recast run carries take
+        // a worker booked nowhere here, as every admits take one.
+        assert_eq!(
+            placed(&naming(&["tern"]), &Admits::Rooms).as_deref(),
+            Some("tern"),
+            "so the person's run recast for tern reaches tern"
+        );
         let mut unasked = made_by("/usr/bin/lend", "tern", a_day_out());
         unasked.asker = None;
         shared.book_for(&unasked);
@@ -26546,6 +26757,28 @@ esac
         );
     }
 
+    // Followup 534: kept as a worker and named a room, this node's own
+    // machine is held the person's by its guard alone.
+    #[tokio::test]
+    async fn the_persons_run_naming_this_machine_kept_as_a_worker_stays_the_persons() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        fs::write(dir.path().join(made::AGENT_ROOMS), "skiff\n").expect("named");
+        let mut skiff = placement::tests::machine("skiff", "linux", 32, &["basin"]);
+        skiff.worker = true;
+        shared.store.put_machine(&skiff).expect("kept");
+        let person = || Admits::Asker(made::PERSON.to_owned());
+        assert_eq!(
+            shared.as_a_room_takes(
+                By::Person,
+                &work(vec![Need::Machine("skiff".to_owned())]),
+                person()
+            ),
+            (By::Person, person()),
+            "this node's own machine, which no booking here names, is held to who asks"
+        );
+    }
+
     #[tokio::test]
     async fn the_persons_run_naming_a_machine_booked_nowhere_is_fenced_on_a_worker_alone() {
         use crate::declared::Kind;
@@ -26574,6 +26807,53 @@ esac
                 "but a machine that is no worker stays the person's, though a session listed it"
             );
         }
+    }
+
+    // Followup 499: where a run would go is asked as the run is placed.
+    #[tokio::test]
+    async fn where_the_persons_run_would_go_is_placed_as_its_run_is_recast() {
+        use crate::declared::Kind;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[("wren", made::PERSON), ("reef", "P9R1KI")]);
+        fs::write(dir.path().join(made::AGENT_ROOMS), "reef\nwren\ntern\n").expect("named");
+        // tern is booked nowhere here, a worker this node's link reached.
+        let mut tern = placement::tests::machine("tern", "linux", 32, &["basin"]);
+        tern.worker = true;
+        shared.store.put_machine(&tern).expect("kept");
+        let person = || Admits::Asker(made::PERSON.to_owned());
+        let naming = |name: &str| work(vec![Need::Machine(name.to_owned())]);
+        for room in ["reef", "tern"] {
+            assert_eq!(
+                shared.placing_asked(&naming(room), Counts::Never, By::Person, person()),
+                (Some(Kind::Fence), Screen::Run, Admits::Rooms),
+                "the person's run naming {room} is placed as its run is, on rooms, fenced"
+            );
+            assert_eq!(
+                shared.placing_asked(&naming(room), Counts::Here, By::Person, person()),
+                (None, held_screen(None), person()),
+                "but the person's start naming {room} is held to who asks"
+            );
+        }
+        assert_eq!(
+            shared.placing_asked(&naming("wren"), Counts::Never, By::Person, person()),
+            (None, Screen::Run, person()),
+            "and the person's run naming their own room is theirs"
+        );
+        assert_eq!(
+            ["reef", "tern", "wren"].map(|room| shared.recasts(By::Person, &naming(room))),
+            [Some(Recast::AnAgentsBooking), Some(Recast::NoBooking), None],
+            "each recast says why: an agent's booking, or none here"
+        );
+        assert_eq!(
+            shared.placing_asked(
+                &naming("reef"),
+                Counts::Never,
+                By::Agent(Kind::Strict),
+                person()
+            ),
+            (Some(Kind::Strict), Screen::Run, person()),
+            "and an agent's run is held to who asks, as before"
+        );
     }
 
     // Followup 487: who asked a run recast to a room is said only by a
@@ -26627,13 +26907,25 @@ esac
     #[test]
     fn a_recast_run_refused_says_the_person_asked_it() {
         assert_eq!(
-            sent_as(true, "nowhere: reef is gone".to_owned()),
+            sent_as(
+                Some(Recast::AnAgentsBooking),
+                "nowhere: reef is gone".to_owned()
+            ),
             "the person's run naming a room made for agents is sent there as an agent's, in \
              the agent fence, and nowhere: reef is gone",
             "a recast run's refusal says whose it was"
         );
+        // Followup 503: a booking lost or not yet back is named.
         assert_eq!(
-            sent_as(false, "nowhere: reef is gone".to_owned()),
+            sent_as(Some(Recast::NoBooking), "nowhere: tern is gone".to_owned()),
+            "the person's run naming a room made for agents is sent there as an agent's, in \
+             the agent fence, since no booking on this node says the room is the person's \
+             (each node keeps its own, and holds one again after a restart only once its make \
+             redials), and nowhere: tern is gone",
+            "and where no booking here names the room, it says so"
+        );
+        assert_eq!(
+            sent_as(None, "nowhere: reef is gone".to_owned()),
             "nowhere: reef is gone",
             "any other run's is as it was"
         );
@@ -29990,6 +30282,18 @@ esac
             to_dial,
         );
         let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        // Kept with no link's word on it, as from the node's start till
+        // its link returns.
+        let kestrel = placement::tests::machine("kestrel", "linux", 32, &[]);
+        shared.store.put_machine(&kestrel).expect("kept");
+        let listed = || {
+            shared
+                .with_makes_marked(shared.others())
+                .into_iter()
+                .find(|one| one.name == "kestrel")
+                .map(|one| one.worker)
+        };
+        assert_eq!(listed(), Some(false), "booked for nobody, it is no worker");
         for (asker, worker) in [
             (Some(made::PERSON), false),
             (Some("P9R1KI"), true),
@@ -30002,6 +30306,11 @@ esac
                 shared.book_for(&made).worker,
                 worker,
                 "a machine made for {asker:?} is a worker: {worker}"
+            );
+            assert_eq!(
+                listed(),
+                Some(worker),
+                "and is listed as one before its link says so: {worker}"
             );
         }
     }

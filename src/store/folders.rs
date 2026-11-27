@@ -760,10 +760,19 @@ impl Store for Folders {
 
     fn mark_worker(&self, machine: &str, worker: bool) {
         let mut workers = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
-        if worker {
-            workers.insert(machine.to_owned());
+        let moved = if worker {
+            workers.insert(machine.to_owned())
         } else {
-            workers.remove(machine);
+            workers.remove(machine)
+        };
+        drop(workers);
+        // The mark is in memory alone, so no file's watch tells it.
+        if moved {
+            let change = Change::Machine(machine.to_owned());
+            self.told
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .retain(|told| told.send(change.clone()).is_ok());
         }
     }
 
@@ -2572,6 +2581,23 @@ mod tests {
         assert!(
             again.is_worker("tern"),
             "a record taken away unmakes no worker either"
+        );
+    }
+
+    // A session may take away the record a link put, but the room gate asks
+    // the link's mark, which stays.
+    #[test]
+    fn a_worker_stays_one_though_its_record_is_removed() {
+        // Followup 544(4): a worker by its link's put stays one with its record gone.
+        let (dir, store) = store();
+        let mut tern = crate::placement::tests::machine("tern", "linux", 32, &[]);
+        tern.worker = true;
+        store.put_machine(&tern).expect("its link keeps it");
+        fs::remove_file(dir.path().join("claims").join(format!("tern{SAID}")))
+            .expect("a session takes it away");
+        assert!(
+            store.is_worker("tern"),
+            "a worker its link put stays one, its record taken away"
         );
     }
 

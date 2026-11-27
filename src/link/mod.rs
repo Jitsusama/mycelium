@@ -3184,6 +3184,32 @@ mod tests {
         );
     }
 
+    // Followup 507(b): a recast run's asker crosses the link as its node
+    // said it, so the room runs it reading no profile.
+    #[test]
+    fn a_recast_runs_asker_crosses_a_link_as_said() {
+        let said: Run = serde_json::from_value(json!({
+            "work": {"needs": [], "prefers": [], "tolerates": [], "may_wait": false},
+            "command": ["true"],
+            "by": {"Agent": "fence"},
+            "asked_by": "Person"
+        }))
+        .expect("a recast run as a node says it");
+        assert_eq!(
+            (said.by, said.asked_by),
+            (Some(By::Agent(Kind::Fence)), Some(By::Person)),
+            "both read as PROTOCOL.md writes them"
+        );
+        let frame = Frame::Run { ask: 7, run: said };
+        let written = serde_json::to_string(&frame).expect("a frame writes");
+        assert!(written.contains(r#""asked_by":"Person""#), "{written}");
+        assert_eq!(
+            serde_json::from_str::<Frame>(&written).expect("a frame reads"),
+            frame,
+            "and the far end reads it back whole"
+        );
+    }
+
     /// How long a test waits for a link to carry something before failing.
     /// Each waits on what it waits for, so this only bounds how long a
     /// failure takes to say so; a narrow pipe's backlog, carried a few
@@ -4361,6 +4387,46 @@ mod tests {
         assert!(
             asked.is_some() && carrying.is_some(),
             "the link still carries the asks, and asks its node again"
+        );
+    }
+
+    // Followup 544(9): the room gate reads the worker mark as soon as the
+    // node can ask anything of a machine, so the link's admission marks it
+    // before the link offers the node its asks.
+    #[tokio::test]
+    async fn a_link_marks_its_worker_before_its_node_can_ask_of_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("node.sock");
+        let listener = tokio::net::UnixListener::bind(&path).expect("the node binds");
+        let (skiff, kestrel) = (Memory::default(), Memory::default());
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let _near_end = end(&skiff, "skiff", near);
+        let starting = dialled_starting(dir.path(), path);
+        let (reading, writing) = tokio::io::split(far);
+        let kept = kestrel.clone();
+        let _far_end = tokio::spawn(async move {
+            run(
+                kept,
+                &realm("kestrel"),
+                Connection {
+                    worker: true,
+                    ..connection(reading, writing)
+                },
+                None,
+                Some(starting),
+            )
+            .await
+        });
+        let (called, _) = tokio::time::timeout(PATIENCE, listener.accept())
+            .await
+            .expect("the link calls its node in time")
+            .expect("the node takes the call");
+        let mut node = BufReader::new(called).lines();
+        let first = node.next_line().await.expect("it asks").expect("a line");
+        assert!(first.contains("Carry"), "the link asks to carry: {first}");
+        assert!(
+            kestrel.is_worker("skiff"),
+            "skiff is marked a worker before kestrel's node can ask anything of it"
         );
     }
 
@@ -5822,8 +5888,8 @@ mod tests {
     }
 
     // A worker's link is one by its way in, from its admission, so a
-    // worker that never says what its machine is, after a restart or a
-    // record a session wrote of it ready, still reads as a worker.
+    // worker that never says what its machine is still reads as a
+    // worker, though a record kept from before says it is none.
     #[tokio::test]
     async fn a_worker_saying_nothing_of_its_machine_is_one_from_its_admission() {
         let skiff = Memory::default();
@@ -5839,22 +5905,14 @@ mod tests {
             None,
         );
         says(&mut far_writing, &[Frame::Hello(realm("tern").hello())]).await;
-        let worker = |store: &Memory| {
+        // The mark that moves is told, so this waits on the change.
+        until(&skiff, |store| {
             store
                 .machines()
                 .iter()
                 .any(|machine| machine.name == "tern" && machine.worker)
-        };
-        let waited = tokio::time::timeout(PATIENCE, async {
-            while !worker(&skiff) {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
         })
         .await;
-        assert!(
-            waited.is_ok(),
-            "a worker's machine read as one within {PATIENCE:?} of its hello alone"
-        );
     }
 
     /// Each link's admission says whether its machine is a worker, either

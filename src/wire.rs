@@ -5,9 +5,9 @@
 //! then each change. A `Present` connection is held open by its process
 //! for as long as it runs.
 //!
-//! Long because every request and answer the socket takes is said here,
-//! in one place a reader of the protocol can follow, with the tests that
-//! hold each one's words for nodes older and newer.
+//! Long because it is the socket's whole vocabulary: every request a
+//! client may send and every reply and event it may read, each said once
+//! here so the node, its clients and PROTOCOL.md hold to one shape.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -697,6 +697,37 @@ mod tests {
         assert!(
             serde_json::from_str::<Request>(r#"{"Watch":{"groups":[]}}"#).is_err(),
             "a pattern is one string, never a list"
+        );
+    }
+
+    // Followup 507(b): a run a node recast, saying who asked it, is read
+    // and written as PROTOCOL.md says, so a node clearing it has it to
+    // clear, and a run that says nothing of it is written as before it was
+    // said.
+    #[test]
+    fn a_run_saying_who_asked_it_reads_and_writes_as_said() {
+        let said = r#"{"Run":{"work":{},"command":["true"],"by":{"Agent":"fence"},"from":"tern","asked_by":"Person"}}"#;
+        let request = serde_json::from_str::<Request>(said).expect("a run reads");
+        let Request::Run(run) = &request else {
+            panic!("a run: {request:?}");
+        };
+        assert_eq!(run.asked_by, Some(By::Person), "{said}");
+        assert_eq!(run.by, Some(By::Agent(Kind::Fence)), "{said}");
+        let written = serde_json::to_string(&request).expect("a run writes");
+        assert!(written.contains(r#""asked_by":"Person""#), "{written}");
+        assert_eq!(
+            serde_json::from_str::<Request>(&written).expect("it reads back"),
+            request
+        );
+        let plain = Run {
+            asked_by: None,
+            ..run.clone()
+        };
+        assert!(
+            !serde_json::to_string(&plain)
+                .expect("a run writes")
+                .contains("asked_by"),
+            "a run no node recast says nothing of it"
         );
     }
 
