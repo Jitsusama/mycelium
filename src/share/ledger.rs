@@ -472,8 +472,11 @@ thread_local! {
 
 /// The ledger at `path`, parsed only when its file isn't the one read
 /// before, or `None` where there is none. The stamp is read from the file
-/// opened, so what it stands for is what is read.
-fn read_ledger(path: &Path) -> io::Result<Option<Ledger>> {
+/// opened, so what it stands for is what is read. It is the copy kept as
+/// read, shared rather than copied: on 26 November copying and dropping
+/// whole ledgers, of up to 7.3 MB, took a third of a node's time, as each
+/// link's look took every shared quest's once a second.
+fn read_ledger(path: &Path) -> io::Result<Option<Arc<Ledger>>> {
     let mut file = match fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -488,7 +491,7 @@ fn read_ledger(path: &Path) -> io::Result<Option<Ledger>> {
         .filter(|(before, _)| *before == stamp)
         .map(|(_, ledger)| Arc::clone(ledger));
     if let Some(ledger) = before {
-        return Ok(Some(Ledger::clone(&ledger)));
+        return Ok(Some(ledger));
     }
     let mut text = Vec::new();
     file.read_to_end(&mut text)?;
@@ -496,7 +499,8 @@ fn read_ledger(path: &Path) -> io::Result<Option<Ledger>> {
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     #[cfg(test)]
     PARSED.with(|parsed| parsed.set(parsed.get() + 1));
-    read_before().insert(path.to_owned(), (stamp, Arc::new(ledger.clone())));
+    let ledger = Arc::new(ledger);
+    read_before().insert(path.to_owned(), (stamp, Arc::clone(&ledger)));
     Ok(Some(ledger))
 }
 
@@ -544,12 +548,35 @@ impl Ledgers {
             ));
         }
         let path = self.folder.join(format!("{quest}.json"));
-        read_ledger(&path)?.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("{} isn't there", path.display()),
-            )
-        })
+        read_ledger(&path)?
+            .map(|ledger| Ledger::clone(&ledger))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("{} isn't there", path.display()),
+                )
+            })
+    }
+
+    /// What this machine knows of `quest` as last kept, an empty ledger
+    /// where it has none, read as [`Self::read`] reads it and shared with
+    /// the copy kept as read rather than copied, for a reader that
+    /// changes nothing. What it holds may be changed by a holder the
+    /// moment after, so a reader that would change the ledger holds it
+    /// and reads it again.
+    ///
+    /// # Errors
+    ///
+    /// When `quest` isn't a quest's id, or its ledger can't be read.
+    pub fn look(&self, quest: &str) -> io::Result<Arc<Ledger>> {
+        if !is_quest(quest) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{quest:?} is not a quest's id"),
+            ));
+        }
+        let path = self.folder.join(format!("{quest}.json"));
+        Ok(read_ledger(&path)?.unwrap_or_default())
     }
 
     /// Whether this machine shares `quest`.
@@ -591,7 +618,7 @@ impl Ledgers {
         };
         rustix::fs::flock(&lock, FlockOperation::LockExclusive)?;
         let path = self.folder.join(format!("{quest}.json"));
-        let ledger = read_ledger(&path)?.unwrap_or_default();
+        let ledger = read_ledger(&path)?.map_or_else(Ledger::default, Arc::unwrap_or_clone);
         Ok(Held {
             ledger,
             path,
@@ -733,6 +760,45 @@ mod tests {
         );
         assert!(
             ledgers.hold("../etc").is_err(),
+            "only a quest's id names a ledger"
+        );
+    }
+
+    #[test]
+    fn a_look_shares_the_ledger_kept_and_sees_what_is_kept_next() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let ledgers = Ledgers::in_state(dir.path());
+        let quest_id = "QEST-20261013-4UHC5Q";
+        assert_eq!(
+            *ledgers.look(quest_id).expect("looked"),
+            Ledger::default(),
+            "a quest unshared looks empty"
+        );
+        let mut held = ledgers.hold(quest_id).expect("held");
+        held.ledger.journey = Some("# Journey\n".to_owned());
+        held.keep().expect("kept");
+        drop(held);
+        let first = ledgers.look(quest_id).expect("looked");
+        assert!(
+            Arc::ptr_eq(&first, &ledgers.look(quest_id).expect("looked again")),
+            "two looks share one copy"
+        );
+        let mut held = ledgers.hold(quest_id).expect("held");
+        held.ledger.journey = Some("# Journey, on\n".to_owned());
+        held.keep().expect("kept");
+        drop(held);
+        assert_eq!(
+            ledgers.look(quest_id).expect("looked").journey.as_deref(),
+            Some("# Journey, on\n"),
+            "and a look after a keep sees it"
+        );
+        assert_eq!(
+            first.journey.as_deref(),
+            Some("# Journey\n"),
+            "while an earlier look's stands"
+        );
+        assert!(
+            ledgers.look("../etc").is_err(),
             "only a quest's id names a ledger"
         );
     }
