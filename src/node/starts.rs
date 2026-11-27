@@ -348,7 +348,6 @@ pub struct Admitted {
 impl Admitted {
     /// The same start, landed on a room made for agents to share
     /// ([`Kept::room`]), so it no longer counts toward its cell's number.
-    #[must_use]
     pub fn on_a_room(mut self) -> Self {
         self.asked.room = true;
         self

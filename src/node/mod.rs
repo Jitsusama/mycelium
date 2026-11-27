@@ -2,7 +2,7 @@
 //! stores of the machines discovery finds, holds the sessions and messages
 //! in memory, and serves the local socket every client reads.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
@@ -8515,7 +8515,7 @@ impl<S: Store> Shared<S> {
     fn landed_on_a_room(
         admitted: starts::Admitted,
         started: &Result<Started, String>,
-        rooms: &BTreeSet<String>,
+        rooms: &std::collections::BTreeSet<String>,
     ) -> starts::Admitted {
         match started {
             Ok(started) if rooms.contains(&started.machine) => admitted.on_a_room(),
