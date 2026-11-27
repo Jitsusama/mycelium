@@ -118,6 +118,17 @@ impl Through {
             .and_then(|mut client| client.ask(request))
             .map_err(|error| format!("the node didn't answer: {error}"))?
     }
+
+    /// Machine `to` as the node, carrying, knows it, or none where it
+    /// knows of none so named.
+    fn linked(&self, to: &str) -> Result<Option<crate::facts::Machine>, String> {
+        match self.ask(&Request::Machines)? {
+            Response::Machines(machines) => {
+                Ok(machines.into_iter().skip(1).find(|one| one.name == to))
+            }
+            other => Err(format!("the node answered {other:?} for its machines")),
+        }
+    }
 }
 
 impl Hands for Through {
@@ -132,14 +143,7 @@ impl Hands for Through {
     }
 
     fn lent(&mut self, to: &str) -> Result<Lent, String> {
-        match self.ask(&Request::Machines)? {
-            Response::Machines(machines) => Ok(machines
-                .iter()
-                .skip(1)
-                .find(|one| one.name == to)
-                .map_or(Lent::Not, Lent::of)),
-            other => Err(format!("the node answered {other:?} for its machines")),
-        }
+        Ok(self.linked(to)?.map_or(Lent::Not, |one| Lent::of(&one)))
     }
 
     fn sessions(&mut self) -> Result<Vec<Session>, String> {
@@ -238,12 +242,17 @@ impl Hands for Through {
     fn share(&mut self, quest: &str, to: &str) -> Result<(), String> {
         debug_assert_eq!(quest, self.quest, "a carry shares its own quest");
         let scratch = ["handover".to_owned()];
-        let shared = match self.lent(to)? {
-            Lent::Not => self.shares.offer(quest, &scratch),
+        let linked = self.linked(to)?;
+        let shared = match linked.as_ref().map_or(Lent::Not, Lent::of) {
+            // A room is one of the person's own to a carry, but its link is
+            // a worker's, which serves only what it was given.
+            Lent::Not if !linked.as_ref().is_some_and(|one| one.worker) => {
+                self.shares.offer(quest, &scratch)
+            }
             Lent::TakesNone => return Err(ground::takes_none(to)),
-            Lent::TakesCarries => {
-                // The whole handover, every machine's, since a worker is
-                // served all of it.
+            Lent::Not | Lent::TakesCarries => {
+                // The whole handover, every machine's, since a worker's
+                // link serves all of it.
                 let handover = self.shares.scratch.join(quest).join("handover");
                 let found = secrets::first_in(&handover).map_err(|error| {
                     format!("{quest}'s handover can't be told free of secrets: {error}")
@@ -1116,6 +1125,51 @@ mod tests {
             "a handover holding a login is refused, naming it"
         );
         assert!(!places.given("tern", quest), "and nothing is given");
+    }
+
+    #[test]
+    fn a_room_its_node_names_is_given_the_quest_its_carry_shares() {
+        use super::{Hands, Places, Through};
+        use crate::declared::Declared;
+        use crate::facts;
+        let dir = tempfile::tempdir().expect("places");
+        let places = Places {
+            quests: dir.path().join("quests"),
+            scratch: dir.path().join("scratch"),
+            home: dir.path().join("home"),
+            state: dir.path().join("state"),
+        };
+        let quest = "QEST-20261115-HARBOR";
+        fs::create_dir_all(places.record(quest)).expect("its record");
+        let notes = places.scratch.join(quest).join("handover").join("skiff");
+        fs::create_dir_all(&notes).expect("a handover");
+        fs::write(notes.join("s-busy01.done.json"), "{}").expect("a done file");
+        // Lent by a provider's link, as a room is, and named by its node.
+        let room = facts::Machine {
+            worker: true,
+            held_for: facts::HeldFor::Agents,
+            declared: Some(Declared {
+                costs_money: true,
+                ..Declared::default()
+            }),
+            ..facts::measure("osprey", &facts::Sources::nowhere())
+        };
+        let machines = vec![facts::measure("skiff", &facts::Sources::nowhere()), room];
+        let mut hands = Through::new(
+            dir.path().join("work.sock"),
+            places.clone(),
+            quest,
+            Duration::from_secs(1),
+        )
+        .asking(Box::new(move |request| match request {
+            Request::Machines => Ok(Response::Machines(machines.clone())),
+            other => Err(format!("asked {other:?}")),
+        }));
+        hands.share(quest, "osprey").expect("shared to the room");
+        assert!(
+            places.given("osprey", quest),
+            "its link serves a worker only what it was given, so the room is given it"
+        );
     }
 
     // 8855BD77's council (23 November): hands made once the session was
