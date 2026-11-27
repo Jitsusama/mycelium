@@ -402,11 +402,11 @@ same code, each line a JSON value:
 19. `{"Lend": {"ask", "lend"}}`: answer a model call through the other
     end's lender, as a `"Lend"` request says it (Borrowing a Lend).
     The other end takes it only where this end is its worker, or a
-    machine it made for the person and dialled through the provider
-    that releases it, known by the link alone, and its node was started
-    with `--lend`; otherwise
-    it refuses 403, saying why. Its lender names the borrowing machine
-    by the link's other end, never by what the lend says. It answers
+    machine its node made, such as one made for the person, which its
+    way in releases, each known by the link alone, and its node was
+    started with `--lend`; otherwise it refuses 403, saying why. Its
+    lender names the borrowing machine by the link's other end, never
+    by what the lend says. It answers
     `{"Lent": {"ask", "lent"}}` a line for each `Lent`, the last its
     `"Done"` or `"Refused"`, at most four ahead of `{"Taken": {"ask"}}`,
     which the asking end sends as its asker takes each, as for a run.
@@ -1761,7 +1761,13 @@ how full that disk is as the machine's disk guard bands it (`healthy`,
 `filling`, `nearly-full` or `critically-full`, from the guard's
 `status.json` while its heartbeat is under two minutes old, and absent
 otherwise; the guard's earlier `pressure`, `urgent` and `critical` are
-read as those three, and a band a node doesn't know is read as absent),
+read as those three, and a band a node doesn't know is read as absent;
+a disk the guard calls critically full is `nearly-full` where the
+guard says all three of its `free` bytes above its `nix_floor` and
+`exhausted` false, since the guard may band it so by forecast hours
+before it fills, and `critically-full` otherwise, a guard saying less,
+or a figure in another shape, being taken at its word; no other band
+is changed),
 `accelerators` (each a `kind`, `gpu` or
 `npu`, and its `driver`), and `power`: `on_battery`, true only with a
 battery of its own and nothing plugged in, and `charge`, its own
@@ -2492,7 +2498,11 @@ a granted session's and one from no one known included, whoever it is
 booked for, since its booking says who pays for it and may let it go,
 not who may use it; the person's own go there only where it is booked
 for the person or for no asker, never into a worker home an agent's
-make wrote. Work that names none of the workers may go to it though it
+make wrote. A run the person asks naming one machine alone, a room an
+agent's make booked, runs there as an agent's, in the agent fence, so
+the person's safe word reaches every room though no session asks it,
+and the person's own login still never runs in that worker home.
+Work that names none of the workers may go to it though it
 costs money, ranked by its room as any machine is, so before a machine
 kept lively while it has room, and after one within its ceiling once
 it is over a limit. The node marks each one `"held_for": "agents"` as it
@@ -3662,14 +3672,31 @@ as `quest:<id>`, so its short name is never a group's, as no group's
 name holds a colon; it is read in lower case, so keys differing only
 in case are one folder. `for` and `folder` are drawn on one line: each
 control character and line or paragraph separator in them is read as
-a space and each mark turning text's direction is dropped. `for` also
-drops each character that draws nothing and each of Unicode's 66
-noncharacters, keeping one selector only after a character drawn as
-part of a word past ASCII (none a space, a braille blank or a
-noncharacter), and a joiner only between two, the first perhaps
-followed by its selector, and then is trimmed of spaces
-and braille blanks (U+2800), and cut to its first 120 characters, then
-cleaned again, so it ends in no space and no joiner left joining
+a space and each mark turning text's direction is dropped. From what
+is left, `for` also drops each of Unicode's 66 noncharacters first,
+then each character that draws nothing (U+00AD, U+034F, U+115F,
+U+1160, U+17B4, U+17B5, U+180B to U+180F, U+200B to U+200D, U+2060
+to U+2065, U+206A to U+206F, U+3164, U+FE00 to U+FE0F, U+FEFF,
+U+FFA0, U+FFF0 to U+FFFB, U+1BCA0 to U+1BCA3, U+1D173 to U+1D17A and
+U+E0000 to U+E0FFF), keeping one selector (U+FE00 to U+FE0F or
+U+E0100 to U+E01EF, so no Mongolian one) only where the last
+character kept is itself past ASCII and drawn as part of a word (none
+a space, here any character Unicode gives White_Space, such as U+00A0
+or U+3000, nor a braille blank), so what this pass drops between them
+parts nothing, and a joiner (U+200C or U+200D) only between two such,
+the first perhaps followed by its selector and the second the very
+next character left, so one dropped in this pass after a joiner parts
+it, though a direction mark or noncharacter, gone before, doesn't; and at most
+three zero-width joiners (U+200D) from the start or from one
+character, other than a skin tone or any regional indicator (U+1F1E6
+to U+1F1FF, paired as a flag or not), given a cell by unicode-width 0.2.3's
+per-character width (most spacing marks are, though none extending a
+grapheme, such as U+09BE; no nonspacing mark, conjoining jamo vowel or
+final, or selector is) and following no zero-width joiner kept, to the
+next, the rest dropped, a non-joiner (U+200C) never counted, each
+judged against what is kept so far; and then is trimmed of such
+spaces and braille blanks (U+2800), and cut to its first 120 characters,
+then cleaned again, so it ends in no space and no joiner left joining
 nothing; `folder` is 1 to 1024 bytes. A
 `for` said as null or as anything but text is unsaid, and one unsaid,
 empty or cleaned to nothing is left out of the cell record. A cell's

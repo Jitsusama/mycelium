@@ -21,8 +21,8 @@ use std::fmt::Write as _;
 
 use super::{Cell, Is, MACHINES, Mycelium, Network, Shape, Share};
 use crate::swarm::{
-    BOLD, DOING_AT, FAINT, GAP, Label, Look, NARROWEST, Standing, fit, header, padded, row,
-    says_again, shell_word, unmarked, without_marks,
+    BOLD, DOING_AT, FAINT, GAP, Label, Look, NARROWEST, Standing, drawn_width, fit, header, padded,
+    row, says_again, shell_word, unmarked, without_marks,
 };
 
 impl Shape {
@@ -98,7 +98,7 @@ fn label<'a>(network: &'a Network, title: &'a str, width: usize) -> Label<'a> {
 fn shorts_width<'a>(networks: impl Iterator<Item = &'a Network>) -> usize {
     networks
         .filter_map(shown_short)
-        .map(|short| unmarked(short).chars().count())
+        .map(|short| drawn_width(&unmarked(short)))
         .max()
         .unwrap_or_default()
 }
@@ -513,7 +513,7 @@ pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool, all: bool) -
         .cells
         .iter()
         .filter(|cell| matches!(cell.is, Is::Machine | Is::Builder))
-        .map(|cell| unmarked(&cell.name).chars().count())
+        .map(|cell| drawn_width(&unmarked(&cell.name)))
         .chain([shorts_width(mycelium.networks.iter())])
         .max()
         .unwrap_or_default();
@@ -589,7 +589,7 @@ fn cell_lines<'a>(
     });
     let name_width = sessions
         .iter()
-        .map(|(_, cell)| unmarked(&cell.name).chars().count())
+        .map(|(_, cell)| drawn_width(&unmarked(&cell.name)))
         .max()
         .unwrap_or_default();
     let mut lines: Vec<String> = sessions
@@ -635,7 +635,7 @@ fn cell_line(
     // Drawn whole, the title is as wide as it is, and what it does is
     // lined up with the others' once they're drawn.
     let title_room = if look.whole() {
-        title.chars().count()
+        drawn_width(&title)
     } else if doing.is_some() {
         (room / 2).max(NARROWEST)
     } else {
@@ -645,7 +645,7 @@ fn cell_line(
         "{indent}{}{GAP}{}{GAP}{}",
         look.paint(standing.colour(), &padded(standing.said(), said)),
         padded(&unmarked(&cell.name), name_width),
-        padded(&fit(&title, title_room), title_room)
+        padded(&look.fitted(&title, title_room), title_room)
     );
     if let Some(doing) = doing {
         let left = room.saturating_sub(title_room + GAP.len()).max(NARROWEST);
@@ -768,7 +768,7 @@ pub fn cells(mycelium: &Mycelium, look: &Look, all: bool, standing: &[String]) -
         lines.extend([String::new(), look.paint(BOLD, MACHINES)]);
         let width = machines
             .iter()
-            .map(|cell| unmarked(&cell.name).chars().count())
+            .map(|cell| drawn_width(&unmarked(&cell.name)))
             .max()
             .unwrap_or_default();
         for machine in machines {
@@ -789,7 +789,7 @@ pub fn cells(mycelium: &Mycelium, look: &Look, all: bool, standing: &[String]) -
         lines.extend([String::new(), look.paint(BOLD, "builders")]);
         let width = builders
             .iter()
-            .map(|cell| unmarked(&cell.name).chars().count())
+            .map(|cell| drawn_width(&unmarked(&cell.name)))
             .max()
             .unwrap_or_default();
         for builder in builders {
@@ -817,7 +817,7 @@ pub fn cells(mycelium: &Mycelium, look: &Look, all: bool, standing: &[String]) -
         lines.extend([String::new(), look.paint(BOLD, "receptors")]);
         let width = receptors
             .iter()
-            .map(|cell| unmarked(&cell.name).chars().count())
+            .map(|cell| drawn_width(&unmarked(&cell.name)))
             .max()
             .unwrap_or_default();
         for receptor in receptors {
@@ -906,12 +906,12 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
         lines.extend([String::new(), look.paint(BOLD, "networks")]);
         let width = joined
             .iter()
-            .map(|each| unmarked(&each.short).chars().count())
+            .map(|each| drawn_width(&unmarked(&each.short)))
             .max()
             .unwrap_or_default();
         let shapes = joined
             .iter()
-            .map(|each| each.shape.said().chars().count())
+            .map(|each| drawn_width(each.shape.said()))
             .max()
             .unwrap_or_default();
         for each in joined {
@@ -924,7 +924,7 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
                 let title = unmarked(&titled(each, look));
                 let room = look
                     .width
-                    .saturating_sub(line.chars().count() + GAP.len())
+                    .saturating_sub(drawn_width(&line) + GAP.len())
                     .max(NARROWEST);
                 let _ = write!(line, "{GAP}{}", look.paint(FAINT, &fit(&title, room)));
             }
@@ -956,7 +956,7 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
         lines.extend([String::new(), look.paint(BOLD, "its own folders")]);
         let width = alone
             .iter()
-            .map(|share| share.key.chars().count())
+            .map(|share| drawn_width(&share.key))
             .max()
             .unwrap_or_default();
         for share in alone {
@@ -967,10 +967,7 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
                 continue;
             }
             let line = format!("  {}{GAP}", padded(&share.key, width));
-            let room = look
-                .width
-                .saturating_sub(line.chars().count())
-                .max(NARROWEST);
+            let room = look.width.saturating_sub(drawn_width(&line)).max(NARROWEST);
             let about = look.paint(FAINT, &fit(&share.about, room));
             lines.push(format!("{line}{about}"));
         }

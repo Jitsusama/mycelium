@@ -2872,17 +2872,99 @@ struct Seen<'a> {
     held: &'a [hold::Held],
     /// The sessions carried away lately or waiting for their turn.
     coming_back: &'a HashSet<String>,
-    /// The park markers this boot wrote, as [`Shared::marked`] reads them.
-    marked: &'a [Marked],
-    /// Each holders' folder read for the markers, by its path, so a
-    /// park a presence names is judged from the same look
-    /// ([`Shared::parked_here`]).
-    folders: &'a HashMap<PathBuf, Vec<hold::Held>>,
+    /// The park markers and the holders' folders, read once for the
+    /// judgement ([`Shared::looked`]), so a park a presence names is
+    /// judged from the same look as a marker's ([`Shared::parked_here`]).
+    looked: &'a Looked,
+}
+
+/// What one judgement of parks reads, outside the node's lock: the park
+/// markers this boot wrote, read first, then this node's own holders'
+/// folder, each one the presences of the sessions judged name and each
+/// one a marker names, each once ([`look`]). Read in that order, a holder
+/// that parks between the two is seen parked, so no marker is judged
+/// against a record older than it.
+#[derive(Default)]
+struct Looked {
+    /// The park markers, each with what its holder's records said of it.
+    marked: Vec<Marked>,
+    /// Each holders' folder read, by its path.
+    folders: HashMap<PathBuf, Vec<hold::Held>>,
+}
+
+impl Looked {
+    /// Whether the holder `id` in `folder` still runs, and if so whether
+    /// its own record says its program is parked
+    /// ([`steer::its_holder_among`]), as this look read it. Every folder a
+    /// judgement asks of is one the look read, since the presences it
+    /// judges name them; one it missed is a fault, failing a test, and is
+    /// read afresh elsewhere, as a running holder is never taken as gone.
+    fn holder(&self, folder: &Path, id: &str) -> Option<bool> {
+        let read = self.folders.get(folder);
+        debug_assert!(read.is_some(), "the look missed {}", folder.display());
+        match read {
+            Some(holders) => steer::its_holder_among(id, holders),
+            None => steer::its_holder_among(id, &hold::held(folder)),
+        }
+    }
+
+    /// The holders of this node's own folder `held`, which every look
+    /// reads first ([`look`]); the empty look of a judgement needing no
+    /// park has none, and is never asked.
+    fn held(&self, held: &Path) -> &[hold::Held] {
+        let read = self.folders.get(held);
+        debug_assert!(read.is_some(), "the look missed {}", held.display());
+        read.map_or(&[], Vec::as_slice)
+    }
+}
+
+/// The look [`Shared::looked`] takes, given its two reads, so their order
+/// is pinned by a test: `parks` reads the park markers, first, and `read`
+/// reads a holders' folder, each once however many name it: this node's
+/// own `held`, each one the wake files `wakes` name, then each a marker
+/// names. Every marker is judged against the very holders the rest of
+/// the judgement reads, never a second read that may disagree with it.
+fn look(
+    held: &Path,
+    wakes: &[&Path],
+    parks: impl FnOnce() -> Vec<crate::wake::Parked>,
+    mut read: impl FnMut(&Path) -> Vec<hold::Held>,
+) -> Looked {
+    let parks = parks();
+    let mut folders = HashMap::from([(held.to_path_buf(), read(held))]);
+    for wake in wakes {
+        if let Some((folder, _)) = steer::holder_of(wake, held) {
+            read_once(&mut folders, folder, &mut read);
+        }
+    }
+    let marked = parks
+        .into_iter()
+        .map(|parked| Marked {
+            holder: steer::holder_of(&parked.wake, held).and_then(|(folder, id)| {
+                steer::its_holder_among(id, read_once(&mut folders, folder, &mut read))
+            }),
+            session: parked.session,
+            wake: parked.wake,
+        })
+        .collect();
+    Looked { marked, folders }
+}
+
+/// The holders of `folder` as `folders` keeps them, read with `read` and
+/// kept there the first time it is asked, so a look reads it once.
+fn read_once<'a>(
+    folders: &'a mut HashMap<PathBuf, Vec<hold::Held>>,
+    folder: &Path,
+    read: &mut impl FnMut(&Path) -> Vec<hold::Held>,
+) -> &'a [hold::Held] {
+    folders
+        .entry(folder.to_path_buf())
+        .or_insert_with(|| read(folder))
 }
 
 /// A park marker this boot wrote, with what its holder's records said of
 /// it, read once per judgement outside the node's lock
-/// ([`Shared::marked`]), so the lock is never held over the markers'
+/// ([`Shared::looked`]), so the lock is never held over the markers'
 /// folder and the holders' records, once per session judged.
 struct Marked {
     /// The session it parks.
@@ -3068,6 +3150,9 @@ enum Admits {
     /// booked for the person: of those booked, only the person's own,
     /// those booked for the person.
     Granted,
+    /// Only rooms made for agents to share, for the person's run sent to
+    /// one as an agent's ([`Shared::as_a_room_takes`]).
+    Rooms,
 }
 
 impl Admits {
@@ -3075,19 +3160,22 @@ impl Admits {
     /// choose. The person's own cloud machines, booked for the person, are
     /// where every agent's sessions go, as the person asked on 26
     /// November, keeping the person a session there
-    /// ([`Self::keeps_the_persons`]). One whose make told no asker takes
-    /// only the person's own starts, since nothing says whose it is. A
-    /// room made for agents to share (`room`, [`made::Book::agent_rooms`])
-    /// is every agent's too, since its booking says who pays for it and
-    /// may let it go, not who may use it. A machine an agent's make booked
-    /// is that agent's alone, since that agent wrote its worker home, and
-    /// the person's own starts are held to the person's machines.
+    /// ([`Self::keeps_the_persons`]); but never a run held to rooms. One
+    /// whose make told no asker takes only the person's own starts, since
+    /// nothing says whose it is. A room made for agents to share (`room`,
+    /// [`made::Book::agent_rooms`]) is every agent's too, since its booking
+    /// says who pays for it and may let it go, not who may use it. A
+    /// machine an agent's make booked is that agent's alone, since that
+    /// agent wrote its worker home, and the person's own starts are held to
+    /// the person's machines.
     fn takes(&self, booked: Option<&str>, room: bool) -> bool {
         let the_persons = booked.is_none() || booked == Some(made::PERSON);
         match self {
             Self::All => true,
             Self::Asker(told) if told == made::PERSON => the_persons,
-            _ if room || booked == Some(made::PERSON) => true,
+            _ if room => true,
+            Self::Rooms => false,
+            _ if booked == Some(made::PERSON) => true,
             Self::Granted => false,
             Self::Asker(told) => told != made::UNKNOWN && booked == Some(told.as_str()),
         }
@@ -3100,6 +3188,7 @@ impl Admits {
             Self::All => false,
             Self::Asker(told) => told != made::PERSON,
             Self::Granted => true,
+            Self::Rooms => false,
         }
     }
 }
@@ -5479,9 +5568,11 @@ impl<S: Store> Shared<S> {
             steer.body.insert("id".to_owned(), words::talk_id().into());
         }
         let address = steer.address.clone();
-        // The markers are read only where a session here neither runs nor
-        // is parked by its presence, and then once, for the wake too.
-        let marked = std::cell::OnceCell::new();
+        // The markers and the holders' folders are read only where a
+        // session here neither runs nor is parked by its presence, and
+        // then once, to say where it runs; the wake reads its own look,
+        // after the inbox and the carry are written ([`Self::steer_here`]).
+        let looked = std::cell::OnceCell::new();
         let sessions: Vec<Session> = self
             .lock()
             .state
@@ -5495,8 +5586,11 @@ impl<S: Store> Shared<S> {
                 matches!(session.state, SessionState::Busy | SessionState::Idle)
                     || parked_presence(session)
                     || (session.machine == self.machine
-                        && Self::marked_wake(session, marked.get_or_init(|| self.marked()))
-                            .is_some())
+                        && Self::marked_wake(
+                            session,
+                            &looked.get_or_init(|| self.looked(&sessions)).marked,
+                        )
+                        .is_some())
             })
             .map(|session| session.machine.clone())
             .collect();
@@ -5544,7 +5638,7 @@ impl<S: Store> Shared<S> {
             return steered;
         }
         self.keep_persons_carry(&steer, &sessions)?;
-        self.steer_here(&steer, &sessions, &marked)?;
+        self.steer_here(&steer, &sessions)?;
         if person {
             self.keep_word(&steer, &machine);
         }
@@ -5980,7 +6074,7 @@ impl<S: Store> Shared<S> {
         });
         if one.is_some_and(|one| one.state != SessionState::Ended) {
             Err(format!("{shown} is still live on {machine}{NOT_REOPENED}"))
-        } else if one.is_some_and(|one| self.parked_here(one, seen.marked, seen.folders)) {
+        } else if one.is_some_and(|one| self.parked_here(one, seen.looked)) {
             Err(format!(
                 "{shown} is parked on {machine}, and its holder wakes it{NOT_REOPENED}"
             ))
@@ -7203,11 +7297,7 @@ impl<S: Store> Shared<S> {
             .map_err(|error| format!("the carry couldn't be kept, so it isn't ordered: {error}"))?;
         self.said.sessions.send_modify(|said| *said += 1);
         self.tell_carries();
-        self.steer_here(
-            &steer,
-            std::slice::from_ref(target),
-            &std::cell::OnceCell::new(),
-        )
+        self.steer_here(&steer, std::slice::from_ref(target))
     }
 
     /// Carries the session a look `chosen` to ease this machine, under
@@ -7343,15 +7433,14 @@ impl<S: Store> Shared<S> {
     /// Puts `steer` in its session's inbox here, unless it only wakes,
     /// then wakes the session where it is parked this boot: a wake that
     /// can't is refused, but a steer told and not woken is read at the
-    /// session's next wake, whatever wakes it. The park markers are read
-    /// only where no holder's own record wakes it, unless `marked` holds
-    /// them already.
-    fn steer_here(
-        &self,
-        steer: &Steer,
-        sessions: &[Session],
-        marked: &std::cell::OnceCell<Vec<Marked>>,
-    ) -> Result<(), String> {
+    /// session's next wake, whatever wakes it. The park markers and the
+    /// holders' folders are read, once, only where no holder's own record
+    /// names its wake, and only after the inbox is written, so the wake is
+    /// judged from a look no older than the words it wakes the session to
+    /// read, and found exactly where a start would be refused for it
+    /// ([`Self::parked_here`]).
+    fn steer_here(&self, steer: &Steer, sessions: &[Session]) -> Result<(), String> {
+        let looked = std::cell::OnceCell::new();
         let address = &steer.address;
         if !steer.only_wakes() {
             steer
@@ -7359,12 +7448,15 @@ impl<S: Store> Shared<S> {
                 .map_err(|error| format!("its inbox refused it: {error}"))?;
         }
         let boot = store::folders::boot_id();
+        let looked = || looked.get_or_init(|| self.looked(sessions));
         let waking = sessions
             .iter()
             .filter(|session| session.machine == self.machine)
             .find_map(|session| {
-                steer::wake_for(session, boot.as_deref(), &self.held)
-                    .or_else(|| Self::marked_wake(session, marked.get_or_init(|| self.marked())))
+                steer::wake_among(session, boot.as_deref(), &self.held, |folder, id| {
+                    looked().holder(folder, id)
+                })
+                .or_else(|| Self::marked_wake(session, &looked().marked))
             });
         match (waking, steer.only_wakes()) {
             (Some(file), true) => steer::wake(&file, address)
@@ -7878,9 +7970,7 @@ impl<S: Store> Shared<S> {
         let parked = brought
             .filter(|session| by != By::Person && session.machine == self.machine)
             .filter(|session| {
-                let mut folders = HashMap::new();
-                let marked = self.marked_among(&mut folders);
-                self.parked_here(session, &marked, &folders)
+                self.parked_here(session, &self.looked(std::slice::from_ref(*session)))
             })
             .map(|session| session.id.clone());
         Judged {
@@ -7965,62 +8055,42 @@ impl<S: Store> Shared<S> {
 
     /// Whether `session` is parked here with a holder that a steer would
     /// wake, so a start bringing it back would open its log beside the
-    /// one its holder wakes. It is judged as [`steer::wake_for`] judges
+    /// one its holder wakes. It is judged as [`steer::wake_among`] judges
     /// it, so a start is refused exactly where a steer would wake the
     /// session instead: a park of an earlier boot, or one whose holder
     /// has gone, has nothing to wake it and comes back by a start, as a
     /// restarted machine's wave does. A start bringing back one already
     /// coming back is refused by [`starts::Starts::admit`]. A park marker
     /// of this boot counts too, as [`Self::marked_wake`] finds it in
-    /// `marked`, the same marker a steer wakes through. A holders'
-    /// folder `folders` holds is judged as it was read for `marked`, and
-    /// any other is read now.
-    fn parked_here(
-        &self,
-        session: &Session,
-        marked: &[Marked],
-        folders: &HashMap<PathBuf, Vec<hold::Held>>,
-    ) -> bool {
-        let holder = |folder: &Path, id: &str| match folders.get(folder) {
-            Some(holders) => steer::its_holder_among(id, holders),
-            None => steer::its_holder_among(id, &hold::held(folder)),
-        };
+    /// `looked`, the same marker a steer wakes through. Every holder is
+    /// judged as `looked` read it, which reads each folder the presence of
+    /// a session it was taken for names ([`Looked::holder`]).
+    fn parked_here(&self, session: &Session, looked: &Looked) -> bool {
+        let holder = |folder: &Path, id: &str| looked.holder(folder, id);
         session.machine == self.machine
             && (steer::wake_among(session, self.boot.id.as_deref(), &self.held, holder).is_some()
-                || Self::marked_wake(session, marked).is_some())
+                || Self::marked_wake(session, &looked.marked).is_some())
     }
 
-    /// The park markers this boot wrote, each with what its holder's
-    /// records say of it, read once for a judgement before the node's
-    /// lock is taken. The boot is the one read when the node started, so
-    /// no `sysctl` runs for it, and each holders' folder is read once
-    /// however many markers name a holder in it.
-    fn marked(&self) -> Vec<Marked> {
-        self.marked_among(&mut HashMap::new())
-    }
-
-    /// The park markers as [`Self::marked`] reads them, each holders'
-    /// folder in `folders` taken as already read and each other one kept
-    /// there once read, so a judgement that read this node's own holders
-    /// reads the markers, and the parks presences name, against that
-    /// very look, not a second one that may disagree with it.
-    fn marked_among(&self, folders: &mut HashMap<PathBuf, Vec<hold::Held>>) -> Vec<Marked> {
-        crate::wake::parked(&self.parked, self.boot.began)
-            .into_iter()
-            .map(|parked| {
-                let holder = steer::holder_of(&parked.wake, &self.held).and_then(|(folder, id)| {
-                    let holders = folders
-                        .entry(folder.to_path_buf())
-                        .or_insert_with(|| hold::held(folder));
-                    steer::its_holder_among(id, holders)
-                });
-                Marked {
-                    holder,
-                    session: parked.session,
-                    wake: parked.wake,
-                }
-            })
-            .collect()
+    /// The look a judgement of `sessions`' parks reads, once, before or
+    /// apart from the node's lock: the park markers this boot wrote, then
+    /// this node's own holders, each holders' folder a marker names and
+    /// each one the wake of a presence here names, each folder once
+    /// however many name it. The boot is the one read when the node
+    /// started, so no `sysctl` runs for it.
+    fn looked(&self, sessions: &[Session]) -> Looked {
+        let wakes: Vec<&Path> = sessions
+            .iter()
+            .filter(|one| one.machine == self.machine)
+            .filter_map(|one| one.presence.get("wake")?.as_str())
+            .map(Path::new)
+            .collect();
+        look(
+            &self.held,
+            &wakes,
+            || crate::wake::parked(&self.parked, self.boot.began),
+            hold::held,
+        )
     }
 
     /// The wake file of a park marker this boot wrote for `session`,
@@ -8032,7 +8102,7 @@ impl<S: Store> Shared<S> {
     /// waking one there would open a second pi on it.
     /// A marker outlasting its park, its holder running a program again,
     /// counts for nothing, so a session it named is reopened as any
-    /// ended one. Judged from `marked`, as [`Self::marked`] read them.
+    /// ended one. Judged from `marked`, as [`Self::looked`] read them.
     fn marked_wake(session: &Session, marked: &[Marked]) -> Option<PathBuf> {
         marked
             .iter()
@@ -8359,23 +8429,32 @@ impl<S: Store> Shared<S> {
         } else {
             self.hold_begun(begins, sessions, away.clone())?
         };
-        // The sessions are read first, then the holders' records and the
-        // park markers outside the lock, so neither is older than the
-        // state it is judged with: a holder that parks between the two
-        // reads is seen parked.
+        // The sessions are read first, then the park markers, then the
+        // holders' records outside the lock, so neither is older than
+        // what it is judged with: a holder that parks between two reads
+        // is seen parked (followup 477).
         let (known, coming_back) = {
             let inner = self.lock();
             let known = inner.state.sessions();
             (known, ended::coming_back(away, inner.turns.waiting()))
         };
-        let held = hold::held(&self.held);
-        let mut folders = HashMap::from([(self.held.clone(), held.clone())]);
-        let marked = self.marked_among(&mut folders);
+        // Only the sessions judged are looked for: each asked, and each an
+        // asked id begins ([`Self::begun_by`]), so a park's holders' folder
+        // is read only where a judgement may ask it.
+        let judged: Vec<Session> = known
+            .iter()
+            .filter(|one| {
+                sessions
+                    .iter()
+                    .any(|asked| one.id.starts_with(asked.as_str()))
+            })
+            .cloned()
+            .collect();
+        let looked = self.looked(&judged);
         let seen = Seen {
-            held: &held,
+            held: looked.held(&self.held),
             coming_back: &coming_back,
-            marked: &marked,
-            folders: &folders,
+            looked: &looked,
         };
         let judged = sessions.iter().try_for_each(|session| {
             if ended_here {
@@ -8415,12 +8494,11 @@ impl<S: Store> Shared<S> {
             let coming_back = ended::coming_back(away, inner.turns.waiting());
             // What begins a word is found whether or not it is parked, so
             // no marker is read.
-            let unread = HashMap::new();
+            let unread = Looked::default();
             let seen = Seen {
                 held: &held,
                 coming_back: &coming_back,
-                marked: &[],
-                folders: &unread,
+                looked: &unread,
             };
             let now = std::time::Instant::now();
             let mut begun = Vec::new();
@@ -9599,6 +9677,7 @@ impl<S: Store> Shared<S> {
             By::Agent(kind) => By::Agent(kind.max(crate::declared::Kind::Fence)),
             By::Person => By::Person,
         };
+        let (by, admits) = self.as_a_room_takes(by, &asked.work, self.admits().await);
         asked.by = Some(by);
         let fence = match by {
             By::Agent(kind) => Some(kind),
@@ -9608,7 +9687,6 @@ impl<S: Store> Shared<S> {
         // start the machine's room has yet to show. An agent's is placed
         // only on ground as firm as here, where it stands in the fence its
         // launcher sets.
-        let admits = self.admits().await;
         let machine = match self.place(&asked.work, Counts::Never, fence, Screen::Run, &admits) {
             Placement::Placed { machine, .. } => machine,
             Placement::Pending { misses } => return Err(nowhere_now(&misses)),
@@ -9666,6 +9744,33 @@ impl<S: Store> Shared<S> {
         };
         run::journal(&self.runs.journal, &started);
         Ok((machine, run::journaled(self.runs.journal.clone(), id, said)))
+    }
+
+    /// Who a run asked `by` runs as, and the machines it may be placed
+    /// on, `admits` as its asker is told: the person's run naming one
+    /// machine, a room made for agents that an agent's make booked, runs
+    /// there as an agent's, in the agent fence, and on rooms alone. So it
+    /// still reaches the room, as the person's safe word asks of every
+    /// room, though no pi session asks it; yet the person's own login,
+    /// never fenced, never runs in the worker home that agent wrote. Any
+    /// other run is held to who asks it.
+    fn as_a_room_takes(&self, by: By, work: &Work, admits: Admits) -> (By, Admits) {
+        let mut named = work.needs.iter().filter_map(|need| match need {
+            Need::Machine(name) => Some(name),
+            _ => None,
+        });
+        let (Some(room), None) = (named.next(), named.next()) else {
+            return (by, admits);
+        };
+        let rooms = self.book.agent_rooms();
+        if by == By::Person
+            && rooms.contains(room)
+            && !self.admitted_among(room, &admits, &rooms)
+        {
+            (By::Agent(crate::declared::Kind::Fence), Admits::Rooms)
+        } else {
+            (by, admits)
+        }
     }
 
     /// Where a machine made is kept: this node's book and store, and its
@@ -22189,6 +22294,117 @@ esac
         );
     }
 
+    // Followup 481: a park its presence names, with no marker, in a
+    // sibling realm's holders' folder, is judged from the look the
+    // reopening took of that folder, which a presence's wake names.
+    #[tokio::test]
+    async fn a_presences_park_beside_is_judged_by_the_holders_of_its_folder() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        let beside = socket.with_file_name("home.held");
+        let now = jiff::Timestamp::now().to_string();
+        store.start_here(
+            "s-beside",
+            json!({"session": "s-beside", "addresses": ["BESIDE"], "at": now,
+                   "state": "parked", "wake": beside.join("e0r6.wake")}),
+            false,
+        );
+        let (holder, program) = holds_for_real(&beside, "e0r6");
+        let _let_go = LetGo(vec![holder, program]);
+        asks_below(&socket, 7001);
+        assert_eq!(
+            ask(
+                socket.clone(),
+                reopening(&["pi", "--session", "s-beside"], false)
+            )
+            .await,
+            Err(
+                "s-beside is parked on skiff, and its holder wakes it, so it isn't reopened"
+                    .to_owned()
+            ),
+            "a park its presence names beside, whose holder runs, holds the reopening back"
+        );
+        // Followup 492: a steer finds the same park from its own look,
+        // taken after the inbox is written, and wakes it there.
+        let mut client = Speaking::greeted(&socket).await;
+        client
+            .ask(json!({"id": 1, "ask": "steer", "address": "BESIDE",
+                        "steer": {"act": "wake", "from": "WCJQSG"}}))
+            .await;
+        let woken = client.next().await;
+        assert_eq!(woken["steered"]["machine"], json!("skiff"), "{woken}");
+        assert!(
+            beside.join("e0r6.wake").exists(),
+            "a steer wakes a park beside through the holder its presence names"
+        );
+    }
+
+    // Followups 488 and 489: a look reads the park markers before any
+    // holders' folder, and each folder once, so a holder that parks
+    // between the two reads is seen parked, and the markers are judged by
+    // the very holders the rest of the judgement reads. The folder beside
+    // answers its holder only the first time it is read, so a second read
+    // for the markers would judge them apart from the presence.
+    #[test]
+    fn a_look_reads_the_markers_first_and_each_folder_once() {
+        let home = Path::new("/run/skiff");
+        let (held, beside) = (home.join("work.held"), home.join("home.held"));
+        let reads = std::cell::RefCell::new(Vec::<PathBuf>::new());
+        let parks_now = std::cell::Cell::new(false);
+        let parks = || {
+            reads.borrow_mut().push(PathBuf::from("markers"));
+            parks_now.set(true);
+            vec![crate::wake::Parked {
+                session: "s-beside".to_owned(),
+                addresses: vec!["BESIDE".to_owned()],
+                wake: beside.join("e0r7.wake"),
+            }]
+        };
+        let read = |folder: &Path| {
+            let first = !reads.borrow().iter().any(|read| read == folder);
+            reads.borrow_mut().push(folder.to_path_buf());
+            let parked = parks_now.get();
+            (folder == beside && first)
+                .then(|| hold::Held {
+                    id: "e0r7".to_owned(),
+                    command: vec!["pi".to_owned()],
+                    folder: home.to_path_buf(),
+                    holder: 1,
+                    pid: u32::from(!parked),
+                    parked,
+                    since: String::new(),
+                    windows: Vec::new(),
+                })
+                .into_iter()
+                .collect()
+        };
+        let (named, other) = (beside.join("e0r7.wake"), held.join("e0r8.wake"));
+        let looked = look(&held, &[named.as_path(), other.as_path()], parks, read);
+        assert_eq!(
+            reads.into_inner(),
+            vec![PathBuf::from("markers"), held.clone(), beside.clone()],
+            "the markers are read first, then each folder once however many name it"
+        );
+        assert_eq!(
+            looked.marked.first().map(|marked| marked.holder),
+            Some(Some(true)),
+            "a holder that parks after the markers are read is seen parked"
+        );
+        assert_eq!(
+            looked.holder(&beside, "e0r7"),
+            Some(true),
+            "and the presence's park is judged from that same read"
+        );
+        assert!(
+            looked.held(&held).is_empty(),
+            "this node's own folder holds none"
+        );
+    }
+
     // Our council's round 3 on the marks: an agent's start of a session
     // that ended here, whose park only a marker of this boot and its
     // holder's record tell, is left to that holder, as a reopening is,
@@ -24746,6 +24962,12 @@ esac
             "every agent's start leaves the person a session, and the person's and a pinned \
              one take it"
         );
+        assert!(
+            Admits::Rooms.takes(Some("P9R1KI"), true)
+                && !Admits::Rooms.takes(Some(made::PERSON), false)
+                && !Admits::Rooms.takes(None, false),
+            "the person's run sent to a room as an agent's takes rooms alone"
+        );
     }
 
     /// A node on skiff keeping its book in `dir`, which made each of
@@ -24912,6 +25134,78 @@ esac
             ),
             (None, Some("osprey")),
             "so is one made at no asker's word"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_persons_run_naming_an_agents_room_runs_there_fenced_as_an_agents() {
+        use crate::declared::Kind;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[("wren", made::PERSON), ("reef", "P9R1KI")]);
+        fs::write(dir.path().join(made::AGENT_ROOMS), "reef\nwren\n").expect("named");
+        let person = || Admits::Asker(made::PERSON.to_owned());
+        let naming = |names: &[&str]| {
+            work(
+                names
+                    .iter()
+                    .map(|name| Need::Machine((*name).to_owned()))
+                    .collect(),
+            )
+        };
+        let placed = |work: &Work, admits: &Admits| match shared.place(
+            work,
+            Counts::Never,
+            None,
+            Screen::Ground,
+            admits,
+        ) {
+            Placement::Placed { machine, .. } => Some(machine),
+            _ => None,
+        };
+        let reef = naming(&["reef"]);
+        assert_eq!(
+            shared.as_a_room_takes(By::Person, &reef, person()),
+            (By::Agent(Kind::Fence), Admits::Rooms),
+            "the person's run naming a room an agent's make booked runs there as an agent's"
+        );
+        assert_eq!(
+            (
+                placed(&reef, &person()),
+                placed(&reef, &Admits::Rooms).as_deref()
+            ),
+            (None, Some("reef")),
+            "so it reaches the room the person's own login never runs in"
+        );
+        for (by, work, why) in [
+            (
+                By::Person,
+                naming(&["wren"]),
+                "a room the person's make booked",
+            ),
+            (By::Person, naming(&["reef", "wren"]), "two machines named"),
+            (By::Person, work(Vec::new()), "none named"),
+            (
+                By::Agent(Kind::Strict),
+                reef.clone(),
+                "an agent's, already fenced",
+            ),
+        ] {
+            assert_eq!(
+                shared.as_a_room_takes(by, &work, person()),
+                (by, person()),
+                "{why} is held to who asks, as before"
+            );
+        }
+        fs::write(dir.path().join(made::AGENT_ROOMS), "wren\n").expect("named");
+        assert_eq!(
+            shared.as_a_room_takes(By::Person, &reef, person()),
+            (By::Person, person()),
+            "an agent's machine that is no room stays out of the person's reach"
+        );
+        assert_eq!(
+            placed(&reef, &Admits::Rooms),
+            None,
+            "and the rooms-only admits never take it, though it is named"
         );
     }
 
