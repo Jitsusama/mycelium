@@ -1820,7 +1820,9 @@ anything in its presence.
 A machine is what its node measures of it when asked, the facts work is
 placed by: its `name`, `measured_at`, `state` (`ready` for a node answering
 for itself or a machine a link carries, `unreachable` for one no link
-reaches now, as of when one last did), `os`, `system` (`linux` or
+reaches now, as of when one last did, and in a node's `"Machines"`
+answer for one no link has spoken of since that node began, whatever
+its record says), `os`, `system` (`linux` or
 `macos`, `null` from a node too old to say it), `arch`, `model` (a
 Mac's is its identifier, such as `Mac14,2`), `model_name`, its kind in
 words (`MacBook Air`, absent from a node too old to say it), `cpu`

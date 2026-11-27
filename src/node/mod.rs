@@ -5505,10 +5505,15 @@ impl<S: Store> Shared<S> {
     /// another machine dialled, which run apart from it and mark no worker
     /// it can read, both keep those marks in the store. Set both ways, so
     /// nothing a machine says of itself, or a record says of it, counts.
+    /// One unheard is said out of reach, whatever its record says: the
+    /// record outlives the node, and a session may write it ready.
     fn as_heard(&self, mut machines: Vec<facts::Machine>) -> Vec<facts::Machine> {
         for one in machines.iter_mut().filter(|one| one.name != self.machine) {
             one.heard_this_run =
                 store::last_linked(&self.store, &one.name).is_some_and(|at| at >= self.began);
+            if !one.heard_this_run {
+                one.state = Readiness::Unreachable;
+            }
         }
         machines
     }
@@ -27176,6 +27181,47 @@ esac
                 .iter()
                 .any(|one| one.name == "tern" && !one.heard_this_run),
             "a record saying it was heard says nothing"
+        );
+    }
+
+    // Followup 544(2): a machine's record outlives the node and a session
+    // may write it, so the node says a machine ready only where a link
+    // spoke of it this run, one it keeps or one another machine dialled.
+    #[tokio::test]
+    async fn a_record_saying_ready_is_out_of_reach_till_a_link_speaks_of_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        for name in ["osprey", "kestrel", "tern"] {
+            let one = placement::tests::machine(name, "linux", 32, &["basin"]);
+            assert_eq!(one.state, Readiness::Ready, "its record says it is ready");
+            shared.store.put_machine(&one).expect("kept");
+            shared
+                .store
+                .mark_admitted(name, 0)
+                .expect("let in long ago");
+        }
+        let now = jiff::Timestamp::now().as_millisecond();
+        shared.store.mark_admitted("osprey", now).expect("let in");
+        shared
+            .store
+            .mark_linked("kestrel", now)
+            .expect("dialled, standing");
+        let Ok(Response::Machines(machines)) = shared.answer(Request::Machines) else {
+            panic!("the node says its machines");
+        };
+        let states: Vec<(&str, Readiness)> = machines
+            .iter()
+            .map(|one| (one.name.as_str(), one.state))
+            .collect();
+        assert_eq!(
+            states,
+            [
+                ("skiff", Readiness::Ready),
+                ("kestrel", Readiness::Ready),
+                ("osprey", Readiness::Ready),
+                ("tern", Readiness::Unreachable),
+            ],
+            "only a machine a link spoke of this run is as its record says"
         );
     }
 
