@@ -2799,9 +2799,12 @@ mod tests {
     #[test]
     fn a_session_started_there_is_waited_for_after_a_close_that_spent_the_wait() {
         // A busy session may spend the whole wait finishing its turn
-        // here, and its start there still needs a moment to run.
+        // here, and its start there still needs a moment to run. Each
+        // patience is just what its step needs, so a fresh wait given
+        // before the close, which it would then spend, fails the close.
         let mut realm = Realm {
             patience: 2,
+            afresh: 1,
             ends_after: 2,
             slow: 4,
             ..realm()
