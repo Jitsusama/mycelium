@@ -1259,14 +1259,14 @@ impl<S: Store> Shared<S> {
     }
 }
 
-/// `work` as it is asked of `machine`, made for it: a fresh machine, so
-/// its start there needs no fresh one, which would make another, and
-/// lands on that machine alone.
-fn pinned_to_made(work: &Work, machine: &str) -> Work {
-    let mut there = work.clone();
-    there.needs.retain(|need| *need != Need::Fresh);
-    there.needs.push(Need::Machine(machine.to_owned()));
-    there
+/// `asked` as it is asked of `machine`, made for it: a fresh machine, so
+/// its start there needs no fresh one, which that machine, made before
+/// it, would refuse, and lands on that machine alone. The whole start,
+/// so what is placed there is what is sent there.
+fn pinned_to_made(mut asked: Start, machine: &str) -> Start {
+    asked.work.needs.retain(|need| *need != Need::Fresh);
+    asked.work.needs.push(Need::Machine(machine.to_owned()));
+    asked
 }
 
 /// The kinds the node holds itself in the daemon interface, which no
@@ -9482,17 +9482,17 @@ impl<S: Store> Shared<S> {
                     LINKED_WITHIN.as_secs()
                 )
             })?;
-        let there = pinned_to_made(&asked.work, &made.machine);
+        let there = pinned_to_made(asked, &made.machine);
         // Pinned to the machine made for it, which is booked for its asker.
         match self.place(
-            &there,
+            &there.work,
             Counts::Always,
             fence,
             held_screen(fence),
             &Admits::All,
         ) {
             Placement::Placed { machine, .. } => {
-                self.start_on(machine, asked, (fence, MADE_ANSWERED_WITHIN))
+                self.start_on(machine, there, (fence, MADE_ANSWERED_WITHIN))
                     .await
             }
             Placement::Pending { misses } | Placement::Refused { misses } => {
@@ -11541,7 +11541,9 @@ mod tests {
             ("ended-quest".to_owned(), ended_quests_of(socket)),
         ]);
         let providers = providers_of(socket);
-        let book = Book::at(socket.with_file_name("made.jsonl"));
+        // Of the realm its node serves, as the daemon's is, so what the
+        // node made reads back as its own.
+        let book = Book::at(socket.with_file_name("made.jsonl")).of_realm("work");
         let parked = parks_of(socket);
         let held = held_of(socket);
         let kernel = Processes::Folder(procs_of(socket));
@@ -21564,7 +21566,7 @@ esac
         .await
         .expect_err("harbour isn't linked here");
         assert!(
-            !elsewhere.contains("sessions in the last hour"),
+            !elsewhere.contains("sessions through this node"),
             "harbour's number is its own: {elsewhere}"
         );
         let kept = fs::read_to_string(socket.with_file_name("starts.jsonl"))
@@ -29267,11 +29269,37 @@ esac
         }
     }
 
+    // The node's own number is sidestepped only by a start pinned to a
+    // machine its book says it made, never to one it didn't, nor to
+    // itself, though a provider named a machine it made so.
+    #[test]
+    fn only_a_machine_this_node_made_takes_a_start_off_its_number() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[("harbour", "CELL01"), ("skiff", "CELL01")]);
+        let on = |machine: &str| shared.made_it_needs(&work(vec![Need::Machine(machine.into())]));
+        assert_eq!(on("harbour"), Some("harbour".to_owned()), "one it made");
+        assert_eq!(on("tern"), None, "one it didn't make");
+        assert_eq!(on("skiff"), None, "itself, though booked as made");
+        assert_eq!(
+            shared.made_it_needs(&work(vec![Need::Cloud])),
+            None,
+            "and work naming no machine"
+        );
+    }
+
     #[test]
     fn a_start_on_the_machine_made_for_it_needs_no_fresh_one() {
-        let asked = work(vec![Need::Fresh, Need::System("linux".into())]);
+        let asked = Start {
+            work: work(vec![Need::Fresh, Need::System("linux".into())]),
+            folder: None,
+            strict: false,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
         assert_eq!(
-            pinned_to_made(&asked, "harbour").needs,
+            pinned_to_made(asked, "harbour").work.needs,
             vec![Need::System("linux".into()), Need::Machine("harbour".into())],
             "made fresh for it, it lands there alone and makes no other"
         );
