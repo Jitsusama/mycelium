@@ -1549,6 +1549,9 @@ mod tests {
         /// The sessions, by id, whose record once started reads ended
         /// there, as one whose pi exited as it was taken up.
         ended_there: BTreeSet<String>,
+        /// The sessions, by id, listed once started under another
+        /// session's id there, as a session the node there mistook.
+        misnamed: BTreeSet<String>,
         /// How many looks at the sessions pass after a start before the
         /// sessions started run there.
         slow: usize,
@@ -1620,7 +1623,8 @@ mod tests {
         /// Each session started, as the node it started on lists it once
         /// pi runs it there: by the address it went by here, or its id, on
         /// the machine its start needs, idle, but on wren for one `astray`
-        /// and ended for one `ended_there`. None for the quest's own
+        /// and ended for one `ended_there`, and under another id for one
+        /// `misnamed`. None for the quest's own
         /// trees, which no pi takes up, nor for one `silent`.
         fn arrived_there(&self) -> Vec<Session> {
             self.started
@@ -1649,7 +1653,12 @@ mod tests {
                         "idle"
                     };
                     let mut there = session(&address, machine, QUEST, state, &json!({}));
-                    there.presence = Arc::new(json!({"session": id}));
+                    let listed = if self.misnamed.contains(id) {
+                        format!("{id}-other")
+                    } else {
+                        id.clone()
+                    };
+                    there.presence = Arc::new(json!({"session": listed}));
                     Some(there)
                 })
                 .collect()
@@ -2748,6 +2757,25 @@ mod tests {
         assert!(
             said.contains("NAPS02") && !said.contains("BUSY01"),
             "naming the one that ended, not one running there: {said}"
+        );
+    }
+
+    #[test]
+    fn a_session_running_there_under_another_id_fails_the_carry() {
+        let mut realm = Realm {
+            misnamed: ["s-naps02"].map(str::to_owned).into(),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        assert_eq!(
+            done,
+            Err(Failed { step: Step::Answer }),
+            "a session runs there only as its own id, not another running there"
+        );
+        let said = last_said(&lines);
+        assert!(
+            said.contains("NAPS02") && !said.contains("BUSY01"),
+            "naming the one listed under another id, not one running there: {said}"
         );
     }
 
