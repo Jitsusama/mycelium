@@ -1358,6 +1358,41 @@ mod tests {
     }
 
     #[test]
+    fn a_held_claim_names_the_first_doubtful_session_its_walk_met() {
+        let mut record = nested();
+        let standing = standing(&[("s-steward-2", Some("WCJQSG")), ("s-other", None)]);
+        let said = record.lapse(&standing, || {
+            Some(|session: &str| match session {
+                "s-steward-2" => Ok(Some("s-steward".to_owned())),
+                // Through a log that claimed nothing and no longer
+                // stands, to two doubtful logs in a row, the second the
+                // nearer the claimer.
+                "s-other" => Ok(Some("s-gone".to_owned())),
+                "s-gone" => Err(quests(&["s-nearer", "s-elder"])),
+                "s-nearer" => Err(quests(&["s-weigh", "s-older"])),
+                _ => Ok(None),
+            })
+        });
+        assert_eq!(
+            said,
+            [
+                Lapsed::Handed {
+                    claimer: "s-steward".to_owned(),
+                    heir: "s-steward-2".to_owned(),
+                    heads: "QEST-20261007-WCJQSG".to_owned(),
+                },
+                Lapsed::Held {
+                    claimer: "s-weigh".to_owned(),
+                    heads: "QEST-20261111-OSPHT4".to_owned(),
+                    doubting: "s-gone".to_owned(),
+                },
+            ],
+            "held, naming the first session met whose logs can't be told, where the walk's \
+             doubt began, not the nearer ones it went on through"
+        );
+    }
+
+    #[test]
     fn a_log_that_cant_be_told_holds_back_only_the_claims_it_may_continue() {
         let mut record = nested();
         let weigh = record.sessions.get("s-weigh").cloned();
