@@ -114,8 +114,13 @@ the mesh takes as there, and with `machine` naming where it runs. It never
 goes over a session of this machine's or of a third machine's.
 
 One link at a time carries a machine's sessions into a store: it claims
-that machine first, by a lock in `~/.local/state/mycelium/claims/`, and a
-second link to the same machine is refused until the first ends. The link
+that machine first, by a lock in `~/.local/state/mycelium/claims/`. A
+second link to the same machine asks the first to let it go, by writing
+the time in that machine's `.newer` file there; the first, looking each
+second, ends, and the second is refused only when it isn't let go within
+ten seconds. A newer link from a machine means the older one's other end
+is gone, though it may not have heard so, as when that machine's node
+restarted while its end of the link waited on a write. The link
 lets go of what it carried when the session ends. When the link drops,
 it keeps what it carried but marks each `unreachableSince` the drop, in
 milliseconds since the epoch, since a dropped link says nothing of
@@ -254,12 +259,23 @@ same code, each line a JSON value:
    its sessions, and again each minute. The other end keeps it only if
    it names the sending machine, as ready while the link stands and as
    unreachable, with what it last said, once the link drops. An end
-   fallen behind what it hears keeps, of the `Machine` frames waiting,
-   only the newest, and takes every other frame in the order it came,
-   since each says the machine whole. Between
+   fallen behind what it hears keeps, of the `Machine` frames waiting
+   before the next `Share` or `HandedOver`, only the newest, since each
+   says the machine whole. It takes every other frame in the order it
+   came, but that one waiting only behind `Share` and `Machine` frames
+   goes ahead of them where it is a `Message`, `Presence`, `Ended`,
+   `Replies`, `Ran`, `Taken`, `Lent` or `Started`: what the sending end
+   says of its sessions and its answers, none of which a share or facts
+   before it wait for. Shares and `Machine` frames keep their order
+   between them, since what a machine declares decides which shares
+   are heard. Every other frame keeps its place behind both: an ask,
+   since a carried start must find the shares said before it;
+   `HandedOver`, since it lets the machine go once those shares are;
+   and a line that isn't a frame, so a link ends where it broke. Between
    two ends that both say `facts`, an end that has heard nothing at all
    for three minutes by the wall clock ends the link, so one left from
-   before its machine slept gives way to its dialler's new one.
+   before its machine slept gives way to its dialler's new one. Any end
+   whose write the other end takes none of for three minutes ends too.
 8. `{"Start": {"ask", "start"}}`: start a session held on the other
    end's machine, as a `"Start"` request says it. The other end hands it
    to its own node's socket as `{"Relayed": {"from", "start"}}`, `from`
@@ -385,10 +401,12 @@ same code, each line a JSON value:
     save what it holds and what is killed past them two more to go.
 19. `{"Lend": {"ask", "lend"}}`: answer a model call through the other
     end's lender, as a `"Lend"` request says it (Borrowing a Lend).
-    The other end takes it only where this end is its worker, known by
-    the link alone, and its node was started with `--lend`; otherwise
-    it refuses 403, saying why. Its lender names the borrowing machine
-    by the link's other end, never by what the lend says. It answers
+    The other end takes it only where this end is its worker, or a
+    machine its node made, such as one made for the person, which its
+    way in releases, each known by the link alone, and its node was
+    started with `--lend`; otherwise it refuses 403, saying why. Its
+    lender names the borrowing machine by the link's other end, never
+    by what the lend says. It answers
     `{"Lent": {"ask", "lent"}}` a line for each `Lent`, the last its
     `"Done"` or `"Refused"`, at most four ahead of `{"Taken": {"ask"}}`,
     which the asking end sends as its asker takes each, as for a run.
@@ -664,10 +682,16 @@ reads it:
   files it lacks as `lacking`, and a `reason`, with `why` in words, also
   said on stderr: `refused` when the quest couldn't be shared or the
   machine is this one, `no-link` when no link has reached the machine
-  for 5 seconds, `not-shared` when its node hasn't said it shares the
-  quest within 5 seconds of a link reaching it, and `behind` when it
-  still lacks a file at the bound. An end older than `theirs` never says
-  it took a file, so a wait for it ends `behind`.
+  for 5 seconds from the wait's start or its link's drop, or by a
+  shorter bound, `not-shared` when its node hasn't said it shares the
+  quest (too old to share one, or too busy to say yet), either once the
+  link standing now has reached it for 30 seconds, a link that drops
+  and comes back starting them again, or else at the bound, a link
+  having reached it in its last 5 seconds, and `behind` when it says
+  it shares the quest but still lacks a file at the bound. An end
+  older than `theirs` says it shares the quest but never that it took
+  a file, so a wait for it ends `behind`. A look this machine's own
+  node fails to answer neither ends a link standing nor shows one.
 
 ## Carrying a Quest
 
@@ -680,7 +704,9 @@ in order and says each step:
    work, those running and those parked this boot. A machine not in reach,
    or this one, is refused. So is one to a worker (The Link) whose
    `declared` doesn't say `takes_carries`, as `tern is a worker that
-   doesn't declare it takes carries, so nothing is carried there`.
+   doesn't declare it takes carries, so nothing is carried there (a
+   worker is lent by a provider's link, reaches aquifer, or leaves
+   within 30 days)`.
    So is a carry whose sessions' starts the
    machine wouldn't take: the node is asked `"Takes"` once, with each
    session's arrival and the quest's own, and its refusal is said, as
@@ -946,6 +972,12 @@ session says of itself:
   such a machine. A worker is firm ground only where its `declared`
   says `takes_carries`, and never for a strict session, since a
   worker's strict fence is its own word, which no node holds it to.
+  A carry doesn't count a machine in the cloud as a worker, paid for
+  or not, where no provider's link lent it, it reaches no `aquifer`,
+  and it stays more than 30 days: it is one of the person's own, and
+  takes any carry, strict sessions too, under its own fences as the
+  Mac does. A machine this node made leaves when its make ends, as
+  the node's book says, whatever it declares.
 - The fence it names is never looser than its process shows. The
   node reads the proved owner's process: `PI_SANDBOX` in the
   environment it began with (`strict` or `fence`), and, for a pi that
@@ -1270,13 +1302,22 @@ row starts the ten minutes again, as does a reading five minutes or
 more after the lone one. While it is held over while another has
 room, in the latest reading too, and the readings five minutes after
 the first sleep of its spell over still say over, it would carry one
-session to a peer with room in the watch and in the latest reading,
-straight away where it put none to sleep; while none has room it
+session to a peer, or a worker whose `declared` says `takes_carries`
+and that the node names with `--eases-onto MACHINE`, once for each
+(a worker's word is only its own, so one unnamed takes none),
+with room in the watch and in the latest reading, straight away where
+it put none to sleep; while none has room it
 carries nothing. Sessions that wait anew meanwhile sleep too without
 putting the carry off, and once the five minutes are past they sleep
 only where nothing is carried; while it is short of memory, one that
 has never slept is never carried. It carries the smallest log first,
-placed as any work is and onto ground as firm. A session in a turn,
+placed as any work is and onto ground as firm, ground that isn't left
+out before placing: on the person's own machines first, and only
+where none of them takes it, on the best of the workers, each named
+so placement lets it take the work and ranked as placement ranks
+machines. A worker takes no strict
+session, its strict fence being its own word, and one that leaves
+takes none, since a carried session lasts. A session in a turn,
 on the person's screen, written in by the person (its presence says
 `"driven": true`, and only `false` says not), orchestrating other
 sessions, holding a lease
@@ -1286,8 +1327,8 @@ or a password prompt waits inside its turn, so it stays as one in a
 turn. What a session is part
 way through is told only once its presence says `"leases":
 {"background": true}`, its harness keeping a lease for each background
-run. After a carry it would carry none for half an hour, and it would
-carry at most six in a day. A session moved by anyone stays put for a
+run. After a carry it would carry none for five minutes, and it would
+carry at most 48 in a day. A session moved by anyone stays put for a
 day, by the carries kept here, and nothing goes to a machine a session
 came from within the hour, nor to a Mac whose node doesn't say
 `fences_held` but a session shown unfenced (see The Socket). A strict
@@ -1341,7 +1382,7 @@ saying the node chose it by its own machine's reading, and that
 why: one refused for ground no firmer, a machine not the realm's,
 or a session no longer here is neither kept nor told, and one whose
 inbox refused it stays kept. A refused carry still counts as one
-made, toward the half hour and the six a day. It still puts no
+made, toward the five minutes and the 48 a day. It still puts no
 session to sleep, so the sleep it would have made only delays a
 carry by the minutes it waits to see whether sleeping eased it.
 An orchestrator's order after the node's carry still stands, as
@@ -1450,7 +1491,7 @@ kept whenever that why comes, changes or clears, though nothing else
 changed, until the day's file is full. A node with no quests' record
 served therefore never eases.
 
-The six a day are counted twice, and the larger counts. One count is
+The 48 a day are counted twice, and the larger counts. One count is
 what the node remembers: what it did since it began, and from when it
 began, each carry its own lines in `eases` say it made, or would have,
 within the day, and each carry the record of carries keeps `by`
@@ -1472,7 +1513,7 @@ from here within the day, read at each look. That
 record is the person's file to edit, so one cut short lifts no limit,
 even across a restart while the node's own lines stand; one that can't
 be read stops every carry, saying why. A carry kept by
-`node@<machine>`, or said in its own lines, also starts the half hour
+`node@<machine>`, or said in its own lines, also starts the five minutes
 after a carry and pins its session, across a restart. A line dated
 ahead counts until a day past its time, which can only hold carries
 back.
@@ -1561,7 +1602,7 @@ reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"PlaceToStart": work}` | `{"Placement": placement}`, as `"Place"` for a start, counted here as one |
 | `{"Start": {"work", "folder", "strict", "command", "may_cost", "once"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
 | `{"Takes": {"starts", "ordered"}}` | `{"Placement": placement}`, the last start's, placed as `"Start"` would, or a refusal; starts nothing |
-| `{"Sprout": {"words", "folder", "from", "on", "cwd"}}` | `{"Started": {"machine", "held", "folder", "attach"}}`, as for `"Start"`, or `{"Refused": {"code", "why"}}` |
+| `{"Sprout": {"words", "folder", "from", "on", "cwd", "needs"}}` | `{"Started": {"machine", "held", "folder", "attach"}}`, as for `"Start"`, or `{"Refused": {"code", "why"}}` |
 | `{"Places": {}}` | `{"Places": [{"folder", "name", "kind", "out", "checkOut"}]}`, where work can begin, as the asker sees the disk |
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by", "carries_on", "carries_with"}}`, where it was put, who ordered a carry, whether the node carries it on, and whether with those it named |
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
@@ -1726,7 +1767,13 @@ how full that disk is as the machine's disk guard bands it (`healthy`,
 `filling`, `nearly-full` or `critically-full`, from the guard's
 `status.json` while its heartbeat is under two minutes old, and absent
 otherwise; the guard's earlier `pressure`, `urgent` and `critical` are
-read as those three, and a band a node doesn't know is read as absent),
+read as those three, and a band a node doesn't know is read as absent;
+a disk the guard calls critically full is `nearly-full` where the
+guard says all three of its `free` bytes above its `nix_floor` and
+`exhausted` false, since the guard may band it so by forecast hours
+before it fills, and `critically-full` otherwise, a guard saying less,
+or a figure in another shape, being taken at its word; no other band
+is changed),
 `accelerators` (each a `kind`, `gpu` or
 `npu`, and its `driver`), and `power`: `on_battery`, true only with a
 battery of its own and nothing plugged in, and `charge`, its own
@@ -1849,7 +1896,12 @@ answer within five seconds measures for itself and says none, so it is
 judged by the line. A node with no room to read, or told its host's
 verdict, forgets its own, and one restarted starts with none held. It
 is left out of a room a node too old to judge says, and placement then
-judges the pressure by the line of 80 alone. The room is `null` where
+judges the pressure by the line of 80 alone. Its `cpu_minute` is the
+share of the last minute some work waited on a processor, machine-wide,
+in percent, as its own kernel says it (`some avg60` of
+`/proc/pressure/cpu`), which no queue's record carries; it is left out
+where the kernel says none, as a Mac's, or by a node too old to read
+it. The room is `null` where
 no harness keeps a queue, or where the queue's record is of another
 shape or unwritten for two minutes. A machine keeps no reserve of
 mycelium's: its own slices keep its person's share.
@@ -1898,10 +1950,25 @@ than every cell in it: lower-case letters, digits and hyphens, at most
 63, read as no basin in any other shape, which spoils nothing else
 declared. It is the cell's own word and only ever drawn, never weighed
 in placement.
+Where given, `needs_in` says what work sprouted here needs wherever
+placement sends it, as `[{"folders": ["src/inner"], "words":
+["forge.example"], "needs": [{"reach": "inner"}]}]`: a sprout begun
+in one of `folders` or below, each within home unless whole, or whose
+words hold one of `words` in any case, needs each of `needs`. Only a
+sprout placement chooses for gains them; one naming a machine, asking
+needs of its own or staying here is started as asked. A need met only
+by a probe is met as the probe last answered, so while no machine's
+probe answers, such work is refused, saying why each machine missed,
+rather than started where it can't work. A `Start` gains nothing,
+since its asker says its work whole.
 Where true, `takes_carries` says a worker takes carried sessions, as
 one made to take load off the person's machines does: a carry to a
 worker that doesn't say so is refused (Carrying a Quest), and one of
-the person's own machines takes carries either way.
+the person's own machines takes carries either way. A carry counts a
+machine in the cloud as one of the person's own, though it declares
+`costs_money`, where no provider's link lent it, it reaches no
+`aquifer`, and its `leaves_at`, or its make's end, is more than 30 days
+out (Carrying a Quest).
 Where given, `fence` says the fences an agent session runs in there, by
 kind (`none`, `fence` or `strict`), each with the doors it opens:
 `{"strict": {"builders": [...], "forges": [...], "secrets": [...]}}`,
@@ -2001,7 +2068,12 @@ hourly cost is a decimal written out, such as `"0.12"`, in a
 three-letter currency; `lasts` is the longest one lives, in seconds,
 where its provider fixes it. Each offer comes back with the `provider`
 that offered it, and a program that couldn't say is in `unanswered`
-with why, rather than taken as offering nothing. An offer is the
+with why, rather than taken as offering nothing. Beside them, `needs`
+lists the needs without a value this node places a `"Sprout"` by,
+`["cloud"]`, so a client offers cloud work only where a node says it;
+a node from before says none, and drops a sprout's `needs` unsaid,
+where a node that says them refuses a sprout field it doesn't know.
+An offer is the
 provider's promise, never a fact about a machine: it only decides
 whether one is worth making, and once made, the machine's own node says
 what it is.
@@ -2009,10 +2081,12 @@ what it is.
 `"Place"` asks which of those machines work should go to. The work says
 its `needs` and `prefers`, each one of `{"machine": name}`,
 `{"system": "linux"}`, `{"arch": "x86_64"}`, `{"reach": network}`,
-`{"accelerator": "gpu"}` or `{"tool": name}`, the earliest preference
-most wanted (a machine reaches a network it declares in `reach`, or one
-it probes while its probe last answered, and lacks one whose probe
-didn't; it has a tool its `kit` lists, lacks one its kit doesn't, and
+`{"accelerator": "gpu"}`, `{"tool": name}` or `"cloud"`, the earliest
+preference most wanted (a machine is a cloud one where it declares it
+`costs_money`, as an offer does; a machine reaches a network it
+declares in `reach`, or one it probes while its probe last answered,
+and lacks one whose probe didn't; it has a tool its `kit` lists, lacks
+one its kit doesn't, and
 hasn't said one where it says no kit, nor has a machine not yet made); the
 keys of the taints it `tolerates`; whether it `may_wait` for a machine
 out of reach; how long it `lasts`, as an ISO 8601 duration such as
@@ -2067,7 +2141,26 @@ or memory headroom. Over, it carries a `memory-pressure` or
 `cpu-saturated` the work doesn't tolerate, so work starts where it runs
 at once, and still goes to the roomiest where every machine is
 saturated, never refused; an unheard room is never saturated, nor
-passed for it. Within a tier, the most preferences met goes first,
+passed for it. A machine whose `declared` says `kept_lively`, as
+`{"cpu": 28, "memory_available": bytes}` (the second may be left out),
+is one the person works at that the others take new work from first:
+within its ceiling (processor pressure machine-wide at or under `cpu`,
+as its `cpu_minute` says it, or over ten seconds where its room says
+none, and as much memory available as it keeps) and its queue's
+limits, it ranks after every other heard machine with room and before
+those over a limit, since a machine over is swamped while one within
+its ceiling is light by the ceiling's own measure; within its ceiling
+but over a limit of its queue's, after those over too and before those
+saturated; saturated, or past its ceiling, where it carries
+`kept-lively`, `prefer_not`, and ranks over, it goes after every other
+heard machine. Unheard, it ranks with the
+unheard. It refuses no work, so where nothing else takes a start it
+still does, and a start placed on it heard is past room, as the cloud's
+paragraph below says, so the person's start goes to a cloud machine
+with room before it. Work tolerating `kept-lively` ranks it as any
+machine. A ceiling in another shape spoils only itself, and a node
+older than the field ranks it as any machine. Within a tier, the most
+preferences met goes first,
 then the most headroom, then by name; of the first and each as good but
 for headroom within 0.05 of it (`NEAR_BEST`), one is chosen at random,
 so asks alike spread rather than herd. Headroom is one sum, its weights
@@ -2208,8 +2301,11 @@ none or names no folder there, unless `strict` is true: then a `folder`
 that machine hasn't, or can't look at, is refused, as `tern has no
 folder src/elsewhere, which the start names` (a path within tern's
 home), since the work it's for is there and home won't do. A sprout's
-start is strict; any asker may make one so. A start that machine runs
-within its strict fence's launcher is refused so too, strict or not,
+start is strict; any asker may make one so. A strict start naming no
+machine that the machine placement chose refuses so is placed again on
+the asking node's machine alone, as a sprout's is (below). A start
+that machine runs within its strict fence's launcher is refused so
+too, strict or not,
 since that fence won't let a command write home, and so is one there
 that names no folder, or names home itself, as `tern would begin this
 start at home, which its strict fence won't let it write, so the start
@@ -2262,17 +2358,61 @@ that shape, whether or not it says it carries, is taken only for a
 session that ended on this machine, and otherwise refused as `no
 session <id> ended on <machine>, so nothing is reopened here`, whoever
 asked. Nor is one taken for a session that comes back by itself: one
-still live (`<id> is still live on <machine>`), parked for its holder
-to wake as its `standing` says (one it doesn't has nothing to wake
-it, so is reopened as any ended session), held by a holder there,
-carried away or waiting for its turn, each refused with why, nor
-while the carries can't be read. Once taken, the session is
-held as being reopened while its start runs, and another reopening of
+still live (`<id> is still live on <machine>`), parked with a holder
+there to wake it, as a running holder's park or a park marker of this
+boot names one, the marker where the presence says parked or the
+holder's own record says its program is (a park with none has nothing
+to wake it, and a marker outlasting its park counts for nothing, so
+either is reopened as any ended session), held by a holder there,
+carried away or waiting for its turn, each refused with why. One that
+never ended there is refused as held or coming back where a holder
+resumes it, as it names it in the words and scripts read below (an
+id or log path ending in `_` and then the id counts too), or it was
+carried away from there or waits its turn there, and otherwise as
+never ended there, whatever ids it begins; nor while the carries
+can't be read. Once taken, the session is held as being reopened
+while its start runs, and another reopening of
 it meanwhile is refused as `<id> is being reopened on <machine>
-already`; a start whose asker hung up holds it at most two minutes. A
-reopening let through without its asker's fence is asked only of a
-node whose link says `reopens`, since one older would take it as any
-relayed start, so one asked of an older node is refused as
+already`. The hold ends when the start here answers, which it does
+within seconds, since a holder silent for ten is killed, whether or
+not its asker still waits; one stuck before it answers holds it at
+most eleven minutes, a minute past the longest an asker waits on one.
+A carry's arrival from the machine relaying it, word for word as a
+carry writes it, which starts pi only once `pi-carry arrive` has taken
+the carry, is judged by the carry, but its session is still held
+while its start runs, and refused as being reopened where another
+start holds it, or holds a word as written that begins it. Any other
+start relayed here is held, in the same words, to each session it
+names by `--session` or `--session-id`, alone or with `=`, under any
+program or in the script given right after the `-c`, alone or among
+other letters, of `sh`, `bash`, `zsh`, `dash`, `ksh` or `mksh`, where
+every word between the shell and the `-c` is a flag, reading only
+`$N` and `${N}` as its positional parameters, and to each id a log's
+path may end in, what follows each `_` of its name.
+Each word it names as written is held, too, to each session here that
+word begins, and to each another start holds that it begins, since pi
+opens one so; it is refused where another start holds, as written, a
+shorter word that begins it. A holder whose command names a word
+beginning a session, which no session there has as its id, holds
+that session too. Each is refused where one comes back by itself or
+is being reopened, or while the carries can't be read, as `no start
+naming a session is taken on <machine>, as its carries can't be
+read`, and held while its start runs, though it need not have ended
+here, since its asker fenced it. A start only shaped as a
+carry is held so too. A refusal of a session a word begins names the
+word as asked, and a log path's tail begins nothing. An id a script
+works out as it runs, a script in any other shape or shell, as after
+`-o pipefail` or `--` or reading `$@`, or a resume naming none, as
+`pi --continue`, is not judged. A start asked of the node itself and
+placed on its own machine takes the same holds while it starts there,
+never as it waits for room or a machine, and is not judged by them: it
+is refused where another start, relayed or asked here, holds one of
+them, as a relayed start is, and the two refuse each other only while
+both start. A reopening let through without its asker's fence is
+asked only of a node whose
+link says `reopens`, since one older
+would take it as any relayed start, so one asked of an older node is
+refused as
 `<machine>'s mycelium is too old to judge a reopening`, and one no
 link reaches as `no link reaches <machine> now to judge a
 reopening`. The person's, one held to its asker's ground, and one on
@@ -2303,8 +2443,10 @@ meets no need, and none is a machine already named. An offer whose
 `hourly` is nothing, written with any number of zeros, may be made for
 any start, so a provider lending machines that cost nothing is as easy
 to start on as a machine of the realm. One that costs is made only for
-a start that says it `may_cost` (`mycelium start --may-cost`); a start
-that doesn't is refused, saying which offer would have done and what it
+a start that says it `may_cost` (`mycelium start --may-cost`), or for
+the person's own start that names a machine or needs `"cloud"`, since
+he pays for what he names; a start that doesn't is refused, saying
+which offer would have done and what it
 costs, and nothing is made. Of those that would take the work, it makes
 one of the cheapest an hour, after taints and preferences, as
 `PROGRAM make SHAPE --lasting SECONDS`: the work's
@@ -2317,7 +2459,14 @@ orchestrator is proved, as that session's own presence says it; else
 `person` for the person's own login; else `unknown`, as for an agent
 no session is proved for, a session whose presence says no address of
 letters and digits (told in capitals), or any agent on a Mac, which
-proves no session. The node's journal, and a refused make's error, say
+proves no session. A session the person granted is told `person`
+instead, while its grant stands: `grants.json`, beside the node's book
+of makes, is a JSON list of `{"address", "said", "at", "until"}`, the
+session's address, the person's words granting it, when they said them
+and when the grant ends. Its makes are booked for the person, so the
+person's own starts may use them; its own fence still holds its work.
+A file that can't be read, or a grant past `until`, grants nothing.
+The node's journal, and a refused make's error, say
 why for each `unknown`. A provider serving only some refuses the rest
 by failing its `make`, and nothing is made; it should refuse a `make`
 where the variable is missing too, as it is from a node older than it,
@@ -2334,9 +2483,41 @@ made for it is not held to it. The booking is the making node's, kept
 while it runs and made again as it redials its book. Like the judging
 of a run, this fences habit, not an agent set on passing as another,
 which runs as the same account; an agent's process left with no agent
-above it is judged the person's. A start relayed from another machine's
-node makes nothing, since it is pinned to this machine by name, which no
-offer meets. The program writes one JSON line,
+above it is judged the person's. A machine named in `agent-rooms`,
+beside the node's book of makes, a name a line, past blank lines and
+what follows a `#` on any line, is a room made for agents to share:
+already up and
+paid for by being so. Every agent's start or run may be placed there,
+a granted session's and one from no one known included, whoever it is
+booked for, since its booking says who pays for it and may let it go,
+not who may use it; the person's own go there only where it is booked
+for the person or for no asker, never into a worker home an agent's
+make wrote. A run the person asks naming one machine alone, a room an
+agent's make booked, runs there as an agent's, in the agent fence, so
+the person's safe word reaches every room though no session asks it,
+and the person's own login still never runs in that worker home.
+Work that names none of the workers may go to it though it
+costs money, ranked by its room as any machine is, so before a machine
+kept lively while it has room, and after one within its ceiling once
+it is over a limit. The node marks each one `"held_for": "agents"` as it
+places, from its own file, and every other as booked, never from what
+the machine says, and a link keeps nothing a machine says of it. A
+session the person granted is booked as the person but isn't one: its
+starts go to a machine booked for the person or for no asker, and not
+named in the file, only where they name it, never to one an agent's
+make booked, and even then that machine is full one session short of
+the most it holds, kept for the person, where it says or was promised
+a most. A start of its that no machine takes goes on to a make. A
+carry takes no account of rooms, since it asks as its session, which
+never says whether it is the person's. The file is written by whatever
+keeps the rooms, and any session on the node can write it, so it
+fences habit as the booking does; a writer puts a new file beside it
+and renames it into place, so a placement never reads one half
+written. A file that isn't there names none, and so does one that
+can't be read or isn't a plain file, said in the node's journal once
+each time that changes; only its first 64 KiB is read. A start relayed
+from another machine's node makes nothing, since it is pinned to this
+machine by name, which no offer meets. The program writes one JSON line,
 `{"place", "machine", "until"}`:
 where it is, as `--via` names it, the name its node will say for
 itself, and when its provider ends it whatever else happens. The node
@@ -2375,7 +2556,10 @@ saying which. A claim proves nothing, so the 8 are a cell's fair
 share, and the 32, with the ended sessions below, the bound no agent
 gets round. A start counts whether it started or failed, since a failed one may
 still have spent, and so does one still starting, so starts asked at
-once can't pass the limit; a refused one doesn't. The person's own
+once can't pass the limit; a refused one doesn't, nor one relayed to
+the node and refused there before anything began: placed elsewhere,
+not taken now, or not to be begun for want of a launcher, a starter,
+a home, its folder or leave to begin at home. The person's own
 starts are never counted or refused. An agent's first start in the
 hour that brings back a session the node knows has ended, on the
 machine it ran on, counts toward neither, up to 128 through the node
@@ -2521,8 +2705,59 @@ as the first counted.
 in no window: the node makes the `"Start"` and starts it as above, under
 the same limits. `words` is the work, a link alone or words, which
 become the session's first words; `from` the address of the cell it
-comes from; `on` the machine, this one when it's none or names this
-one; and all but `words` may be left out. Beside its first words the
+comes from; `on` the machine; `needs`, a list of needs as a `"Start"`'s
+work says them, such as `"cloud"`, a machine that costs money
+(`mycelium sprout --need cloud`), which it must meet; and all but
+`words` may be left out. With no `on`, a sprout with `needs` is placed
+by them, wherever its folder is, and is never placed again here. With
+no `on` or `needs`, a sprout whose folder is in a repository's own checkout
+where the person keeps them, `~/src/<repo>` or
+`~/src/<host>/<owner>/<repo>`, or in the trunk's tree of a bare
+repository kept under home outside `~/src`, either fetching from its
+origin, names no
+machine, so placement chooses, as for any start, and new work goes
+where there is room. Every other names this one, since no other machine has its
+folder as it is here: one in another tree cut from a repository kept
+elsewhere (its `.git` a file: a quest's tree, a zone's), a clone
+kept anywhere else, as a
+quest's scratch clone is, one with no remote, or in no checkout. What
+a checkout holds uncommitted isn't looked at, so work on it names this
+machine with `on`. Where the machine placement chose refuses the start
+with `<machine> has no folder <folder>, which the start names`, alone
+or wrapped after `: `, before anything starts there, it is placed again
+on this one alone, held to the ground it would be placed here on, within
+the same start: booked once, under one wait for room and one time to
+answer, with the refusing machine's load forgotten, though the day's
+placements keep both. Any other answer stands, so one lost on
+its way back, which may have started there, is never asked again. A
+node from before `strict` begins a strict start at home and its guard
+ends it, so a realm placing sprouts runs nodes that judge `strict`.
+The person's sprout may cost, an agent's never. A start that may cost
+and names no machine, placed on a machine heard lately but over its
+room, saturated or kept lively, so that every machine heard is past
+its room or kept lively, is
+asked again needing `cloud`, judged to last at least an hour, and
+strict where it names a folder: a cloud machine linked, heard lately
+within its room, takes it, counted there. No machine is made for it,
+since one made holds none of the person's checkouts and making one
+outlasts the asker's wait; one made by naming `cloud` serves those
+after it. Where none is chosen, or the one chosen began nothing (no
+link took the ask, or it refused it before anything began, as the
+limits above, the person's stop, a relay refused there or a reopening
+of a session that never ended there do), it goes where placement
+chose, as before; any other answer, a lost one among them, stands, and
+that machine is passed over past room for ten minutes, for starts
+asked as that one was, by the person or by an agent, so no agent's
+passes it over for the person's; a lost answer does so only where it
+had 30 seconds or more, a refusal of the one session it names (being
+reopened, live, parked, held or coming back there) does so for none,
+and a start already asked of it then and taken, or lost with less,
+ends it. A refusal there of every start naming a session, as its
+carries can't be read, stands, since that machine couldn't tell
+whether the session is its own. The cloud is asked within what
+leaves the start 30 seconds for the machine placement chose, and not
+at all where no more is left.
+Beside its first words the
 session is given `QUEST_WORKFLOW_SPROUT`, the same work as data, a
 JSON object such as
 `{"v": 1, "link": "https://...", "from": "HARBOR", "id": "sprout-..."}`:
@@ -2655,9 +2890,15 @@ inbox as it wakes, so what is said is there before it is woken. The node
 there then wakes it, when it parked this boot, by writing its holder's
 `<id>.wake`: the holder's it knows, else the one the session's presence
 names as `wake`, taken only as a holder's in a realm's `.held` folder
-beside its own. A talk's file, `<ADDRESS>/replies/<id>.jsonl`, is opened
-on the asking machine first, and the lines its session writes are
-carried back to it, so a talk reads the same wherever its session runs.
+beside its own. An ended session whose presence never said parked
+counts too where a park marker of this boot names a running holder
+whose own record says its program is parked, and is woken through it.
+So is one whose presence said parked but names no such file, where a
+park marker of this boot names a running holder, whatever its record
+says. One live in a pi of its own is never woken through a marker.
+A talk's file, `<ADDRESS>/replies/<id>.jsonl`, is opened on the asking machine
+first, and the lines its session writes are carried back to it, so a
+talk reads the same wherever its session runs.
 An `act` of `wake`, alone, as the launcher's Wake asks, puts nothing in
 the inbox, since the harness has no such act, and only wakes the session
 there, so the launcher wakes one without starting a program to write its
@@ -3024,9 +3265,13 @@ Before each, the lender reads spend-watch's word,
 `spend-watch/budgets.json` in the account's runtime folder. Where it
 is missing, unreadable, written more than 15 minutes ago or more than
 a minute ahead, or says nothing of the budget, spend-watch is silent
-and every model is refused 503. Where it says an allowance of the
-budget's is refused, spent to its `allowance`, or as a `share` used
-whole, the lend is refused 429.
+and every model is refused 503. Where any entry of the budget's name
+is marked `undeclared`, one it has seen spent but was never told of,
+so with no allowance to keep it, every model is refused 503 too: a
+marker of any value but `false` or `null` counts, so one that can't
+be read refuses that budget alone. Where it says an allowance of any
+entry of the budget's is refused, spent to its `allowance`, or as a
+`share` used whole, the lend is refused 429.
 
 ### The Forge
 
@@ -3118,7 +3363,15 @@ anything as anyone. A node given `--worker-socket PATH` and
 folder only the node's account or the system's may change, made 0755
 if it isn't there. It answers only a process the kernel names as of
 account UID, refusing any other with one `{"Err": ...}` line, and the
-main socket answers none of these asks.
+main socket answers none of these asks. A worker socket that can't be
+put in place, as where its folder can't be made, another account may
+change it, or the socket can't be bound in it, is said on the node's
+standard error with what to do, and the node binds nothing there and
+runs on without it: its own sessions still reach it, and only the
+workers' can't, until the node starts again with its folder in
+place. The folder is the machine's to make before the node starts,
+as a system's boot makes its runtime folders before any account's
+services, so the node doesn't try again.
 
 Where UID is the node's own account, every program it holds is told
 the socket in `MYCELIUM_WORKER_SOCKET`, which the harness speaks
@@ -3362,8 +3615,10 @@ each message's `at` in UTC to the millisecond, as
 `2026-11-16T17:00:00.000Z`, whatever offset or precision it came with,
 so the order of the words is the order sent; an `at` that is no time
 is held as when the node heard it. The `team` kind
-holds each orchestrator's team, keyed by its address: the living
-sessions answering to it as `members`, its `lead` working on its quest,
+holds each orchestrator's team, keyed by its address in upper case,
+as is `within`, so a client matches a session's `orchestrated_by`
+without regard to case: the living sessions answering to it as
+`members`, its `lead` working on its quest,
 its `title` as a served `quest` names it (else its lead's), the name it
 goes by in the swarm as `swarm` where that quest gives one, the team it
 sits `within` by its lead's orchestrator, and `counts` of its members
@@ -3411,13 +3666,37 @@ as `quest:<id>`, so its short name is never a group's, as no group's
 name holds a colon; it is read in lower case, so keys differing only
 in case are one folder. `for` and `folder` are drawn on one line: each
 control character and line or paragraph separator in them is read as
-a space and each mark turning text's direction is dropped, and then
-`for` is trimmed, cut to its first 120 characters and trimmed again,
-and `folder` is 1 to 1024 bytes. A `for` said as null or as anything
-but text is unsaid, and one unsaid, empty or cleaned to nothing is
-left out of the cell record. A cell's first 16 shares are read, those
-past these bounds are passed over, and a key said twice is its first;
-each is among that cell record's `shares`. A group a presence names
+a space and each mark turning text's direction is dropped. From what
+is left, `for` also drops each of Unicode's 66 noncharacters first,
+then each character that draws nothing (U+00AD, U+034F, U+115F,
+U+1160, U+17B4, U+17B5, U+180B to U+180F, U+200B to U+200D, U+2060
+to U+2065, U+206A to U+206F, U+3164, U+FE00 to U+FE0F, U+FEFF,
+U+FFA0, U+FFF0 to U+FFFB, U+1BCA0 to U+1BCA3, U+1D173 to U+1D17A and
+U+E0000 to U+E0FFF), keeping one selector (U+FE00 to U+FE0F or
+U+E0100 to U+E01EF, so no Mongolian one) only where the last
+character kept is itself past ASCII and drawn as part of a word (none
+a space, here any character Unicode gives White_Space, such as U+00A0
+or U+3000, nor a braille blank), so what this pass drops between them
+parts nothing, and a joiner (U+200C or U+200D) only between two such,
+the first perhaps followed by its selector and the second the very
+next character left, so one dropped in this pass after a joiner parts
+it, though a direction mark or noncharacter, gone before, doesn't; and at most
+three zero-width joiners (U+200D) from the start or from one
+character, other than a skin tone or any regional indicator (U+1F1E6
+to U+1F1FF, paired as a flag or not), given a cell by unicode-width 0.2.3's
+per-character width (most spacing marks are, though none extending a
+grapheme, such as U+09BE; no nonspacing mark, conjoining jamo vowel or
+final, or selector is) and following no zero-width joiner kept, to the
+next, the rest dropped, a non-joiner (U+200C) never counted, each
+judged against what is kept so far; and then is trimmed of such
+spaces and braille blanks (U+2800), and cut to its first 120 characters,
+then cleaned again, so it ends in no space and no joiner left joining
+nothing; `folder` is 1 to 1024 bytes. A
+`for` said as null or as anything but text is unsaid, and one unsaid,
+empty or cleaned to nothing is left out of the cell record. A cell's
+first 16 shares are read, those past these bounds are passed over,
+and a key said twice is its first; each is among that cell record's
+`shares`. A group a presence names
 holding a colon joins none, as a folder's name does, so one called
 `files`, or under it with no colon, is a group still. Its heading is
 `folders`, as a session says it works in one, and nothing asks whether
@@ -4101,7 +4380,15 @@ that quest's record, and the mesh must put the ended quest's sessions
 and the asker in that orchestrator's group. Only that orchestrator
 ends them so, never one above it. Anyone else is refused, saying
 why. An id held here is ended here; one held on more than one other
-machine is refused. A holder that no longer answers on its socket has
+machine is refused. Another machine's hold is known by the presence
+of the session running in it, or, where none does, by the node's
+book of starts, which keeps the machine each start it holds landed
+on, up to 2048 of them, on disk, so a node started again knows. The
+book forgets nothing a hold ending does, so an end it routes says so,
+and what that machine answers may be that it holds the id no longer.
+A machine sent an end is waited on for the hold's ten seconds and
+the thirty a steer is answered in; one silent past that may still
+end it. A holder that no longer answers on its socket has
 its stale record taken away, and nothing it names is signalled. The
 program's process group is told to end (`TERM`) and has ten seconds,
 then its holder is told; what still runs is killed, and the answer's
@@ -4189,6 +4476,22 @@ found; the record says the program, not the shell. One that can't
 start again stays parked and says why on its terminal, and the next
 wake tries again, with any command named since. A parked program is no
 work: it keeps no machine awake and holds up no handover.
+
+A program that exits with 79 quit though nobody asked it to, as a pi
+whose own code gave up does, and is started again at once on the same
+terminal, as one that restarts is, never shown as parked: its window
+stays rather than closing on the person. Its run's end warns in the
+journal, as `quit unasked (exit 79)`. One killed by `SIGUSR2` quit
+unasked too, as a pi does when a name lookup it can't cut short holds
+its exit, and is started again the same way; it warns too, its
+journal line naming the signal. One such quit with three others in
+the minute before it is parked instead, so a program that quits as it
+starts can't start forever: every window, and each joining while it
+is parked, is told why, and the journal warns that it was parked,
+with `MYCELIUM_PARKED=too-often`. A key in its window starts it
+again, with as many quits as at first, and a wake file left beside
+the quit doesn't. A message doesn't wake it, since nothing marks it
+parked for one to find.
 
 A program that exits with 69 (sysexits' `EX_UNAVAILABLE`) having
 written `<id>.gone`, told its path in `MYCELIUM_GONE`, is kept as a

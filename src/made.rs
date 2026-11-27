@@ -12,10 +12,12 @@
 //! ([`Book`]), so what was made, for how long and at what rate can always
 //! be read back and summed.
 
+use std::collections::BTreeSet;
 use std::fs::OpenOptions;
-use std::io::{self, Write};
-use std::path::PathBuf;
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -137,6 +139,31 @@ pub async fn make(offer: &Offer, lasting: Duration, asker: &str) -> Result<Made,
     })
 }
 
+/// The file beside the book that holds the person's grants.
+pub const GRANTS: &str = "grants.json";
+
+/// The file beside the book that names the machines made for agents to
+/// share ([`Book::agent_rooms`]).
+pub const AGENT_ROOMS: &str = "agent-rooms";
+
+/// The person's word that a session may have machines made and placed for
+/// it as though the person asked, until `until`: its makes are told to
+/// the provider as [`PERSON`] and booked for the person, so the person's
+/// own starts may use them. It changes only who a machine is for; the
+/// session's own fence still holds its work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Grant {
+    /// The session granted, by its mesh address.
+    pub address: String,
+    /// The person's words granting it, as said.
+    pub said: String,
+    /// When they said them.
+    pub at: jiff::Timestamp,
+    /// When the grant ends.
+    pub until: jiff::Timestamp,
+}
+
 /// Where a node keeps each make and release, a JSON line each, newest
 /// last. Every realm's node on a machine keeps the same book, so each
 /// make names the realm whose node made it.
@@ -144,7 +171,14 @@ pub async fn make(offer: &Offer, lasting: Duration, asker: &str) -> Result<Made,
 pub struct Book {
     path: PathBuf,
     realm: Option<String>,
+    /// Why the rooms file last couldn't be read, if it couldn't, so the
+    /// journal says so once each time that changes, not on every read.
+    rooms_unread: Arc<Mutex<Option<String>>>,
 }
+
+/// The most of the rooms file read, far past any list of machines, so a
+/// file grown without end costs a placement no more than this.
+const ROOMS_AT_MOST: u64 = 64 * 1024;
 
 /// The machines a book says are made and not yet released, and how many
 /// of its lines it couldn't read.
@@ -163,7 +197,11 @@ impl Book {
     /// A book kept at `path`, its makes naming no realm.
     #[must_use]
     pub fn at(path: PathBuf) -> Self {
-        Self { path, realm: None }
+        Self {
+            path,
+            realm: None,
+            rooms_unread: Arc::default(),
+        }
     }
 
     /// The same book, kept by `realm`'s node.
@@ -173,6 +211,67 @@ impl Book {
             realm: Some(realm.to_owned()),
             ..self
         }
+    }
+
+    /// The grant `address` holds at `now` to have machines made and
+    /// placed for it as the person's, as the person said it, from
+    /// `grants.json` beside the book ([`Grant`]). A grant past its end, a
+    /// file that isn't there or can't be read, and a line that isn't a
+    /// grant all grant nothing, so a mistake never makes an agent the
+    /// person.
+    #[must_use]
+    pub fn granted(&self, address: &str, now: jiff::Timestamp) -> Option<Grant> {
+        let text = std::fs::read_to_string(self.path.with_file_name(GRANTS)).ok()?;
+        let grants: Vec<Grant> = serde_json::from_str(&text).ok()?;
+        grants
+            .into_iter()
+            .find(|grant| grant.address.eq_ignore_ascii_case(address) && now < grant.until)
+    }
+
+    /// The machines made for agents to share, each already up and paid
+    /// for by being so, which agents' work may go to though it names
+    /// none of them: `agent-rooms` beside the book, a machine's name a
+    /// line, what follows a `#` and blank lines passed over. A machine it
+    /// doesn't name stays as booked, so the person's own are theirs. A
+    /// file that isn't there names none, and so does one that can't be
+    /// read or isn't a plain file, said in the node's journal once each
+    /// time that changes, since agents' work then goes back to the
+    /// machines it would leave. Only its first [`ROOMS_AT_MOST`] bytes
+    /// are read.
+    #[must_use]
+    pub fn agent_rooms(&self) -> BTreeSet<String> {
+        let path = self.path.with_file_name(AGENT_ROOMS);
+        let read = rooms_said(&path);
+        let unread = read
+            .as_ref()
+            .err()
+            .filter(|error| error.kind() != io::ErrorKind::NotFound)
+            .map(ToString::to_string);
+        let mut last = self
+            .rooms_unread
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *last != unread {
+            match (&unread, &read) {
+                (Some(why), _) => {
+                    eprintln!(
+                        "{} names no rooms, as it can't be read: {why}",
+                        path.display()
+                    );
+                }
+                (None, Ok(_)) => eprintln!("{} can be read again", path.display()),
+                (None, Err(_)) => eprintln!("{} is gone, so it names no rooms", path.display()),
+            }
+            last.clone_from(&unread);
+        }
+        drop(last);
+        read.unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.split('#').next())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .collect()
     }
 
     /// Keeps that `made` was made.
@@ -289,6 +388,23 @@ struct Released {
     place: String,
 }
 
+/// What the rooms file at `path` says, read only where it is a plain
+/// file, so a pipe or a device left there never holds a placement, and
+/// only so far as [`ROOMS_AT_MOST`].
+fn rooms_said(path: &Path) -> io::Result<String> {
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "it isn't a plain file",
+        ));
+    }
+    let mut said = String::new();
+    std::fs::File::open(path)?
+        .take(ROOMS_AT_MOST)
+        .read_to_string(&mut said)?;
+    Ok(said)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -297,7 +413,7 @@ mod tests {
     use crate::offer::Shape;
 
     /// A program at `dir`'s `provider` running `body`.
-    fn provider(dir: &std::path::Path, body: &str) -> String {
+    fn provider(dir: &Path, body: &str) -> String {
         let program = dir.join("provider");
         crate::stand_in::program(&program, &format!("#!/bin/sh\n{body}\n"));
         program.display().to_string()
@@ -370,6 +486,70 @@ mod tests {
             ),
             (&json!("0.12"), &json!("its work was done")),
             "each make and release is kept, a line each, in order"
+        );
+    }
+
+    #[test]
+    fn the_rooms_made_for_agents_are_named_a_line_each_beside_the_book() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let book = Book::at(dir.path().join("made.jsonl"));
+        assert!(book.agent_rooms().is_empty(), "no file names none");
+        fs::write(
+            dir.path().join(AGENT_ROOMS),
+            "# rooms for agents\nwren # the big one\n\n  tern  \n",
+        )
+        .expect("written");
+        assert_eq!(
+            book.agent_rooms(),
+            BTreeSet::from(["tern".to_owned(), "wren".to_owned()]),
+            "each name a line, trimmed, past blanks and comments"
+        );
+        fs::remove_file(dir.path().join(AGENT_ROOMS)).expect("removed");
+        fs::create_dir(dir.path().join(AGENT_ROOMS)).expect("a folder in its place");
+        assert!(
+            book.agent_rooms().is_empty(),
+            "what isn't a file names none"
+        );
+        assert!(
+            book.rooms_unread
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_some(),
+            "and why is kept, so it is said once"
+        );
+    }
+
+    #[test]
+    fn a_grant_holds_only_for_its_session_and_until_its_end() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let book = Book::at(dir.path().join("made.jsonl"));
+        let at = |said: &str| said.parse::<jiff::Timestamp>().expect("a time");
+        let now = at("2026-11-25T23:50:00Z");
+        assert_eq!(book.granted("WREN01", now), None, "no file grants nothing");
+
+        fs::write(dir.path().join(GRANTS), "not json").expect("written");
+        assert_eq!(
+            book.granted("WREN01", now),
+            None,
+            "nor does one that isn't grants"
+        );
+
+        fs::write(
+            dir.path().join(GRANTS),
+            r#"[{"address":"WREN01","said":"you may make it as me",
+                "at":"2026-11-25T23:05:00Z","until":"2026-11-26T12:00:00Z"}]"#,
+        )
+        .expect("written");
+        assert_eq!(
+            book.granted("wren01", now).map(|grant| grant.said),
+            Some("you may make it as me".to_owned()),
+            "the session granted, however its address is cased"
+        );
+        assert_eq!(book.granted("TERN02", now), None, "and no other");
+        assert_eq!(
+            book.granted("WREN01", at("2026-11-26T12:00:00Z")),
+            None,
+            "and not once it ends"
         );
     }
 

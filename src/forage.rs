@@ -1120,19 +1120,20 @@ impl WaitingFolder {
             (Some((_, was)), Some(now)) if *was == now && !self.again => Vec::new(),
             (_, Some(now)) => {
                 self.again = false;
-                // A watch on a folder since removed is gone or stale.
-                let _ = watcher.unwatch(folder);
-                self.deaf = watcher
-                    .watch(folder, notify::RecursiveMode::NonRecursive)
-                    .is_err();
-                let real = fs::canonicalize(folder).unwrap_or_else(|_| folder.clone());
-                self.heard = Some((real, now));
+                // A watch on a folder since removed is gone or stale, so
+                // it's given back and taken again, with the parent that
+                // awaited it, in one batch.
+                let mut gone = vec![folder.clone()];
                 if self.awaited
                     && let Some(parent) = parent
                 {
-                    let _ = watcher.unwatch(parent);
+                    gone.push(parent.to_owned());
                     self.awaited = false;
                 }
+                let new = [(folder.clone(), notify::RecursiveMode::NonRecursive)];
+                self.deaf = crate::watching::watch_all(watcher, &gone, &new) != [true];
+                let real = fs::canonicalize(folder).unwrap_or_else(|_| folder.clone());
+                self.heard = Some((real, now));
                 let files: BTreeSet<PathBuf> = fs::read_dir(folder)
                     .map(|entries| {
                         entries
@@ -1307,10 +1308,9 @@ fn round(
         .round(store, living);
     let keeping: BTreeSet<PathBuf> = kept.iter().flat_map(|id| folders(store, id)).collect();
     if let Some(watcher) = watcher {
-        for gone in listened_to.difference(&keeping) {
-            // A folder already gone is no longer watched.
-            let _ = watcher.unwatch(gone);
-        }
+        // A folder already gone is no longer watched.
+        let gone: Vec<PathBuf> = listened_to.difference(&keeping).cloned().collect();
+        crate::watching::watch_all(watcher, &gone, &[]);
     }
     listened_to.retain(|folder| keeping.contains(folder));
     kept
@@ -1324,13 +1324,19 @@ fn listen_to(
     due: &BTreeSet<String>,
     listened_to: &mut BTreeSet<PathBuf>,
 ) {
-    for folder in due.iter().flat_map(|id| folders(store, id)) {
-        if !listened_to.contains(&folder)
-            && folder.is_dir()
-            && watcher
-                .watch(&folder, notify::RecursiveMode::NonRecursive)
-                .is_ok()
-        {
+    // In one batch, so macOS's stream starts once, not once a folder.
+    let new: BTreeSet<PathBuf> = due
+        .iter()
+        .flat_map(|id| folders(store, id))
+        .filter(|folder| !listened_to.contains(folder) && folder.is_dir())
+        .collect();
+    let modes: Vec<(PathBuf, notify::RecursiveMode)> = new
+        .iter()
+        .map(|folder| (folder.clone(), notify::RecursiveMode::NonRecursive))
+        .collect();
+    let answers = crate::watching::watch_all(watcher, &[], &modes);
+    for (folder, took) in new.into_iter().zip(answers) {
+        if took {
             listened_to.insert(folder);
         }
     }
@@ -1359,11 +1365,24 @@ pub fn chosen(records: Vec<Value>, named: Option<&str>) -> Vec<Value> {
 /// `text` as one line for a terminal: each control character, a newline
 /// or an escape among them, and each line or paragraph separator, which
 /// an editor or a viewer breaks a line at, as a space, and each mark that
-/// turns text's direction left out, so words read from a file can't draw
-/// lines of their own, steer the terminal, or read backwards past their
-/// own end.
+/// turns text's direction or draws nothing left out, so words read from a
+/// file can't draw lines of their own, steer the terminal or read
+/// backwards past their own end. [`joins`] cleans each need with it too,
+/// so the needs a node serves in its forage records are cleaned the same.
+///
+/// A joiner or non-joiner between two characters past ASCII, and one
+/// variation selector straight after one, are kept, since Persian and
+/// Indic words are spelled with them and an emoji is drawn by them;
+/// beside ASCII, as in an address, or stacked, they only part names that
+/// read alike or carry what nobody sees. Kept there, one can still part
+/// two names past ASCII that read alike, as a letter from another script
+/// can. Each is judged by what is left once direction marks and controls
+/// are gone, in one pass, so no mark beside it can vouch for it. A run of
+/// emoji keeps at most [`MOST_JOINED`] joiners, so a name chained from
+/// dozens can't count as the two cells one emoji takes.
 pub(crate) fn one_line(text: &str) -> String {
-    text.chars()
+    let plain: Vec<char> = text
+        .chars()
         .filter(|each| !turns_direction(*each))
         .map(|each| {
             if each.is_control() || matches!(each, '\u{2028}' | '\u{2029}') {
@@ -1372,13 +1391,127 @@ pub(crate) fn one_line(text: &str) -> String {
                 each
             }
         })
-        .collect()
+        .collect();
+    let mut kept: Vec<char> = Vec::with_capacity(plain.len());
+    // The zero-width joiners kept in the run at hand, counted from the
+    // text's start, which a character that follows none, takes a cell of
+    // its own by unicode-width and neither selects nor modifies ends, so
+    // a nonspacing mark between emoji can't start the count afresh,
+    // though a spacing mark can where unicode-width gives it a cell (not
+    // one extending a grapheme), nor can any regional indicator, paired
+    // as a flag or not, a flag's second half following its first rather
+    // than a joiner. A non-joiner is never counted, as it joins no emoji.
+    let mut joined = 0;
+    for (at, &each) in plain.iter().enumerate() {
+        let before = kept.last().copied();
+        let keep = match each {
+            '\u{200C}' | '\u{200D}' => {
+                before.is_some_and(|before| spells(before) || selects(before))
+                    && plain.get(at + 1).is_some_and(|after| spells(*after))
+                    && (each == '\u{200C}' || joined < MOST_JOINED)
+            }
+            each if selects(each) => before.is_some_and(spells),
+            each => !unseen(each),
+        };
+        if keep {
+            kept.push(each);
+            if each == '\u{200D}' {
+                joined += 1;
+            } else if before != Some('\u{200D}')
+                && !selects(each)
+                && !modifies(each)
+                && !matches!(each, '\u{1F1E6}'..='\u{1F1FF}')
+                && unicode_width::UnicodeWidthChar::width(each).is_some_and(|cells| cells > 0)
+            {
+                joined = 0;
+            }
+        }
+    }
+    kept.into_iter().collect()
+}
+
+/// The most joiners in one of Unicode's emoji sequences, as in a family of
+/// four, or a kiss between two with their skin tones. A terminal draws
+/// only a sequence it knows as one glyph, yet Unicode's widths count a
+/// joined run of any length as two cells. This bounds that, not closes
+/// it: four emoji joined as no sequence is still count two cells and draw
+/// eight, so a chain of them draws at most four times what it counts.
+/// A chain of Khmer subscripts (coeng, U+17D2) isn't capped: Unicode's
+/// widths count it as one cell, which a terminal drawing per code point
+/// draws wider; capping it as emoji chains are is still to do.
+const MOST_JOINED: usize = 3;
+
+/// Whether `each` is an emoji modifier, a skin tone, which is drawn as
+/// part of the emoji before it.
+const fn modifies(each: char) -> bool {
+    matches!(each, '\u{1F3FB}'..='\u{1F3FF}')
 }
 
 /// Whether `each` is one of Unicode's marks that turn the direction text
 /// is drawn in, which a terminal may honour past the words they came in.
 pub(crate) const fn turns_direction(each: char) -> bool {
     matches!(each, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Whether `each` draws as nothing: a soft hyphen, a zero-width space or
+/// joiner, a word joiner or invisible operator, a grapheme joiner, a
+/// Hangul or Khmer filler, a variation selector, Mongolian or not, a byte
+/// order mark, a tag, or a format control of the old shaping, interlinear
+/// annotation, shorthand or musical kinds, any of which hides text from
+/// the person or smuggles it past them. It holds what the terminal kit's
+/// list of Unicode's default-ignorables holds.
+pub(crate) const fn unseen(each: char) -> bool {
+    matches!(
+        each,
+        '\u{00AD}'
+            | '\u{034F}'
+            | '\u{115F}'
+            | '\u{1160}'
+            | '\u{17B4}'
+            | '\u{17B5}'
+            | '\u{180B}'..='\u{180F}'
+            | '\u{200B}'..='\u{200D}'
+            | '\u{2060}'..='\u{2065}'
+            | '\u{206A}'..='\u{206F}'
+            | '\u{3164}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FEFF}'
+            | '\u{FFA0}'
+            | '\u{FFF0}'..='\u{FFFB}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0000}'..='\u{E0FFF}'
+    )
+}
+
+/// Whether `each` is a variation selector, which picks how the character
+/// before it is drawn.
+const fn selects(each: char) -> bool {
+    matches!(each, '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}')
+}
+
+/// Whether `each` is drawn as part of a word past ASCII, so a joiner
+/// beside it or a selector after it may be part of the word too: not
+/// [`unseen`], not a space or a [`BRAILLE_BLANK`], which a cleaning may
+/// trim from either end, and not a noncharacter, which no font draws, a
+/// table's marks are made of and a cleaning drops.
+fn spells(each: char) -> bool {
+    !each.is_ascii()
+        && !unseen(each)
+        && !each.is_whitespace()
+        && each != BRAILLE_BLANK
+        && !noncharacter(each)
+}
+
+/// A braille blank, which draws as a space though no text calls it one,
+/// so a name may hold it to look empty.
+pub(crate) const BRAILLE_BLANK: char = '\u{2800}';
+
+/// Whether `each` is one of Unicode's 66 noncharacters, which no font
+/// draws and no text from outside should hold: U+FDD0 to U+FDEF, and the
+/// last two code points of each plane.
+pub(crate) const fn noncharacter(each: char) -> bool {
+    matches!(each, '\u{FDD0}'..='\u{FDEF}') || (each as u32) & 0xFFFE == 0xFFFE
 }
 
 /// The most lines a cell's purpose takes when drawn, so each block leads
@@ -1408,7 +1541,7 @@ fn read_cut(purpose: &str) -> Option<&str> {
 /// drawn `whole`; a purpose cut there, or read already cut at its length,
 /// ends in one ellipsis after a whole word.
 fn purpose_drawn(said: &str, width: usize, whole: bool) -> String {
-    use crate::swarm::wrapped;
+    use crate::swarm::{drawn_width, within, wrapped};
     // Judged as its node counted it, before the marks one_line drops.
     let length = read_cut(said).map(|kept| kept.chars().count());
     let cleaned = one_line(said);
@@ -1435,7 +1568,7 @@ fn purpose_drawn(said: &str, width: usize, whole: bool) -> String {
         return drawn;
     }
     let mut kept: Vec<String> = drawn.lines().take(most).map(str::to_owned).collect();
-    let holds_the_mark = |line: &str| line.chars().count() + 2 <= width;
+    let holds_the_mark = |line: &str| drawn_width(line) + 2 <= width;
     // Drawn whole, every word read stays, so a mark with no room left on
     // the last line takes one of its own.
     if whole && kept.last().is_some_and(|last| !holds_the_mark(last)) {
@@ -1445,7 +1578,7 @@ fn purpose_drawn(said: &str, width: usize, whole: bool) -> String {
             if let Some(at) = last.trim_end().rfind(' ').filter(|at| *at > 2) {
                 last.truncate(at);
             } else {
-                *last = last.chars().take(width.saturating_sub(2)).collect();
+                *last = within(last, width.saturating_sub(2)).to_owned();
                 break;
             }
         }
@@ -1476,7 +1609,7 @@ fn closed(document: &Value) -> bool {
 /// its row would pass `width`. Unless drawn `whole`, the closed ones are
 /// counted in a line of their own, saying how `cell`'s are listed.
 fn documents_drawn(documents: &[Value], cell: &str, whole: bool, width: usize) -> String {
-    use crate::swarm::{fit, wrapped};
+    use crate::swarm::{drawn_width, fit, padded, wrapped};
     if documents.is_empty() {
         return wrapped("No research, plans or reports yet.", "  ", "  ", width);
     }
@@ -1486,16 +1619,17 @@ fn documents_drawn(documents: &[Value], cell: &str, whole: bool, width: usize) -
         .filter(|each| whole || !closed(each))
         .collect();
     // Padded to the longest, up to a stage's length, so one long kind or
-    // stage, uncut into a pipe, makes its own row long and no other.
-    let padded = |field: &str| {
+    // stage, uncut into a pipe, makes its own row long and no other. A
+    // peer writes both, so each is counted in the cells it draws.
+    let widest = |field: &str| {
         shown
             .iter()
-            .map(|each| text(&each[field]).len())
+            .map(|each| drawn_width(&text(&each[field])))
             .max()
             .unwrap_or(0)
             .min(PADDED_MOST)
     };
-    let (kinds, stages) = (padded("kind"), padded("stage"));
+    let (kinds, stages) = (widest("kind"), widest("stage"));
     let mut drawn = String::new();
     for document in &shown {
         let (ticked, open) = (
@@ -1508,9 +1642,9 @@ fn documents_drawn(documents: &[Value], cell: &str, whole: bool, width: usize) -
             format!("{ticked} of {} ticked", ticked + open)
         };
         let row = format!(
-            "  {:kinds$}  {:stages$}  {steps:<16}  {}",
-            text(&document["kind"]),
-            text(&document["stage"]),
+            "  {}  {}  {steps:<16}  {}",
+            padded(&text(&document["kind"]), kinds),
+            padded(&text(&document["stage"]), stages),
             text(&document["title"]),
         );
         // Writing to a String never fails.
@@ -2856,6 +2990,37 @@ mod tests {
     }
 
     #[test]
+    fn a_wide_kind_or_stage_keeps_the_titles_in_line() {
+        let mut cell = forage("KESTRL", "kestrel", "QEST-1");
+        cell["documents"] = json!([
+            {"kind": "調査", "title": "Hover", "stage": "計画", "ticked": 2, "open": 2},
+            {"kind": "plan", "title": "Wind", "stage": "build", "ticked": 1, "open": 1},
+        ]);
+        // Both wide fields share a row, so a miscount in one can't be
+        // made up by the other's in the next row.
+        let drawn = draw(&[cell], None, 80);
+        // Measured by Unicode's widths directly, not by the code under
+        // test, as nothing here is coloured.
+        let cells = <str as unicode_width::UnicodeWidthStr>::width;
+        let at = |title: &str| {
+            drawn
+                .lines()
+                .find_map(|line| line.find(title).map(|at| cells(&line[..at])))
+        };
+        assert!(
+            at("Hover").is_some() && at("Hover") == at("Wind"),
+            "a wide kind or stage moved its title out of line:\n{drawn}"
+        );
+        // Two, the kinds' 4 cells, two, the stages' 5, two, the steps'
+        // 16 and two: counted in bytes, the kinds and stages take 6 each.
+        assert_eq!(
+            at("Hover"),
+            Some(33),
+            "the kind and stage columns were not as wide as they draw:\n{drawn}"
+        );
+    }
+
+    #[test]
     fn into_a_pipe_nothing_is_cut_or_counted() {
         let purpose = "Kestrel hovers over the field ".repeat(10);
         let mut cell = forage("KESTRL", "kestrel", "QEST-1");
@@ -3435,6 +3600,107 @@ mod tests {
         // Neither is a control, yet an editor or a viewer breaks a line
         // at each, so a title could draw a row of its own.
         assert_eq!(one_line("fly\u{2028}  plan\u{2029}done"), "fly   plan done");
+    }
+
+    #[test]
+    fn a_character_that_draws_nothing_is_left_out() {
+        // Each takes no room, so a name holding one reads as another's.
+        assert_eq!(
+            one_line("SK\u{200B}IFF\u{200C}1\u{200D} \u{00AD}tern\u{2060}\u{FEFF}"),
+            "SKIFF1 tern"
+        );
+        assert_eq!(
+            one_line("SKIFF1\u{3164}\u{E0041}\u{FE0F}\u{034F} tern\u{115F}\u{2065}"),
+            "SKIFF1 tern",
+            "a filler, a tag, a selector or a grapheme joiner beside ASCII was kept"
+        );
+        assert_eq!(
+            one_line("SK\u{FFF9}IFF\u{1BCA0}1\u{1D173}\u{206A} tern\u{E0080}\u{E0FFF}"),
+            "SKIFF1 tern",
+            "an annotation, shorthand, musical or old shaping control, or a tag past \
+             the flags', was kept"
+        );
+    }
+
+    #[test]
+    fn a_joiner_that_spells_a_word_or_an_emoji_is_kept() {
+        // Persian spells "I want" with a non-joiner, and a heart on fire
+        // is a heart, its emoji selector, a joiner and a fire.
+        for spelt in [
+            "\u{645}\u{6CC}\u{200C}\u{62E}\u{648}\u{627}\u{647}\u{645}",
+            "\u{2764}\u{FE0F}\u{200D}\u{1F525}",
+        ] {
+            assert_eq!(one_line(spelt), spelt, "a joiner past ASCII was dropped");
+        }
+    }
+
+    #[test]
+    fn a_run_of_joined_emoji_keeps_no_more_joiners_than_unicode_s_longest() {
+        let woman = "\u{1F469}";
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
+        let kiss =
+            "\u{1F469}\u{1F3FB}\u{200D}\u{2764}\u{FE0F}\u{200D}\u{1F48B}\u{200D}\u{1F468}\u{1F3FC}";
+        for whole in [family, kiss, &format!("{family}{family}")] {
+            assert_eq!(
+                one_line(whole),
+                whole,
+                "a sequence Unicode names lost a joiner"
+            );
+        }
+        let joined = |count: usize| vec![woman; count].join("\u{200D}");
+        assert_eq!(
+            one_line(&joined(7)),
+            format!("{}{}", joined(4), joined(3)),
+            "a joiner past three in a run was kept"
+        );
+    }
+
+    #[test]
+    fn a_joiner_or_selector_beside_ascii_is_left_out_whatever_vouches_for_it() {
+        for (said, read) in [
+            ("\u{D8}\u{200C}SKIFF", "\u{D8}SKIFF"),
+            ("SKIFF\u{200D}\u{E9}", "SKIFF\u{E9}"),
+            ("SKIFF1\u{202E}\u{FE0F}", "SKIFF1"),
+            ("SKIFF\u{2066}\u{200C}\u{2066}1", "SKIFF1"),
+            ("Reef\u{2028}\u{FE0F}", "Reef "),
+            // A space past ASCII survives as itself, and vouches for nothing.
+            ("Reef\u{A0}\u{FE0F}", "Reef\u{A0}"),
+            ("\u{E9}\u{3000}\u{200D}\u{E9}", "\u{E9}\u{3000}\u{E9}"),
+            ("Reef\u{FDD0}\u{FE0F}", "Reef\u{FDD0}"),
+            // So does one past the first plane, which a cleaning drops.
+            ("Reef\u{1FFFF}\u{FE0F}", "Reef\u{1FFFF}"),
+            // As does a braille blank, which a cleaning may trim.
+            ("\u{E9}\u{200D}\u{2800}", "\u{E9}\u{2800}"),
+            ("\u{2800}\u{FE0F}\u{E9}", "\u{2800}\u{E9}"),
+            (
+                "do\u{10FFFE}\u{200D}\u{10FFFE}ck",
+                "do\u{10FFFE}\u{10FFFE}ck",
+            ),
+            // A keycap's base is ASCII, so it loses its emoji form.
+            ("1\u{FE0F}\u{20E3}", "1\u{20E3}"),
+        ] {
+            assert_eq!(
+                one_line(said),
+                read,
+                "a joiner or selector with ASCII on one side, or vouched for only by \
+                 a mark, a break or a noncharacter, was kept from {said:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_one_selector_is_kept_even_from_a_long_run() {
+        assert_eq!(
+            one_line("caf\u{E9}\u{FE00}\u{FE0F}\u{E0100}"),
+            "caf\u{E9}\u{FE00}",
+            "a selector after a selector was kept"
+        );
+        let long = format!("\u{E9}{}", "\u{FE0F}".repeat(200_000));
+        assert_eq!(
+            one_line(&long),
+            "\u{E9}\u{FE0F}",
+            "a run of selectors was kept"
+        );
     }
 
     #[test]

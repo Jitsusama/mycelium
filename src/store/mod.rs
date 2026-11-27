@@ -124,6 +124,14 @@ pub trait Store: Clone + Send + Sync + 'static {
     /// another link holds it.
     fn claim(&self, machine: &str) -> io::Result<Option<Claim>>;
 
+    /// Asks the link holding `machine`'s claim to let it go, for a newer
+    /// link with it, as of now.
+    fn supersede(&self, machine: &str) -> io::Result<()>;
+
+    /// When a newer link last asked for `machine`'s claim, in milliseconds
+    /// since the epoch, if one ever did.
+    fn superseded(&self, machine: &str) -> Option<i64>;
+
     /// Until when this store was last linked with `machine`, in
     /// milliseconds since the epoch, if it ever was.
     fn linked_until(&self, machine: &str) -> Option<i64>;

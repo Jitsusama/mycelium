@@ -114,6 +114,11 @@ impl Disk for Viewed {
         self.here(&folder.join(".git")).is_some()
     }
 
+    fn is_cut_tree(&self, folder: &Path) -> bool {
+        self.here(&folder.join(".git"))
+            .is_some_and(|real| real.is_file())
+    }
+
     fn resolved(&self, folder: &Path) -> PathBuf {
         self.here(folder).unwrap_or_else(|| lexical(folder))
     }
@@ -204,6 +209,26 @@ mod tests {
         assert!(viewed.is_folder(&rows));
         assert_eq!(viewed.resolved(&rows), rows.canonicalize().expect("real"));
         assert_eq!(viewed.cwd(), rows);
+    }
+
+    // A tree cut from a repository kept elsewhere has a `.git` file naming
+    // it, where the repository's own checkout has a folder; an asker's
+    // view tells them apart, as this machine's Disk does in sprout's.
+    #[test]
+    fn a_tree_cut_from_a_repository_elsewhere_is_told_from_its_own_checkout() {
+        let place = tempfile::tempdir().expect("a place");
+        let rows = place.path().join("src/rows");
+        checkout(&rows);
+        let tidy = place.path().join("trees/tidy");
+        fs::create_dir_all(&tidy).expect("the tree is made");
+        let named = "gitdir: ../../src/rows/.git/worktrees/tidy\n";
+        fs::write(tidy.join(".git"), named).expect("it names its repository");
+        let procs = place.path().join("proc");
+        asking(&procs, 43, 7, Path::new("/"), &rows);
+        let viewed = Viewed::of(&procs, 43, 7).expect("the asker is seen");
+
+        assert!(viewed.is_checkout(&tidy) && viewed.is_cut_tree(&tidy));
+        assert!(viewed.is_checkout(&rows) && !viewed.is_cut_tree(&rows));
     }
 
     #[test]
@@ -307,6 +332,7 @@ mod tests {
             folder: Some(folder.to_owned()),
             from: None,
             on: None,
+            needs: Vec::new(),
             cwd: None,
         }
     }

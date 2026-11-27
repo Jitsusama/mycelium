@@ -118,6 +118,17 @@ impl Through {
             .and_then(|mut client| client.ask(request))
             .map_err(|error| format!("the node didn't answer: {error}"))?
     }
+
+    /// Machine `to` as the node, carrying, knows it, or none where it
+    /// knows of none so named.
+    fn linked(&self, to: &str) -> Result<Option<crate::facts::Machine>, String> {
+        match self.ask(&Request::Machines)? {
+            Response::Machines(machines) => {
+                Ok(machines.into_iter().skip(1).find(|one| one.name == to))
+            }
+            other => Err(format!("the node answered {other:?} for its machines")),
+        }
+    }
 }
 
 impl Hands for Through {
@@ -132,14 +143,7 @@ impl Hands for Through {
     }
 
     fn lent(&mut self, to: &str) -> Result<Lent, String> {
-        match self.ask(&Request::Machines)? {
-            Response::Machines(machines) => Ok(machines
-                .iter()
-                .skip(1)
-                .find(|one| one.name == to)
-                .map_or(Lent::Not, Lent::of)),
-            other => Err(format!("the node answered {other:?} for its machines")),
-        }
+        Ok(self.linked(to)?.map_or(Lent::Not, |one| Lent::of(&one)))
     }
 
     fn sessions(&mut self) -> Result<Vec<Session>, String> {
@@ -238,25 +242,38 @@ impl Hands for Through {
     fn share(&mut self, quest: &str, to: &str) -> Result<(), String> {
         debug_assert_eq!(quest, self.quest, "a carry shares its own quest");
         let scratch = ["handover".to_owned()];
-        let shared = match self.lent(to)? {
-            Lent::Not => self.shares.offer(quest, &scratch),
+        let linked = self.linked(to)?;
+        let shared = match linked.as_ref().map_or(Lent::Not, Lent::of) {
+            // A room is one of the person's own to a carry, but its link is
+            // a worker's, which serves only what it was given.
+            Lent::Not if !linked.as_ref().is_some_and(|one| one.worker) => {
+                self.shares.offer(quest, &scratch)
+            }
             Lent::TakesNone => return Err(ground::takes_none(to)),
-            Lent::TakesCarries => {
-                // The whole handover, every machine's, since a worker is
-                // served all of it.
+            lent @ (Lent::Not | Lent::TakesCarries) => {
+                let what = if lent == Lent::Not {
+                    "a room lent for agents"
+                } else {
+                    "a worker"
+                };
+                // The whole handover, every machine's, since a worker's
+                // link serves all of it. Found only once the sessions have
+                // carried into it, so the refusal says where they wait.
                 let handover = self.shares.scratch.join(quest).join("handover");
                 let found = secrets::first_in(&handover).map_err(|error| {
                     format!("{quest}'s handover can't be told free of secrets: {error}")
                 })?;
                 if let Some(secret) = found {
                     return Err(format!(
-                        "{} names a secret, so {quest} isn't given to {to}, a worker",
+                        "{} names a secret, so {quest} isn't given to {to}, {what}; its \
+                         sessions wait in the handover here, so take the secret out and carry \
+                         again, or carry to a machine of the person's own",
                         secret.display()
                     ));
                 }
                 let given = self.shares.offer_to(to, quest, &scratch);
                 if given.is_ok() {
-                    eprintln!("mycelium: {quest} given to {to}, a worker, for a carry");
+                    eprintln!("mycelium: {quest} given to {to}, {what}, for a carry");
                 }
                 given
             }
@@ -661,7 +678,7 @@ mod tests {
         put_brought, refusals, refused, short_host, unstarted, untaken,
     };
     use crate::carry::cell::Brought;
-    use crate::carry::{Refused, Untaken};
+    use crate::carry::{Refused, Untaken, ground};
     use crate::placement::Placement;
     use crate::wire::{Request, Response, Taking};
 
@@ -1031,7 +1048,7 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_is_given_a_quest_whose_handover_names_no_secret() {
+    fn a_worker_is_given_a_quest_free_of_secrets_and_the_persons_own_any_quest() {
         use super::{Hands, Places, Through};
         use crate::declared::Declared;
         use crate::facts;
@@ -1055,11 +1072,17 @@ mod tests {
             }),
             ..facts::measure(name, &facts::Sources::nowhere())
         };
+        let mut cloud = machine("kestrel", None);
+        cloud.declared = Some(Declared {
+            costs_money: true,
+            ..Declared::default()
+        });
         let machines = vec![
             machine("skiff", None),
             machine("tern", Some(true)),
             machine("wren", Some(false)),
             machine("osprey", None),
+            cloud,
         ];
         let mut hands = Through::new(
             dir.path().join("work.sock"),
@@ -1076,13 +1099,16 @@ mod tests {
             !places.given("osprey", quest),
             "one of the person's own is given nothing"
         );
+        hands
+            .share(quest, "kestrel")
+            .expect("shared to one of the person's own in the cloud");
+        assert!(
+            !places.given("kestrel", quest),
+            "which, paid for but lent by no provider, is shared as any of theirs"
+        );
         assert_eq!(
             hands.share(quest, "wren"),
-            Err(
-                "wren is a worker that doesn't declare it takes carries, so nothing is carried \
-                 there"
-                    .to_owned()
-            ),
+            Err(ground::takes_none("wren")),
             "a worker taking none is given nothing"
         );
         hands.share(quest, "tern").expect("given");
@@ -1097,12 +1123,79 @@ mod tests {
         assert_eq!(
             hands.share(quest, "tern"),
             Err(format!(
-                "{} names a secret, so {quest} isn't given to tern, a worker",
+                "{} names a secret, so {quest} isn't given to tern, a worker; its sessions wait \
+                 in the handover here, so take the secret out and carry again, or carry to a \
+                 machine of the person's own",
                 login.display()
             )),
             "a handover holding a login is refused, naming it"
         );
         assert!(!places.given("tern", quest), "and nothing is given");
+        assert_eq!(
+            (hands.share(quest, "osprey"), hands.share(quest, "kestrel")),
+            (Ok(()), Ok(())),
+            "while the person's own share it, login and all, in the cloud as on the desk"
+        );
+    }
+
+    #[test]
+    fn a_room_its_node_names_is_given_the_quest_its_carry_shares() {
+        use super::{Hands, Places, Through};
+        use crate::declared::Declared;
+        use crate::facts;
+        let dir = tempfile::tempdir().expect("places");
+        let places = Places {
+            quests: dir.path().join("quests"),
+            scratch: dir.path().join("scratch"),
+            home: dir.path().join("home"),
+            state: dir.path().join("state"),
+        };
+        let quest = "QEST-20261115-HARBOR";
+        fs::create_dir_all(places.record(quest)).expect("its record");
+        let notes = places.scratch.join(quest).join("handover").join("skiff");
+        fs::create_dir_all(&notes).expect("a handover");
+        fs::write(notes.join("s-busy01.done.json"), "{}").expect("a done file");
+        // Lent by a provider's link, as a room is, and named by its node.
+        let room = facts::Machine {
+            worker: true,
+            held_for: facts::HeldFor::Agents,
+            declared: Some(Declared {
+                costs_money: true,
+                ..Declared::default()
+            }),
+            ..facts::measure("osprey", &facts::Sources::nowhere())
+        };
+        let machines = vec![facts::measure("skiff", &facts::Sources::nowhere()), room];
+        let mut hands = Through::new(
+            dir.path().join("work.sock"),
+            places.clone(),
+            quest,
+            Duration::from_secs(1),
+        )
+        .asking(Box::new(move |request| match request {
+            Request::Machines => Ok(Response::Machines(machines.clone())),
+            other => Err(format!("asked {other:?}")),
+        }));
+        hands.share(quest, "osprey").expect("shared to the room");
+        assert!(
+            places.given("osprey", quest),
+            "its link serves a worker only what it was given, so the room is given it"
+        );
+        let login = notes.join("cells").join("auth.json");
+        fs::create_dir_all(notes.join("cells")).expect("a cells folder");
+        fs::write(&login, "{}").expect("a login");
+        fs::remove_dir_all(places.state.join("given")).expect("the gift taken back");
+        assert_eq!(
+            hands.share(quest, "osprey"),
+            Err(format!(
+                "{} names a secret, so {quest} isn't given to osprey, a room lent for agents; \
+                 its sessions wait in the handover here, so take the secret out and carry \
+                 again, or carry to a machine of the person's own",
+                login.display()
+            )),
+            "a handover holding a login is refused a room, as a worker, naming it"
+        );
+        assert!(!places.given("osprey", quest), "and nothing is given");
     }
 
     // 8855BD77's council (23 November): hands made once the session was

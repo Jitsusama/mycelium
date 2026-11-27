@@ -29,6 +29,67 @@ const RESUMING: [&str; 2] = ["--session", "--session-id"];
 /// `.../2026-11-14T22-23-37-209Z_<id>.jsonl`, is the id that path ends in.
 #[must_use]
 pub fn resumed(command: &[String]) -> Option<String> {
+    trimmed(named(command).first()?)
+}
+
+/// Whether `command` resumes `session`: by the very word it names, or a
+/// log's path ending in it, as `.../<time>Z_<session>.jsonl`, since
+/// [`resumed`] reads an `_` or a `.` as a log path's, and an id may hold
+/// either. So `pi --session a_b` resumes `a_b`, though [`resumed`] says
+/// `b`. It errs toward a match, as `x_a` resuming `a` too, and as any
+/// word the command names a session by, not only the first, since a
+/// match only refuses a reopening, where a miss would start a second pi.
+#[must_use]
+pub fn resumes(command: &[String], session: &str) -> bool {
+    named(command).into_iter().any(|word| {
+        let stem = Path::new(&word).file_stem().and_then(|stem| stem.to_str());
+        word == session
+            || stem == Some(session)
+            || stem.is_some_and(|stem| {
+                stem.strip_suffix(session)
+                    .is_some_and(|it| it.ends_with('_'))
+            })
+    })
+}
+
+/// Every session `command` names by `--session` or `--session-id`, under
+/// any program or in a shell's `-c` script with its positional
+/// parameters filled in: each such word, first to last, and each id that
+/// word may end in where it is a log's path, as [`tails`] reads them.
+/// It errs toward naming too many, as [`resumes`] does, since each is
+/// only held to what stands. An id a script works out as it runs, or a
+/// resume naming none, as `--continue`, is not found.
+#[must_use]
+pub fn sessions_named(command: &[String]) -> Vec<String> {
+    let mut sessions = Vec::new();
+    for word in named(command) {
+        let ids = tails(&word);
+        for session in std::iter::once(word).chain(ids) {
+            if !session.is_empty() && !sessions.contains(&session) {
+                sessions.push(session);
+            }
+        }
+    }
+    sessions
+}
+
+/// Each word [`sessions_named`] finds, as `command` writes it, never the
+/// id a log's path ends in: the words pi may take for the start of an
+/// id, which a path's tail never is.
+#[must_use]
+pub fn words_named(command: &[String]) -> Vec<String> {
+    let mut words: Vec<String> = Vec::new();
+    for word in named(command) {
+        if !word.is_empty() && !words.contains(&word) {
+            words.push(word);
+        }
+    }
+    words
+}
+
+/// Each word naming a session `command` resumes, first to last, as
+/// [`resumed`] finds the first, before it is read as a log's path.
+fn named(command: &[String]) -> Vec<String> {
     let words: Vec<String> = command
         .iter()
         .enumerate()
@@ -41,17 +102,49 @@ pub fn resumed(command: &[String]) -> Option<String> {
         })
         .collect();
     let words: Vec<&str> = words.iter().map(String::as_str).collect();
-    let named = words.iter().enumerate().find_map(|(at, word)| {
-        if let Some((flag, id)) = word.split_once('=')
-            && RESUMING.contains(&flag)
-        {
-            return Some(id);
-        }
-        RESUMING
-            .contains(word)
-            .then(|| words.get(at + 1).copied())
-            .flatten()
-    })?;
+    words
+        .iter()
+        .enumerate()
+        .filter_map(|(at, word)| {
+            if let Some((flag, id)) = word.split_once('=')
+                && RESUMING.contains(&flag)
+            {
+                return Some(id);
+            }
+            RESUMING
+                .contains(word)
+                .then(|| words.get(at + 1).copied())
+                .flatten()
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Each id a log's path `named` may end in, as
+/// `.../2026-11-14T22-23-37-209Z_<id>.jsonl` does: what follows each
+/// `_` of its stem, longest first, since an id may hold an `_` itself,
+/// as `a_b` does, or the whole stem where it holds none. It errs toward
+/// naming too many, as [`resumes`] does, since each only holds a start
+/// back, where a miss starts a second pi.
+fn tails(named: &str) -> Vec<String> {
+    let Some(stem) = Path::new(named).file_stem().and_then(|stem| stem.to_str()) else {
+        return Vec::new();
+    };
+    let mut starts: Vec<usize> = stem.match_indices('_').map(|(at, _)| at + 1).collect();
+    if starts.is_empty() {
+        starts.push(0);
+    }
+    starts
+        .into_iter()
+        .map(|at| &stem[at..])
+        .filter(|id| !id.is_empty() && !id.starts_with('-'))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The id `named` gives, where it may be a log's path, as
+/// `.../2026-11-14T22-23-37-209Z_<id>.jsonl` is.
+fn trimmed(named: &str) -> Option<String> {
     let id = Path::new(named).file_stem()?.to_str()?.rsplit('_').next()?;
     (!id.is_empty() && !id.starts_with('-')).then(|| id.to_owned())
 }
@@ -225,6 +318,39 @@ mod tests {
         all.iter().map(|word| (*word).to_owned()).collect()
     }
 
+    // Round council-20261125T115239116-000008: a relayed start is held
+    // to every session it names, by whatever program, in whatever shape.
+    #[test]
+    fn every_session_a_command_names_is_found_whatever_runs_it() {
+        let cases: [(&[&str], &[&str]); 8] = [
+            (&["pi", "--session", "s-1", "--thinking", "high"], &["s-1"]),
+            (&["env", "A=b", "pi", "--session=s-1", "go"], &["s-1"]),
+            (&["/nix/store/x-pi/bin/pi", "--session-id", "s-2"], &["s-2"]),
+            (
+                &["sh", "-c", "exec pi --session \"$1\"", "sh", "s-3"],
+                &["s-3"],
+            ),
+            (
+                &["pi", "--session", "/l/2026-11-14T22-23-37-209Z_s-4.jsonl"],
+                &["/l/2026-11-14T22-23-37-209Z_s-4.jsonl", "s-4"],
+            ),
+            // An id holding an `_` is held by its log's path as by its own.
+            (
+                &["pi", "--session", "/l/2026-11-14T22-23-37-209Z_a_b.jsonl"],
+                &["/l/2026-11-14T22-23-37-209Z_a_b.jsonl", "a_b", "b"],
+            ),
+            (&["pi", "--session", "a", "--session", "a"], &["a"]),
+            (&["pi", "QUEST_WORKFLOW_FIRST_TEXT=fix --session s-5"], &[]),
+        ];
+        for (command, sessions) in cases {
+            assert_eq!(
+                sessions_named(&words(command)),
+                words(sessions),
+                "{command:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_command_resumes_the_session_it_names() {
         let cases = [
@@ -255,6 +381,57 @@ mod tests {
             (words(&["pi", "--session", "--model"]), None),
         ];
         resumes(cases);
+    }
+
+    // Round council-20261125T054114584-000006 (F5): an id holding an
+    // `_` or a `.` is read as a log path's, so its holder went unseen.
+    #[test]
+    fn a_command_resumes_an_id_holding_what_a_path_would() {
+        for id in ["a_b", "a.b", "01a1-gh"] {
+            assert!(
+                super::resumes(&words(&["pi", "--session", id]), id),
+                "pi --session {id} resumes {id}"
+            );
+            assert!(
+                super::resumes(
+                    &words(&["sh", "-c", &format!("exec pi --session={id}")]),
+                    id
+                ),
+                "so does a script naming it"
+            );
+            let log =
+                format!("/h/.pi/agent/sessions/--h-src--/2026-11-14T22-23-37-209Z_{id}.jsonl");
+            assert!(
+                super::resumes(&words(&["pi", "--session", &log]), id),
+                "and a log's path ending in it (round 7's F1)"
+            );
+        }
+        let log = "/h/.pi/agent/sessions/--h-src--/2026-11-14T22-23-37-209Z_01a1-gh.jsonl";
+        assert!(
+            super::resumes(&words(&["pi", "--session", log]), "01a1-gh"),
+            "a log's path resumes the id it ends in"
+        );
+        assert!(
+            !super::resumes(&words(&["pi", "--session", "a_b"]), "a"),
+            "and nothing but what it names"
+        );
+        assert!(
+            !super::resumes(&words(&["pi"]), "a_b"),
+            "one naming none resumes none"
+        );
+        // Round council-20261125T103525593-000003: a session named after
+        // another is resumed too, since pi may take the last.
+        assert!(
+            super::resumes(
+                &words(&["sh", "-c", "tool --session-id q; exec pi --session x"]),
+                "x"
+            ),
+            "a script naming one before the pi still resumes the pi's"
+        );
+        assert!(
+            super::resumes(&words(&["pi", "--session", "d", "--session", "x"]), "x"),
+            "and so does a command naming two"
+        );
     }
 
     fn resumes<const N: usize>(cases: [(Vec<String>, Option<&str>); N]) {

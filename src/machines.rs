@@ -7,7 +7,7 @@ use crate::builders::Builder;
 use crate::disk::Band;
 use crate::facts::{Machine, Readiness};
 use crate::room::Limit;
-use crate::swarm::{GAP, Look, fit, padded, wrapped};
+use crate::swarm::{GAP, Look, drawn_width, fit, padded, unmarked, wrapped};
 
 /// How far a line's later lines are set in beneath its first.
 const HANGING: &str = "  ";
@@ -71,7 +71,7 @@ pub fn table(machines: &[Machine], builders: &[Builder], look: &Look) -> String 
         out.push_str(&columns(&BUILDER_COLUMNS, &rows, look));
         for builder in builders {
             if let Some(said) = builder.said.as_deref().filter(|said| !said.is_empty()) {
-                let said = format!("{}: {said}", builder.name);
+                let said = unmarked(&format!("{}: {said}", builder.name));
                 out.push_str(&wrapped(&said, "", HANGING, look.width));
             }
         }
@@ -116,7 +116,7 @@ pub fn one(machine: &Machine, look: &Look) -> String {
             look.when(&machine.measured_at).unwrap_or_default(),
         ),
     ];
-    let heading = format!("{}  {}", named(machine), state(machine.state));
+    let heading = unmarked(&format!("{}  {}", named(machine), state(machine.state)));
     let mut out = fit(&heading, look.width);
     out.push('\n');
     out.push_str(&labelled(&lines, look));
@@ -135,35 +135,45 @@ pub fn one_builder(builder: &Builder, look: &Look) -> String {
         ("supports", builder.supported.join(", ")),
         ("says", builder.said.clone().unwrap_or_default()),
     ];
-    let mut out = fit(&format!("{}  {}", builder.name, builder.state), look.width);
+    let heading = unmarked(&format!("{}  {}", builder.name, builder.state));
+    let mut out = fit(&heading, look.width);
     out.push('\n');
     out.push_str(&labelled(&lines, look));
     out
 }
 
 /// Each of `lines` said under its label, its words wrapped to `look`'s
-/// width beneath where the first began, the empty ones left out.
+/// width beneath where the first began, the empty ones left out. What a
+/// machine said of itself is held to one line first, so none of it acts
+/// on the terminal.
 fn labelled(lines: &[(&str, String)], look: &Look) -> String {
     lines
         .iter()
+        .map(|(label, said)| (label, unmarked(said)))
         .filter(|(_, said)| !said.is_empty())
         .map(|(label, said)| {
             let first = format!("{HANGING}{label:<LABEL_WIDTH$}{GAP}");
-            let rest = " ".repeat(first.chars().count());
-            wrapped(said, &first, &rest, look.width)
+            let rest = " ".repeat(drawn_width(&first));
+            wrapped(&said, &first, &rest, look.width)
         })
         .collect()
 }
 
 /// `rows` under `headings`, each column as wide as its widest and as many
 /// as fit `look`'s width whole, the first however narrow, every line cut
-/// to it, the headings faint where it is drawn in colour.
+/// to it, the headings faint where it is drawn in colour. Each cell a
+/// machine or builder said is held to one line before it is counted.
 fn columns(headings: &[&str], rows: &[Vec<String>], look: &Look) -> String {
+    let rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| row.iter().map(|cell| unmarked(cell)).collect())
+        .collect();
+    let rows = &rows;
     let widths: Vec<usize> = (0..headings.len())
         .map(|column| {
             rows.iter()
-                .map(|row| row[column].chars().count())
-                .chain(std::iter::once(headings[column].chars().count()))
+                .map(|row| drawn_width(&row[column]))
+                .chain(std::iter::once(drawn_width(headings[column])))
                 .max()
                 .unwrap_or_default()
         })
@@ -177,8 +187,8 @@ fn columns(headings: &[&str], rows: &[Vec<String>], look: &Look) -> String {
         })
         .count()
         .max(1);
-    let line = |cells: Vec<&str>| {
-        let drawn: Vec<String> = cells
+    let line = |said: Vec<&str>| {
+        let drawn: Vec<String> = said
             .iter()
             .zip(&widths)
             .take(shown)
@@ -230,7 +240,8 @@ fn builder_row(builder: &Builder) -> Vec<String> {
 
 /// What about `machine` is worth a person's look, a line each: an update
 /// that ended unsettled, its own health ailing, a disk filling, or the
-/// queue's limits it is at.
+/// queue's limits it is at. Each line is the machine's own words too, so
+/// it is held to one line and drops what draws nothing.
 fn worth_a_look(machine: &Machine, look: &Look) -> Vec<String> {
     let mut worth = Vec::new();
     if machine.worker {
@@ -276,7 +287,7 @@ fn worth_a_look(machine: &Machine, look: &Look) -> Vec<String> {
             limits.join(" and ")
         ));
     }
-    worth
+    worth.iter().map(|line| unmarked(line)).collect()
 }
 
 /// How `state` reads.
@@ -492,6 +503,90 @@ mod tests {
             .filter(|line| line.chars().count() > 40)
             .collect();
         assert!(long.is_empty(), "lines past 40 columns: {long:?}");
+    }
+
+    #[test]
+    fn drawn_whole_every_column_is_there_and_nothing_wraps() {
+        assert_eq!(
+            table(&[osprey()], &[], &look(crate::swarm::WHOLE)),
+            "machine  state  busy  memory free  disk free      power         updated\n\
+             osprey   ready        ? of 48 GiB  130 of 994 GB  battery 100%  failed 16:29\n\
+             \n\
+             osprey's update failed at 16:29: building the system failed (exit status: 1)\n"
+        );
+    }
+
+    #[test]
+    fn drawn_whole_a_line_past_the_old_pipe_width_stays_one_line() {
+        let why = "/nix/store/0c3f4a9b2d1e8f7a6b5c4d3e2f1a0b9c-nixos-system-tern failed to \
+                   build, as a dependency could not be fetched";
+        let mut long = tern();
+        long.updated = Some(json!({"step": "failed", "at": "2026-11-12T16:29:02Z", "why": why}));
+        let said = format!("tern's update failed at 16:29: {why}");
+        assert!(said.chars().count() > 100, "the case passes 100 columns");
+        let whole = look(crate::swarm::WHOLE);
+        for drawn in [
+            table(&[osprey(), long.clone()], &[skiff()], &whole),
+            one(&long, &whole),
+        ] {
+            assert!(
+                drawn.lines().any(|line| line.trim_start() == said),
+                "a line past 100 columns was cut or wrapped:\n{drawn}"
+            );
+            assert!(!drawn.contains('…'), "a word was shortened:\n{drawn}");
+        }
+    }
+
+    #[test]
+    fn a_machine_s_own_words_reach_no_page_but_as_one_line() {
+        // A builder's name and words are its machine's too, so each is
+        // dirtied alike.
+        let named = |name: &str, why: &str| {
+            let mut tern = tern();
+            tern.name = name.to_owned();
+            tern.updated = Some(json!({"step": "failed", "at": "2026-11-12T16:29:02Z",
+                "why": why}));
+            let mut skiff = skiff();
+            skiff.name = format!("sk{name}");
+            skiff.said = Some(why.to_owned());
+            (tern, skiff)
+        };
+        let pages = |(tern, skiff): &(Machine, Builder)| {
+            [80, crate::swarm::WHOLE].map(|width| {
+                let look = look(width);
+                [
+                    table(
+                        &[osprey(), tern.clone()],
+                        std::slice::from_ref(skiff),
+                        &look,
+                    ),
+                    one(tern, &look),
+                    one_builder(skiff, &look),
+                ]
+            })
+        };
+        assert_eq!(
+            pages(&named("te\u{200B}rn\u{fdd0}", "it\u{200B} failed")),
+            pages(&named("tern", "it failed")),
+            "what draws nothing, or a mark, in a machine's name or words moved a column"
+        );
+        let (name, why) = ("tern\u{1b}]0;x\u{7}", "it\r\nfailed \u{1b}[2J");
+        let dirty = pages(&named(name, why));
+        assert!(
+            !dirty
+                .iter()
+                .flatten()
+                .any(|page| page.contains(['\u{1b}', '\u{7}', '\r'])),
+            "a machine's escape reached a page: {dirty:?}"
+        );
+        assert_eq!(
+            dirty,
+            pages(&named(
+                &crate::forage::one_line(name),
+                &crate::forage::one_line(why)
+            )),
+            "a machine's escape or break drew otherwise than its words on one line"
+        );
     }
 
     #[test]
