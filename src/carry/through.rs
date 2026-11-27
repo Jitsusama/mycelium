@@ -723,8 +723,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        UNREADABLE_REFUSAL, Unreadable, failed_why, forget_stale, handover, left, mark_started,
-        put_brought, refusals, refused, short_host, unstarted, untaken,
+        LAST_SAID, UNREADABLE_REFUSAL, Unreadable, failed_why, forget_stale, handover, left,
+        mark_started, put_brought, refusals, refused, short_host, unstarted, untaken,
     };
     use crate::carry::cell::Brought;
     use crate::carry::{Refused, Untaken, ground};
@@ -1483,6 +1483,10 @@ mod tests {
         );
     }
 
+    /// What [`failed_why`] says before the last line it quotes, where
+    /// `pi-carry` exited 1 saying no why.
+    const QUOTING: &str = "it exited 1, saying nothing of why; its last line was ";
+
     #[test]
     fn pi_carry_failing_silently_quotes_its_last_line_escaped_and_cut() {
         let last = format!("\u{1b}[2J{}", "x".repeat(4000));
@@ -1492,12 +1496,76 @@ mod tests {
             "what it printed can't pass as the node's own words: {why:?}"
         );
         assert!(
-            why.starts_with("it exited 1, saying nothing of why; its last line was \\u{1b}[2J"),
+            why.starts_with(&format!("{QUOTING}\\u{{1b}}[2J")),
             "escaped, not dropped: {why:?}"
         );
+        assert_eq!(
+            why.chars().count(),
+            QUOTING.len() + LAST_SAID + "...".len(),
+            "and cut, so one line can't swamp the node's log"
+        );
         assert!(
-            why.ends_with("...") && why.chars().count() < 400,
-            "and cut, so one line can't swamp the node's log: {} characters",
+            why.chars().count() <= 300,
+            "short of a log line's worth: {} characters",
+            why.chars().count()
+        );
+        let quoted = |last: &str| {
+            failed_why(last.as_bytes(), b"", ExitStatus::from_raw(1 << 8))
+                .strip_prefix(QUOTING)
+                .map(str::to_owned)
+        };
+        let whole = "x".repeat(LAST_SAID);
+        assert_eq!(
+            quoted(&whole),
+            Some(whole.clone()),
+            "a line of exactly {LAST_SAID} is kept whole"
+        );
+        assert_eq!(
+            quoted(&format!("{whole}x")),
+            Some(format!("{whole}...")),
+            "and one a character longer is cut"
+        );
+    }
+
+    #[test]
+    fn pi_carry_failing_quotes_its_why_lines_escaped_and_cut() {
+        let line = |why: &str| json!({"kind": "failed", "why": why}).to_string();
+        let output = format!(
+            "{}\n{}\n",
+            line("~/src/harbour has changes\n\u{1b}]0;node: carried\u{7}"),
+            line(&"y".repeat(4000)),
+        );
+        let why = failed_why(output.as_bytes(), b"", ExitStatus::from_raw(1 << 8));
+        assert!(
+            !why.contains(['\n', '\u{1b}', '\u{7}']),
+            "what it said can't break the log's line or pass as the node's own: {why:?}"
+        );
+        assert!(
+            why.starts_with("~/src/harbour has changes\\n\\u{1b}]0;node: carried\\u{7}; yyy"),
+            "escaped, not dropped, and joined: {why:?}"
+        );
+        assert!(
+            why.ends_with("...") && why.chars().count() < 2000,
+            "and cut, so its lines can't swamp the node's log: {} characters",
+            why.chars().count()
+        );
+    }
+
+    #[test]
+    fn pi_carry_failing_quotes_its_errors_escaped_and_cut() {
+        let errors = format!("node: not found\n\u{1b}[2J{}\n", "z".repeat(4000));
+        let why = failed_why(b"", errors.as_bytes(), ExitStatus::from_raw(1 << 8));
+        assert!(
+            !why.contains(['\n', '\u{1b}']),
+            "what it wrote can't break the log's line or pass as the node's own: {why:?}"
+        );
+        assert!(
+            why.starts_with("node: not found\\n\\u{1b}[2Jzzz"),
+            "escaped, its newlines too, not dropped: {why:?}"
+        );
+        assert!(
+            why.ends_with("...") && why.chars().count() < 2000,
+            "and cut, so its errors can't swamp the node's log: {} characters",
             why.chars().count()
         );
     }
