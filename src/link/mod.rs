@@ -428,6 +428,7 @@ pub async fn run(
         has: HashSet::new(),
         sent: BTreeMap::new(),
         carried: HashSet::new(),
+        unkept: BTreeMap::new(),
         _claim: claim,
     };
 
@@ -1318,6 +1319,12 @@ struct End<S> {
     /// says which hold its sessions.
     held: Option<PathBuf>,
     carried: HashSet<String>,
+    /// The presences the other end sent that the store refused, each
+    /// with its leases, by session: one that still lives here, carried
+    /// there before it ended here. The other end says a presence only
+    /// as it changes, so each is put again as this machine's sessions
+    /// move, and stands once the one here has ended.
+    unkept: BTreeMap<String, (Value, Option<Vec<Value>>)>,
     exchange: Option<Exchange>,
     /// This machine's own health, as its node keeps it, which a word
     /// moving has said again at once rather than with the next minute's
@@ -1500,7 +1507,10 @@ impl<S: Store> End<S> {
     ) -> io::Result<()> {
         match change {
             Change::Message(id) => self.send_messages(vec![id], writing).await,
-            Change::Presence => self.send_presence(writing).await,
+            Change::Presence => {
+                self.put_unkept();
+                self.send_presence(writing).await
+            }
             Change::Rescan => self.catch_up(writing).await,
             // A machine's facts and carries cross only from that machine
             // itself, and this end measures its own facts as it sends them.
@@ -1656,6 +1666,7 @@ impl<S: Store> End<S> {
             } => self.hear_presence(&session, body, leases, held, started_by),
             Frame::Ended { session } => {
                 self.carried.remove(&session);
+                self.unkept.remove(&session);
                 self.store.remove_presence(&session, &self.other)?;
             }
             Frame::Share(say) => {
@@ -2113,17 +2124,52 @@ impl<S: Store> End<S> {
                 fields.insert(mesh::STARTED_BY_AS.to_owned(), Value::String(started_by));
             }
         }
+        let put = self.keep_presence(session, body, leases);
+        self.kept(session, put);
+    }
+
+    /// Keeps `body`, the presence the other end sent of `session`, with
+    /// `leases`, or holds it among the unkept to put again when the store
+    /// refuses it for a session that is another machine's.
+    fn keep_presence(
+        &mut self,
+        session: &str,
+        body: Value,
+        leases: Option<Vec<Value>>,
+    ) -> io::Result<()> {
         let put = self.store.put_presence(session, &self.other, &body);
-        if put.is_ok() {
-            self.carried.insert(session.to_owned());
-            if let Some(leases) = leases {
-                self.kept(
-                    session,
-                    self.store.put_leases(session, &self.other, &leases),
-                );
+        match &put {
+            Ok(()) => {
+                self.unkept.remove(session);
+                self.carried.insert(session.to_owned());
+                if let Some(leases) = leases {
+                    self.kept(
+                        session,
+                        self.store.put_leases(session, &self.other, &leases),
+                    );
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                self.unkept.insert(session.to_owned(), (body, leases));
+            }
+            Err(_) => {
+                self.unkept.remove(session);
             }
         }
-        self.kept(session, put);
+        put
+    }
+
+    /// Puts each unkept presence again, since this machine's sessions
+    /// moved and one of them may have ended here. One still refused was
+    /// said in the log when it first came, so it isn't said again.
+    fn put_unkept(&mut self) {
+        for (session, (body, leases)) in std::mem::take(&mut self.unkept) {
+            if let Err(error) = self.keep_presence(&session, body, leases)
+                && error.kind() != io::ErrorKind::PermissionDenied
+            {
+                self.kept(&session, Err(error));
+            }
+        }
     }
 
     /// Tells an end that carries steers which talks this end follows, so
@@ -3970,6 +4016,32 @@ mod tests {
             matches!(mac.as_slice(), [one] if one.elsewhere.is_none() && one.lives),
             "the Mac keeps its own, its end on skiff never carried back: {mac:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_session_heard_running_there_while_it_lives_here_stands_there_once_it_ends_here() {
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
+        // Carried from skiff, it came up on the Mac before it ended here,
+        // and the Mac says it only once, as nothing of it changes after.
+        skiff.start_here("moved", json!({"session": "moved"}), true);
+        kestrel.start_here("moved", json!({"session": "moved"}), true);
+        kestrel.start_here("zz-after", json!({"session": "zz-after"}), true);
+
+        let _link = linked(&skiff, &kestrel, 1 << 16);
+        // The Mac's sessions go in order, so once the later one is here,
+        // skiff has heard the moved one and kept its own.
+        until(&skiff, |store| {
+            store.presences().iter().any(|p| p.session == "zz-after")
+        })
+        .await;
+        skiff.start_here("moved", json!({"session": "moved"}), false);
+        until(&skiff, |store| {
+            store.presences().iter().any(|p| {
+                p.session == "moved" && p.elsewhere.as_deref() == Some("kestrel") && p.lives
+            })
+        })
+        .await;
     }
 
     #[tokio::test]

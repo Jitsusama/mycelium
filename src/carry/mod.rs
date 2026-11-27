@@ -11,9 +11,12 @@
 //! carries the rest, shares the quest with its handover, starts each
 //! carried session again on the other machine, held, once `pi-carry
 //! arrive` has its trees there, marking each started so no later carry
-//! starts it again, and waits until the sessions here have ended. A
-//! step that fails says why and nothing after it runs; what was
-//! done stays done, since each step can be taken again.
+//! starts it again, waits until the sessions here have ended, and then
+//! until each runs on the other machine. A step that fails says why
+//! and nothing after it runs; what was done stays done, since each
+//! step before the answer can be taken again. One that fails at the
+//! answer has nothing left to carry, its sessions here ended and each
+//! start there marked started, though a session may still come up there.
 //!
 //! What it does to the world goes through [`Hands`], whose one
 //! implementation is the command's, so the order is proved over a fake.
@@ -63,6 +66,8 @@ pub enum Step {
     Start,
     /// The sessions here ended.
     Close,
+    /// Each session started on the other machine seen running there.
+    Answer,
 }
 
 /// How a step stands as a line says it.
@@ -93,6 +98,9 @@ pub struct Line {
 /// A session started again on the other machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Arrived {
+    /// Its session's id, as its done file names it.
+    #[serde(skip)]
+    pub session: String,
     /// The address it went by here.
     pub address: String,
     /// Its held id there.
@@ -355,6 +363,9 @@ pub trait Hands {
     /// Waits a moment before what is waited for is looked at again, and
     /// says whether there is patience left for another look.
     fn wait(&mut self) -> bool;
+    /// Gives what is waited for next a patience of its own, whatever the
+    /// waits before it spent.
+    fn wait_afresh(&mut self);
 }
 
 /// Carries `quest` from `here` to the machine `to`, saying each step to
@@ -641,7 +652,68 @@ fn rest<F: FnMut(&Value)>(
             "the sessions here have ended".to_owned(),
         );
     }
+
+    said.line(
+        Step::Answer,
+        Stood::Doing,
+        format!("waiting for each session started on {to} to run there"),
+    );
+    // A close that waited out a long turn leaves the starts there no
+    // less to do, so they get a wait of their own.
+    hands.wait_afresh();
+    said.or_failed(Step::Answer, answered(hands, to, &arrived))?;
+    if arrived.is_empty() {
+        said.line(
+            Step::Answer,
+            Stood::Skipped,
+            "no session started there".to_owned(),
+        );
+    } else {
+        said.line(
+            Step::Answer,
+            Stood::Done,
+            format!("{} running on {to}", plural(arrived.len(), "session")),
+        );
+    }
     Ok(arrived)
+}
+
+/// Waits until each of `arrived` runs on `to`, as the node there says
+/// it: its own session, busy or idle there. A start that landed only
+/// holds the arrival, which may still fail before pi takes the session
+/// up, so until then the session runs nowhere. Those that never run
+/// are named, each with how to join its start and see why.
+fn answered(hands: &mut impl Hands, to: &str, arrived: &[Arrived]) -> Result<(), String> {
+    loop {
+        let there = hands.sessions()?;
+        let silent: Vec<&Arrived> = arrived
+            .iter()
+            .filter(|one| {
+                !there.iter().any(|session| {
+                    session.machine == to
+                        && session_id(session) == Some(one.session.as_str())
+                        && runs(session)
+                })
+            })
+            .collect();
+        if silent.is_empty() {
+            return Ok(());
+        }
+        if !hands.wait() {
+            let each: Vec<String> = silent
+                .iter()
+                .map(|one| {
+                    format!(
+                        "{} started on {to} but isn't running there; join its start with `{}` \
+                         to see why",
+                        one.address,
+                        one.attach.join(" ")
+                    )
+                })
+                .collect();
+            return Err(each.join("; "));
+        }
+    }
 }
 
 /// What a carry's sessions were, once found: those it carries, and the
@@ -749,6 +821,7 @@ fn start_each(
         }
         if one.session != quest {
             arrived.push(Arrived {
+                session: one.session.clone(),
                 address,
                 held: started.held,
                 attach: started.attach,
@@ -1420,6 +1493,7 @@ fn plural(count: usize, thing: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Arc;
 
     use serde_json::{Value, json};
 
@@ -1447,6 +1521,11 @@ mod tests {
         ends: bool,
         /// How many more looks it waits for.
         patience: usize,
+        /// How many looks it waits for once told to wait afresh.
+        afresh: usize,
+        /// How many looks at the sessions pass after a start before the
+        /// sessions here end, where they do.
+        ends_after: usize,
         steered: Vec<(String, Value)>,
         rest: Option<String>,
         /// The done files in the handover, each with whether it was
@@ -1461,6 +1540,21 @@ mod tests {
         /// The session, by id, whose start there lands but whose answer
         /// never comes back, as a loaded node's over a link.
         unanswered: Option<String>,
+        /// The sessions, by id, that start there but never run, as one
+        /// whose arrival fails after it was held.
+        silent: BTreeSet<String>,
+        /// The sessions, by id, whose record once started reads on wren
+        /// rather than the machine its start needs.
+        astray: BTreeSet<String>,
+        /// The sessions, by id, whose record once started reads ended
+        /// there, as one whose pi exited as it was taken up.
+        ended_there: BTreeSet<String>,
+        /// How many looks at the sessions pass after a start before the
+        /// sessions started run there.
+        slow: usize,
+        /// How many looks at the sessions there have been since the first
+        /// start.
+        looks: usize,
         /// Who the node proves ordered an `ordered-carry`.
         by: Option<String>,
         /// Who it proves ordered one session's instead, by its address.
@@ -1523,6 +1617,44 @@ mod tests {
     }
 
     impl Realm {
+        /// Each session started, as the node it started on lists it once
+        /// pi runs it there: by the address it went by here, or its id, on
+        /// the machine its start needs, idle, but on wren for one `astray`
+        /// and ended for one `ended_there`. None for the quest's own
+        /// trees, which no pi takes up, nor for one `silent`.
+        fn arrived_there(&self) -> Vec<Session> {
+            self.started
+                .iter()
+                .filter_map(|start| {
+                    let id = start.command.get(6)?;
+                    let [Need::Machine(on)] = start.work.needs.as_slice() else {
+                        return None;
+                    };
+                    if id == QUEST || self.silent.contains(id) {
+                        return None;
+                    }
+                    let address = self
+                        .sessions
+                        .iter()
+                        .find(|one| session_id(one) == Some(id.as_str()))
+                        .map_or_else(|| id.clone(), |one| one.address.clone());
+                    let machine = if self.astray.contains(id) {
+                        "wren"
+                    } else {
+                        on.as_str()
+                    };
+                    let state = if self.ended_there.contains(id) {
+                        "ended"
+                    } else {
+                        "idle"
+                    };
+                    let mut there = session(&address, machine, QUEST, state, &json!({}));
+                    there.presence = Arc::new(json!({"session": id}));
+                    Some(there)
+                })
+                .collect()
+        }
+
         /// Writes `session`'s done file, afresh where one was there.
         fn write(&mut self, session: &str) {
             let one = Done {
@@ -1546,10 +1678,16 @@ mod tests {
         }
         fn sessions(&mut self) -> Result<Vec<Session>, String> {
             let mut sessions = self.sessions.clone();
-            if self.ends && !self.started.is_empty() {
+            if !self.started.is_empty() {
+                self.looks += 1;
+            }
+            if self.ends && !self.started.is_empty() && self.looks > self.ends_after {
                 for one in &mut sessions {
                     one.state = State::Ended;
                 }
+            }
+            if self.looks > self.slow {
+                sessions.extend(self.arrived_there());
             }
             Ok(sessions)
         }
@@ -1736,6 +1874,9 @@ mod tests {
             self.patience = self.patience.saturating_sub(1);
             more
         }
+        fn wait_afresh(&mut self) {
+            self.patience = self.afresh;
+        }
     }
 
     /// A session of `quest` on `machine`, standing as `state` says, its
@@ -1778,6 +1919,7 @@ mod tests {
             carries: ["s-busy01", "s-naps02"].map(str::to_owned).into(),
             ends: true,
             patience: 3,
+            afresh: 3,
             ..Realm::default()
         }
     }
@@ -2006,7 +2148,7 @@ mod tests {
             "a quest with no session here asks nothing and brings nothing"
         );
         let mut unnamed = session("BUSY01", "skiff", QUEST, "busy", &json!({}));
-        if let Some(presence) = std::sync::Arc::make_mut(&mut unnamed.presence).as_object_mut() {
+        if let Some(presence) = Arc::make_mut(&mut unnamed.presence).as_object_mut() {
             presence.remove("session");
         }
         assert_eq!(
@@ -2192,7 +2334,9 @@ mod tests {
                 "start doing",
                 "start done",
                 "close doing",
-                "close done"
+                "close done",
+                "answer doing",
+                "answer done"
             ],
             "each step said as it begins and as it ends: {lines:?}"
         );
@@ -2540,6 +2684,115 @@ mod tests {
             realm.cells.contains("s-naps02"),
             "and the slow one keeps its cell, since it may still be carrying: {:?}",
             realm.cells
+        );
+    }
+
+    #[test]
+    fn a_session_started_there_that_never_runs_fails_the_carry() {
+        // 27 November: a carry onto a room was held there, but its
+        // arrival exited at once, as the room had no pi-carry, so its
+        // session ran nowhere.
+        let mut realm = Realm {
+            silent: ["s-naps02"].map(str::to_owned).into(),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        assert_eq!(
+            done,
+            Err(Failed { step: Step::Answer }),
+            "a start there isn't a carry until the session runs there"
+        );
+        let said = last_said(&lines);
+        assert!(
+            said.contains("NAPS02") && !said.contains("BUSY01"),
+            "naming the one that doesn't run, not one that does: {said}"
+        );
+        assert!(
+            said.contains("mycelium attach h1"),
+            "with how to join its start, to see why: {said}"
+        );
+    }
+
+    #[test]
+    fn a_session_found_running_on_another_machine_fails_the_carry() {
+        let mut realm = Realm {
+            astray: ["s-naps02"].map(str::to_owned).into(),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        assert_eq!(
+            done,
+            Err(Failed { step: Step::Answer }),
+            "a session runs there only on the machine it was started on"
+        );
+        let said = last_said(&lines);
+        assert!(
+            said.contains("NAPS02") && !said.contains("BUSY01"),
+            "naming the one running elsewhere, not one running there: {said}"
+        );
+    }
+
+    #[test]
+    fn a_session_whose_record_there_has_ended_fails_the_carry() {
+        let mut realm = Realm {
+            ended_there: ["s-naps02"].map(str::to_owned).into(),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        assert_eq!(
+            done,
+            Err(Failed { step: Step::Answer }),
+            "a session there that has ended doesn't run there"
+        );
+        let said = last_said(&lines);
+        assert!(
+            said.contains("NAPS02") && !said.contains("BUSY01"),
+            "naming the one that ended, not one running there: {said}"
+        );
+    }
+
+    #[test]
+    fn a_session_started_there_is_waited_for_until_it_runs() {
+        let mut realm = Realm { slow: 2, ..realm() };
+        let (done, lines) = carried(&mut realm, "tern");
+        let done = done.expect("carried, once each runs there");
+        assert_eq!(
+            done.sessions.len(),
+            3,
+            "each told, and the one found after: {done:?}"
+        );
+        assert_eq!(
+            last_said(&lines),
+            "3 sessions running on tern",
+            "said once each runs there"
+        );
+    }
+
+    #[test]
+    fn a_session_started_there_is_waited_for_after_a_close_that_spent_the_wait() {
+        // A busy session may spend the whole wait finishing its turn
+        // here, and its start there still needs a moment to run.
+        let mut realm = Realm {
+            patience: 2,
+            ends_after: 2,
+            slow: 4,
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        let done = done.expect("carried, once each runs there");
+        assert_eq!(
+            realm.looks, 5,
+            "three looks until the sessions here end, two until they run there: {lines:?}"
+        );
+        assert_eq!(
+            done.sessions.len(),
+            3,
+            "each told, and the one found after: {done:?}"
+        );
+        assert_eq!(
+            last_said(&lines),
+            "3 sessions running on tern",
+            "said once each runs there"
         );
     }
 

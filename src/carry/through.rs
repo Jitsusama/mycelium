@@ -31,8 +31,17 @@ const LOOK_EVERY: Duration = Duration::from_secs(2);
 const TIES_WITHIN: Duration = Duration::from_secs(30);
 
 /// How long a carry waits, all told, for the sessions to carry and then
-/// to end: time for a busy one to finish its turn and push.
+/// to end: time for a busy one to finish its turn and push. It then
+/// waits `ANSWERED_WITHIN` of its own for each to run there.
 pub const PATIENCE: Duration = Duration::from_secs(15 * 60);
+
+/// How long a carry waits, once the sessions here have ended, for each
+/// started there to run: its own, whatever the waits before it spent,
+/// since a turn that ended late leaves its start no less to do. Time
+/// for each arrival to fetch its trees over a slow link and for pi to
+/// take its session up, while one whose arrival failed is said within
+/// minutes rather than after another quarter of an hour.
+const ANSWERED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// How a carry's hands put a request to the node from within it, rather
 /// than over its socket: answered as the asker the node vouched for.
@@ -61,7 +70,9 @@ pub struct Through {
 
 impl Through {
     /// Hands for carrying `quest` through the node at `socket`, with the
-    /// quest's share in `shares`, waiting no longer than `patience`.
+    /// quest's share in `shares`, waiting no longer than `patience` for
+    /// the sessions to carry and then to end, and `ANSWERED_WITHIN` more
+    /// for each to run there.
     #[must_use]
     pub fn new(socket: PathBuf, shares: Places, quest: &str, patience: Duration) -> Self {
         // The hostname, not the name the machine goes by in the realm:
@@ -325,6 +336,10 @@ impl Hands for Through {
         }
         thread::sleep(LOOK_EVERY);
         true
+    }
+
+    fn wait_afresh(&mut self) {
+        self.until = Instant::now() + ANSWERED_WITHIN;
     }
 }
 
@@ -1441,6 +1456,44 @@ mod tests {
         assert!(unreadable.first("one"), "a new error is said");
         assert!(!unreadable.first("one"), "the same error isn't said again");
         assert!(unreadable.first("another"), "another error is said");
+    }
+
+    #[test]
+    fn the_answer_waits_afresh_whatever_the_close_spent() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Instant;
+
+        use super::{ANSWERED_WITHIN, Hands, Places, Through};
+        let dir = tempfile::tempdir().expect("places");
+        let places = Places {
+            quests: dir.path().join("quests"),
+            scratch: dir.path().join("scratch"),
+            home: dir.path().join("home"),
+            state: dir.path().join("state"),
+        };
+        let stopped = Arc::new(AtomicBool::new(false));
+        // Hands whose close waited out all their patience.
+        let mut hands = Through::new(
+            dir.path().join("work.sock"),
+            places,
+            "QEST-20261115-HARBOR",
+            Duration::ZERO,
+        )
+        .stopping(Arc::clone(&stopped));
+        assert!(!hands.wait(), "the close has no look left");
+        let before = Instant::now();
+        hands.wait_afresh();
+        let after = Instant::now();
+        assert!(
+            hands.until >= before + ANSWERED_WITHIN && hands.until <= after + ANSWERED_WITHIN,
+            "the answer waits its own span from when it begins"
+        );
+        stopped.store(true, Ordering::Relaxed);
+        assert!(
+            !hands.wait(),
+            "and no longer once whoever carries has stopped"
+        );
     }
 
     #[test]

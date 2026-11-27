@@ -878,6 +878,11 @@ in order and says each step:
    step fails naming those that didn't start, which stay in the
    handover.
 5. `close`: the sessions here are seen to end.
+6. `answer`: each session started is seen to run on the machine, its
+   own record there reading `busy` or `idle`, since a start that landed
+   holds only the arrival, which may still fail before pi takes the
+   session up. The step fails naming each that doesn't, with the words
+   that join its start to see why; what started stays started.
 
 Each step prints `{"step", "state", "said"}` on a line as it begins
 (`doing`) and ends (`done`, `skipped` or `failed`), and the last line is
@@ -890,8 +895,14 @@ the last line `{"step": "handed", "state": "done", "machine",
 "sessions": []}`, since it can't end while the command runs below it.
 A step that fails says why, the
 command exits non-zero, and nothing after it runs; what was done stays
-done, since each step can be taken again. It waits 15 minutes in all for
-the sessions to carry and then to end.
+done, since each step before `answer` can be taken again. A carry that
+fails at `answer` has nothing left to carry: its sessions here have
+ended and each start there is marked started. A session it names may
+still come up there; the words the step named join its start to see
+why it hasn't. It waits 15 minutes in all for the sessions to carry and
+then to end, or an hour for a carry the node carries on itself, and
+then 5 minutes of its own for them to run there, whatever the steps
+before spent.
 
 ### A Carry an Orchestrator Orders
 
