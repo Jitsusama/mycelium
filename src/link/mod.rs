@@ -3489,9 +3489,13 @@ mod tests {
     }
 
     /// Facts of tern with `cores`, on the ground of declaring nothing or
-    /// of saying nothing of what it declares.
+    /// of saying nothing of what it declares. Tern is measured once, so
+    /// the facts a test expects are those it queued, measured at the
+    /// same moment with the same disk free.
     fn facts_of_tern(cores: u32, declares_nothing: bool) -> Frame {
-        let mut machine = facts::measure("tern", &facts::Sources::nowhere());
+        static TERN: std::sync::LazyLock<facts::Machine> =
+            std::sync::LazyLock::new(|| facts::measure("tern", &facts::Sources::nowhere()));
+        let mut machine = TERN.clone();
         machine.cpu.cores = Some(cores);
         machine.declares_nothing = declares_nothing;
         Frame::Machine(Box::new(machine))
