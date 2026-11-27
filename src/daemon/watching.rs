@@ -70,19 +70,22 @@ pub(super) async fn keep_watching<H: Holds>(
     if answering.send(first).await.is_err() {
         return;
     }
-    let mut last_sent = Instant::now();
+    let mut last_read = Instant::now();
     loop {
         tokio::select! {
             heard = told.changed() => {
                 if heard.is_err() {
                     return;
                 }
-                tokio::time::sleep_until(due(holds.as_ref(), last_sent)).await;
+                let at = due(holds.as_ref(), last_read);
+                tokio::time::sleep_until(at).await;
+                last_read = at;
             }
             asked = when.changed() => {
                 if asked.is_err() {
                     return;
                 }
+                last_read = Instant::now();
             }
         }
         let now = held(&holds, *told.borrow_and_update());
@@ -104,23 +107,26 @@ pub(super) async fn keep_watching<H: Holds>(
         if answering.send(said).await.is_err() {
             return;
         }
-        last_sent = Instant::now();
     }
 }
 
-/// When a watch woken now by a change, having last sent at `last_sent`,
+/// When a watch woken now by a change, having last read at `last_read`,
 /// reads what changed: [`BETWEEN_SENDS`] after it woke, or, where its
 /// records are built for every watch, the first [`beat`] at least half
-/// that after it woke and that long after it last sent, so the watches
+/// that after it woke and that long after it last read, so the watches
 /// woken by changes a moment apart read together and share one build.
+/// The floor counts from the read, which for a watch woken by a change
+/// is a beat, never from when its send ended: counted from there, a
+/// send taking any time at all would pass the next beat over, and a
+/// watch kept busy would read on every other.
 ///
 /// [`beat`]: super::Built::beat
-fn due(holds: &impl Holds, last_sent: Instant) -> Instant {
+fn due(holds: &impl Holds, last_read: Instant) -> Instant {
     let now = Instant::now();
     let Some(built) = holds.built() else {
         return now + BETWEEN_SENDS;
     };
-    let after = (now + BETWEEN_SENDS / 2).max(last_sent + BETWEEN_SENDS);
+    let after = (now + BETWEEN_SENDS / 2).max(last_read + BETWEEN_SENDS);
     built.beat(after)
 }
 
@@ -321,6 +327,30 @@ mod tests {
             }
         };
         [tokio::spawn(watch), tokio::spawn(reading)]
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_watch_that_read_on_a_beat_reads_on_the_next_though_its_send_took_a_while() {
+        let holds = Beating {
+            built: crate::daemon::Built::default(),
+            builds: AtomicU32::new(0),
+            told: watch::channel(0).0,
+        };
+        tokio::time::advance(BETWEEN_SENDS).await;
+        let read = Instant::now();
+        assert_eq!(holds.built.beat(read), read, "it read on a beat");
+        tokio::time::advance(Duration::from_millis(5)).await;
+        assert_eq!(
+            due(&holds, read),
+            read + BETWEEN_SENDS,
+            "woken as its send ends, it reads on the next beat"
+        );
+        tokio::time::advance(BETWEEN_SENDS / 2).await;
+        assert_eq!(
+            due(&holds, read),
+            read + BETWEEN_SENDS * 2,
+            "woken too near the next, it waits half a beat at least, so the one after"
+        );
     }
 
     #[tokio::test(start_paused = true)]
