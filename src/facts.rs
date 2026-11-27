@@ -248,6 +248,10 @@ pub struct Sources {
     /// Its kernel's folder of what it says, `/proc` or a stand-in, whose
     /// processor pressure over the last minute its room carries.
     pub procs: PathBuf,
+    /// Its kernel's root of control groups, `/sys/fs/cgroup` or a
+    /// stand-in, below which a ceiling names the groups its disk pressure
+    /// is read from.
+    pub cgroups: PathBuf,
 }
 
 impl Sources {
@@ -262,6 +266,7 @@ impl Sources {
             reached: place::reached(),
             updated: place::updated(),
             procs: "/proc".into(),
+            cgroups: "/sys/fs/cgroup".into(),
         }
     }
 
@@ -278,6 +283,7 @@ impl Sources {
             reached: "/nowhere".into(),
             updated: "/nowhere".into(),
             procs: "/nowhere/proc".into(),
+            cgroups: "/nowhere/cgroup".into(),
         }
     }
 }
@@ -378,6 +384,19 @@ pub fn measure_in(name: &str, realm: &str, sources: &Sources) -> Machine {
     machine
 }
 
+/// The share of the last minute in which its disks held all its work at
+/// once, read from the groups its ceiling names where it names any, since
+/// machine-wide a task held back by a cap of its own counts, and from the
+/// machine's otherwise.
+fn io_full_minute(declared: Option<&Declared>, sources: &Sources) -> Option<f64> {
+    match declared.and_then(|declared| declared.kept_lively.as_ref()) {
+        Some(lively) if !lively.io_full_from.is_empty() => {
+            room::io_full_minute_of(&sources.cgroups, &lively.io_full_from)
+        }
+        _ => room::io_full_minute(&sources.procs),
+    }
+}
+
 /// Measures this machine, named `name`, reading the rest from `sources`.
 #[must_use]
 pub fn measure(name: &str, sources: &Sources) -> Machine {
@@ -403,6 +422,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         .map(|room| Room {
             cpu_minute: room::cpu_minute(&sources.procs),
             memory_full_minute: room::memory_full_minute(&sources.procs),
+            io_full_minute: io_full_minute(declared.as_ref(), sources),
             ..room
         });
     // A machine within another has its host's power and room while its
@@ -850,7 +870,9 @@ mod here {
             fn the_mach_host_counts_every_core_it_has() {
                 let cores = super::cores().expect("the host says its cores' ticks");
                 let had = std::thread::available_parallelism().expect("a core count");
-                assert_eq!(cores.len(), had.get(), "one count for each core");
+                // At least as many as this process may use, since a process
+                // held to fewer cores than the host has still sees them all.
+                assert!(cores.len() >= had.get(), "a count for each core");
                 assert!(
                     cores.iter().any(|&[user, system, idle, nice]| {
                         u64::from(user) + u64::from(system) + u64::from(idle) + u64::from(nice) > 0
@@ -1170,6 +1192,7 @@ mod tests {
             reached: "/nowhere".into(),
             updated: "/nowhere".into(),
             procs: "/nowhere/proc".into(),
+            cgroups: "/nowhere/cgroup".into(),
         };
         let mut machine = measure("osprey", &nowhere);
         let said = serde_json::to_value(&machine).expect("it says itself");
@@ -1354,6 +1377,7 @@ mod tests {
                 reached: home.path().join("reached.json"),
                 updated: home.path().join("last.json"),
                 procs: home.path().join("proc"),
+                cgroups: home.path().join("cgroup"),
             },
         );
         assert_eq!(machine.name, "trial", "it carries the name it was given");
@@ -1403,6 +1427,68 @@ mod tests {
     }
 
     #[test]
+    fn a_ceiling_naming_groups_reads_its_disks_from_them_not_the_machine() {
+        let home = tempfile::tempdir().expect("a temporary folder");
+        let queue = home.path().join("queue.json");
+        let kept = serde_json::json!({
+            "v": 1,
+            "at": "2026-11-26T07:30:00.000Z",
+            "heartbeat": jiff::Timestamp::now().as_second(),
+            "machine": {"cores": 16, "availableGib": 23.5,
+                "pressure": {"cpu": 4.0, "memory": 0.0, "io": 0.0}, "vms": 0},
+            "room": {"vms": 1, "builds": 8},
+            "quiet": null,
+            "jobs": []
+        });
+        std::fs::write(&queue, kept.to_string()).expect("the queue keeps its record");
+        let full = |at: f64| format!("full avg10=0.00 avg60={at:.2} avg300=0.00 total=1\n");
+        let procs = home.path().join("proc");
+        std::fs::create_dir_all(procs.join("pressure")).expect("its pressure");
+        std::fs::write(procs.join("pressure").join("io"), full(8.5)).expect("written");
+        let cgroups = home.path().join("cgroup");
+        std::fs::create_dir_all(cgroups.join("agents.slice")).expect("its group");
+        std::fs::write(cgroups.join("agents.slice").join("io.pressure"), full(2.2))
+            .expect("written");
+        let declared = home.path().join("declared.json");
+        let sources = Sources {
+            queue: Some(queue),
+            declared: Some(declared.clone()),
+            procs,
+            cgroups,
+            ..Sources::nowhere()
+        };
+        let io_with = |lively: &str| {
+            std::fs::write(
+                &declared,
+                format!(
+                    r#"{{"reach": [], "outlives": [], "costs_money": false,
+                        "taints": [], "kept_lively": {lively}}}"#
+                ),
+            )
+            .expect("declared");
+            measure("skiff", &sources)
+                .room
+                .expect("its queue says its room")
+                .io_full_minute
+        };
+        assert_eq!(
+            io_with(r#"{"cpu": 28, "io_full": 1, "io_full_from": ["agents.slice"]}"#),
+            Some(2.2),
+            "the group it names, not the machine its capped survey stalls"
+        );
+        assert_eq!(
+            io_with(r#"{"cpu": 28, "io_full": 1}"#),
+            Some(8.5),
+            "and the machine's where it names none"
+        );
+        assert_eq!(
+            io_with(r#"{"cpu": 28, "io_full": 1, "io_full_from": ["gone.slice"]}"#),
+            None,
+            "a group saying none says no minute, never the machine's"
+        );
+    }
+
+    #[test]
     fn a_machines_room_carries_its_kernels_minute_beside_its_queues_seconds() {
         let home = tempfile::tempdir().expect("a temporary folder");
         let queue = home.path().join("queue.json");
@@ -1425,6 +1511,18 @@ mod tests {
              full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
         )
         .expect("its kernel says its processors' pressure");
+        std::fs::write(
+            procs.join("pressure").join("memory"),
+            "some avg10=9.00 avg60=7.00 avg300=2.00 total=1\n\
+             full avg10=4.00 avg60=3.20 avg300=1.00 total=1\n",
+        )
+        .expect("its kernel says its memory's pressure");
+        std::fs::write(
+            procs.join("pressure").join("io"),
+            "some avg10=30.00 avg60=20.00 avg300=9.00 total=1\n\
+             full avg10=12.00 avg60=8.70 avg300=4.00 total=1\n",
+        )
+        .expect("its kernel says its disks' pressure");
         let sources = Sources {
             queue: Some(queue),
             procs: procs.clone(),
@@ -1445,12 +1543,25 @@ mod tests {
             Some(31.0),
             "and the last minute, as its own kernel says"
         );
-        std::fs::remove_file(procs.join("pressure").join("cpu")).expect("removed");
         assert_eq!(
-            roomed().cpu_minute,
-            None,
+            room.memory_full_minute,
+            Some(3.2),
+            "and the last minute all its work waited on memory at once"
+        );
+        assert_eq!(room.io_full_minute, Some(8.7), "and on its disks at once");
+        std::fs::remove_file(procs.join("pressure").join("cpu")).expect("removed");
+        std::fs::remove_file(procs.join("pressure").join("memory")).expect("removed");
+        std::fs::remove_file(procs.join("pressure").join("io")).expect("removed");
+        let unsaid = roomed();
+        assert_eq!(
+            unsaid.cpu_minute, None,
             "a kernel saying no pressure, as a Mac's, says no minute"
         );
+        assert_eq!(
+            unsaid.memory_full_minute, None,
+            "of its processors or its memory"
+        );
+        assert_eq!(unsaid.io_full_minute, None, "or its disks");
     }
 
     #[test]
@@ -1473,6 +1584,7 @@ mod tests {
                 reached: home.path().join("reached.json"),
                 updated: home.path().join("last.json"),
                 procs: home.path().join("proc"),
+                cgroups: home.path().join("cgroup"),
             },
         );
         assert_eq!(
@@ -1504,6 +1616,7 @@ mod tests {
             reached: home.path().join("reached.json"),
             updated: home.path().join("last.json"),
             procs: home.path().join("proc"),
+            cgroups: home.path().join("cgroup"),
         };
         // A charge no machine running these tests reads of itself.
         let draining = Power {
@@ -1548,6 +1661,7 @@ mod tests {
             reached: home.path().join("reached.json"),
             updated: home.path().join("last.json"),
             procs: home.path().join("proc"),
+            cgroups: home.path().join("cgroup"),
         };
         assert_eq!(
             measure("tern", &sources).updated,
@@ -1584,6 +1698,7 @@ mod tests {
             reached: home.path().join("reached.json"),
             updated: home.path().join("last.json"),
             procs: home.path().join("proc"),
+            cgroups: home.path().join("cgroup"),
         };
         let agents = measure_in("skiff", "work", &sources)
             .declared

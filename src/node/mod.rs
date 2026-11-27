@@ -12600,6 +12600,7 @@ mod tests {
                 saturated: None,
                 cpu_minute: None,
                 memory_full_minute: None,
+                io_full_minute: None,
             }),
             ..kestrel_at("2026-10-29T06:00:00Z")
         };
@@ -20488,6 +20489,7 @@ esac
                 saturated: Some(false),
                 cpu_minute: None,
                 memory_full_minute: None,
+                io_full_minute: None,
             }),
             ..fenced("osprey", &["remote"])
         };
