@@ -186,16 +186,24 @@ pub struct Book {
 }
 
 /// The ends last read, with the stamp the book had as they were read;
-/// none where its stamp couldn't be taken, so they're read again.
+/// none where its stamp couldn't be taken, or the book couldn't be read,
+/// so they're read again.
 type EndsRead = (Option<Stamp>, Ends);
 
 /// A file as its metadata tells it apart from itself once changed: its
-/// inode, its length and when it was last written.
-type Stamp = (u64, u64, std::time::SystemTime);
+/// inode, its length, when it was last written, and when its inode last
+/// changed, as a change of who may read it does, to the nanosecond.
+type Stamp = (u64, u64, std::time::SystemTime, i64, i64);
 
 /// The stamp `file` has now.
 fn stamp(file: &std::fs::Metadata) -> Option<Stamp> {
-    Some((file.ino(), file.len(), file.modified().ok()?))
+    Some((
+        file.ino(),
+        file.len(),
+        file.modified().ok()?,
+        file.ctime(),
+        file.ctime_nsec(),
+    ))
 }
 
 /// When each machine this realm's node made ends, as the book stands by
@@ -507,7 +515,11 @@ impl Book {
         {
             return ends.clone();
         }
-        let ends = match self.standing() {
+        let read = self.standing();
+        // One that couldn't be read is read again at the next ask, though
+        // its stamp hasn't moved.
+        let stamp = stamp.filter(|_| read.is_ok());
+        let ends = match read {
             Ok(standing) => Ends {
                 until: standing
                     .made
@@ -581,9 +593,32 @@ fn kept(line: &str) -> (Option<Kept>, Option<&str>) {
 }
 
 /// What `left`, all that is left of a line cut short, may have hidden
-/// from a book kept by `realm`.
-fn torn(_left: &str, _realm: Option<&str>) -> Torn {
-    Torn::Any
+/// from a book kept by `realm`. A line is kept with its keys in order,
+/// so a release says so before its machine, and a make says its
+/// machine before its place and its realm last; nothing a make holds
+/// before its machine has a key of that name, and a name said within
+/// another's text has its quotes escaped, so the first whole name after
+/// the make's start is its own. What is left before either says which
+/// may be any machine's make.
+fn torn(left: &str, realm: Option<&str>) -> Torn {
+    if left.contains(r#""released":"#)
+        || said(left, "realm").is_some_and(|said| Some(said.as_str()) != realm)
+    {
+        return Torn::Nothing;
+    }
+    left.find(r#""made":{"#)
+        .and_then(|made| said(&left[made..], "machine"))
+        .map_or(Torn::Any, Torn::Machine)
+}
+
+/// The text `left` first says whole for `key`, if it says one.
+fn said(left: &str, key: &str) -> Option<String> {
+    let key = format!("\"{key}\":");
+    let at = left.find(&key)? + key.len();
+    serde_json::Deserializer::from_str(&left[at..])
+        .into_iter::<String>()
+        .next()?
+        .ok()
 }
 
 /// Which machine a release let go.
