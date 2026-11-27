@@ -7210,9 +7210,7 @@ impl<S: Store> Shared<S> {
         if to == self.machine {
             return Err(format!("{address} already runs on {to}"));
         }
-        // A machine made for one asker takes only its sessions and the
-        // person's, so another's is never carried there.
-        if !self.admitted_on(to, &Admits::Asker(address.clone())) {
+        if !self.takes_a_carry(to, &address) {
             return Err(format!(
                 "{to} was made for another asker, so {address} isn't carried there"
             ));
@@ -9814,12 +9812,21 @@ impl<S: Store> Shared<S> {
         })
     }
 
-    /// Whether a carry may take a session to `machine` for `admits`: any
+    /// Whether `to` takes a session carried there by `address`: any
     /// machine not booked, and a booked one only as [`Admits::takes`]
-    /// says. Rooms made for agents count for nothing here, since a carry
-    /// asks as its session's address, which never says whether it is the
-    /// person's, so a session carried never lands in a worker home another
-    /// asker's make wrote.
+    /// says. A machine made for one asker takes only its sessions and the
+    /// person's, so another's never lands in a worker home that asker's
+    /// make wrote. A room made for agents to share takes any agent's, as a
+    /// start placed there does, since its worker home is theirs alike. A
+    /// carry names its machine.
+    fn takes_a_carry(&self, to: &str, address: &str) -> bool {
+        let asker = Admits::Asker(address.to_owned());
+        self.admitted_among(to, &asker, &self.book.agent_rooms(), true)
+    }
+
+    /// Whether `machine` takes `admits` counting no room made for agents,
+    /// as work that doesn't name it.
+    #[cfg(test)]
     fn admitted_on(&self, machine: &str, admits: &Admits) -> bool {
         self.admitted_among(machine, admits, &std::collections::BTreeSet::new(), false)
     }
@@ -25256,6 +25263,25 @@ esac
             weighed(naming, &Admits::Granted).0.as_deref(),
             Some("wren"),
             "a room keeps no last session for the person"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_room_made_for_agents_takes_another_agents_carry() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[("wren", "P9R1KI")]);
+        assert_eq!(
+            (
+                shared.takes_a_carry("wren", "QK4T7Z"),
+                shared.takes_a_carry("wren", "P9R1KI"),
+            ),
+            (false, true),
+            "unnamed as a room, it takes only its asker's carry"
+        );
+        fs::write(dir.path().join(made::AGENT_ROOMS), "wren\n").expect("named");
+        assert!(
+            shared.takes_a_carry("wren", "QK4T7Z"),
+            "named as a room, it takes another agent's carry"
         );
     }
 
