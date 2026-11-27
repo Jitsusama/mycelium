@@ -342,7 +342,10 @@ fn single_spaced(lead: &str) -> String {
 /// escape, which [`Look::paint`] writes and no peer's text keeps once
 /// [`unmarked`], takes none. So it measures only text cleaned or painted
 /// here: in a peer's raw text, an escape never closed would count all
-/// that follows it as no cells.
+/// that follows it as no cells. A character of East Asian Ambiguous
+/// width, such as the tables' own U+2026 and U+00B7, counts one cell, as a
+/// terminal set for Western text draws it; one set to draw them wide,
+/// as some CJK settings do, draws a line wider than it counts.
 pub(crate) fn drawn_width(text: &str) -> usize {
     let mut count = 0;
     let mut rest = text;
