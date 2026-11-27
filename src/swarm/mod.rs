@@ -408,9 +408,9 @@ fn starts_a_cluster(before: Option<char>, each: char) -> bool {
 pub(crate) fn within(text: &str, room: usize) -> &str {
     // A selector widens the heart before it and a joiner makes two emoji
     // one, so a start can draw wider or narrower than its characters
-    // summed. Unicode's width rules join a character to what's before it
-    // only in the cases `starts_afresh` names, so the cells up to any
-    // other are settled and only the run since is measured again: a cut
+    // summed. [`drawn_width`] counts a cluster at a time, each begun where
+    // `starts_a_cluster` says, so the cells up to any such start are
+    // settled and only the run since is measured again: a cut
     // costs what it walks, even into a pipe, where the room is the whole
     // text, which may be a peer's message of 256 KiB. A character narrows
     // the start it ends by at most a cell, by those rules: a text
@@ -423,7 +423,7 @@ pub(crate) fn within(text: &str, room: usize) -> &str {
     let mut before: Option<char> = None;
     for step in steps(text).take(most_steps(room)) {
         if let Some(each) = step.chars().next().filter(|_| !step.starts_with("\u{1b}[")) {
-            if starts_afresh(before, each) || (since >= LONGEST_RUN && splits(before, each)) {
+            if starts_a_cluster(before, each) || (since >= LONGEST_RUN && splits(before, each)) {
                 settled += drawn_width(&text[from..at]);
                 from = at;
                 since = 0;
@@ -460,23 +460,6 @@ fn steps(text: &str) -> impl Iterator<Item = &str> {
         rest = left;
         (step > 0).then_some(taken)
     })
-}
-
-/// Whether no width rule of Unicode's joins `each` to what's before it:
-/// it takes a cell of its own, isn't a modifier, a regional indicator or a
-/// letter of a script whose ligatures narrow, and follows no joiner.
-fn starts_afresh(before: Option<char>, each: char) -> bool {
-    let follows_a_joiner = matches!(before, Some('\u{200D}' | '\u{2D7F}' | '\u{17D2}' | '\r'));
-    let joins_what_is_before = matches!(
-        each,
-        // Emoji modifiers and regional indicators.
-        '\u{1F3FB}'..='\u{1F3FF}' | '\u{1F1E6}'..='\u{1F1FF}'
-        // Arabic, where an alef joins the lam before it.
-        | '\u{0600}'..='\u{08FF}' | '\u{FB50}'..='\u{FDFF}' | '\u{FE70}'..='\u{FEFF}'
-        // Lisu's tone letters, Kirat Rai's vowels and Tifinagh's joiner.
-        | '\u{A4F8}'..='\u{A4FF}' | '\u{16D40}'..='\u{16D7F}' | '\u{2D7F}'
-    );
-    !follows_a_joiner && !joins_what_is_before && !draws_nothing(each)
 }
 
 /// Whether `each` takes no cell of its own, as a selector, a joiner or a
