@@ -4,6 +4,10 @@
 //! one per line, for as long as the client stays: first the whole state,
 //! then each change. A `Present` connection is held open by its process
 //! for as long as it runs.
+//!
+//! Long because every request and answer the socket takes is said here,
+//! in one place a reader of the protocol can follow, with the tests that
+//! hold each one's words for nodes older and newer.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

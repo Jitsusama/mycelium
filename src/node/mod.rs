@@ -8658,9 +8658,9 @@ impl<S: Store> Shared<S> {
     /// declares opens no forge and no secret, here or, as it accepts,
     /// on a machine it reaches from here, and its sessions run as an
     /// account of their own, which can't open this node's socket to say
-    /// a link proved what it didn't. That holds however its held starts
-    /// are fenced, through the launcher or by pi itself, since each opens
-    /// what the machine declares. One that can't read what it declares,
+    /// a link proved what it didn't. Each such start goes through the
+    /// launcher the machine declares, which alone drops it to that
+    /// account ([`Self::start_here`]). One that can't read what it declares,
     /// or declares no agent fence, opens what it may.
     fn opens_nothing(&self) -> bool {
         type Names = std::collections::BTreeSet<String>;
@@ -9957,10 +9957,16 @@ impl<S: Store> Shared<S> {
         // A Mac whose pi lays its own fence round each command it runs,
         // as its configuration says, leaves pi to fence itself as Linux
         // does, since pi can't reach its own state within the launcher.
-        let fences = self.fences_held
-            && !declared
-                .as_ref()
-                .is_some_and(|declared| declared.pi_fences_itself);
+        // Where sessions run as an account of their own, only the
+        // launcher a machine declares drops a start to it: a pi fencing
+        // itself runs as this node's account, which can open its socket.
+        // So an agent fence there, the one a room loosens a relayed start
+        // to, starts within that launcher, never by pi alone (D53A5A27).
+        let pi_fences_itself = declared
+            .as_ref()
+            .is_some_and(|declared| declared.pi_fences_itself);
+        let dropped = self.starts_apart && fence == Some(crate::declared::Kind::Fence);
+        let fences = (self.fences_held && !pi_fences_itself) || dropped;
         let within = held_within(fences, fence, (&asked.command, &agent), |kind| {
             crate::declared::launcher(&self.declared, kind, &self.runs.declarers)
                 .map_err(|why| format!("{machine}{LAUNCHER_REFUSED}{kind}: {why}"))
@@ -27870,13 +27876,20 @@ esac
             Some("FENCED=strict"),
             "a start declaring no fence, strict"
         );
-        // Where pi fences itself, as on Linux, it opens what the room
-        // declares all the same.
+        // Where pi fences itself, as on Linux, a pi fencing itself would
+        // run as the node's own account, so the agent fence still starts
+        // through the launcher, which alone drops it to the sessions' own
+        // (D53A5A27). A strict start fences itself as before.
         link.fences_held = false;
         assert_eq!(
-            fenced_as(&link, &given, true, fenced).await,
-            Some("PI_SANDBOX=fence"),
-            "a room whose pi fences itself takes the agent fence declared too"
+            fenced_as(&link, &given, true, fenced.clone()).await,
+            Some("FENCED=fence"),
+            "a room whose pi fences itself starts the agent fence in its launcher"
+        );
+        assert_eq!(
+            fenced_as(&link, &given, false, fenced).await,
+            Some("PI_SANDBOX=strict"),
+            "and one no key proved strict, fenced by pi itself"
         );
     }
 
