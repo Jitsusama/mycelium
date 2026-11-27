@@ -1428,11 +1428,12 @@ pub(crate) fn one_line(text: &str) -> String {
 /// four, or a kiss between two with their skin tones. A terminal draws
 /// only a sequence it knows as one glyph, yet Unicode's widths count a
 /// joined run of any length as two cells. This bounds that, not closes
-/// it: four emoji joined as no sequence is still count two cells and draw
+/// it: four emoji joined as no sequence still count two cells and draw
 /// eight, so a chain of them draws at most four times what it counts.
-/// A chain of Khmer subscripts (coeng, U+17D2) isn't capped: Unicode's
-/// widths count it as one cell, which a terminal drawing per code point
-/// draws wider; capping it as emoji chains are is still to do.
+/// A chain of Khmer subscripts (coeng, U+17D2) needs no cap: Unicode's
+/// widths count it as one cell, but the swarm's measure counts each
+/// subscript letter a cell of its own, as a terminal drawing per code
+/// point does.
 const MOST_JOINED: usize = 3;
 
 /// Whether `each` is an emoji modifier, a skin tone, which is drawn as

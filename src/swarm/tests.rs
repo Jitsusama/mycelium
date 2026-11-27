@@ -952,6 +952,11 @@ fn a_letter_a_ligature_joins_still_takes_its_own_cell() {
             2,
             "a Khmer letter and its subscript",
         ),
+        (
+            "\u{1781}\u{17D2}\u{1782}\u{17D2}\u{1783}",
+            3,
+            "a Khmer letter and a chain of two subscripts",
+        ),
         ("\u{A4F9}\u{A4FC}", 2, "Lisu's tone letters"),
         ("\u{10C32}\u{200D}\u{10C03}", 2, "Old Turkic's ligature"),
         ("\u{1A15}\u{1A17}\u{200D}\u{1A10}", 2, "Buginese's ligature"),
