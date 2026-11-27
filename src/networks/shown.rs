@@ -972,6 +972,8 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
             lines.push(format!("{line}{about}"));
         }
     }
-    // A cell's page draws no table, so any mark left in it is a peer's.
+    // A cell's page draws no table, so it holds no mark of ours. Each
+    // peer's text above is cleaned already, so none of theirs is left
+    // either; this keeps it so for a line added later uncleaned.
     without_marks(&lines.join("\n"))
 }

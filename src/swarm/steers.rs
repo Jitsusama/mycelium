@@ -107,6 +107,12 @@ fn session_by_address<'a>(swarm: &'a Swarm, asked: &str) -> Option<&'a Value> {
         })
 }
 
+/// Whether a steer naming `asked` goes to `team` alone, as `named`
+/// reads it, and to no session or other team.
+pub(super) fn reaches(swarm: &Swarm, asked: &str, team: &Value) -> bool {
+    matches!(named(swarm, asked), Ok(Named::Team(found)) if std::ptr::eq(found, team))
+}
+
 /// The team or session `asked` names: a living session by its address,
 /// as [`session_by_address`] finds it, then a team by its address, then
 /// a team by its short name, then a team by a part of its name, then a

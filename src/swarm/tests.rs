@@ -706,6 +706,46 @@ fn a_short_name_is_drawn_as_it_is_typed_and_reaches_only_its_team() {
 }
 
 #[test]
+fn a_team_with_no_short_name_is_given_to_a_shell_only_by_a_name_reaching_it() {
+    // Titled as an act, Harbour works out no short name, and its title
+    // typed would pause rather than reach it, so its address is given.
+    let mut acting = swarm();
+    acting.teams[1]["title"] = json!("Pause");
+    let names = typed(&acting);
+    assert!(
+        !names.iter().any(|name| name.eq_ignore_ascii_case("pause"))
+            && names.contains(&"HARBOR".to_owned()),
+        "an act was given as a team's name, or its address was not: {names:?}"
+    );
+    // Two teams titled alike work out no short name, and the title typed
+    // reaches both, so each is given by its address.
+    let mut twins = swarm();
+    twins.teams[2]["title"] = json!("Reef");
+    assert_eq!(
+        typed(&twins)
+            .into_iter()
+            .filter(|name| name != "harbour")
+            .collect::<Vec<_>>(),
+        ["KELP01", "REEF01"],
+        "a title reaching two teams was given for one"
+    );
+    // Keyed by a working session's address that doesn't lead it, the team
+    // is reached by no name a shell could be given: its title acts, and
+    // its address steers the session BUSY.
+    let mut keyed = swarm();
+    keyed.teams[1]["key"] = json!("team:BUSY");
+    keyed.teams[2]["within"] = json!("BUSY");
+    keyed.teams[1]["title"] = json!("Pause");
+    let names = typed(&keyed);
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case("busy") || name.eq_ignore_ascii_case("pause")),
+        "a name that steers another was given as a team's: {names:?}"
+    );
+}
+
+#[test]
 fn two_short_names_that_clean_alike_go_to_neither_and_swarm_names_say_them_cleaned() {
     // Drawn alike, typed they'd reach both, and the hint offered one.
     let mut both = swarm();

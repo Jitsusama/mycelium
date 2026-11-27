@@ -1039,13 +1039,31 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
 /// the order the overview lists them, for a shell to complete. Each is
 /// cleaned as a page draws it, since a peer gives the name and a shell
 /// may draw what it completes; matching cleans both sides, so the
-/// cleaned name still reaches its team.
+/// cleaned name still reaches its team. A team with no short name is
+/// given by its title where that is one word, and else by its address,
+/// as the hint gives its example; and only a name that, shown or
+/// steered, goes to its team alone is given at all, as a title isn't
+/// held to a short name's rules, and an address may be a session's, so
+/// a team none reaches is given by none.
 #[must_use]
 pub fn typed(swarm: &Swarm) -> Vec<String> {
     let shorts = shorts_of(swarm);
     ordered(swarm.teams.iter())
         .into_iter()
-        .map(|team| unmarked(names::typed(team, &shorts)))
+        .filter_map(|team| {
+            let typed = unmarked(names::typed(team, &shorts));
+            let address = address(team).to_owned();
+            [
+                Some(typed).filter(|typed| names::one_word(typed)),
+                Some(address).filter(|address| typeable(address)),
+            ]
+            .into_iter()
+            .flatten()
+            .find(|name| {
+                named(swarm, name).is_ok_and(|found| std::ptr::eq(found, team))
+                    && steers::reaches(swarm, name, team)
+            })
+        })
         .collect()
 }
 

@@ -3916,6 +3916,19 @@ mod tests {
     }
 
     #[test]
+    fn a_machine_with_no_zone_found_says_its_times_in_utc() {
+        // The look's time is the machine's, and where no zone is found
+        // jiff gives one named Etc/Unknown; a time drawn into a pipe says
+        // its zone as this, so it must name UTC rather than that.
+        let unknown = jiff::Timestamp::UNIX_EPOCH.to_zoned(jiff::tz::TimeZone::unknown());
+        assert_eq!(
+            unknown.strftime("%Z (%:z)").to_string(),
+            "UTC (+00:00)",
+            "a zone not found was drawn otherwise than as UTC"
+        );
+    }
+
+    #[test]
     fn a_terminal_is_drawn_no_wider_than_it_is() {
         for (columns, said, wide) in [
             (Some("200"), Some(120), 120),
