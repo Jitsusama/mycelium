@@ -4503,6 +4503,22 @@ mod tests {
         );
     }
 
+    // On 27 November 2026 every turn of asked files lapsed on the tunnels
+    // to cloud machines, which carried 26 KB a second at their slowest,
+    // since a turn of 1 MiB pieces couldn't cross in the wait. A turn, as
+    // base64, crosses there in half the wait, or the next one lapses too.
+    #[test]
+    fn a_turn_of_pieces_crosses_the_slowest_link_in_half_its_wait() {
+        const SLOWEST: u64 = 26_000;
+        let turn = PIECE * u64::try_from(ASKED_AT_ONCE).expect("few") * 4 / 3;
+        assert!(
+            turn / SLOWEST < ANSWERED_WITHIN.as_secs() / 2,
+            "a turn of {turn} bytes takes {} s of a {} s wait",
+            turn / SLOWEST,
+            ANSWERED_WITHIN.as_secs()
+        );
+    }
+
     #[test]
     fn a_large_file_crosses_a_piece_to_a_frame() {
         let skiff = Machine::new("skiff");
@@ -4510,7 +4526,7 @@ mod tests {
         let at = |machine: &Machine| machine.places.scratch.join(QUEST).join("bench/run.bin");
         let bytes: Vec<u8> = (0..=u8::MAX)
             .cycle()
-            .take(usize::try_from(2 * PIECE).expect("a size") + 512 * 1024)
+            .take(usize::try_from(2 * PIECE + PIECE / 2).expect("a size"))
             .collect();
         fs::create_dir_all(at(&skiff).parent().expect("a folder")).expect("made");
         fs::write(at(&skiff), &bytes).expect("written");
@@ -4548,7 +4564,7 @@ mod tests {
         let piece = usize::try_from(PIECE).expect("a size");
         assert_eq!(
             pieces,
-            [(0, piece), (PIECE, piece), (2 * PIECE, 512 * 1024)],
+            [(0, piece), (PIECE, piece), (2 * PIECE, piece / 2)],
             "it crossed in three pieces, each asked for once the last was staged"
         );
         assert!(

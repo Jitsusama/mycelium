@@ -377,6 +377,22 @@ const YIELDING_ON_A_MAC: [&str; 3] = ["/usr/sbin/taskpolicy", "-c", "utility"];
 /// program.
 const IN_ITS_REALM: &str = r#"export MYCELIUM_REALM="$1"; if [ -n "$2" ]; then PATH="$2/bin${PATH:+:$PATH}"; export PATH; fi; if [ "${MYCELIUM_AGENT+said}" = said ]; then if [ -n "$MYCELIUM_AGENT" ]; then SSH_AUTH_SOCK="$MYCELIUM_AGENT"; export SSH_AUTH_SOCK; else unset SSH_AUTH_SOCK; fi; unset SSH_TPM_AUTH_SOCK MYCELIUM_AGENT; fi; shift 2; exec "$@""#;
 
+/// The shell's script that takes off its path, before [`IN_ITS_REALM`],
+/// every folder in its home, by name or by where it leads, and every one
+/// named relatively, which the run's folder in that home would hold: a
+/// service's path may name the home's own tools (`~/.local/bin`, a
+/// profile's `bin`), which whoever wrote the home could make shadow a
+/// command. Each folder it keeps it names by where it leads, so no link
+/// the home holds along the way can be pointed elsewhere before the
+/// command is looked up, and one it can't enter, which may not be there
+/// yet, goes too. A path left with nothing is `/usr/bin:/bin`, never
+/// empty, which a shell reads as the run's folder. The home is the one
+/// its first word names, the node's own, and the `HOME` it is given as
+/// well, so a launcher that takes `HOME` away or points it elsewhere
+/// leaves none of either on the path. It shifts that word off. With no
+/// home, or `/` for one, only the relative and the missing go.
+const OUT_OF_ITS_HOME: &str = r#"homes=; for at in "$1" "${HOME-}"; do case $at in /?*) at=${at%/}; homes=$homes$at:; led=$(cd -P "$at" 2>/dev/null && pwd -P) && homes=$homes$led:;; esac; done; shift; kept=; set -f; IFS=:; for dir in ${PATH-}; do case $dir in /*) ;; *) continue;; esac; led=$(cd -P "$dir" 2>/dev/null && pwd -P) || continue; for at in $homes; do case $dir/ in "$at"/*) led=;; esac; case $led/ in "$at"/*) led=;; esac; done; [ -z "$led" ] || kept=${kept:+$kept:}$led; done; unset IFS; set +f; PATH=${kept:-/usr/bin:/bin}; export PATH; "#;
+
 /// The words that run a program held in `realm` through the person's
 /// login shell, as a terminal would run it, so it has their environment
 /// rather than a service's: a pi started without it has no model token
@@ -397,17 +413,56 @@ pub fn login_shell(realm: &str, kit: Option<&Path>) -> Vec<String> {
     } else {
         Vec::new()
     };
-    through.extend([
+    through.extend(in_its_realm(
         shell,
-        "-lic".to_owned(),
+        "-lic",
         IN_ITS_REALM.to_owned(),
+        realm,
+        kit,
+    ));
+    through
+}
+
+/// The words that run a program in `realm` through `shell` with `flags`
+/// and `script`, which ends as [`IN_ITS_REALM`] does, with the `kit`'s
+/// tools first on its path.
+fn in_its_realm(
+    shell: String,
+    flags: &str,
+    script: String,
+    realm: &str,
+    kit: Option<&Path>,
+) -> [String; 6] {
+    [
+        shell,
+        flags.to_owned(),
+        script,
         "mycelium".to_owned(),
         realm.to_owned(),
         // Always a word, empty for none, so the program's own start where
         // the script shifts to.
         kit.map(|kit| kit.display().to_string()).unwrap_or_default(),
-    ]);
-    through
+    ]
+}
+
+/// The words that run a command in `realm` as [`login_run`] does, but
+/// through `/bin/sh`, which run so reads no profile, for a run whose
+/// home another may have written: the person's run sent to a room an
+/// agent's make booked, whose profile that agent could make shadow the
+/// command or fake its end. It has the environment its launcher gives
+/// it, but with no folder of `home`, the home it runs in, nor of the
+/// `HOME` it is given, on its path ([`OUT_OF_ITS_HOME`]), and the kit's
+/// tools first. A command found only in the home isn't found, rather
+/// than found as the home's writer left it. `HOME` still names the
+/// home, though, so a program that reads its own files from there, as
+/// an interpreter may, reads what that writer left.
+#[must_use]
+pub fn plain_run(realm: &str, kit: Option<&Path>, home: &Path) -> Vec<String> {
+    let script = format!("{OUT_OF_ITS_HOME}{IN_ITS_REALM}");
+    let mut words = in_its_realm("/bin/sh".to_owned(), "-c", script, realm, kit).to_vec();
+    // After the shell's own name, as the script's first word.
+    words.insert(4, home.display().to_string());
+    words
 }
 
 /// The words that run a command in `realm` through the person's login
@@ -580,18 +635,34 @@ mod tests {
         );
     }
 
+    /// The `sh` on this test's own path, by where it is, since a `PATH`
+    /// a test gives its child is where a bare `sh` would be looked for.
+    fn the_shell() -> PathBuf {
+        std::env::split_paths(&std::env::var_os("PATH").expect("a PATH"))
+            .map(|folder| folder.join("sh"))
+            .find(|sh| sh.is_file())
+            .expect("sh is on the PATH")
+    }
+
     /// What `program`, given to `sh -c`, prints when run through `words`
     /// by `sh` standing for the person's shell, with `profile`'s
     /// variables standing for what a profile sets before the script runs.
+    /// Both shells are named by where they are, so a `PATH` the profile
+    /// gives, which may hold no `sh`, finds neither.
     fn run_through(words: &[String], program: &str, profile: &[(&str, &str)]) -> String {
+        let sh = the_shell();
+        // A login shell's flags first, since a Mac's yielding words hold
+        // a `-c` of their own before them.
         let script = words
             .iter()
             .position(|word| word == "-lic" || word == "-lc")
-            .expect("the words run a login shell");
-        let said = Command::new("sh")
+            .or_else(|| words.iter().position(|word| word == "-c"))
+            .expect("the words run a shell");
+        let said = Command::new(&sh)
             .arg("-c")
             .args(&words[script + 1..])
-            .args(["sh", "-c", program])
+            .arg(&sh)
+            .args(["-c", program])
             // Whatever this test runs in, only the profile says an agent.
             .env_remove("MYCELIUM_AGENT")
             .envs(profile.iter().copied())
@@ -633,10 +704,7 @@ mod tests {
         let kit = tempfile::tempdir().expect("a temporary kit");
         let bin = kit.path().join("bin");
         fs::create_dir(&bin).expect("the kit's bin");
-        let sh = std::env::split_paths(&std::env::var_os("PATH").expect("a PATH"))
-            .map(|folder| folder.join("sh"))
-            .find(|sh| sh.is_file())
-            .expect("sh is on the PATH");
+        let sh = the_shell();
         // The kit holds the shell the run starts, since nothing else is on
         // an empty path.
         std::os::unix::fs::symlink(&sh, bin.join("sh")).expect("the kit's shell");
@@ -708,6 +776,178 @@ mod tests {
                 run_through(&words, program, &person),
                 "/run/user/4242/every-key.sock|/run/user/4242/every-key.sock|gone",
                 "what said no agent, as a Mac's hold, is left as the profile has it"
+            );
+        }
+    }
+
+    // Followup 487: the person's run sent to a room an agent wrote the
+    // home of runs through a shell reading no profile there, yet in its
+    // realm with the kit's tools first, as a login run is.
+    #[test]
+    fn a_plain_run_reads_no_profile_and_keeps_its_realm_and_kit() {
+        let words = plain_run(
+            "harbour",
+            Some(Path::new("/nix/store/kit")),
+            Path::new("/home/kestrel"),
+        );
+        assert_eq!(
+            words[..2],
+            ["/bin/sh".to_owned(), "-c".to_owned()],
+            "a plain shell, never a login one, whatever this login's shell is"
+        );
+        assert!(
+            !words.iter().any(|word| word == "-lc" || word == "-lic"),
+            "{words:?}"
+        );
+        assert_eq!(
+            run_through(
+                &words,
+                r#"printf '%s|%s' "$MYCELIUM_REALM" "${PATH%%:*}""#,
+                &[("MYCELIUM_REALM", "lighthouse")]
+            ),
+            "harbour|/nix/store/kit/bin",
+            "in the realm it runs in, with the kit's tools first"
+        );
+    }
+
+    #[test]
+    fn a_plain_run_finds_nothing_in_its_home() {
+        let made = tempfile::tempdir().expect("a temporary folder");
+        // Where it leads, as a Mac's temporary folder is behind a link.
+        let at = fs::canonicalize(made.path()).expect("the folder's place");
+        let real = at.join("real");
+        let tools = real.join(".local/bin");
+        fs::create_dir_all(&tools).expect("the home's tools");
+        // The home by a link to it, as a service may be told it, and a
+        // folder outside that leads into it.
+        let home = at.join("home");
+        std::os::unix::fs::symlink(&real, &home).expect("a home by a link");
+        let leads = at.join("leads");
+        std::os::unix::fs::symlink(&tools, &leads).expect("a folder leading in");
+        // The system's folders, made here, since a sandbox may lack the
+        // real ones.
+        let (first, last) = (at.join("first"), at.join("last"));
+        let around = at.join("around");
+        let beside = at.join("homex/bin");
+        // Outside the home: a folder by a link, kept by where it leads, and
+        // one whose way runs through a link in the home, which the home's
+        // writer could point elsewhere, kept only where it leads now.
+        let store = at.join("store");
+        for folder in [&first, &last, &around, &beside, &store.join("bin")] {
+            fs::create_dir_all(folder).expect("a folder outside");
+        }
+        let named = at.join("named");
+        std::os::unix::fs::symlink(&around, &named).expect("a folder by a link");
+        std::os::unix::fs::symlink(&store, real.join(".nix-profile")).expect("a profile");
+        let through = at.join("through");
+        std::os::unix::fs::symlink(home.join(".nix-profile"), &through).expect("a way in");
+        let shown = |folder: &PathBuf| folder.display().to_string();
+        let [first, last, around, beside, store] =
+            [&first, &last, &around, &beside, &store].map(shown);
+        let [home, real, leads] = [&home, &real, &leads].map(shown);
+        let path = [
+            format!("{home}/.local/bin"),
+            first.clone(),
+            format!("{real}/.nix-profile/bin"),
+            "bin".to_owned(),
+            String::new(),
+            leads,
+            home.clone(),
+            shown(&named),
+            shown(&through.join("bin")),
+            // Not there yet, so it may yet be made a way in.
+            shown(&at.join("missing")),
+            beside.clone(),
+            last.clone(),
+        ]
+        .join(":");
+        let print = r#"printf %s "$PATH""#;
+        let kept = format!("/nix/store/kit/bin:{first}:{around}:{store}/bin:{beside}:{last}");
+        let plain = plain_run(
+            "harbour",
+            Some(Path::new("/nix/store/kit")),
+            Path::new(&format!("{home}/")),
+        );
+        assert_eq!(
+            run_through(
+                &plain,
+                print,
+                &[("HOME", &format!("{home}/")), ("PATH", &path)]
+            ),
+            kept,
+            "the home's folders go, by name or by where they lead, and relative and missing \
+             ones, and each kept is named by where it leads"
+        );
+        // A launcher may point HOME elsewhere; the home the run is in
+        // still goes, by name or by where it leads.
+        let elsewhere = at.join("elsewhere").display().to_string();
+        for given in [&home, &real] {
+            let plain = plain_run(
+                "harbour",
+                Some(Path::new("/nix/store/kit")),
+                Path::new(given),
+            );
+            assert_eq!(
+                run_through(&plain, print, &[("HOME", &elsewhere), ("PATH", &path)]),
+                kept,
+                "the home it runs in, {given}, goes whatever HOME says"
+            );
+        }
+        // And the HOME it is given goes too, though the node's is another.
+        let plain = plain_run(
+            "harbour",
+            Some(Path::new("/nix/store/kit")),
+            Path::new(&elsewhere),
+        );
+        assert_eq!(
+            run_through(&plain, print, &[("HOME", &home), ("PATH", &path)]),
+            kept,
+            "the home HOME names goes as well"
+        );
+        assert_eq!(
+            run_through(
+                &login_run("harbour", None),
+                print,
+                &[("HOME", &home), ("PATH", &path)]
+            ),
+            path,
+            "the person's own run keeps its path"
+        );
+    }
+
+    #[test]
+    fn a_plain_run_left_with_no_folder_has_the_systems_alone() {
+        let made = tempfile::tempdir().expect("a temporary folder");
+        let at = fs::canonicalize(made.path()).expect("the folder's place");
+        let (home, first, last) = (at.join("home"), at.join("first"), at.join("last"));
+        for folder in [&home.join(".local/bin"), &first, &last] {
+            fs::create_dir_all(folder).expect("a folder");
+        }
+        let shown = |folder: &Path| folder.display().to_string();
+        let (home, first, last) = (shown(&home), shown(&first), shown(&last));
+        let print = r#"printf %s "$PATH""#;
+        let plain = plain_run("harbour", None, Path::new("/"));
+        assert_eq!(
+            run_through(
+                &plain,
+                print,
+                &[("HOME", "/"), ("PATH", &format!("{first}:.:{last}"))]
+            ),
+            format!("{first}:{last}"),
+            "a home of / takes off only the relative and the missing"
+        );
+        // A path left with nothing, and no kit, is never empty, which a
+        // shell would read as the run's folder, in the home.
+        let plain = plain_run("harbour", None, Path::new(&home));
+        for given in [
+            format!("{home}/.local/bin"),
+            String::new(),
+            ":bin:".to_owned(),
+        ] {
+            assert_eq!(
+                run_through(&plain, print, &[("HOME", &home), ("PATH", &given)]),
+                "/usr/bin:/bin",
+                "a path of {given:?} left with nothing is the system's alone"
             );
         }
     }

@@ -3151,7 +3151,7 @@ mod tests {
         let person = arrived(
             Run {
                 by: Some(By::Person),
-                ..said
+                ..said.clone()
             },
             "skiff",
         );
@@ -3159,6 +3159,19 @@ mod tests {
             person.by,
             Some(By::Person),
             "as the asking machine judged it"
+        );
+        let recast = arrived(
+            Run {
+                by: Some(By::Agent(Kind::Fence)),
+                asked_by: Some(By::Person),
+                ..said
+            },
+            "skiff",
+        );
+        assert_eq!(
+            recast.asked_by,
+            Some(By::Person),
+            "the person's run its node sent as an agent's still says who asked"
         );
     }
 

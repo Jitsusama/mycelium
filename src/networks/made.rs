@@ -14,7 +14,7 @@ use serde::Deserialize as _;
 
 use super::{
     ASKED_MOST, Builds, Cell, EventLine, Is, MACHINES, Mycelium, Network, Places, Shape, Share,
-    Tree, Usage, kept,
+    Subjects, Tree, Usage, kept,
 };
 use crate::receptor::{self, Counts, Source};
 use crate::swarm::{self, Standing};
@@ -230,7 +230,7 @@ fn bare(name: String, is: Is) -> Cell {
         asks: None,
         asked: None,
         repo: None,
-        subjects: Vec::new(),
+        subjects: Subjects::default(),
         usage: Usage::default(),
         leads: Vec::new(),
         machine: None,
@@ -325,8 +325,15 @@ pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Mycelium
 }
 
 /// The most subjects a cell is held to declare, as the harness reads
-/// them.
-pub const MOST_SUBJECTS: usize = 12;
+/// them. Twelve cut off the areas a cell's merges led behind its title's
+/// words. In a replay of 450 of the mesh's needs, 80 of them labelled
+/// with the cell that owned them, the harness as it was found the owner
+/// for 51. With 24 and the harness reading lib/core's areas three
+/// folders deep, it found 62, and needs about the review tools went from
+/// 16 of 32 to 26. The cap alone found 52. Depth alone was scored only
+/// at four folders deep, which with 24 also finds 62, and held to 12 it
+/// found 51.
+pub const MOST_SUBJECTS: usize = 24;
 
 /// The most characters one subject holds.
 const SUBJECT_MOST: usize = 120;
@@ -366,7 +373,9 @@ fn asked_whole(asked: &str) -> Option<String> {
 /// string of at most [`SUBJECT_MOST`] characters with nothing a terminal
 /// acts on and nothing that draws as nothing; any other entry is passed
 /// over alone, so a cell's subjects never draw as more than plain words,
-/// nor two that draw alike hub apart.
+/// nor two that draw alike hub apart. A subject said again, in any case,
+/// is passed over too, since its hub is the first's: the cap counts the
+/// subjects a cell holds, not the times it says them.
 #[must_use]
 pub fn subjects(declared: &Value) -> Vec<String> {
     declared
@@ -384,6 +393,10 @@ pub fn subjects(declared: &Value) -> Vec<String> {
                         || crate::forage::unseen(each)
                         || matches!(each, '\u{2028}' | '\u{2029}')
                 })
+        })
+        .filter({
+            let mut said = std::collections::HashSet::new();
+            move |subject| said.insert(subject.to_lowercase())
         })
         .take(MOST_SUBJECTS)
         .map(str::to_owned)
@@ -583,7 +596,7 @@ fn session_cell(session: &Value) -> Option<Cell> {
         asks: session["wants"]["said"].as_str().map(str::to_owned),
         asked: session["wants"]["asked"].as_str().and_then(asked_whole),
         repo: session["presence"]["repo"].as_str().map(str::to_owned),
-        subjects: subjects(&session["presence"]["subjects"]),
+        subjects: Subjects::kept(subjects(&session["presence"]["subjects"])),
         usage: Usage::of(session),
         leads: Vec::new(),
         machine: text("machine"),

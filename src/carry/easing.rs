@@ -306,6 +306,26 @@ pub fn eased_lately(folder: &Path, here: &str, now: Timestamp) -> Result<Vec<Mov
         .collect())
 }
 
+/// The carries of `kept` this machine's node, `here`'s, made to ease it
+/// that haven't landed yet, as `judge` says each stands: still told to
+/// its session, or gone from here and not yet running where it went.
+/// One refused, arrived, back or stuck holds nothing back, so a carry
+/// that never lands holds easing no longer than it stands ordered.
+pub fn on_way(kept: &[Kept], here: &str, judge: impl Fn(&Kept) -> kept::State) -> Vec<Moved> {
+    let by = ease::by(here);
+    kept.iter()
+        .filter(|one| one.said("by") == by && one.said("from") == here)
+        .filter(|one| matches!(judge(one), kept::State::Ordered | kept::State::Carrying))
+        .map(|one| Moved {
+            session: one.said("session").to_owned(),
+            from: here.to_owned(),
+            to: one.said("to").to_owned(),
+            at: one.at,
+            eases: true,
+        })
+        .collect()
+}
+
 /// How many of the carries `kept` within the day before `now` this
 /// machine's node, `here`'s, made to ease it.
 #[must_use]
@@ -653,6 +673,8 @@ pub struct Easing {
     acts_on_sleep: bool,
     /// Each session a look chose to carry, with when.
     gone: BTreeMap<String, Timestamp>,
+    /// Each session whose carry was refused as it was told, with when.
+    refused: BTreeMap<String, Timestamp>,
     /// The reason of the last line kept for doing nothing, with the doubt
     /// it said.
     said: Option<(String, Option<String>)>,
@@ -754,6 +776,27 @@ impl Easing {
     /// for the lines that follow to say.
     pub fn doubt(&mut self, why: Option<String>) {
         self.doubt = why;
+    }
+
+    /// Takes the carries its node made to ease the machine that haven't
+    /// landed yet, as [`on_way`] says, for the looks that follow.
+    /// One refused as its session was told of it, as [`Easing::refused`]
+    /// notes, isn't, though its record still stands ordered.
+    pub fn on_way(&mut self, mut on_way: Vec<Moved>) {
+        on_way.retain(|one| {
+            self.refused
+                .get(&one.session)
+                .is_none_or(|refused| *refused < one.at)
+        });
+        self.history.on_way(on_way);
+    }
+
+    /// Notes that the carry of `session` its look chose was refused as
+    /// the session was told of it, `at`, so that carry holds no other
+    /// once the cooldown is out; a later carry of it still does. A
+    /// restart forgets it, so the carry holds again until it is stuck.
+    pub fn refused(&mut self, session: &str, at: Timestamp) {
+        self.refused.insert(session.to_owned(), at);
     }
 
     /// What `here` would do now of its `cells`, by `reading`, as the line
@@ -2135,6 +2178,44 @@ mod tests {
     }
 
     #[test]
+    fn only_its_nodes_easing_carries_not_yet_landed_are_on_their_way() {
+        let carry = |session: &str, by: &str, from: &str| Kept {
+            id: format!("{session}:then"),
+            at: ago(3),
+            line: json!({"by": by, "session": session, "from": from, "to": "tern"}),
+        };
+        let kept = [
+            carry("s1", "node@skiff", "skiff"),
+            carry("s2", "node@skiff", "skiff"),
+            carry("s3", "node@skiff", "skiff"),
+            carry("s4", "node@skiff", "skiff"),
+            carry("s5", "node@skiff", "skiff"),
+            carry("s6", "node@skiff", "skiff"),
+            carry("s7", "WCJQSG", "skiff"),
+            carry("s8", "node@tern", "tern"),
+        ];
+        let judge = |one: &Kept| match one.said("session") {
+            "s2" => kept::State::Carrying,
+            "s3" => kept::State::Arrived,
+            "s4" => kept::State::Back,
+            "s5" => kept::State::Refused("it holds a lease".to_owned()),
+            "s6" => kept::State::Stuck("still ordered".to_owned()),
+            _ => kept::State::Ordered,
+        };
+        assert_eq!(
+            on_way(&kept, "skiff", judge),
+            ["s1", "s2"].map(|session| Moved {
+                session: session.to_owned(),
+                from: "skiff".to_owned(),
+                to: "tern".to_owned(),
+                at: ago(3),
+                eases: true,
+            }),
+            "skiff's node's own, ordered or carrying, and no other's"
+        );
+    }
+
+    #[test]
     fn a_carry_the_record_dates_ahead_counts() {
         let kept = [Kept {
             id: "s1:ahead".to_owned(),
@@ -2481,6 +2562,36 @@ mod tests {
                 "chosen {minutes} minutes since: {chose:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_carry_refused_as_it_was_told_holds_back_no_other() {
+        let going = |at: Timestamp| Moved {
+            session: "s0".to_owned(),
+            from: "skiff".to_owned(),
+            to: "tern".to_owned(),
+            at,
+            eases: true,
+        };
+        let carried = |refused: Option<Timestamp>| {
+            let mut easing = Easing::after(&[], vec![going(ago(30))]);
+            if let Some(at) = refused {
+                easing.refused("s0", at);
+            }
+            // As the node does before each look, from the record that
+            // still stands it ordered.
+            easing.on_way(vec![going(ago(30))]);
+            first_carry(&looks(&mut easing, &[cell("s1")])).is_some()
+        };
+        assert!(!carried(None), "one on its way holds the next");
+        assert!(
+            carried(Some(ago(29))),
+            "one refused as it was told isn't on its way"
+        );
+        assert!(
+            !carried(Some(ago(31))),
+            "a refusal before it holds no later carry of the session"
+        );
     }
 
     #[test]

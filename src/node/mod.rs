@@ -539,9 +539,9 @@ fn plain_quest(quest: &str) -> bool {
 /// What each log under `logs` continues, the folder scanned once, as a
 /// lapse of the record of orchestrations asks only where a claim lapses;
 /// none where the folder can't be read, so what lapses is kept until it
-/// can be. That, each folder in it passed over as unreadable, and each
-/// session whose several logs disagree, is said once, so claims kept
-/// with no end name their cause.
+/// can be. That, and each folder in it passed over as unreadable, is said
+/// once, so claims kept with no end name their cause; a claim kept as
+/// logs disagree is said by the lapse itself ([`said_lapsed`]).
 fn continuing(
     logs: &Path,
     unreadable: &through::Unreadable,
@@ -564,16 +564,25 @@ fn continuing(
             "the sessions logged in a folder that can't be read continue none: {why}"
         ));
     }
-    // Kept where a lapse follows one back (`chain::Orchestrations::lapse`).
-    for session in found.doubled() {
-        say(format!(
-            "claims {}'s logs may continue are kept, rather than lapse, as the logs under {} \
-             named for it disagree on what it continues",
-            crate::carry::shown(session),
-            logs.display()
-        ));
-    }
     Some(move |session: &str| found.follows(session))
+}
+
+/// Says what became of each claim in `lapsed` in the node's log, where
+/// the record keeping it was `kept`: a claim handed on or forgotten only
+/// then, as a record read and let go of changes nothing, and one held
+/// once each, through `unreadable`, as it's held again at every lapse
+/// until the logs can tell.
+fn said_lapsed(lapsed: &[chain::Lapsed], kept: bool, unreadable: &through::Unreadable) {
+    for lapsed in lapsed {
+        let line = lapsed.to_string();
+        let said = match lapsed {
+            chain::Lapsed::Held { .. } => unreadable.first(&line),
+            chain::Lapsed::Handed { .. } | chain::Lapsed::Forgotten { .. } => kept,
+        };
+        if said {
+            eprintln!("{line}");
+        }
+    }
 }
 
 /// Whether `session` stands where a carry reaches it: running, or parked
@@ -4517,6 +4526,19 @@ impl<S: Store> Shared<S> {
         Ok(ended::carried(&carries, judge, now))
     }
 
+    /// The carries this node made to ease its machine that haven't landed
+    /// yet, each judged as the person sees it, for easing to wait on. One
+    /// ordered longer ago than [`kept::STUCK_AFTER`] stands stuck, so it
+    /// isn't read.
+    fn easing_on_way(&self, now: jiff::Timestamp) -> Vec<ease::Moved> {
+        let sightings = self.sightings();
+        let carries = self.carries_here(now - kept::STUCK_AFTER);
+        easing::on_way(&carries, &self.machine, |carry| {
+            let seen = sightings.seen(carry, self.handed(carry));
+            kept::judged(carry, &seen, now)
+        })
+    }
+
     /// The sessions here that ended while their quest goes on, as
     /// [`ended`] says, each standing as it does here, against the quests
     /// this node serves; none where it serves none.
@@ -5162,26 +5184,18 @@ impl<S: Store> Shared<S> {
     /// over, as [`redial_standing`] passes it, since nothing ever releases
     /// it and it may be another realm's. Another machine whose end has
     /// passed is gone, as one past its own leaving is. Where the book
-    /// can't be read, no other machine that costs money is carried to,
-    /// since none can be told apart from one made to live an hour. This
+    /// may have lost a machine's make ([`made::Doubt`]), that machine is
+    /// carried to only if it costs nothing or an end is known for it,
+    /// since one whose make was lost can't be told apart from one kept
+    /// for good. The book is read again
+    /// only once it changes ([`made::Book::ends`]). This
     /// machine is always kept, first where it was, since every reader
     /// takes the head of the answer for here.
     fn as_carried(&self, machines: Vec<facts::Machine>) -> Vec<facts::Machine> {
-        let mut ends = BTreeMap::new();
-        let readable = match self.book.standing() {
-            Ok(standing) => {
-                for made in standing.made {
-                    ends.insert(made.machine, made.until);
-                }
-                true
-            }
-            Err(error) => {
-                eprintln!(
-                    "the book of machines made can't be read, so no paid machine is carried to: {error}"
-                );
-                false
-            }
-        };
+        let made::Ends {
+            until: mut ends,
+            doubt,
+        } = self.book.ends();
         ends.extend(self.lock().ends.clone());
         let now = jiff::Timestamp::now();
         machines
@@ -5189,8 +5203,9 @@ impl<S: Store> Shared<S> {
             .map(|one| leaving_as_made(one, &ends))
             .filter(|one| {
                 let said = one.declared.as_ref();
+                let end_known = !doubt.of(&one.name) || ends.contains_key(&one.name);
                 one.name == self.machine
-                    || (readable || !said.is_some_and(|said| said.costs_money))
+                    || (end_known || !said.is_some_and(|said| said.costs_money))
                         && !said.is_some_and(|said| said.has_left(now))
             })
             .collect()
@@ -6463,6 +6478,13 @@ impl<S: Store> Shared<S> {
             }
             if let Some(line) = line {
                 let mut line = self.act_to_ease(eases.carries, line).await;
+                // Its record is kept before the session is told, so one
+                // refused then would stand ordered, on its way, till stuck.
+                if let Some(chosen) = easing::chosen(&line)
+                    && line.get("refused").is_some()
+                {
+                    easing.refused(&chosen.session, jiff::Timestamp::now());
+                }
                 if let Some(parking) = &mut parking {
                     self.sleep_to_ease(&mut line, parking, easing, now).await;
                 }
@@ -6718,6 +6740,7 @@ impl<S: Store> Shared<S> {
         let here = ease::Here::of(&self.machine, &machines, &loads, onto);
         let reading = crate::balance::read(&machines, &sessions, now);
         easing.doubt(orchestrators.err());
+        easing.on_way(self.easing_on_way(now));
         let line = easing.look(&here, reading, cells, &holds, kept_eases, now);
         (line, sampler)
     }
@@ -6766,6 +6789,7 @@ impl<S: Store> Shared<S> {
         + 'static,
     ) -> Reply {
         let (file, claiming) = (self.orchestrations.clone(), self.claiming.clone());
+        let unreadable = Arc::clone(&self.unreadable);
         tokio::task::spawn_blocking(move || {
             let _claiming = claiming
                 .lock()
@@ -6777,9 +6801,7 @@ impl<S: Store> Shared<S> {
             record.keep(&file).map_err(|error| {
                 format!("the record of orchestrations couldn't be kept: {error}")
             })?;
-            for lapsed in lapsed {
-                eprintln!("{lapsed}");
-            }
+            said_lapsed(&lapsed, true, &unreadable);
             Ok(Response::Orchestrated)
         })
         .await
@@ -6870,7 +6892,8 @@ impl<S: Store> Shared<S> {
         let unreadable = Arc::clone(&self.unreadable);
         let record = tokio::task::spawn_blocking(move || {
             let mut record = chain::Orchestrations::read(&file)?;
-            record.lapse(&standing, || continuing(&logs, &unreadable));
+            let lapsed = record.lapse(&standing, || continuing(&logs, &unreadable));
+            said_lapsed(&lapsed, false, &unreadable);
             io::Result::Ok(record)
         })
         .await
@@ -6971,7 +6994,8 @@ impl<S: Store> Shared<S> {
             let mut record = chain::Orchestrations::read(&file).map_err(|error| {
                 format!("this node's record of orchestrations can't be read, so no carry is ordered: {error}")
             })?;
-            record.lapse(&standing, || continuing(&logs, &unreadable));
+            let lapsed = record.lapse(&standing, || continuing(&logs, &unreadable));
+            said_lapsed(&lapsed, false, &unreadable);
             Ok(record)
         })
         .await
@@ -9906,6 +9930,7 @@ impl<S: Store> Shared<S> {
         let (by, admits) = self.as_a_room_takes(by, &asked.work, self.admits().await);
         let recast = by != who_asked;
         asked.by = Some(by);
+        asked.asked_by = asked_by(recast, who_asked, &asked);
         let fence = match by {
             By::Agent(kind) => Some(kind),
             By::Person => None,
@@ -9938,9 +9963,10 @@ impl<S: Store> Shared<S> {
             "command": asked.command,
         });
         // Who asked is kept beside how it ran, so the journal tells the
-        // person's run sent to a room from an agent's own.
-        if recast {
-            started["asked_by"] = serde_json::json!(who_asked);
+        // person's run sent to a room from an agent's own, here and on the
+        // room alike.
+        if let Some(person) = asked.asked_by {
+            started["asked_by"] = serde_json::json!(person);
         }
         let said = if machine == self.machine {
             let home =
@@ -9948,7 +9974,8 @@ impl<S: Store> Shared<S> {
             let folder = start::begins_in(asked.folder.as_deref(), &home);
             let (folder, ground) = self.ground(folder, by, asked.from.as_deref()).await?;
             let launcher = self.launcher(by, ground.as_ref(), &from, &mut started)?;
-            let words = run::words(launcher, &self.realm, self.kit(), asked.command);
+            let shell = shell_for(asked.asked_by, &home);
+            let words = run::words(launcher, &self.realm, self.kit(), asked.command, shell);
             // An agent's fence grants the work trees its session holds, so
             // the run is told the session the kernel and pi's records prove
             // asks, never one its words name; none where none is proved,
@@ -10775,6 +10802,33 @@ fn nowhere_now(misses: &[Miss]) -> String {
         "nowhere now, though a machine out of reach would do: {}",
         placement::said(misses)
     )
+}
+
+/// Who asked `run` where its `by` isn't them: `judged`, who this node
+/// judged asked it, where it `recast` it, as another machine's node said
+/// where it came from there, and never as whoever asks here says, since
+/// only a node says it.
+fn asked_by(recast: bool, judged: By, run: &Run) -> Option<By> {
+    if recast {
+        Some(judged)
+    } else if run.from.is_some() {
+        run.asked_by
+    } else {
+        None
+    }
+}
+
+/// The shell a run here goes through: for the person's run sent here as
+/// an agent's ([`asked_by`]), one that reads no profile of `home`, the
+/// home it runs in, which the agent may have written, and finds no tool
+/// in it, whatever `HOME` its launcher gives it; the login shell for
+/// every other.
+fn shell_for(asked_by: Option<By>, home: &Path) -> run::Shell<'_> {
+    if asked_by == Some(By::Person) {
+        run::Shell::Plain { home }
+    } else {
+        run::Shell::Login
+    }
 }
 
 /// Why a run is refused, `why`, saying where it was `recast` that the
@@ -19455,6 +19509,7 @@ esac
             command: ["/bin/sh", "-c", script].map(str::to_owned).to_vec(),
             by: None,
             from: None,
+            asked_by: None,
         }
     }
 
@@ -25720,6 +25775,87 @@ esac
     }
 
     #[test]
+    fn while_a_line_of_the_book_is_unread_only_paid_machines_of_known_end_are_carried_to() {
+        use std::collections::BTreeSet;
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        for (name, paid) in [("tern", true), ("wren", true), ("osprey", false)] {
+            let mut other = placement::tests::machine(name, "linux", 32, &["basin"]);
+            other.declared.as_mut().expect("declared").costs_money = paid;
+            shared
+                .store
+                .put_machine(&other)
+                .expect("the machine is kept");
+        }
+        shared
+            .book
+            .made(&made_by("/usr/bin/lend", "tern", soon))
+            .expect("the make is kept");
+        // wren's make, say, cut short by a crash.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("made.jsonl"))
+            .expect("the book opens")
+            .write_all(b"{\"at\": \"cut sh\n")
+            .expect("a line cut short is written");
+        let carried = shared.as_carried(shared.others());
+        let names: BTreeSet<&str> = carried.iter().map(|one| one.name.as_str()).collect();
+        assert_eq!(
+            names,
+            BTreeSet::from(["tern", "osprey"]),
+            "a paid machine whose end the book may have lost isn't carried to"
+        );
+        assert_eq!(
+            carried
+                .iter()
+                .find(|one| one.name == "tern")
+                .and_then(|tern| tern.declared.as_ref()?.leaves_at),
+            Some(soon),
+            "one whose end it read leaves then"
+        );
+    }
+
+    #[test]
+    fn a_make_cut_short_holds_back_only_the_paid_machine_it_still_names() {
+        use std::collections::BTreeSet;
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        for name in ["tern", "wren", "kestrel"] {
+            let mut other = placement::tests::machine(name, "linux", 32, &["basin"]);
+            other.declared.as_mut().expect("declared").costs_money = true;
+            shared
+                .store
+                .put_machine(&other)
+                .expect("the machine is kept");
+        }
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        shared
+            .book
+            .made(&made_by("/usr/bin/lend", "tern", soon))
+            .expect("the make is kept");
+        // wren's make, cut short by a crash after its name.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("made.jsonl"))
+            .expect("the book opens")
+            .write_all(
+                b"{\"at\":\"2026-11-27T08:00:00Z\",\"made\":{\"costs\":{\"currency\":\"USD\",\
+                  \"hourly\":\"0.12\"},\"machine\":\"wren\",\"pla\n",
+            )
+            .expect("a line cut short is written");
+        let carried = shared.as_carried(shared.others());
+        let names: BTreeSet<&str> = carried.iter().map(|one| one.name.as_str()).collect();
+        assert_eq!(
+            names,
+            BTreeSet::from(["tern", "kestrel"]),
+            "only the paid machine whose make may be lost is held back"
+        );
+    }
+
+    #[test]
     fn this_machine_heads_the_carried_machines_while_the_book_cant_be_read() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let shared = made_for(dir.path(), &[]);
@@ -25946,6 +26082,54 @@ esac
                 shared.as_a_room_takes(By::Person, &naming("osprey"), admits.clone()),
                 (By::Person, admits),
                 "but a machine that is no worker stays the person's, though a session listed it"
+            );
+        }
+    }
+
+    // Followup 487: who asked a run recast to a room is said only by a
+    // node, the one recasting it or the one it came from, so the room
+    // runs it reading no profile; whoever asks here can't say it.
+    #[test]
+    fn only_a_node_says_the_person_asked_a_recast_run() {
+        use crate::declared::Kind;
+        let fenced = By::Agent(Kind::Fence);
+        let said = |from: Option<&str>| Run {
+            from: from.map(str::to_owned),
+            asked_by: Some(By::Person),
+            ..run_of("tern", "true")
+        };
+        assert_eq!(
+            asked_by(true, By::Person, &run_of("tern", "true")),
+            Some(By::Person),
+            "the node recasting it says so"
+        );
+        assert_eq!(
+            asked_by(false, fenced, &said(Some("skiff"))),
+            Some(By::Person),
+            "the room keeps what the node it came from said"
+        );
+        assert_eq!(
+            asked_by(false, fenced, &said(None)),
+            None,
+            "and whoever asks here saying it is not heard"
+        );
+    }
+
+    #[test]
+    fn only_the_persons_run_sent_as_an_agents_reads_no_profile() {
+        use crate::declared::Kind;
+        let home = Path::new("/home/tern");
+        assert!(
+            matches!(
+                shell_for(Some(By::Person), home),
+                run::Shell::Plain { home: plain } if plain == home
+            ),
+            "the person's run sent as an agent's goes through the plain shell, in its home"
+        );
+        for asked in [None, Some(By::Agent(Kind::Fence))] {
+            assert!(
+                matches!(shell_for(asked, home), run::Shell::Login),
+                "a run asked by {asked:?} goes through the login shell"
             );
         }
     }

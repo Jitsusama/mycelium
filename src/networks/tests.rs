@@ -2515,9 +2515,36 @@ fn a_cell_declares_plain_subjects_alone_each_bad_one_passed_over() {
         vec!["mycelium:hubs".to_owned(), "x".repeat(120)],
         "only plain words of at most 120 characters are kept, trimmed"
     );
-    let many: Vec<String> = (0..20).map(|n| format!("subject {n}")).collect();
-    let kept = subjects(&json!(many));
-    assert_eq!(kept.len(), MOST_SUBJECTS);
-    assert_eq!(kept[0], "subject 0", "the first declared are kept");
+    assert_eq!(MOST_SUBJECTS, 24, "PROTOCOL.md tells clients 24");
+    // Each good subject comes after a bad entry and before a repeat of
+    // the one before it in another case, so a cap counting either would
+    // keep fewer than the first 24 good ones.
+    let many: Vec<Value> = (0..30)
+        .flat_map(|n| {
+            [
+                json!("bell\u{7}"),
+                json!(format!("subject {n}")),
+                json!(format!("SUBJECT {n}")),
+            ]
+        })
+        .collect();
+    let first: Vec<String> = (0..24).map(|n| format!("subject {n}")).collect();
+    assert_eq!(
+        subjects(&json!(many)),
+        first,
+        "the first 24 good subjects are kept, in the order declared"
+    );
     assert!(subjects(&json!("one")).is_empty(), "subjects are a list");
+    // The hub keys a subject by its full lower case, so a repeat past
+    // ASCII's letters must fold the same way, or it takes a place of the
+    // cap while sharing the first one's hub.
+    assert_eq!(
+        subjects(&json!(["école", "ÉCOLE", "Straße", "STRASSE"])),
+        vec![
+            "école".to_owned(),
+            "Straße".to_owned(),
+            "STRASSE".to_owned()
+        ],
+        "a repeat is one whose lower case matches, as the hub reads it"
+    );
 }

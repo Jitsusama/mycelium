@@ -678,6 +678,7 @@ mod tests {
             command: vec!["true".to_owned()],
             by: None,
             from: None,
+            asked_by: None,
         };
         let started = asked_of_kestrel(async |asks: Asks| {
             let _ = asks.ask("kestrel", start).await;

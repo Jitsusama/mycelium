@@ -631,8 +631,10 @@ hearing the other end is said at the next look:
   there, from offset `at`. An end older than `at` names none and is
   sent the file whole.
 - `{"Piece": {"quest", "file", "state", "at", "len", "body", "mode"}}`:
-  for a file over 1 MiB, the 1 MiB of it at `at`, of `len` in all.
-  The receiving end stages it under
+  for a file over 64 KiB, the 64 KiB of it at `at`, of `len` in all
+  (1 MiB from an end built before pieces shrank). The receiving end
+  takes a piece of any length and asks next from where it ends, so the
+  sender alone sets the size. It stages it under
   `~/.local/state/mycelium/pieces/<machine>/` and asks for the next, so
   the link's messages pass between pieces. Once whole, it is taken as a
   `File`; a piece that doesn't follow what is staged is passed over, and
@@ -1336,20 +1338,24 @@ or a password prompt waits inside its turn, so it stays as one in a
 turn. What a session is part
 way through is told only once its presence says `"leases":
 {"background": true}`, its harness keeping a lease for each background
-run. After a carry it would carry none for five minutes, and it would
-carry at most 48 in a day. A session moved by anyone stays put for a
-day, by the carries kept here, and nothing goes to a machine a session
-came from within the hour, nor to a Mac whose node doesn't say
-`fences_held` but a session shown unfenced (see The Socket). A strict
-session goes only to a machine of its own system, by each machine's
-`system`, since a Mac's strict fence reads more of the home folder
-than Linux's: carried across, it would land looser though both say
-strict. A machine that names no system is taken as another. As with
-every carry a node makes (see A Carry an Orchestrator Orders), only
-the person takes such a session across. Nor does
-anything go to a machine whose facts are too old to place by (the
-`stale` flag, past 150 seconds), since it may have filled up since it
-was heard, or its link may be down.
+run. After a carry it would carry none for five minutes, nor while a
+carry it made to ease itself is still ordered or carrying, by the
+carries kept here, since neither machine's readings say what that
+carry eased until it lands; one ordered half an hour ago stands stuck
+and holds nothing, nor does one its session refused as it was told,
+while the node runs on. It would carry at most 48 in a day. A session moved
+by anyone stays put for a day, by the carries kept here, and nothing
+goes to a machine a session came from within the hour, nor to a Mac
+whose node doesn't say `fences_held` but a session shown unfenced
+(see The Socket). A strict session goes only to a machine of its own
+system, by each machine's `system`, since a Mac's strict fence reads
+more of the home folder than Linux's: carried across, it would land
+looser though both say strict. A machine that names no system is
+taken as another. As with every carry a node makes (see A Carry an
+Orchestrator Orders), only the person takes such a session across.
+Nor does anything go to a machine whose facts are too old to place by
+(the `stale` flag, past 150 seconds), since it may have filled up
+since it was heard, or its link may be down.
 
 Each choice to sleep or carry, and each change in why it does nothing,
 is a JSON line in the state folder's `eases`, a file each day of at
@@ -1620,7 +1626,7 @@ reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Update": {"machine"}}` | `{"Updated": ending}`, as its updater said it |
 | `{"End": {"held"}}` | `{"Ended": {"machine", "held", "ending"}}`, `ending` `gently` or `killed` (A Held Session) |
 | `{"EndStart": {"held", "from", "cell"}}` | as `End`, from a link proved to be machine `from`, ending for its starter `cell` a start relayed from there (A Held Session) |
-| `{"Run": {"work", "folder", "command", "by", "from"}}` | `{"Running": {"machine"}}`, then a `Ran` a line |
+| `{"Run": {"work", "folder", "command", "by", "from", "asked_by"}}` | `{"Running": {"machine"}}`, then a `Ran` a line |
 | `{"Lend": {"budget", "method", "path", "headers", "body"}}` | a `Lent` a line, no reply first (Borrowing a Lend) |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
@@ -2523,21 +2529,33 @@ the person's own login still never runs in a worker home an agent
 wrote. Such a run is placed as an agent's run is: the asking machine
 must declare the agent fence and the room must say it runs commands in
 it, or the run is refused, its refusal saying the person asked it and
-it was sent as an agent's. The asking node's runs journal keeps
-`asked_by` beside its `by`; the room's own journal, and a refusal the
-room itself sends back, read as an agent's, since a run crossing the
-link carries no asker. One machine named twice is still one, and this
-node's own machine stays the person's whatever the file names. Since
-any session may write the file, naming a machine there only ever fences
-the person's runs to it, never loosens them, and never fences them to
-a machine that is no worker and no agent's make booked, as the
-person's own machines aren't. Work that names none of
-the workers may go to it though it costs money, ranked by its room as
-any machine is, so before a machine kept lively while it has room, and
-after one within its ceiling once it is over a limit. The node marks
-each one `"held_for": "agents"` as it places, from its own file, and
-every other as booked, never from what the machine says, and a link
-keeps nothing a machine says of it. A
+it was sent as an agent's; a refusal the room itself sends back reads
+as an agent's. The run says `"asked_by": "Person"`, which only a node
+says: one an asker puts there without naming a machine it comes from
+is cleared. The room runs it through `/bin/sh -c`, never the login
+shell, so no profile of the home the agent wrote runs before it, and
+takes every folder of that home off its path, by name or by where it
+leads, before the kit's tools go first, so nothing the home holds
+shadows its command: one found only there isn't found. Each folder
+kept is named by where it leads, one that can't be entered goes, and
+a path left with nothing is `/usr/bin:/bin`, never empty. The home is
+the one the node runs it in, and the `HOME` its launcher gives it
+too, so a launcher that takes `HOME` away or points it elsewhere
+leaves neither on the path. `HOME` still names that home, so a
+program the command runs that reads its own files from there reads
+what the agent left. Each run's journal keeps `asked_by` beside its
+`by`. One machine named twice is still one, and this node's own
+machine stays the person's whatever the file names. Since any session
+may write the file, naming a machine
+there only ever fences the person's runs to it, never loosens them,
+and never fences them to a machine that is no worker and no agent's
+make booked, as the person's own machines aren't. Work that names
+none of the workers may go to it though it costs
+money, ranked by its room as any machine is, so before a machine kept
+lively while it has room, and after one within its ceiling once it is
+over a limit. The node marks each one `"held_for": "agents"` as it
+places, from its own file, and every other as booked, never from what
+the machine says, and a link keeps nothing a machine says of it. A
 session the person granted is booked as the person but isn't one: its
 starts go to a machine booked for the person or for no asker, and not
 named in the file, only where they name it, never to one an agent's
@@ -2985,9 +3003,11 @@ ending comes back, and then the ask fails, saying so; the machine's
 
 `"Run"` runs `command` on the machine placement chooses for `work`,
 never on one made for it, in `folder` as for `"Start"`, through the
-person's login shell there without a terminal, its kit's tools first on
-its path as for `"Start"`, and with nothing on its
-input. This machine runs it as the node's own; another, through the link
+person's login shell there without a terminal (the person's run sent
+to a room as an agent's, through `/bin/sh -c`, reading no profile and
+with no folder of that home on its path),
+its kit's tools first on its path as for `"Start"`, and with nothing on
+its input. This machine runs it as the node's own; another, through the link
 reaching it, as A Link says. The node judges who asks, as `by`,
 `"Person"` or `{"Agent": kind}`: an agent, in the strictest fence the
 presences of its process and its forebears say, and in a strict one
@@ -3776,8 +3796,9 @@ whose every cell is parked counts them `dormant`, so it draws after
 the living ones. A network is heard when the latest of its cells was,
 or its team where its cells say nothing. Its records change as the
 sessions do, so a machine come or gone shows with the next change to a
-session. Ten thousand cells, each holding two trees, make their
-networks within 30 MB, in time that grows with them.
+session. Ten thousand cells, each holding two trees, three in ten of
+them saying from 1 to 24 subjects, make their networks within 30 MB,
+in time that grows with them.
 
 The `cell` kind holds each cell of the realm, keyed by its name: a
 session's address, a machine's name, or a receptor's source and machine,
@@ -3790,8 +3811,10 @@ same records as the `network` kind, less its `kind`: its `type`
 text its want asks in, where the session says one: its lines and
 paragraphs kept, nothing else that steers a terminal, cut past 4096
 characters to end in a space and `[...]`), `repo`,
-the `subjects` its presence declares (the first 12 strings of at most
-120 characters a terminal draws as plain text), `usage`, the networks it
+the `subjects` its presence declares (the first 24 strings of at most
+120 characters a terminal draws as plain text, a repeat in any case
+passed over like any other entry; the rest are dropped without a word,
+though the session's presence keeps them all), `usage`, the networks it
 `leads`, `machine`, `since`, `quest`, `started_by` (the cell its
 session's record says a book of starts names, else the orchestrator it
 names, each only as an address other than its own) with
@@ -3815,7 +3838,10 @@ sent at once. A watch is sent only the cells that changed, each with
 only the fields that moved. A node holds each record of every kind as
 the bytes it is sent as, and reads only the fields that moved, so ten
 thousand cells make their records within 30 MB while each holds two
-trees, in time that grows with them.
+trees and three in ten say from 1 to 24 subjects of about 30
+characters each, in time that grows with them. Each subject a cell says
+adds about 33 bytes to that peak, so the 30 MB holds about six a cell
+on the whole, and every cell saying 24 would take about 36 MB.
 
 The `tie` kind holds who talked with whom in the last day, made from the
 messages the node holds: never what a message said, nor its id, only
@@ -3851,16 +3877,19 @@ lower case. A subject has a hub for every 10 cells declaring it, each
 naming at most 5 of them as its `fits`, shared out among its hubs, the
 cell heard least lately first: by its own `tie:<cell>` record, its
 messages in the last hour and a 24th of the day's, so a cell talking
-least has the most room. A cell hubs one
-subject, the rarest first, except where every cell declaring a subject
-already hubs another: then the one hubbing fewest hubs it too, so no
-subject is left with none. A record says its `subject`, its `hubs`,
-each `{"hub", "fits"}`, and the first of them again as `hub` and
-`fits`, for a reader of one hub. A hub is made by the node's own count
-and grants nothing: it is where a need is sent first, never a cell
-that may do more. The kind is told as the sessions change, so a busy
-hour of talk moves the hubs with the next change, not a message at a
-time.
+least has the most room. A cell hubs one subject, the rarest first,
+except where too few cells declaring a subject are free: then those
+hubbing fewest hub it too, so no subject has fewer hubs than its cells
+make. A record says its `subject`, its `hubs`, each `{"hub", "fits"}`,
+and the first of them again as `hub` and `fits`, for a reader of one
+hub. A hub is made by the node's own count and grants nothing: it is
+where a need is sent first, never a cell that may do more. A cell's
+subjects are its own word, checked by nobody, so a newcomer heard
+least sits first among the fits of every subject it says. Each node
+makes the kind by its own rules, so while nodes of two versions share
+a realm, they may name different hubs for one subject. The kind
+is told as the sessions change, so a busy hour of talk moves the hubs
+with the next change, not a message at a time.
 
 The `ended` kind holds each session of this machine's whose work
 stopped while its quest goes on, keyed `ended:<session>`, so whoever
