@@ -164,7 +164,7 @@ same code, each line a JSON value:
 
 1. `{"Hello": {"machine", "realm", "version", "facts", "starts",
    "steers", "releases", "updates", "runs", "carries", "shows",
-   "ends", "lends", "reopens", "parks"}}`, first,
+   "ends", "ends_starts", "lends", "reopens", "parks"}}`, first,
    from each end. Each end's
    membership admits the other or refuses it, and nothing else crosses
    until it has. `facts` says the end hears and says what a machine is; an end
@@ -177,7 +177,10 @@ same code, each line a JSON value:
    older than any of them is asked none of it. `shows` says it tells of
    the carries its node ordered and keeps those the other end tells of;
    an end older than it is told none. `ends` says it carries an end of a
-   session held there; an end older than it is asked none. `lends`
+   session held there; an end older than it is asked none.
+   `ends_starts` says it takes an end asked for a start's starter, as
+   below; an end older than it is asked none, since it would read
+   that asker as no frame it knows and close the link. `lends`
    says it carries lends, as below; an end older than it is asked none.
    `reopens` says its node judges a reopening relayed to it
    (`"Start"`); an end older than it is asked none. `parks` says it
@@ -392,11 +395,17 @@ same code, each line a JSON value:
 18. `{"End": {"ask", "held", "by"}}`: end the session held on the
     other end's machine as `held` for good, answered by `Started` with
     `Ended`. `by` is who this end's node judged asks: `"Person"` for the
-    person's own login, or `{"Session": address}` for the session asking.
-    The other end takes it only if its membership proved which machine
-    asked, as for an update, and `by` is the person, since a session's
+    person's own login, `{"Session": address}` for the session asking,
+    or `{"Starter": address}` for the cell this end's book of starts
+    names as having asked that start, proved to be asking. The other end
+    takes it only if its membership proved which machine asked, as for
+    an update, and `by` is the person or the starter, since a session's
     orchestration is proved only where both run; otherwise it refuses,
-    saying why. It ends the hold itself, as `"End"` on the socket does.
+    saying why. A starter's end is sent only where both hellos say
+    `ends_starts`, and the other end's node ends the hold only where its
+    own book took that start as an agent's relayed from this end's
+    machine, refusing one the person started there, as its log says.
+    It ends the hold itself, as `"End"` on the socket does.
     No time limits the answer, since the session has ten seconds to
     save what it holds and what is killed past them two more to go.
 19. `{"Lend": {"ask", "lend"}}`: answer a model call through the other
@@ -1619,6 +1628,7 @@ reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Starts": {"act"}}` | `{"Starts": {"stopped", "newest"}}`, `stop`, `resume` or `list` from the person's own login |
 | `{"Update": {"machine"}}` | `{"Updated": ending}`, as its updater said it |
 | `{"End": {"held"}}` | `{"Ended": {"machine", "held", "ending"}}`, `ending` `gently` or `killed` (A Held Session) |
+| `{"EndStart": {"held", "from", "cell"}}` | as `End`, from a link proved to be machine `from`, ending for its starter `cell` a start relayed from there (A Held Session) |
 | `{"Run": {"work", "folder", "command", "by", "from", "asked_by"}}` | `{"Running": {"machine"}}`, then a `Ran` a line |
 | `{"Lend": {"budget", "method", "path", "headers", "body"}}` | a `Lent` a line, no reply first (Borrowing a Lend) |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
@@ -2673,8 +2683,11 @@ write there could lift it, as it could stop the node. Every start,
 refused ones too, is kept in `starts.jsonl` beside `runs.jsonl` as a
 JSON line, `{"at", "by", "started_by", "folder", "program",
 "resumes", "reopens", "carried", "machine", "held",
-"failed", "refused"}`: `at` in milliseconds, `started_by` null for the
-person's, `resumes` the id of the session it brings back uncounted,
+"relayed_from", "failed", "refused"}`: `at` in milliseconds,
+`started_by` null for the person's, `relayed_from` the machine whose
+link relayed an agent's start counted here, which alone may end it
+for its starter, `resumes` the id of the session it brings back
+uncounted,
 `reopens` the id of the session it brings back, counted or not,
 `carried` the id of the session a carry takes uncounted, as below,
 `program` the command's first word alone, so no argument is kept,
@@ -3443,7 +3456,13 @@ go as the connection closes. It refuses a session, or any address,
 that a session living or parked here or elsewhere answers to, and a
 session another connection holds. Later lines on it are another
 `Presence`, when it changes, or `{"Send": {"message": {...}}}`, the
-message as the harness writes its file, each answered in turn.
+message as the harness writes its file, each answered in turn, or
+`{"End": {"held"}}`, an end of the hold the session runs in. The
+node ends it only where the kernel shows the connection's process
+below that hold's program here, refusing any other with `{"Err":
+"why"}`, since the presence proves nothing, and answers `{"Ok":
+"Ending"}` before it begins, as the person's own end does, its
+ending said on the node's log. An end opening a connection is refused.
 
 The node writes a message again with only the fields the mesh reads,
 keeping it only when its id is of the mesh's shape, names its sender
@@ -4454,10 +4473,22 @@ holding it in `sessions` names its `orchestrator` by address: the asker
 must head that orchestrator's open quest by this node's record and by
 that quest's record, and the mesh must put the ended quest's sessions
 and the asker in that orchestrator's group. Only that orchestrator
-ends them so, never one above it. Anyone else is refused, saying
-why. An id held here is ended here; one held on more than one other
-machine is refused. Another machine's hold is known by the presence
-of the session running in it, or, where none does, by the node's
+ends them so, never one above it. A session also ends the hold it
+runs in, here, once the kernel shows its process below that hold's
+program; a parked hold runs none. The cell this node's book of
+starts names as having asked a start that landed on another machine,
+proved to be that cell, ends it there as its starter: the link sends
+it as such, and that machine's node ends it only where its own book
+took that start as an agent's relayed from this machine, logging the
+hold, the cell and the machine, the log stamping when. A machine
+where the person works takes such an end only from its node's own
+process, so it refuses those a link's end asks there. The end goes
+only over a link whose far key proved it, as one this machine dials
+to that machine by ssh is, never over one that machine dialled.
+Anyone else is refused, saying why. An id held here is ended here;
+one held on more than one other machine is refused. Another
+machine's hold is known by the presence of the session running in
+it, or, where none does, by the node's
 book of starts, which keeps the machine each start it holds landed
 on, up to 2048 of them, on disk, so a node started again knows. The
 book forgets nothing a hold ending does, so an end it routes says so,

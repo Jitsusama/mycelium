@@ -38,13 +38,18 @@ pub enum Asker {
     Person,
     /// The session going by this address, as the node proved it asks.
     Session(String),
+    /// The cell going by this address, as the node proved it asks, whose
+    /// start the hold is, as that node's book of starts names it: sent
+    /// across a link, so the machine holding it ends it only where it
+    /// started it as relayed from that node's machine, for an agent.
+    Starter(String),
 }
 
 impl std::fmt::Display for Asker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Person => f.write_str("the person"),
-            Self::Session(address) => f.write_str(address),
+            Self::Session(address) | Self::Starter(address) => f.write_str(address),
         }
     }
 }
