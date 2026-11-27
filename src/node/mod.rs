@@ -27952,23 +27952,17 @@ esac
                 "{case}"
             );
         }
-        let being = "s-1 is being reopened on wren already";
-        let relayed_hold = Ok(Err(relay_refused("wren", false, "an agent's", being)));
-        assert!(
-            refused_for_one_session(&relayed_hold, "wren", &[]),
-            "a relay's of its hold, read as the unbooking reads it"
-        );
-        let spaced = "my notes is being reopened on wren already";
-        assert!(
-            !refused_for_one_session(&said(spaced), "wren", &[]),
-            "a word with a space the start never named"
-        );
-        assert!(
-            refused_for_one_session(&said(spaced), "wren", &["my notes".to_owned()]),
-            "one the start named"
-        );
+    }
+
+    // A relayed refusal for one session is read as one, and its pass-over
+    // left; a lost answer is no refusal. Followup 495: a cloud machine's
+    // hold refusing one session is read as the unbooking reads it, relayed
+    // or not, so the two never disagree on whether the hold said it.
+    #[test]
+    fn a_cloud_machine_held_already_is_read_as_its_unbooking_reads_it() {
+        let said = |why: &str| -> Result<Reply, Unsent> { Ok(Err(why.to_owned())) };
         let held = "s-1 is held on wren already, so it isn't reopened";
-        let relayed = Ok(Err(relay_refused("wren", true, "", held)));
+        let relayed = said(&relay_refused("wren", true, "", held));
         assert!(refused_for_one_session(&relayed, "wren", &[]), "a relay's");
         let wrapped = relay_refused("wren", true, "", held);
         assert_eq!(
@@ -27983,6 +27977,21 @@ esac
         assert!(
             !refused_for_one_session(&lost, "wren", &[]),
             "a lost answer"
+        );
+        let being = "s-1 is being reopened on wren already";
+        let relayed_hold = said(&relay_refused("wren", false, "an agent's", being));
+        assert!(
+            refused_for_one_session(&relayed_hold, "wren", &[]),
+            "a relay's of its hold"
+        );
+        let spaced = "my notes is being reopened on wren already";
+        assert!(
+            !refused_for_one_session(&said(spaced), "wren", &[]),
+            "a word with a space the start never named"
+        );
+        assert!(
+            refused_for_one_session(&said(spaced), "wren", &["my notes".to_owned()]),
+            "one the start named"
         );
     }
 
