@@ -1359,6 +1359,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn an_unchanged_presence_is_judged_without_opening_its_file() {
+        use notify::Watcher as _;
+
         let (dir, folders) = store();
         let presence = dir.path().join("mesh/presence");
         for name in ["s-one", "s-two"] {
@@ -1379,7 +1381,8 @@ mod tests {
             notify::Config::default(),
         )
         .expect("a watcher");
-        notify::Watcher::watch(&mut watch, &presence, RecursiveMode::NonRecursive)
+        watch
+            .watch(&presence, RecursiveMode::NonRecursive)
             .expect("the folder is watched");
 
         assert_eq!(folders.presence_bodies().len(), 2, "both read");
