@@ -9778,10 +9778,7 @@ impl<S: Store> Shared<S> {
             return (by, admits);
         };
         let rooms = self.book.agent_rooms();
-        if by == By::Person
-            && rooms.contains(room)
-            && !self.admitted_among(room, &admits, &rooms)
-        {
+        if by == By::Person && rooms.contains(room) && !self.admitted_among(room, &admits, &rooms) {
             (By::Agent(crate::declared::Kind::Fence), Admits::Rooms)
         } else {
             (by, admits)
