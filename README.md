@@ -94,7 +94,8 @@ The harness mesh's messages and presence, carried between machines:
 - `mycelium balance` says how evenly the realm's machines carry its
   work: a row for each machine's load (the largest of the memory it
   uses, how busy its processors are and how long its work stalls),
-  whether it is over or has room, and its busy and idle sessions; how
+  whether it is over (a machine kept lively is over once past its
+  ceiling) or has room, and its busy and idle sessions; how
   far the loads spread; and a sentence for each thing wrong, saying what
   follows: a machine over while another has room, one resource spent
   while the other idles, loads spread too far, or facts too old to
@@ -137,12 +138,12 @@ The harness mesh's messages and presence, carried between machines:
   put to, with who asks whom and how long it has waited, and each hold
   still standing, with until when, each with its id and how it opens.
   It draws text into a pipe too, as `swarm` and `forage` do, each time
-  there with its date and zone so a kept copy still says when (the
-  other commands' piped times still say no year or zone); a
-  script reading the JSON lines it once printed asks for them with
-  `-o json`, which prints each whole as a JSON line. `mycelium said`
-  prints what you said to sessions through this machine, with when each
-  was taken up and answered.
+  there with its date and zone so a kept copy still says when, as
+  every page drawn into a pipe says its times; a script reading the
+  JSON lines it once printed asks for them with `-o json`, which prints
+  each whole as a JSON line. `mycelium said` prints what you said to
+  sessions through this machine, with when each was taken up and
+  answered.
 - `mycelium swarm` shows the realm's teams in a terminal, nested as
   they are and those needing you first, with how many of each one's
   sessions need you, are stuck, move or wait; `mycelium swarm <TEAM>`

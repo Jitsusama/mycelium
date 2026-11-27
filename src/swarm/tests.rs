@@ -151,6 +151,21 @@ fn a_team_says_its_lead_landing_teams_within_sessions_and_meetings() {
 }
 
 #[test]
+fn into_a_pipe_a_team_says_when_it_landed_with_its_day_and_zone() {
+    // A copy is read later or elsewhere, where 15:54 alone says nothing.
+    let whole = Look {
+        width: WHOLE,
+        ..look()
+    };
+    let shown = team(&swarm(), "harb", &whole).expect("Harbour is found by its name");
+    assert_eq!(
+        shown.lines().nth(1),
+        Some("landed Hear the Tide · skiff#12 · Thu 12 Nov 2026 15:54 UTC (+00:00)"),
+        "a landing drawn into a pipe said only its hour:\n{shown}"
+    );
+}
+
+#[test]
 fn a_lead_titled_as_its_team_is_named_by_its_address() {
     let mut swarm = swarm();
     if let Some(lead) = swarm
@@ -978,6 +993,14 @@ fn width_is_counted_in_the_cells_a_terminal_draws() {
             3,
             "a one-cell pictograph joined to an emoji takes its own cell beside the emoji's two",
         ),
+        // Joined after a letter, a skin tone is given its two beside the
+        // letter's one by Unicode's widths, as a terminal draws, whether
+        // it is measured with the letter or apart.
+        (
+            "a\u{200D}\u{1F3FD}",
+            3,
+            "a skin tone joined to a letter takes its own two",
+        ),
         // Asked for as text, a wide emoji counts one cell, as Unicode's
         // widths and a terminal that honours the selector draw it; one
         // drawing each code point alone draws it two.
@@ -1032,6 +1055,23 @@ fn a_letter_a_ligature_joins_still_takes_its_own_cell() {
         // widths count it.
         ("\u{5D0}\u{200D}👩", 3, "an emoji after a letter's joiner"),
         ("a\u{200D}👩", 3, "or after a Latin letter's"),
+        (
+            "\u{915}\u{94D}\u{200D}👩",
+            3,
+            "or after a half form's, its virama taking none",
+        ),
+        // A letter that is an emoji too, given the emoji selector, starts
+        // an emoji's sequence, counted two cells whole as any pictograph's.
+        (
+            "\u{2139}\u{FE0F}\u{200D}👩",
+            2,
+            "the information sign as an emoji, joined to one",
+        ),
+        (
+            "\u{263A}\u{FE0F}\u{200D}👩",
+            2,
+            "as a smile joined to one is",
+        ),
     ] {
         assert_eq!(drawn_width(text), wide, "{what}: {text:?}");
     }
@@ -1365,11 +1405,16 @@ fn a_cut_keeps_the_longest_start_that_fits_as_measured_whole() {
         "\u{1780}\u{17D2}\u{1780} \u{1781}\u{17D2}\u{1782}\u{17D2}\u{1783}",
         "港\u{200D}湾 e\u{301}\u{302}x",
         "a\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}b",
-        // A selector just past the longest run of steps with no fresh
-        // start, where a cut that settled between it and its heart would
-        // count a cell less. Arabic letters hold the run, as accents can't:
-        // a pile of them is cut at its steps to a cell first.
-        &format!("{}\u{200D}❤\u{FE0F}x", "ب".repeat(LONGEST_RUN - 2)),
+        // A selector at the longest run's step, where a cut that
+        // settled between it and its heart would count the heart a cell
+        // narrower than it draws. A pile of marks holds the run with no
+        // fresh start, and a joiner after what is no emoji joins the heart
+        // without making a sequence of them, so the selector still widens
+        // it; the letters before give a room the cut walks it all in.
+        &format!(
+            "abcd#{}\u{200D}❤\u{FE0F}",
+            "\u{301}".repeat(LONGEST_RUN - 3)
+        ),
     ] {
         for room in 0..36 {
             let (cut, whole) = (within(text, room), longest(text, room));
@@ -1397,6 +1442,26 @@ fn a_cut_keeps_the_longest_start_that_fits_as_measured_whole() {
 }
 
 #[test]
+fn a_long_run_settles_anywhere_but_between_a_selector_and_what_it_selects() {
+    assert!(
+        super::splits(Some('a'), 'b'),
+        "a letter after a letter wasn't a place to settle"
+    );
+    assert!(
+        !super::splits(Some('❤'), '\u{FE0F}'),
+        "a selector was settled apart from the heart it widens"
+    );
+    assert!(
+        !super::splits(Some('\u{1F469}'), '\u{E0100}'),
+        "a supplementary selector was settled apart from what it selects"
+    );
+    assert!(
+        super::splits(Some('\u{FE0F}'), '\u{FE0F}'),
+        "a second selector, selecting nothing, wasn't a place to settle"
+    );
+}
+
+#[test]
 fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut() {
     use std::{sync::mpsc, thread, time::Duration};
     /// A cut by what it is, and whether it came out right.
@@ -1405,9 +1470,10 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
     // at each start, cutting it takes minutes and wrapping it longer.
     // Into a pipe the room is the whole text, so neither its room nor a
     // cap on steps bounds it there.
-    // The budget is far under that and far over a fair cut's cost, even
-    // unoptimised on a loaded machine.
-    let budget = Duration::from_secs(30);
+    // The budget is far under that and far over a fair cut's cost on a
+    // loaded machine: 30 s unoptimised, and 5 s as the gate builds it,
+    // optimised, where a cut that walked its text again would fail.
+    let budget = Duration::from_secs(if cfg!(debug_assertions) { 30 } else { 5 });
     // Each cut runs on a thread of its own, so one that costs what its
     // text does fails at the budget rather than holding the run for
     // hours; the test's process ends what it leaves running.

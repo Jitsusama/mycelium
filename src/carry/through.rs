@@ -144,7 +144,15 @@ impl Hands for Through {
     }
 
     fn lent(&mut self, to: &str) -> Result<Lent, String> {
-        Ok(self.linked(to)?.map_or(Lent::Not, |one| Lent::of(&one)))
+        match self.linked(to)? {
+            // Whether it is a worker is its link's word, which a node
+            // opened again hasn't heard until it is in reach again, as
+            // an eased carry's ground holds ([`ground::firm`]).
+            Some(one) if one.state == crate::facts::Readiness::Unreachable => Err(format!(
+                "{to} is out of reach, so nothing is carried there now"
+            )),
+            linked => Ok(linked.map_or(Lent::Not, |one| Lent::of(&one))),
+        }
     }
 
     fn sessions(&mut self) -> Result<Vec<Session>, String> {
@@ -1150,6 +1158,47 @@ mod tests {
             (hands.share(quest, "osprey"), hands.share(quest, "kestrel")),
             (Ok(()), Ok(())),
             "while the person's own share it, login and all, in the cloud as on the desk"
+        );
+    }
+
+    /// A node opened again knows a worker only once its link is let in
+    /// again, so a carry ordered to a machine out of reach is refused
+    /// rather than taken as one of the person's own.
+    #[test]
+    fn a_machine_out_of_reach_is_carried_nothing() {
+        use super::{Hands, Places, Through};
+        use crate::facts;
+        let dir = tempfile::tempdir().expect("places");
+        let places = Places {
+            quests: dir.path().join("quests"),
+            scratch: dir.path().join("scratch"),
+            home: dir.path().join("home"),
+            state: dir.path().join("state"),
+        };
+        let here = facts::measure("skiff", &facts::Sources::nowhere());
+        let mut away = facts::measure("tern", &facts::Sources::nowhere());
+        away.state = facts::Readiness::Unreachable;
+        let near = facts::measure("wren", &facts::Sources::nowhere());
+        let machines = vec![here, away, near];
+        let mut hands = Through::new(
+            dir.path().join("work.sock"),
+            places,
+            "QEST-20261115-HARBOR",
+            Duration::from_secs(1),
+        )
+        .asking(Box::new(move |request| match request {
+            Request::Machines => Ok(Response::Machines(machines.clone())),
+            other => Err(format!("asked {other:?}")),
+        }));
+        assert_eq!(
+            hands.lent("tern"),
+            Err("tern is out of reach, so nothing is carried there now".to_owned()),
+            "whether it is a worker can't be told until its link is back"
+        );
+        assert_eq!(
+            hands.lent("wren"),
+            Ok(super::Lent::Not),
+            "one in reach is what it said"
         );
     }
 

@@ -507,12 +507,21 @@ mod tests {
 
     #[test]
     fn drawn_whole_every_column_is_there_and_nothing_wraps() {
+        // Into a pipe, a time says its day, date and zone, as a copy is
+        // read later or elsewhere.
         assert_eq!(
             table(&[osprey()], &[], &look(crate::swarm::WHOLE)),
             "machine  state  busy  memory free  disk free      power         updated\n\
-             osprey   ready        ? of 48 GiB  130 of 994 GB  battery 100%  failed 16:29\n\
+             osprey   ready        ? of 48 GiB  130 of 994 GB  battery 100%  failed Thu 12 Nov \
+             2026 16:29 UTC (+00:00)\n\
              \n\
-             osprey's update failed at 16:29: building the system failed (exit status: 1)\n"
+             osprey's update failed at Thu 12 Nov 2026 16:29 UTC (+00:00): building the system \
+             failed (exit status: 1)\n"
+        );
+        assert_eq!(
+            table(&[osprey()], &[], &look(80)).lines().nth(1),
+            Some("osprey   ready        ? of 48 GiB  130 of 994 GB  battery 100%  failed 16:29"),
+            "in a terminal, a time today was drawn otherwise than by its hour"
         );
     }
 
@@ -522,7 +531,7 @@ mod tests {
                    build, as a dependency could not be fetched";
         let mut long = tern();
         long.updated = Some(json!({"step": "failed", "at": "2026-11-12T16:29:02Z", "why": why}));
-        let said = format!("tern's update failed at 16:29: {why}");
+        let said = format!("tern's update failed at Thu 12 Nov 2026 16:29 UTC (+00:00): {why}");
         assert!(said.chars().count() > 100, "the case passes 100 columns");
         let whole = look(crate::swarm::WHOLE);
         for drawn in [

@@ -509,7 +509,9 @@ fn doing(said: &Value) -> Option<Doing> {
 }
 
 /// The newest events a presence says, as it says them newest first,
-/// leaving out any it can't read and cutting a title past `LINE_MOST`.
+/// leaving out any it can't read and cutting a title past `LINE_MOST`,
+/// the cut ending as a need's does, on nothing a cut leaves holding
+/// nothing.
 fn events(said: &Value) -> Vec<Event> {
     said.as_array()
         .into_iter()
@@ -518,7 +520,8 @@ fn events(said: &Value) -> Vec<Event> {
         .filter(|event| !event.place.is_empty() && is_instant(&event.at))
         .map(|mut event| {
             if let Some((cut, _)) = event.title.char_indices().nth(LINE_MOST) {
-                event.title.truncate(cut);
+                let ended = crate::forage::cut_ended(&event.title[..cut], char::is_whitespace);
+                event.title.truncate(ended.len());
             }
             event
         })
@@ -1120,6 +1123,7 @@ mod tests {
         );
         said.insert(2, json!({"kind": "push", "where": "x", "title": "no time"}));
         said[3]["title"] = json!("é".repeat(130));
+        said[4]["title"] = json!(format!("{} \u{17D2}\u{1780}", "\u{1780}".repeat(118)));
         let read = session(&presence(json!(said)), "kestrel").expect("a presence reads");
         assert_eq!(
             read.events
@@ -1144,6 +1148,11 @@ mod tests {
             read.events[1].title,
             "é".repeat(120),
             "a long title is cut at 120 characters"
+        );
+        assert_eq!(
+            read.events[2].title,
+            "\u{1780}".repeat(118),
+            "a cut title ends on no coeng, nor the space it leaves last"
         );
         let serialized = serde_json::to_value(&read).expect("a session serializes");
         assert_eq!(

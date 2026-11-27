@@ -62,7 +62,9 @@ tokio = { version = "1", features = [
 # by too, and the joiner cap in `forage::one_line`, which PROTOCOL's
 # cleaning of `for` names, restarts where it gives a cell. Check both
 # whenever this moves, as nodes on either side of a bump would keep
-# different joiners.
+# different joiners. Both also ask `char::is_alphabetic`, whose tables
+# come with the Rust toolchain, so a toolchain bump is a reason to check
+# them too.
 unicode-width = "=0.2.3"
 
 # When a process started on macOS, which only libproc's proc_pidinfo says:

@@ -647,4 +647,75 @@ mod tests {
             "a look after watches them anew"
         );
     }
+
+    #[test]
+    fn a_quest_forgotten_while_a_folder_and_its_record_are_stale_gives_both_back() {
+        use std::sync::atomic::Ordering;
+
+        use crate::watching::counting::Counting;
+
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (scratch, records) = (dir.path().join("scratch"), dir.path().join("records"));
+        for folder in ["notes", "bench"] {
+            fs::create_dir_all(scratch.join(QUEST).join(folder)).expect("made");
+        }
+        fs::create_dir_all(records.join(QUEST)).expect("made");
+        let (counting, starts) = Counting::made();
+        let mut watch = Watch::watched_by(scratch.clone(), records.clone(), |_| {
+            let watcher: Box<dyn Watcher + Send> = Box::new(counting);
+            Ok(watcher)
+        });
+        watch.to_look_at(QUEST, &shared(&["notes", "bench"]));
+
+        // Heard of whole, the folder and the record go stale, held by the
+        // watcher still; a look naming neither watches neither again.
+        watch
+            .early
+            .push(Heard::At(scratch.join(QUEST).join("notes")));
+        watch.early.push(Heard::At(records.join(QUEST)));
+        watch.to_walk(QUEST, &BTreeSet::new());
+        assert_eq!(
+            (watch.stale.len(), watch.records_stale.len()),
+            (1, 1),
+            "the folder and the record went stale: {:?} {:?}",
+            watch.stale,
+            watch.records_stale
+        );
+
+        let held = watch
+            .watcher
+            .as_ref()
+            .expect("a watcher")
+            .watched_paths()
+            .expect("its paths listed");
+        assert_eq!(
+            held.len(),
+            3,
+            "stale or not, the watcher holds both folders and the record: {held:?}"
+        );
+
+        let before = starts.load(Ordering::SeqCst);
+        watch.forget(QUEST);
+        let held = watch
+            .watcher
+            .as_ref()
+            .expect("a watcher")
+            .watched_paths()
+            .expect("its paths listed");
+        assert!(
+            held.is_empty(),
+            "forget kept a stale path watched: {held:?}"
+        );
+        assert_eq!(
+            starts.load(Ordering::SeqCst) - before,
+            1,
+            "forget gave its three paths back in more than one batch"
+        );
+        assert!(
+            watch.stale.is_empty() && watch.records_stale.is_empty(),
+            "forget kept the quest stale: {:?} {:?}",
+            watch.stale,
+            watch.records_stale
+        );
+    }
 }

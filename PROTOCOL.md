@@ -1291,7 +1291,10 @@ A node run with `--eases` looks each minute at what its machine would
 do to ease itself, judging only by what it reads, and does none of it
 but where `--eases-carry` says to make its carries. It reads the
 realm's balance as `mycelium balance --follow` does and holds what
-is seen in most of the last ten readings. Once its readings have said
+is seen in most of the last ten readings. A machine kept lively is
+over there once past its ceiling, as placement judges it, so it
+carries to one with room though its queue is past no limit; past its
+ceiling alone, it puts none to sleep. Once its readings have said
 for ten minutes that its machine is over its limits, whether or not
 another has room, it would put its sessions that wait to sleep where
 they are while it is past its memory limit in eight of the last ten
@@ -2217,7 +2220,9 @@ only a machine out of reach would do and the work may wait, or
 long ago), `{"full": most}` (it holds the `sessions_at_most` its own
 `declared` gives, or, where that gives none, the one the offer it was
 made of promised, judged under the same lock as the starts it counts so
-a burst can't overfill it) or, for an offer, `{"lives_only": duration}`.
+a burst can't overfill it; never a run's, since a run starts no session
+and takes no worker home, so a full machine still takes one as its
+load allows) or, for an offer, `{"lives_only": duration}`.
 Placement only
 chooses: a machine says whether work starts there when asked, by its
 own queue and taints, so nothing fits work against its room, which only
@@ -3759,11 +3764,15 @@ grapheme, such as U+09BE; no nonspacing mark, conjoining jamo vowel or
 final, or selector is) and following no zero-width joiner kept, to the
 next, the rest dropped, a non-joiner (U+200C) never counted, nor a
 zero-width joiner before a letter (any character Unicode gives
-Alphabetic, as in Devanagari's half forms), each
+Alphabetic, as in Devanagari's half forms, by the Unicode tables the
+node's Rust toolchain carries for `char::is_alphabetic`, which a newer
+toolchain may widen), each
 judged against what is kept so far; and then is trimmed of such
 spaces and braille blanks (U+2800), and cut to its first 120 characters,
-then cleaned again, so it ends in no space and no joiner left joining
-nothing; `folder` is 1 to 1024 bytes. A
+then, cut or not, cleaned again, so it ends in no space, no joiner or
+non-joiner left joining nothing and no Khmer coeng (U+17D2) with no
+letter to subscript;
+`folder` is 1 to 1024 bytes. A
 `for` said as null or as anything but text is unsaid, and one unsaid,
 empty or cleaned to nothing is left out of the cell record. A cell's
 first 16 shares are read, those past these bounds are passed over,
@@ -3813,8 +3822,10 @@ text its want asks in, where the session says one: its lines and
 paragraphs kept, nothing else that steers a terminal, cut past 4096
 characters to end in a space and `[...]`), `repo`,
 the `subjects` its presence declares (the first 24 strings of at most
-120 characters a terminal draws as plain text, a repeat in any case
-passed over like any other entry; the rest are dropped without a word,
+120 characters a terminal draws as plain text, a repeat (one whose
+lower case matches an earlier one's) passed over like any other entry,
+and no accent composed first, so one written as its own mark is a
+subject apart; the rest are dropped without a word,
 though the session's presence keeps them all), `usage`, the networks it
 `leads`, `machine`, `since`, `quest`, `started_by` (the cell its
 session's record says a book of starts names, else the orchestrator it
@@ -3840,9 +3851,11 @@ only the fields that moved. A node holds each record of every kind as
 the bytes it is sent as, and reads only the fields that moved, so ten
 thousand cells make their records within 30 MB while each holds two
 trees and three in ten say from 1 to 24 subjects of about 30
-characters each, in time that grows with them. Each subject a cell says
-adds about 33 bytes to that peak, so the 30 MB holds about six a cell
-on the whole, and every cell saying 24 would take about 36 MB.
+characters each, in time that grows with them. Each such subject a
+cell says adds about 33 bytes to that peak, so the 30 MB holds about six
+a cell on the whole, and every cell saying 24 took about 36 MB. A
+subject costs about a byte for each of its bytes, so one of 120
+characters outside ASCII may cost up to about 480 bytes.
 
 The `tie` kind holds who talked with whom in the last day, made from the
 messages the node holds: never what a message said, nor its id, only
@@ -3885,10 +3898,12 @@ make. A record says its `subject`, its `hubs`, each `{"hub", "fits"}`,
 and the first of them again as `hub` and `fits`, for a reader of one
 hub. A hub is made by the node's own count and grants nothing: it is
 where a need is sent first, never a cell that may do more. A cell's
-subjects are its own word, checked by nobody, so a newcomer heard
-least sits first among the fits of every subject it says. Each node
-makes the kind by its own rules, so while nodes of two versions share
-a realm, they may name different hubs for one subject. The kind
+subjects are its own word, checked by nobody, so a cell heard least,
+new or silent, is among the first made a hub or named a fit of each
+subject it says. Each node names hubs from the messages and sessions
+it holds, so two nodes may name different hubs for a while, and nodes
+of two versions may keep different subjects for one cell and name
+different hubs for one subject. The kind
 is told as the sessions change, so a busy hour of talk moves the hubs
 with the next change, not a message at a time.
 
@@ -4349,7 +4364,7 @@ cells', and a reader gathers them as `mycelium forage` does.
 | `documents` | each of its documents: `id`, `kind`, `title`, `stage`, and how many steps are `ticked` and `open` |
 | `waits` | only when there are any, what the quest waits on its person for: `id`, `title`, `why`, `minutes`, `when`, whether it's `ready`, and when it was `raised` |
 | `lineage` | `started_by`, the cell that asked this node to start it, else the orchestrator its presence names; beside one, `started_by_from`, `book` when this node's book of starts holds that start, else `presence`; `split_from`, the cell its presence says it split from, kept only as an address; only when there are any, `split_into`, the cells its presence says it split into; and `parent`, the quest its own sits under |
-| `serves`, `relies` | only when there are any, the needs its presence says it took from other cells, and handed them: each `cell`, by address, `need`, what it was about, and `since`, an ISO time. A `need` is drawn on one line and cleaned as `for` is, its joiners capped at three in a run alike, though it keeps any noncharacter and is trimmed only of whitespace, then cut to its first 280 characters and cleaned and trimmed again, so it ends in no space and no joiner left joining nothing |
+| `serves`, `relies` | only when there are any, the needs its presence says it took from other cells, and handed them: each `cell`, by address, `need`, what it was about, and `since`, an ISO time. A `need` is drawn on one line and cleaned as `for` is, its joiners capped at three in a run alike, though it keeps any noncharacter and is trimmed only of whitespace, then cut to its first 280 characters and cleaned and trimmed again, so it ends in no space, no joiner or non-joiner left joining nothing and no Khmer coeng with no letter to subscript, cut or not; a need left with nothing then passes its join over |
 
 The node works out `started_by` and `started_by_from` itself and never
 takes either from a presence's `lineage`. It finds a session's start in

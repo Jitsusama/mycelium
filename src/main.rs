@@ -3753,29 +3753,8 @@ fn unanswered(socket: &Path, output: &Output) -> io::Result<()> {
         return print_records(socket, mycelium::unanswered::KIND);
     }
     let records = mycelium::swarm::records(socket, mycelium::unanswered::KIND, SWARM_WITHIN)?;
-    let drawn = mycelium::unanswered::drawn(&records, &look(), room());
+    let drawn = mycelium::unanswered::drawn(&records, &look());
     io::stdout().lock().write_all(drawn.as_bytes())
-}
-
-/// The columns stdout has, as [`width`] finds them for a terminal; into
-/// a pipe, none, so nothing is cut.
-fn room() -> Option<usize> {
-    use std::io::IsTerminal as _;
-    let stdout = io::stdout();
-    let terminal = stdout.is_terminal();
-    room_of(
-        terminal,
-        std::env::var("COLUMNS").ok().as_deref(),
-        rustix::termios::tcgetwinsize(&stdout)
-            .ok()
-            .map(|size| size.ws_col),
-    )
-}
-
-/// [`room`] from what it reads: whether stdout is a `terminal`, the
-/// `columns` set in `COLUMNS`, and the terminal's own `size`.
-fn room_of(terminal: bool, columns: Option<&str>, size: Option<u16>) -> Option<usize> {
-    terminal.then(|| width(true, columns, size))
 }
 
 /// Prints each record of `kind` the node holds, a JSON line each, oldest
@@ -3865,8 +3844,8 @@ mod tests {
 
     use super::{
         Action, Command, HELP_WIDTH, SAID_MOST, SwarmAsked, Tree, held_through, in_place, kit,
-        need, orchestrates, processes_here, reader_left, room_of, said_text, swarm_asked, tree,
-        width, within, write_line,
+        need, orchestrates, processes_here, reader_left, said_text, swarm_asked, tree, width,
+        within, write_line,
     };
 
     #[test]
@@ -3932,23 +3911,6 @@ mod tests {
                 width(true, columns, said),
                 wide,
                 "COLUMNS {columns:?}, the terminal saying {said:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_room_is_a_terminal_s_width_and_none_into_a_pipe() {
-        for (terminal, columns, size, room) in [
-            (false, Some("60"), Some(100), None),
-            (true, Some("60"), Some(100), Some(60)),
-            (true, Some("200"), Some(100), Some(100)),
-            (true, Some("wide"), Some(100), Some(100)),
-            (true, None, None, Some(80)),
-        ] {
-            assert_eq!(
-                room_of(terminal, columns, size),
-                room,
-                "a terminal {terminal}, COLUMNS {columns:?}, its size {size:?}"
             );
         }
     }
