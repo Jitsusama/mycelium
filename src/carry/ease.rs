@@ -237,6 +237,9 @@ pub struct History {
     sleeps: usize,
     moved: Vec<Moved>,
     kept_eases: Result<usize, String>,
+    /// The carries this machine's node made to ease it that haven't
+    /// landed yet, as it last judged them.
+    on_way: Vec<Moved>,
 }
 
 impl Default for History {
@@ -250,6 +253,7 @@ impl Default for History {
             slept_at: None,
             sleeps: 0,
             moved: Vec::new(),
+            on_way: Vec::new(),
             kept_eases: Err(
                 "the carries kept here haven't been read, so how many this machine \
                              carried within the day can't be told"
@@ -357,6 +361,13 @@ impl History {
     /// node made to ease it within the day, or why that can't be told.
     pub fn kept_eases(&mut self, count: Result<usize, String>) {
         self.kept_eases = count;
+    }
+
+    /// Notes the carries this machine's node made to ease it that, as it
+    /// judges them now, haven't landed yet: each still told to its
+    /// session, or gone from here and not yet running where it went.
+    pub fn on_way(&mut self, on_way: Vec<Moved>) {
+        self.on_way = on_way;
     }
 
     /// How many sessions `here` carried away to ease itself within the
@@ -1998,6 +2009,35 @@ pub(super) mod tests {
         assert!(
             carries(&eased(cooldown)).is_some(),
             "the cooldown after the last"
+        );
+    }
+
+    #[test]
+    fn a_carry_still_on_its_way_holds_the_next_until_it_lands() {
+        let realm = realm();
+        let going = Moved {
+            session: "s0".to_owned(),
+            from: "skiff".to_owned(),
+            to: "osprey".to_owned(),
+            at: ago(COOLDOWN.as_mins() + 1),
+            eases: true,
+        };
+        let mut history = hot_for(&realm, 60);
+        history.moved(going.clone());
+        history.on_way(vec![going.clone()]);
+        assert_eq!(
+            why_not(&chose(&realm, &[cell("s1")], &history)),
+            format!(
+                "its carry of s0 to osprey at {} hasn't landed yet, and it carries none \
+                 until it does",
+                going.at
+            ),
+            "past the cooldown, a carry still leaving holds the next"
+        );
+        history.on_way(Vec::new());
+        assert!(
+            carries(&chose(&realm, &[cell("s1")], &history)).is_some(),
+            "once it lands"
         );
     }
 

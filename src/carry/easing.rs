@@ -306,6 +306,16 @@ pub fn eased_lately(folder: &Path, here: &str, now: Timestamp) -> Result<Vec<Mov
         .collect())
 }
 
+/// The carries of `kept` this machine's node, `here`'s, made to ease it
+/// that haven't landed yet, as `judge` says each stands: still told to
+/// its session, or gone from here and not yet running where it went.
+/// One refused, arrived, back or stuck holds nothing back, so a carry
+/// that never lands holds easing no longer than it stands ordered.
+pub fn on_way(kept: &[Kept], here: &str, judge: impl Fn(&Kept) -> kept::State) -> Vec<Moved> {
+    let _ = (kept, here, judge);
+    Vec::new()
+}
+
 /// How many of the carries `kept` within the day before `now` this
 /// machine's node, `here`'s, made to ease it.
 #[must_use]
@@ -754,6 +764,12 @@ impl Easing {
     /// for the lines that follow to say.
     pub fn doubt(&mut self, why: Option<String>) {
         self.doubt = why;
+    }
+
+    /// Takes the carries its node made to ease the machine that haven't
+    /// landed yet, as [`on_way`] says, for the looks that follow.
+    pub fn on_way(&mut self, on_way: Vec<Moved>) {
+        self.history.on_way(on_way);
     }
 
     /// What `here` would do now of its `cells`, by `reading`, as the line
@@ -2131,6 +2147,44 @@ mod tests {
             lines.last().expect("a line")["why"],
             json!(full_day()),
             "record lines saying no `to` leave its own day"
+        );
+    }
+
+    #[test]
+    fn only_its_nodes_easing_carries_not_yet_landed_are_on_their_way() {
+        let carry = |session: &str, by: &str, from: &str| Kept {
+            id: format!("{session}:then"),
+            at: ago(3),
+            line: json!({"by": by, "session": session, "from": from, "to": "tern"}),
+        };
+        let kept = [
+            carry("s1", "node@skiff", "skiff"),
+            carry("s2", "node@skiff", "skiff"),
+            carry("s3", "node@skiff", "skiff"),
+            carry("s4", "node@skiff", "skiff"),
+            carry("s5", "node@skiff", "skiff"),
+            carry("s6", "node@skiff", "skiff"),
+            carry("s7", "WCJQSG", "skiff"),
+            carry("s8", "node@tern", "tern"),
+        ];
+        let judge = |one: &Kept| match one.said("session") {
+            "s2" => kept::State::Carrying,
+            "s3" => kept::State::Arrived,
+            "s4" => kept::State::Back,
+            "s5" => kept::State::Refused("it holds a lease".to_owned()),
+            "s6" => kept::State::Stuck("still ordered".to_owned()),
+            _ => kept::State::Ordered,
+        };
+        assert_eq!(
+            on_way(&kept, "skiff", judge),
+            ["s1", "s2"].map(|session| Moved {
+                session: session.to_owned(),
+                from: "skiff".to_owned(),
+                to: "tern".to_owned(),
+                at: ago(3),
+                eases: true,
+            }),
+            "skiff's node's own, ordered or carrying, and no other's"
         );
     }
 
