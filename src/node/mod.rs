@@ -22381,10 +22381,22 @@ esac
         );
         // Followup 498: a word the parked session's id begins, which pi
         // may open it by, is judged as that session from its own look.
+        // A bare resume of it is a reopening, held to a session that
+        // ended here, so only a start saying more is judged by what the
+        // word begins.
         assert_eq!(
             ask(
                 socket.clone(),
                 reopening(&["pi", "--session", "s-bes"], false)
+            )
+            .await,
+            Err("no session s-bes ended on skiff, so nothing is reopened here".to_owned()),
+            "a bare resume of a word a park beside begins names no session ended here"
+        );
+        assert_eq!(
+            ask(
+                socket.clone(),
+                reopening(&["pi", "--session", "s-bes", "--thinking", "high"], false)
             )
             .await,
             Err(
