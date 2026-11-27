@@ -534,8 +534,13 @@ impl Look {
     }
 
     /// When `at`, an RFC 3339 instant, was: its time today, its weekday
-    /// and time this week, else its day.
+    /// and time this week, else its day; or, drawn [`WHOLE`], as
+    /// [`Look::stamped`], since what goes into a pipe is read later or
+    /// elsewhere.
     pub(crate) fn when(&self, at: &str) -> Option<String> {
+        if self.whole() {
+            return self.stamped(at);
+        }
         let at = at
             .parse::<jiff::Timestamp>()
             .ok()?
@@ -547,6 +552,19 @@ impl Look {
             _ => "%-d %b",
         };
         Some(at.strftime(format).to_string())
+    }
+
+    /// When `at`, an RFC 3339 instant, is: its day, date, time and zone,
+    /// so a copy kept until tomorrow, or read on a machine in another
+    /// zone, still says when. The zone's offset follows its name, since a
+    /// name such as IST or CST is held by more than one zone, and some
+    /// zones have none.
+    pub(crate) fn stamped(&self, at: &str) -> Option<String> {
+        let at = at
+            .parse::<jiff::Timestamp>()
+            .ok()?
+            .to_zoned(self.now.time_zone().clone());
+        Some(at.strftime("%a %-d %b %Y %H:%M %Z (%:z)").to_string())
     }
 }
 

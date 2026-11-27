@@ -349,13 +349,13 @@ const NAME_MOST: usize = 16;
 /// the names first, then the sender and the time, so
 /// the wait and the id a person answers by stay whole; only where even
 /// they don't fit are they cut from their end. Into a pipe nothing is
-/// cut, and each time is [`stamped`].
+/// cut, and each time is [`Look::stamped`].
 fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
     use crate::swarm::fit;
     let since = record["since"].as_str().unwrap_or_default();
     let when = match width {
         Some(_) => look.when(since),
-        None => stamped(look, since),
+        None => look.stamped(since),
     }
     .unwrap_or_default();
     let capped = |text: &str| match width {
@@ -387,7 +387,7 @@ fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
             .as_str()
             .and_then(|until| match width {
                 Some(_) => lapses(look, until),
-                None => stamped(look, until),
+                None => look.stamped(until),
             })
             .map_or_else(String::new, |until| format!(", until {until}"));
         ("holds", names(&record["groups"]), until)
@@ -414,18 +414,6 @@ fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
     } else {
         cut(&tail, Some(width))
     }
-}
-
-/// When `at` is, into a pipe: its day, date, time and zone, so a copy
-/// kept until tomorrow, or read on a machine in another zone, still says
-/// when. The zone's offset follows its name, since a name such as IST or
-/// CST is held by more than one zone, and some zones have none.
-fn stamped(look: &Look, at: &str) -> Option<String> {
-    let at = at
-        .parse::<jiff::Timestamp>()
-        .ok()?
-        .to_zoned(look.now.time_zone().clone());
-    Some(at.strftime("%a %-d %b %Y %H:%M %Z (%:z)").to_string())
 }
 
 /// The days ahead a lapse is said by its weekday alone.
