@@ -26928,8 +26928,7 @@ esac
         asks_as_person(&socket);
         assert!(
             matches!(
-                placement_through(socket.clone(), Request::Place(run_of("skiff", "").work))
-                    .await,
+                placement_through(socket.clone(), Request::Place(run_of("skiff", "").work)).await,
                 Placement::Refused { .. }
             ),
             "where work would go is refused a machine holding all it holds, as a spawn's start is"
