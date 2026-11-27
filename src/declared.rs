@@ -238,15 +238,28 @@ fn lively_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Option<Li
 
 /// The rules of what work needs as declared, each one not in the shape
 /// this build reads left out, which spoils only that rule, never the
-/// others or the rest of what's declared.
+/// others or the rest of what's declared. Each left out is said on the
+/// node's log with why, so a misspelt rule, whose work would be placed
+/// where it can't be done, is seen rather than dropped without a word.
 fn rules_read<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Vec<NeedsIn>, D::Error> {
     let rules = match serde_json::Value::deserialize(said)? {
         serde_json::Value::Array(rules) => rules,
-        _ => Vec::new(),
+        serde_json::Value::Null => Vec::new(),
+        other => {
+            eprintln!("what's declared of needs_in isn't a list, so it's left out: {other}");
+            Vec::new()
+        }
     };
     Ok(rules
         .into_iter()
-        .filter_map(|rule| serde_json::from_value(rule).ok())
+        .enumerate()
+        .filter_map(|(at, rule)| {
+            serde_json::from_value(rule)
+                .inspect_err(|error| {
+                    eprintln!("needs_in rule {at} isn't read, so it's left out: {error}");
+                })
+                .ok()
+        })
         .collect())
 }
 

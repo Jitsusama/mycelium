@@ -7630,31 +7630,32 @@ impl<S: Store> Shared<S> {
             return Answer::Err("the node has no home folder".to_owned());
         };
         let here = self.machine.clone();
-        let (words, at_home) = (asked.words.clone(), home.clone());
+        let declared_at = self.declared.clone();
         let (client, started, processes) =
             (self.client, self.client_started, self.processes.clone());
+        // What's declared is read, and its folders resolved, beside the
+        // judging, off the node's serving thread, so a folder that hangs
+        // holds up only this sprout.
         let judged = tokio::task::spawn_blocking(move || {
-            sprouted(&asked, by, client.zip(started), &processes, &home, &here)
+            let mut judged = sprouted(&asked, by, client.zip(started), &processes, &home, &here)?;
+            // Read as it starts, so a switch's new word counts from then.
+            if let Some(declared) = crate::declared::read(&declared_at) {
+                sprout::needs_as_declared(
+                    &mut judged.start,
+                    &asked.words,
+                    &home,
+                    &declared.needs_in,
+                    &sprout::ThisDisk,
+                );
+            }
+            Ok(judged)
         })
         .await;
-        let sprout::Sprouted {
-            mut start,
-            left_out,
-        } = match judged {
+        let sprout::Sprouted { start, left_out } = match judged {
             Ok(Ok(sprouted)) => sprouted,
             Ok(Err(refused)) => return refused,
             Err(error) => return Answer::Err(format!("the sprout couldn't be judged: {error}")),
         };
-        // Read as it starts, so a switch's new word counts from then.
-        if let Some(declared) = crate::declared::read(&self.declared) {
-            sprout::needs_as_declared(
-                &mut start,
-                &words,
-                &at_home,
-                &declared.needs_in,
-                &sprout::ThisDisk,
-            );
-        }
         let reply = self.start(start).await;
         // A log that can't be written takes nothing from the asker, whose
         // session started or didn't as the reply says.
