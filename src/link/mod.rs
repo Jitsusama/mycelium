@@ -5818,22 +5818,14 @@ mod tests {
             None,
         );
         says(&mut far_writing, &[Frame::Hello(realm("tern").hello())]).await;
-        let worker = |store: &Memory| {
+        // The mark that moves is told, so this waits on the change.
+        until(&skiff, |store| {
             store
                 .machines()
                 .iter()
                 .any(|machine| machine.name == "tern" && machine.worker)
-        };
-        let waited = tokio::time::timeout(PATIENCE, async {
-            while !worker(&skiff) {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
         })
         .await;
-        assert!(
-            waited.is_ok(),
-            "a worker's machine read as one within {PATIENCE:?} of its hello alone"
-        );
     }
 
     /// Each link's admission says whether its machine is a worker, either

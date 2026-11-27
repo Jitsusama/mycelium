@@ -175,6 +175,53 @@ fn a_machine_that_declared_nothing_stays_when_it_leaves() {
     assert_eq!(kept.declared, None, "and still declares nothing");
 }
 
+/// A worker's mark that moves is told as its machine's change, as a put
+/// is, so a watch of the machines sees an admission that says nothing
+/// more; one that moves nothing tells nothing.
+#[tokio::test]
+async fn a_worker_mark_that_moves_is_told() {
+    let store = memory::Memory::default();
+    let mut changes = store.changes().expect("the fake tells its changes");
+    store.mark_worker("tern", true);
+    store.mark_worker("tern", true);
+    store.mark_worker("tern", false);
+    store.mark_worker("tern", false);
+    let tern = Change::Machine("tern".to_owned());
+    assert_eq!(changes.changes.recv().await, Some(tern.clone()), "made");
+    assert_eq!(changes.changes.recv().await, Some(tern), "unmade");
+    assert!(
+        changes.changes.try_recv().is_err(),
+        "a mark that moves nothing tells nothing"
+    );
+}
+
+/// A machine let go while a link still holds its claim, as one whose
+/// time is up while its link runs, leaves all the same: that link's
+/// claim holds no put back.
+#[test]
+fn a_machine_let_go_while_its_link_holds_it_leaves() {
+    let store = memory::Memory::default();
+    let mut tern = crate::placement::tests::machine("tern", "linux", 32, &[]);
+    tern.declared = Some(crate::declared::Declared::default());
+    tern.worker = true;
+    store.put_machine(&tern).expect("kept");
+    let held = store.claim("tern").expect("the fake claims");
+    assert!(held.is_some(), "its link holds it");
+    left(&store, "tern", jiff::Timestamp::UNIX_EPOCH);
+    let kept = store
+        .machines()
+        .into_iter()
+        .find(|one| one.name == "tern")
+        .expect("still kept");
+    assert_eq!(
+        kept.declared.and_then(|declared| declared.leaves_at),
+        Some(jiff::Timestamp::UNIX_EPOCH),
+        "it leaves though its link holds it"
+    );
+    assert!(kept.worker, "and stays a worker as its link said");
+    drop(held);
+}
+
 /// A machine whose last link was let in after its mark, as a new one
 /// holding the mark back until its catch-up stands is, and that no
 /// link carries now, as after a node killed in that link's first
