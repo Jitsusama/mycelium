@@ -184,6 +184,64 @@ impl Disk for ThisDisk {
     }
 }
 
+/// A disk that shows nothing: for a sprout judged by the machine it
+/// starts on alone, which names its folder whole, so no folder of the
+/// asking machine is looked at.
+pub struct Unseen;
+
+impl Disk for Unseen {
+    fn is_folder(&self, _: &Path) -> bool {
+        false
+    }
+
+    fn is_checkout(&self, _: &Path) -> bool {
+        false
+    }
+
+    fn is_cut_tree(&self, _: &Path) -> bool {
+        false
+    }
+
+    fn resolved(&self, folder: &Path) -> PathBuf {
+        lexical(folder)
+    }
+
+    fn origin(&self, _: &Path) -> Option<String> {
+        None
+    }
+
+    fn folders(&self, _: &Path) -> Vec<PathBuf> {
+        Vec::new()
+    }
+
+    fn read(&self, _: &Path, _: u64) -> Option<String> {
+        None
+    }
+
+    fn is_bare(&self, _: &Path) -> bool {
+        false
+    }
+
+    fn trunk(&self, _: &Path) -> Option<PathBuf> {
+        None
+    }
+}
+
+/// Whether the sprout `asked` is judged by the machine it starts on
+/// alone, where the asker's folders can't be read on `here`: it names
+/// that machine, another, and its folder whole, from the root, so
+/// nothing of this machine's disk or the asker's says where it begins;
+/// a zone's name, which opens `//`, is a place this machine finds, so it
+/// isn't one. Its start is strict, so that machine refuses a folder it
+/// lacks, and an agent's is fenced there as an agent's.
+#[must_use]
+pub fn judged_there(asked: &Sprout, here: &str) -> bool {
+    asked.on.as_deref().is_some_and(|on| on != here)
+        && asked.folder.as_deref().is_some_and(|folder| {
+            folder.has_root() && !folder.to_str().is_some_and(|said| said.starts_with("//"))
+        })
+}
+
 /// `path` with its `.` and `..` worked out from its words alone.
 pub(crate) fn lexical(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
@@ -1437,6 +1495,28 @@ pub(crate) mod tests {
         let ran = guarded(&work, home.path());
         assert!(ran.status.success());
         assert_eq!(String::from_utf8_lossy(&ran.stdout), "ran\n");
+    }
+
+    #[test]
+    fn a_sprout_naming_another_machine_and_a_whole_folder_is_judged_there() {
+        let judged = |folder: Option<&str>, on: Option<&str>| {
+            judged_there(&sprouting("x", folder, on), "skiff")
+        };
+        assert!(judged(Some("/world/trees/plants"), Some("tern")));
+        assert!(!judged(Some("/world/trees/plants"), Some("skiff")), "here is read here");
+        assert!(!judged(Some("/world/trees/plants"), None), "as is a start placed");
+        assert!(!judged(Some("src/plants"), Some("tern")), "a folder from here isn't whole");
+        assert!(!judged(Some("//areas/plants"), Some("tern")), "a zone is found here");
+        assert!(!judged(None, Some("tern")), "nor is no folder");
+        assert_eq!(
+            Unseen.resolved(Path::new("/world/trees/../trees/plants")),
+            PathBuf::from("/world/trees/plants"),
+            "its folder is worked out from its words alone"
+        );
+        assert!(
+            !Unseen.is_folder(Path::new("/")) && Unseen.folders(Path::new("/")).is_empty(),
+            "and nothing of this disk is read"
+        );
     }
 
     fn sprouting(words: &str, folder: Option<&str>, on: Option<&str>) -> Sprout {
