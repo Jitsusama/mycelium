@@ -777,8 +777,17 @@ impl Store for Folders {
 
     fn put_machine(&self, machine: &Machine) -> io::Result<()> {
         let file = format!("{}{SAID}", safe(&machine.name)?);
+        // The mark moves first, so a watch the record's write wakes reads
+        // the machine as its link now says it, and a record that can't be
+        // written still leaves the mark the room gate reads as said.
         self.mark_worker(&machine.name, machine.worker);
-        let body = serde_json::to_value(machine).map_err(io::Error::other)?;
+        let mut body = serde_json::to_value(machine).map_err(io::Error::other)?;
+        // Whether it is a worker is never read back from the record, which
+        // a session may write, so the record doesn't say it; one an older
+        // node wrote saying it still reads, its word passed over.
+        if let Some(record) = body.as_object_mut() {
+            record.remove("worker");
+        }
         write_whole(&self.claims, &file, &body)
     }
 
@@ -2667,6 +2676,44 @@ mod tests {
         assert!(
             store.is_worker("tern"),
             "a worker its link put stays one, its record taken away"
+        );
+        // Followup 542(e): with nothing it said to read, it isn't listed,
+        // as no machine is whose record is gone; its link puts it back.
+        assert!(
+            !store.machines().iter().any(|one| one.name == "tern"),
+            "a machine whose record is gone isn't listed, worker or not"
+        );
+    }
+
+    // Followup 542(a): a link's drop and its machine's leaving put its
+    // record back as they read it, so a worker stays one through both,
+    // by its mark alone, since the record doesn't say it.
+    #[test]
+    fn a_worker_stays_one_through_its_drop_and_its_leaving() {
+        let (dir, store) = store();
+        let mut tern = crate::placement::tests::machine("tern", "linux", 32, &[]);
+        tern.worker = true;
+        store.put_machine(&tern).expect("its link keeps it");
+        let worker = |store: &Folders| {
+            let machines = store.machines();
+            machines
+                .iter()
+                .find(|one| one.name == "tern")
+                .map(|one| one.worker)
+        };
+        crate::store::out_of_reach(&store, "tern", 1_793_305_804_647, None);
+        assert_eq!(worker(&store), Some(true), "its link's drop keeps it one");
+        crate::store::left(&store, "tern", jiff::Timestamp::UNIX_EPOCH);
+        assert_eq!(worker(&store), Some(true), "and so does its leaving");
+        let record: Value = serde_json::from_slice(
+            &fs::read(dir.path().join("claims").join(format!("tern{SAID}")))
+                .expect("its record is kept"),
+        )
+        .expect("JSON");
+        assert_eq!(
+            record.get("worker"),
+            None,
+            "the record doesn't say it, the mark does"
         );
     }
 

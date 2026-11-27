@@ -551,6 +551,8 @@ impl Store for Memory {
     }
 
     fn put_machine(&self, machine: &Machine) -> io::Result<()> {
+        // The mark moves first, as the folders store moves it before its
+        // record's write, so a watch woken by the put reads it as said.
         self.mark_worker(&machine.name, machine.worker);
         let mut held = self.held();
         held.machines.insert(machine.name.clone(), machine.clone());
