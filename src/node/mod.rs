@@ -5137,26 +5137,18 @@ impl<S: Store> Shared<S> {
     /// over, as [`redial_standing`] passes it, since nothing ever releases
     /// it and it may be another realm's. Another machine whose end has
     /// passed is gone, as one past its own leaving is. Where the book
-    /// can't be read, no other machine that costs money is carried to,
-    /// since none can be told apart from one made to live an hour. This
+    /// may have lost a machine's make ([`made::Doubt`]), that machine is
+    /// carried to only if it costs nothing or an end is known for it,
+    /// since one whose make was lost can't be told apart from one kept
+    /// for good. The book is read again
+    /// only once it changes ([`made::Book::ends`]). This
     /// machine is always kept, first where it was, since every reader
     /// takes the head of the answer for here.
     fn as_carried(&self, machines: Vec<facts::Machine>) -> Vec<facts::Machine> {
-        let mut ends = BTreeMap::new();
-        let readable = match self.book.standing() {
-            Ok(standing) => {
-                for made in standing.made {
-                    ends.insert(made.machine, made.until);
-                }
-                true
-            }
-            Err(error) => {
-                eprintln!(
-                    "the book of machines made can't be read, so no paid machine is carried to: {error}"
-                );
-                false
-            }
-        };
+        let made::Ends {
+            until: mut ends,
+            doubt,
+        } = self.book.ends();
         ends.extend(self.lock().ends.clone());
         let now = jiff::Timestamp::now();
         machines
@@ -5164,8 +5156,9 @@ impl<S: Store> Shared<S> {
             .map(|one| leaving_as_made(one, &ends))
             .filter(|one| {
                 let said = one.declared.as_ref();
+                let end_known = !doubt.of(&one.name) || ends.contains_key(&one.name);
                 one.name == self.machine
-                    || (readable || !said.is_some_and(|said| said.costs_money))
+                    || (end_known || !said.is_some_and(|said| said.costs_money))
                         && !said.is_some_and(|said| said.has_left(now))
             })
             .collect()
@@ -25417,6 +25410,87 @@ esac
             leaving("wren"),
             Some(None),
             "a make naming no realm ends no machine of its name"
+        );
+    }
+
+    #[test]
+    fn while_a_line_of_the_book_is_unread_only_paid_machines_of_known_end_are_carried_to() {
+        use std::collections::BTreeSet;
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        for (name, paid) in [("tern", true), ("wren", true), ("osprey", false)] {
+            let mut other = placement::tests::machine(name, "linux", 32, &["basin"]);
+            other.declared.as_mut().expect("declared").costs_money = paid;
+            shared
+                .store
+                .put_machine(&other)
+                .expect("the machine is kept");
+        }
+        shared
+            .book
+            .made(&made_by("/usr/bin/lend", "tern", soon))
+            .expect("the make is kept");
+        // wren's make, say, cut short by a crash.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("made.jsonl"))
+            .expect("the book opens")
+            .write_all(b"{\"at\": \"cut sh\n")
+            .expect("a line cut short is written");
+        let carried = shared.as_carried(shared.others());
+        let names: BTreeSet<&str> = carried.iter().map(|one| one.name.as_str()).collect();
+        assert_eq!(
+            names,
+            BTreeSet::from(["tern", "osprey"]),
+            "a paid machine whose end the book may have lost isn't carried to"
+        );
+        assert_eq!(
+            carried
+                .iter()
+                .find(|one| one.name == "tern")
+                .and_then(|tern| tern.declared.as_ref()?.leaves_at),
+            Some(soon),
+            "one whose end it read leaves then"
+        );
+    }
+
+    #[test]
+    fn a_make_cut_short_holds_back_only_the_paid_machine_it_still_names() {
+        use std::collections::BTreeSet;
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        for name in ["tern", "wren", "kestrel"] {
+            let mut other = placement::tests::machine(name, "linux", 32, &["basin"]);
+            other.declared.as_mut().expect("declared").costs_money = true;
+            shared
+                .store
+                .put_machine(&other)
+                .expect("the machine is kept");
+        }
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        shared
+            .book
+            .made(&made_by("/usr/bin/lend", "tern", soon))
+            .expect("the make is kept");
+        // wren's make, cut short by a crash after its name.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("made.jsonl"))
+            .expect("the book opens")
+            .write_all(
+                b"{\"at\":\"2026-11-27T08:00:00Z\",\"made\":{\"costs\":{\"currency\":\"USD\",\
+                  \"hourly\":\"0.12\"},\"machine\":\"wren\",\"pla\n",
+            )
+            .expect("a line cut short is written");
+        let carried = shared.as_carried(shared.others());
+        let names: BTreeSet<&str> = carried.iter().map(|one| one.name.as_str()).collect();
+        assert_eq!(
+            names,
+            BTreeSet::from(["tern", "kestrel"]),
+            "only the paid machine whose make may be lost is held back"
         );
     }
 
