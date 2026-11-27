@@ -14,6 +14,11 @@ use process::{made, mycelium};
 
 mod process;
 
+/// The zone the node's times are drawn in: a POSIX rule, which needs no
+/// zone database, as the build's sandbox has none to look `UTC` up in,
+/// and half an hour off UTC, so a stamp drawn in UTC regardless fails.
+const ZONE: &str = "<+0530>-5:30";
+
 /// How long the node has to start and measure its machine.
 const PATIENCE: Duration = Duration::from_secs(30);
 
@@ -28,10 +33,10 @@ impl Drop for Running {
 }
 
 /// What `mycelium` prints with `args` against the node at `home`, its
-/// times in UTC, so a stamp can be said exactly.
+/// times in [`ZONE`], so a stamp can be said exactly.
 fn printed(home: &Path, args: &[&str]) -> String {
     let ran = mycelium(home, args)
-        .env("TZ", "UTC")
+        .env("TZ", ZONE)
         .output()
         .expect("mycelium runs");
     assert!(ran.status.success(), "{args:?} failed: {ran:?}");
@@ -51,7 +56,7 @@ fn measured(home: &Path) -> Option<String> {
         .parse::<jiff::Timestamp>()
         .ok()?;
     Some(
-        at.to_zoned(jiff::tz::TimeZone::UTC)
+        at.to_zoned(jiff::tz::TimeZone::posix(ZONE).expect("a POSIX zone"))
             .strftime("%a %-d %b %Y %H:%M %Z (%:z)")
             .to_string(),
     )
