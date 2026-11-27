@@ -2280,6 +2280,28 @@ fn name_room_for(book: &Book, machine: &str, who: &str) -> Result<bool, String> 
     Ok(named)
 }
 
+/// Names a machine `made` for a proven agent a room, as its asker would
+/// ask, so every agent's work may go to its places: on 27 November a
+/// start naming no room asked for a thirteenth machine past the
+/// provider's cap of twelve while a spot machine an agent had made held
+/// 39 places free, since its booking kept it for that agent alone. One
+/// made for the person, or for no agent proven, stays as booked, as
+/// [`may_name_room`] judges, and is said on the log only where naming
+/// one fails for another reason.
+fn name_made_room(book: &Book, made: &Made) {
+    let Some(asker) = made.asker.as_deref() else {
+        return;
+    };
+    if asker == made::PERSON || asker == made::UNKNOWN {
+        return;
+    }
+    match name_room_for(book, &made.machine, asker) {
+        Ok(true) => eprintln!("{} is named a room, made for {asker}", made.machine),
+        Ok(false) => {}
+        Err(why) => eprintln!("{} stays {asker}'s alone: {why}", made.machine),
+    }
+}
+
 /// Whether `who` may name `machine` a room, as `rooms_asked_by` says, by
 /// what `book` holds standing now, or why not.
 fn may_name_room(book: &Book, machine: &str, who: &str) -> Result<(), String> {
@@ -9732,6 +9754,7 @@ impl<S: Store> Shared<S> {
                 made.machine
             );
         }
+        name_made_room(&self.book, &made);
         let unwanted = Arc::new(Notify::new());
         // The loop runs for as long as the node answers anything.
         let _ = self.to_dial.send((made.clone(), unwanted.clone()));
@@ -26094,6 +26117,37 @@ esac
                 .await
                 .is_err(),
             "an add names its machine"
+        );
+    }
+
+    #[test]
+    fn a_machine_made_for_a_proven_agent_is_named_every_agents_room() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let book = Book::at(dir.path().join("made.jsonl"));
+        for (name, asker) in [
+            ("tern", Some("ASKER1")),
+            ("wren", Some(made::PERSON)),
+            ("osprey", None),
+            ("harbour", Some(made::UNKNOWN)),
+        ] {
+            let mut made = made_by("/usr/bin/lend", name, a_day_out());
+            made.asker = asker.map(str::to_owned);
+            book.made(&made).expect("the make is kept");
+            name_made_room(&book, &made);
+            name_made_room(&book, &made);
+        }
+        assert_eq!(
+            book.agent_rooms(),
+            std::collections::BTreeSet::from(["tern".to_owned()]),
+            "only the agent's, once, though named twice: the person's stay theirs"
+        );
+        // A make the book couldn't keep is judged on what it holds.
+        let mut unkept = made_by("/usr/bin/lend", "skiff", a_day_out());
+        unkept.asker = Some("ASKER1".to_owned());
+        name_made_room(&book, &unkept);
+        assert!(
+            !book.agent_rooms().contains("skiff"),
+            "one the book holds no make of is never named"
         );
     }
 
