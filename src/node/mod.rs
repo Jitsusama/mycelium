@@ -3185,10 +3185,9 @@ impl Admits {
     /// the person's own machines: for any but the person's own starts.
     fn keeps_the_persons(&self) -> bool {
         match self {
-            Self::All => false,
+            Self::All | Self::Rooms => false,
             Self::Asker(told) => told != made::PERSON,
             Self::Granted => true,
-            Self::Rooms => false,
         }
     }
 }
