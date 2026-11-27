@@ -474,6 +474,27 @@ fn drawn_whole_the_counts_line_up_after_the_widest_name_and_nothing_trails() {
 }
 
 #[test]
+fn drawn_whole_a_member_s_name_keeps_every_mark_it_was_written_with() {
+    // Into a pipe a reader that greps or saves the text has all of it,
+    // so a name is drawn as written, though a cut would take a pile of
+    // marks this long at any width: a hundred steps on a name of five
+    // cells, where a cut keeps eight to each cell and one more.
+    let name = format!("Coral{}", "\u{301}".repeat(100));
+    let mut swarm = swarm();
+    let coral = swarm
+        .sessions
+        .iter_mut()
+        .find(|session| session["id"] == "s-coral")
+        .expect("Reef's one");
+    coral["title"] = json!(&name);
+    let shown = team(&swarm, "reef", &whole()).expect("Reef drawn");
+    assert!(
+        shown.contains(&name),
+        "a member's name lost marks drawn whole:\n{shown}"
+    );
+}
+
+#[test]
 fn a_short_name_that_is_another_s_address_is_never_drawn_or_offered() {
     // Typed, it would reach the session BUSY, not Reef.
     let mut swarm = swarm();
