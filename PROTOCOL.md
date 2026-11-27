@@ -2654,14 +2654,19 @@ owns and the user can't write stays. On a Mac, Homebrew's `/opt/homebrew/bin`
 belongs to the user, so it goes too. Each folder kept is named by where it
 leads, one that can't be entered, which may not be there yet, goes, and a path
 left with nothing is `/usr/bin:/bin`, never empty. The node starts the run, and
-any fence launcher before its shell, without the variables that load
-code as a program starts, which the node's environment could name in
-the home: `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `GCONV_PATH`,
-the five `DYLD_` ones, `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `NODE_PATH`,
-`NODE_COMPILE_CACHE`, `OPENSSL_CONF`, `OPENSSL_MODULES`, `PYTHONPATH`,
-`PYTHONSTARTUP`, `PERL5LIB`, `PERL5OPT`, `RUBYLIB`, `RUBYOPT` and
-`LUA_INIT`. A program that needs one of them there sets it itself. The
-home is the one the node runs it in, and the `HOME` its launcher gives
+any fence launcher before its shell, without the variables that load code as a
+program starts, which the node's environment could name in the home:
+`LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `GCONV_PATH`, the five `DYLD_`
+ones, `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `NODE_PATH`, `NODE_COMPILE_CACHE`,
+`OPENSSL_CONF`, `OPENSSL_MODULES`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`,
+`PERL5LIB`, `PERLLIB`, `PERL5OPT`, `RUBYLIB`, `RUBYOPT`, `GEM_PATH`,
+`GEM_HOME`, `LUA_INIT`, `LUA_PATH` and `LUA_CPATH`, each of those three also as
+Lua 5.2, 5.3 and 5.4 name it, as `LUA_INIT_5_4`, which Lua reads before the
+plain one, and `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` and `_JAVA_OPTIONS`.
+Perl reads `PERLLIB` only where `PERL5LIB` is unset, so taking one away and not
+the other would wake it. The list is what the node takes away, not every way a
+program may come to load code. A program that needs one there sets it itself.
+The home is the one the node runs it in, and the `HOME` its launcher gives
 it too, so a launcher that takes `HOME` away or points it elsewhere
 leaves neither on the path. `HOME` still names that home, so a
 program the command runs that reads its own files from there reads
