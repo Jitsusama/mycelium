@@ -5270,7 +5270,7 @@ impl<S: Store> Shared<S> {
     /// passed is gone, as one past its own leaving is. Where the book
     /// may have lost a machine's make ([`made::Doubt`]), that machine is
     /// carried to only if it costs nothing or an end is known for it,
-    /// since one whose make was lost can't be told apart from one kept
+    /// its make's or the one it says itself, since one whose make was lost can't be told apart from one kept
     /// for good. The book is read again
     /// only once it changes ([`made::Book::ends`]). This
     /// machine is always kept, first where it was, since every reader
@@ -5287,7 +5287,9 @@ impl<S: Store> Shared<S> {
             .map(|one| leaving_as_made(one, &ends))
             .filter(|one| {
                 let said = one.declared.as_ref();
-                let end_known = !doubt.of(&one.name) || ends.contains_key(&one.name);
+                let end_known = !doubt.of(&one.name)
+                    || ends.contains_key(&one.name)
+                    || said.is_some_and(|said| said.leaves_at.is_some());
                 one.name == self.machine
                     || (end_known || !said.is_some_and(|said| said.costs_money))
                         && !said.is_some_and(|said| said.has_left(now))
@@ -26180,6 +26182,40 @@ esac
             names,
             BTreeSet::from(["tern", "kestrel"]),
             "only the paid machine whose make may be lost is held back"
+        );
+    }
+
+    #[test]
+    fn a_paid_machine_saying_when_it_leaves_is_carried_to_though_the_book_is_unsure() {
+        use std::collections::BTreeSet;
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        for (name, leaves) in [("tern", Some(soon)), ("wren", None)] {
+            let mut other = placement::tests::machine(name, "linux", 32, &["basin"]);
+            let said = other.declared.as_mut().expect("declared");
+            said.costs_money = true;
+            said.leaves_at = leaves;
+            shared
+                .store
+                .put_machine(&other)
+                .expect("the machine is kept");
+        }
+        fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("made.jsonl"))
+            .or_else(|_| fs::File::create(dir.path().join("made.jsonl")))
+            .expect("the book opens")
+            .write_all(b"{\"at\": \"cut sh\n")
+            .expect("a line cut short is written");
+        let carried = shared.as_carried(shared.others());
+        let names: BTreeSet<&str> = carried.iter().map(|one| one.name.as_str()).collect();
+        assert_eq!(
+            names,
+            BTreeSet::from(["tern"]),
+            "a machine that says when it leaves has an end known, though the \
+             book may have lost its make"
         );
     }
 
