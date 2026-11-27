@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use process::{made, mycelium};
 use serde_json::{Value, json};
-use zone::ZONE;
+use zone::{STAMPED, ZONE};
 
 mod process;
 mod zone;
@@ -95,7 +95,7 @@ fn a_pipe_reads_text_and_json_is_asked_for() {
         lines
             .get(1)
             // The zone as each time drawn in ZONE says it.
-            .map(|line| line.matches(" +0530 (+05:30)").count()),
+            .map(|line| line.matches(&format!(" {STAMPED}")).count()),
         Some(2),
         "into a pipe, when the hold was put and until when weren't both stamped:\n{text}"
     );

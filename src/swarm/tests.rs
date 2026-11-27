@@ -169,13 +169,12 @@ fn into_a_pipe_a_team_says_when_it_landed_with_its_day_and_zone() {
 fn into_a_pipe_a_time_is_stamped_in_the_looks_zone_on_its_own_day() {
     // Five and a half hours ahead of UTC, 20:00 there is 01:30 the next
     // day here, so a stamp drawn in UTC, or dated by UTC's day, fails.
+    // Twin of tests/zone, apart on purpose: its spelled-out stamp is the format's sole oracle.
     let zone = jiff::tz::TimeZone::posix("<+0530>-5:30").expect("a POSIX zone");
-    let whole = Look {
-        now: whole().now.with_time_zone(zone),
-        ..whole()
-    };
+    let mut piped = whole();
+    piped.now = piped.now.with_time_zone(zone);
     assert_eq!(
-        whole.when("2026-11-12T20:00:00Z").as_deref(),
+        piped.when("2026-11-12T20:00:00Z").as_deref(),
         Some("Fri 13 Nov 2026 01:30 +0530 (+05:30)"),
         "a piped time wasn't stamped in the look's zone, on its own day"
     );
