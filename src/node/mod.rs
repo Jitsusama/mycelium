@@ -940,6 +940,12 @@ fn held_here_already(why: &str, machine: &str, named: &[String]) -> bool {
 /// own hold refusing it ([`held_here_already`]), alone or wrapped as a
 /// relay taken as an agent's ([`relayed_why`]), so it began nothing
 /// there.
+// Followup 530: no path of today's node reaches it wrapped. A relay is
+// wrapped only in `relayed_start`, the one caller of `relay_refused`, and
+// `relayed` asks the hold before calling it, answering the hold's refusal
+// bare; a start naming no session is held to nothing, and one relayed here
+// starts through `here`, which never asks the hold. The wrapped reading is
+// kept as a guard, should a hold ever be asked within the relay.
 fn held_there_already(why: &str, machine: &str, named: &[String]) -> bool {
     held_here_already(relayed_why(why, machine).unwrap_or(why), machine, named)
 }
@@ -28549,13 +28555,8 @@ esac
             .hold_reopenings(&["s-held".to_owned()], None, &[])
             .expect("another start holds it");
         let start = Start {
-            work: work(vec![Need::Machine("skiff".to_owned())]),
-            folder: None,
-            strict: false,
             command: ["pi", "--session", "s-held"].map(str::to_owned).to_vec(),
-            may_cost: false,
-            carries: false,
-            once: None,
+            ..start_of_skiff()
         };
         let at = jiff::Timestamp::now().as_millisecond();
         let asked = skiff.placed((start, at), None, Screen::Ground, false).await;
@@ -28611,7 +28612,8 @@ esac
         );
     }
 
-    /// A start pinned to skiff that names no folder, as a hold's tests ask it.
+    /// A start pinned to skiff that names no folder, as the tests of where a
+    /// start is unbooked ask it, each naming its own session or machine.
     fn start_of_skiff() -> Start {
         Start {
             work: work(vec![Need::Machine("skiff".to_owned())]),
@@ -28621,6 +28623,253 @@ esac
             may_cost: false,
             carries: false,
             once: None,
+        }
+    }
+
+    /// How many of the starts skiff's node booked on `machine` weigh there
+    /// now.
+    fn placed_on(skiff: &Shared<Memory>, machine: &str) -> u32 {
+        let machines = skiff.machines();
+        let loads =
+            skiff
+                .lock()
+                .starts
+                .loads(&machines, std::iter::empty(), jiff::Timestamp::now());
+        loads.get(machine).map_or(0, |load| load.placed)
+    }
+
+    /// A node at `socket` that says its machine is `facts` and answers the
+    /// starts relayed to it with `answers` in turn, as another machine's
+    /// node would, refusing whatever else it is asked.
+    fn stand_in_node(socket: &Path, facts: facts::Machine, answers: Vec<Reply>) {
+        let listener = UnixListener::bind(socket).expect("the stand-in node listens");
+        let measured: Reply = Ok(Response::Machine(Box::new(facts)));
+        tokio::spawn(async move {
+            let mut answers = answers.into_iter();
+            while let Ok((stream, _)) = listener.accept().await {
+                let (reading, mut writing) = stream.into_split();
+                let Ok(Some(line)) = BufReader::new(reading).lines().next_line().await else {
+                    continue;
+                };
+                let reply = match serde_json::from_str::<Request>(&line) {
+                    Ok(Request::Machine) => measured.clone(),
+                    Ok(Request::Relayed { .. }) => answers
+                        .next()
+                        .unwrap_or_else(|| Err("the test answers no more starts".to_owned())),
+                    _ => Err("the stand-in node answers nothing else".to_owned()),
+                };
+                let mut said = serde_json::to_string(&reply).expect("a reply");
+                said.push('\n');
+                let _ = writing.write_all(said.as_bytes()).await;
+            }
+        });
+    }
+
+    /// Links skiff's node, keeping what it hears in `store`, to the machine
+    /// `facts` names, whose node is a stand-in in `dir` answering the starts
+    /// relayed to it with `answers` in turn ([`stand_in_node`]), once
+    /// skiff's node may ask it and knows what it is.
+    async fn linked_to_one_answering(
+        (skiff, store): (&Shared<Memory>, &Memory),
+        dir: &Path,
+        facts: facts::Machine,
+        answers: Vec<Reply>,
+    ) {
+        let name = facts.name.clone();
+        let far_node = dir.join(format!("{name}.sock"));
+        stand_in_node(&far_node, facts, answers);
+        // Neither end reads a file of what it declares, so the far end asks
+        // its node what its machine is, as a dialled link's end does.
+        let starting = |node: PathBuf, asking: Option<Asking>| Starting {
+            node,
+            held: dir.join("held"),
+            asking,
+            steers: dir.join("steer"),
+            parked: dir.join("parked"),
+            health: None,
+            declared: None,
+            kit: None,
+            saturation: None,
+            lender: None,
+            gates: None,
+        };
+        let there: crate::link::starts::There =
+            Arc::new(|_: &str, words: &[String]| words.to_vec());
+        let near_end = starting(
+            dir.join("node.sock"),
+            Some(Asking::Kept(skiff.asks.clone(), there)),
+        );
+        let far_end = starting(far_node, None);
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let near_store = store.clone();
+        tokio::spawn(async move {
+            let here = Realm {
+                name: "work".to_owned(),
+                machine: "skiff".to_owned(),
+            };
+            let _ = link::run(near_store, &here, piped(near), None, Some(near_end)).await;
+        });
+        let machine = name.clone();
+        tokio::spawn(async move {
+            let realm = Realm {
+                name: "work".to_owned(),
+                machine,
+            };
+            let _ = link::run(Memory::default(), &realm, piped(far), None, Some(far_end)).await;
+        });
+        tokio::time::timeout(PATIENCE, async {
+            while skiff.asks.there(&name).is_none()
+                || !store.machines().iter().any(|one| one.name == name)
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("skiff's node reaches it and knows what it is");
+    }
+
+    // Followup 524: a start placed here that began nothing weighs nowhere it was placed.
+    #[tokio::test]
+    async fn a_start_placed_here_that_began_nothing_weighs_where_it_was_placed_no_longer() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let folder = dir.path();
+        let store = Memory::default();
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let skiff = holding_skiff(folder, store.clone(), None, processes);
+        let lacks = start::no_folder("tern", folder);
+        let tern = reaching_basin("tern", false, true);
+        let answers = vec![Err(lacks.clone())];
+        linked_to_one_answering((&skiff, &store), folder, tern, answers).await;
+        // A strict start naming no machine, placed on tern, which hasn't its
+        // folder, is placed here, where another start holds its session.
+        let other = skiff
+            .hold_reopenings(&["s-held".to_owned()], None, &[])
+            .expect("another start holds it");
+        let weighed = jiff::Timestamp::now();
+        skiff.lock().starts.placed("tern", weighed);
+        let strict = Start {
+            work: work(Vec::new()),
+            folder: Some(folder.to_owned()),
+            strict: true,
+            command: ["pi", "--session", "s-held"].map(str::to_owned).to_vec(),
+            ..start_of_skiff()
+        };
+        let admits = skiff.admits().await;
+        let at = jiff::Timestamp::now().as_millisecond();
+        let ground = (at, None, Screen::Ground, &admits);
+        let refused = skiff
+            .started_where_placed(("tern".to_owned(), weighed), strict, ground)
+            .await;
+        skiff.let_reopenings_go(&other);
+        assert_eq!(
+            refused.err(),
+            Some(format!(
+                "{lacks}{AND_HERE}s-held is being reopened on skiff already"
+            )),
+            "refused here by this machine's own hold"
+        );
+        assert_eq!(
+            placed_on(&skiff, "skiff"),
+            0,
+            "what it booked here is taken back"
+        );
+        assert_eq!(placed_on(&skiff, "tern"), 0, "and what it booked on tern");
+        // Placed elsewhere, it is never asked here.
+        let elsewhere = Start {
+            work: work(vec![Need::Machine("tern".to_owned())]),
+            ..start_of_skiff()
+        };
+        let at = jiff::Timestamp::now().as_millisecond();
+        let refused = skiff
+            .placed_here((elsewhere, at), None, Screen::Ground, &admits)
+            .await;
+        assert_eq!(refused.err().as_deref(), Some("it would go to tern"));
+        assert_eq!(
+            placed_on(&skiff, "tern"),
+            0,
+            "what it booked on tern is taken back"
+        );
+    }
+
+    // Followup 524: a cloud machine past room whose hold refuses a start leaves it unbooked.
+    #[tokio::test]
+    async fn a_start_past_room_refused_by_a_cloud_machines_hold_weighs_there_no_longer() {
+        let held = "s-1 is being reopened on wren already";
+        // A refusal that isn't the hold's keeps what it booked, so only the
+        // hold's is taken back.
+        for (refusal, kept) in [(held, 0), ("its program failed", 1)] {
+            let dir = tempfile::tempdir().expect("a temporary folder");
+            let store = Memory::default();
+            store
+                .put_machine(&reaching_basin("tern", true, true))
+                .expect("what it said is kept");
+            let mut wren = reaching_basin("wren", false, true);
+            wren.declared.as_mut().expect("declared").costs_money = true;
+            let processes = Processes::Folder("/nowhere/proc".into());
+            let skiff = holding_skiff(dir.path(), store.clone(), None, processes);
+            let answers = vec![Err(refusal.to_owned())];
+            linked_to_one_answering((&skiff, &store), dir.path(), wren, answers).await;
+            let start = Start {
+                work: work(vec![Need::Reach("basin".to_owned())]),
+                command: ["pi", "--session", "s-1"].map(str::to_owned).to_vec(),
+                may_cost: true,
+                ..start_of_skiff()
+            };
+            let at = jiff::Timestamp::now().as_millisecond();
+            let asked = skiff.placed((start, at), None, Screen::Ground, false).await;
+            assert_eq!(
+                asked.err().as_deref(),
+                Some(refusal),
+                "wren's refusal stands"
+            );
+            assert_eq!(
+                placed_on(&skiff, "wren"),
+                kept,
+                "{refusal}: what it booked on wren"
+            );
+            assert_eq!(
+                placed_on(&skiff, "tern"),
+                0,
+                "{refusal}: nothing weighs on tern, as it went to the cloud"
+            );
+        }
+    }
+
+    // Followup 525: a relay's wrapping of a hold's refusal unbooks a start, as a bare one does.
+    #[tokio::test]
+    async fn a_start_placed_where_a_relayed_hold_refused_it_weighs_there_no_longer() {
+        let held = "s-held is being reopened on tern already";
+        let failed = "it didn't start: its program failed";
+        let wrapped = |why: &str| relay_refused("tern", true, "", why);
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let store = Memory::default();
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let skiff = holding_skiff(dir.path(), store.clone(), None, processes);
+        let tern = reaching_basin("tern", false, true);
+        let answers = vec![Err(wrapped(held)), Err(wrapped(failed))];
+        linked_to_one_answering((&skiff, &store), dir.path(), tern, answers).await;
+        let admits = skiff.admits().await;
+        // A refusal that isn't the hold's keeps what it booked, so only the
+        // hold's is taken back.
+        for (why, kept) in [(held, 0), (failed, 1)] {
+            let weighed = jiff::Timestamp::now();
+            skiff.lock().starts.placed("tern", weighed);
+            let asked = Start {
+                work: work(vec![Need::Machine("tern".to_owned())]),
+                command: ["pi", "--session", "s-held"].map(str::to_owned).to_vec(),
+                ..start_of_skiff()
+            };
+            let at = jiff::Timestamp::now().as_millisecond();
+            let ground = (at, None, Screen::Ground, &admits);
+            let refused = skiff
+                .started_where_placed(("tern".to_owned(), weighed), asked, ground)
+                .await;
+            assert_eq!(refused.err(), Some(wrapped(why)), "tern's relay refused it");
+            assert_eq!(
+                placed_on(&skiff, "tern"),
+                kept,
+                "{why}: what it booked on tern"
+            );
         }
     }
 
