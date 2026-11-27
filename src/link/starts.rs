@@ -459,6 +459,41 @@ impl Asks {
         (asked, reaching)
     }
 
+    /// A link reaching `machine` for another module's test, which says
+    /// each start it is asked, and answers it with what `answer` says of
+    /// it, or never where that says none. It reaches `machine` until
+    /// another link does, or the runtime ends.
+    #[cfg(test)]
+    pub(crate) fn answering(
+        &self,
+        machine: &str,
+        answer: impl Fn(&Start) -> Option<Reply> + Send + 'static,
+    ) -> mpsc::UnboundedReceiver<Start> {
+        let there: There = Arc::new(|via: &str, words: &[String]| {
+            [vec![via.to_owned()], words.to_vec()].concat()
+        });
+        let (mut asks, reaching) = self.reach(machine, there);
+        let (seen, starts) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let _reaching = reaching;
+            // Held, so one left unanswered is never answered as dropped.
+            let mut unanswered = Vec::new();
+            while let Some(Ask { asked, answer: reply }) = asks.recv().await {
+                let (Asked::Start(start) | Asked::Reopen(start)) = asked else {
+                    continue;
+                };
+                match answer(&start) {
+                    Some(said) => {
+                        let _ = reply.send(said);
+                    }
+                    None => unanswered.push(reply),
+                }
+                let _ = seen.send(start);
+            }
+        });
+        starts
+    }
+
     fn lock(&self) -> MutexGuard<'_, Links> {
         // A panic while holding the lock leaves the links as they were
         // before it, so carrying on with them is sound.
