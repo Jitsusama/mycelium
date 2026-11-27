@@ -326,6 +326,8 @@ impl Hands for Through {
         thread::sleep(LOOK_EVERY);
         true
     }
+
+    fn wait_afresh(&mut self) {}
 }
 
 /// What a done file's name ends with, after its session's id.

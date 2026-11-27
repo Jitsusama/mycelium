@@ -361,6 +361,9 @@ pub trait Hands {
     /// Waits a moment before what is waited for is looked at again, and
     /// says whether there is patience left for another look.
     fn wait(&mut self) -> bool;
+    /// Gives what is waited for next a patience of its own, whatever the
+    /// waits before it spent.
+    fn wait_afresh(&mut self);
 }
 
 /// Carries `quest` from `here` to the machine `to`, saying each step to
@@ -1513,6 +1516,11 @@ mod tests {
         ends: bool,
         /// How many more looks it waits for.
         patience: usize,
+        /// How many looks it waits for once told to wait afresh.
+        afresh: usize,
+        /// How many looks at the sessions pass after a start before the
+        /// sessions here end, where they do.
+        ends_after: usize,
         steered: Vec<(String, Value)>,
         rest: Option<String>,
         /// The done files in the handover, each with whether it was
@@ -1648,13 +1656,13 @@ mod tests {
         }
         fn sessions(&mut self) -> Result<Vec<Session>, String> {
             let mut sessions = self.sessions.clone();
-            if self.ends && !self.started.is_empty() {
+            if !self.started.is_empty() {
+                self.looks += 1;
+            }
+            if self.ends && self.looks > self.ends_after {
                 for one in &mut sessions {
                     one.state = State::Ended;
                 }
-            }
-            if !self.started.is_empty() {
-                self.looks += 1;
             }
             if self.looks > self.slow {
                 sessions.extend(self.arrived_there());
@@ -1844,6 +1852,9 @@ mod tests {
             self.patience = self.patience.saturating_sub(1);
             more
         }
+        fn wait_afresh(&mut self) {
+            self.patience = self.afresh;
+        }
     }
 
     /// A session of `quest` on `machine`, standing as `state` says, its
@@ -1886,6 +1897,7 @@ mod tests {
             carries: ["s-busy01", "s-naps02"].map(str::to_owned).into(),
             ends: true,
             patience: 3,
+            afresh: 3,
             ..Realm::default()
         }
     }
@@ -2684,6 +2696,34 @@ mod tests {
         let mut realm = Realm { slow: 2, ..realm() };
         let (done, lines) = carried(&mut realm, "tern");
         let done = done.expect("carried, once each runs there");
+        assert_eq!(
+            done.sessions.len(),
+            3,
+            "each told, and the one found after: {done:?}"
+        );
+        assert_eq!(
+            last_said(&lines),
+            "3 sessions running on tern",
+            "said once each runs there"
+        );
+    }
+
+    #[test]
+    fn a_session_started_there_is_waited_for_after_a_close_that_spent_the_wait() {
+        // A busy session may spend the whole wait finishing its turn
+        // here, and its start there still needs a moment to run.
+        let mut realm = Realm {
+            patience: 2,
+            ends_after: 2,
+            slow: 4,
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        let done = done.expect("carried, once each runs there");
+        assert_eq!(
+            realm.looks, 5,
+            "three looks until the sessions here end, two until they run there: {lines:?}"
+        );
         assert_eq!(
             done.sessions.len(),
             3,
