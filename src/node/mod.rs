@@ -25185,7 +25185,7 @@ esac
     fn this_machine_heads_the_carried_machines_while_the_book_cant_be_read() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let shared = made_for(dir.path(), &[]);
-        std::fs::create_dir(dir.path().join("made.jsonl")).expect("the book is a folder");
+        fs::create_dir(dir.path().join("made.jsonl")).expect("the book is a folder");
         for (name, paid) in [("tern", true), ("wren", false)] {
             let mut other = placement::tests::machine(name, "linux", 32, &["basin"]);
             other.declared.as_mut().expect("declared").costs_money = paid;
