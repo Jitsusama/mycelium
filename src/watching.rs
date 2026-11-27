@@ -85,6 +85,10 @@ pub fn watch_all(
 /// at a time or a batch at once. Like notify's, it keeps one watch a path,
 /// a path watched again unchanged alters nothing, and a batch stops at
 /// the first path that fails: one not there, or one given back unwatched.
+/// A path that fails alters nothing, as notify's macOS watcher refuses it
+/// before holding it. That watcher starts again only when the stream's
+/// roots change, and a path inside a recursive root is none, so this
+/// counts a start at least as often as macOS does.
 #[cfg(test)]
 pub mod counting {
     use std::collections::BTreeMap;
@@ -192,6 +196,7 @@ pub mod counting {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
     use std::sync::atomic::Ordering;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -281,5 +286,61 @@ mod tests {
             (dir.path().join("not-yet"), RecursiveMode::Recursive),
         ];
         assert_eq!(watch_all(&mut watcher, &[], &new), [true, false]);
+    }
+
+    #[test]
+    fn the_paths_after_one_not_there_are_watched_still() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        for folder in [&a, &b] {
+            fs::create_dir(folder).expect("made");
+        }
+        let (mut watcher, starts) = Counting::made();
+        let new = [
+            (a, RecursiveMode::NonRecursive),
+            (dir.path().join("not-yet"), RecursiveMode::NonRecursive),
+            (b.clone(), RecursiveMode::NonRecursive),
+        ];
+        assert_eq!(watch_all(&mut watcher, &[], &new), [true, false, true]);
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            2,
+            "once before the path not there, once for the rest after it"
+        );
+        let again = [(b, RecursiveMode::NonRecursive)];
+        assert_eq!(watch_all(&mut watcher, &[], &again), [true]);
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            2,
+            "the path after it was held, so watching it again alters nothing"
+        );
+    }
+
+    #[test]
+    fn the_system_s_watcher_answers_a_path_not_there_beside_the_rest() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let inside = dir.path().join("inside");
+        fs::create_dir(&inside).expect("made");
+        let mut watch = watcher(|_: notify::Result<notify::Event>| {}).expect("a watcher");
+        let new = [
+            (dir.path().to_owned(), RecursiveMode::NonRecursive),
+            (dir.path().join("not-yet"), RecursiveMode::NonRecursive),
+            (inside.clone(), RecursiveMode::NonRecursive),
+        ];
+        assert_eq!(watch_all(&mut watch, &[], &new), [true, false, true]);
+        // Its own list, as it may hold a path by another name.
+        let real = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+        let mut held: Vec<PathBuf> = watch
+            .watched_paths()
+            .expect("its paths listed")
+            .iter()
+            .map(|(path, _)| real(path))
+            .collect();
+        held.sort();
+        assert_eq!(
+            held,
+            [real(dir.path()), real(&inside)],
+            "the path after the one not there is watched too"
+        );
     }
 }

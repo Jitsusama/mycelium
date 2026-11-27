@@ -632,5 +632,13 @@ mod tests {
 
         watch.forget(QUEST);
         assert_eq!(starts.load(Ordering::SeqCst), 3, "and given back at once");
+        // Were any still held, watching them again would alter nothing.
+        let (walk, record) = watch.to_look_at(QUEST, &all);
+        assert_eq!((walk.len(), record), (4, true), "{walk:?}");
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            4,
+            "every path was given back, so a look after watches them anew"
+        );
     }
 }
