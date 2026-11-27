@@ -3153,7 +3153,7 @@ enum Admits {
     Granted,
     /// Of the machines booked here, only rooms made for agents to share,
     /// for the person's run sent to one as an agent's
-    /// ([`Shared::as_a_room_takes`]). A machine booked for no one here is
+    /// ([`Shared::as_a_room_takes`]). A machine not booked here at all is
     /// taken as every admits take it, so what holds that run to its room
     /// is the one machine it names.
     Rooms,
@@ -9790,15 +9790,20 @@ impl<S: Store> Shared<S> {
     /// never fenced, never runs in the worker home that agent wrote. So
     /// does a room this node never booked, since bookings are each node's
     /// own and only one booked for the person here is known to be theirs.
+    /// One machine named twice is still one. This node's own machine,
+    /// which it never books, stays the person's whatever the file says.
     /// Any other run is held to who asks it.
     fn as_a_room_takes(&self, by: By, work: &Work, admits: Admits) -> (By, Admits) {
         let mut named = work.needs.iter().filter_map(|need| match need {
             Need::Machine(name) => Some(name),
             _ => None,
         });
-        let (Some(room), None) = (named.next(), named.next()) else {
+        let Some(room) = named.next() else {
             return (by, admits);
         };
+        if *room == self.machine || named.any(|other| other != room) {
+            return (by, admits);
+        }
         let the_persons = self.lock().booked.get(room).is_some_and(|(_, booked)| {
             booked
                 .as_deref()
@@ -19068,6 +19073,20 @@ esac
                 .is_err_and(|why| why.starts_with("nowhere")),
             "a machine the realm doesn't have takes nothing: {nowhere:?}"
         );
+        fs::write(socket.with_file_name(made::AGENT_ROOMS), "kestrel\nskiff\n").expect("named");
+        let recast = run_through(socket.clone(), run_of("kestrel", "true")).await;
+        assert!(
+            recast.as_ref().is_err_and(|why| why
+                .starts_with("the person's run naming a room made for agents is sent there")),
+            "the person's run sent to a room as an agent's and refused says the person asked it: \
+             {recast:?}"
+        );
+        let own = run_through(socket.clone(), run_of("skiff", "exit 3")).await;
+        assert_eq!(
+            own.map(|came| came.ended),
+            Ok(Some(Ran::Exited(3))),
+            "this node's own machine runs the person's as theirs, though the rooms name it"
+        );
         let nothing = run_through(
             socket,
             Run {
@@ -25359,11 +25378,34 @@ esac
             (None, Some("reef")),
             "so it reaches the room the person's own login never runs in"
         );
+        assert_eq!(
+            shared.as_a_room_takes(By::Person, &naming(&["tern", "tern"]), person()),
+            (By::Agent(Kind::Fence), Admits::Rooms),
+            "and one room named twice is one room, so naming it again keeps no login unfenced"
+        );
+        let mut unasked = made_by("/usr/bin/lend", "tern", a_day_out());
+        unasked.asker = None;
+        shared.book_for(&unasked);
+        fs::write(
+            dir.path().join(made::AGENT_ROOMS),
+            "reef\nwren\ntern\nskiff\n",
+        )
+        .expect("named");
         for (by, work, why) in [
             (
                 By::Person,
                 naming(&["wren"]),
                 "a room the person's make booked",
+            ),
+            (
+                By::Person,
+                naming(&["tern"]),
+                "a room made at no asker's word",
+            ),
+            (
+                By::Person,
+                naming(&["skiff"]),
+                "this node's own machine, which no booking here names",
             ),
             (By::Person, naming(&["reef", "wren"]), "two machines named"),
             (By::Person, work(Vec::new()), "none named"),
