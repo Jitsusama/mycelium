@@ -942,13 +942,24 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
             json!({"key": "quest:khmerlone", "for": "\u{1780}\u{17D2}", "folder": "/k"}),
             json!({"key": "quest:khmerzwnj", "for": format!("{shorter}\u{200C}\u{17D2}\u{1780}"),
                    "folder": "/k"}),
+            json!({"key": "quest:khmerspace", "for": format!("{shorter} \u{17D2}\u{1780}"),
+                   "folder": "/k"}),
+            json!({"key": "quest:khmerbraille", "for": format!("{shorter}\u{2800}\u{17D2}\u{1780}"),
+                   "folder": "/k"}),
+            json!({"key": "quest:tide", "for": "Tide\u{2800}\u{17D2}", "folder": "/k"}),
+            json!({"key": "quest:coeng", "for": "\u{17D2}", "folder": "/k"}),
         ]),
         [
+            untitled("quest:coeng"),
             titled("quest:khmer", &"\u{1780}".repeat(119)),
+            titled("quest:khmerbraille", &shorter),
             titled("quest:khmerlone", "\u{1780}"),
+            titled("quest:khmerspace", &shorter),
             titled("quest:khmerzwnj", &shorter),
+            titled("quest:tide", "Tide"),
         ],
-        "a title ends in no lone Khmer coeng, cut or not, nor in the non-joiner one kept"
+        "a title ends in no lone Khmer coeng, cut or not, nor in the non-joiner, space or braille \
+         blank one kept, and one of only a coeng is untitled"
     );
 }
 
