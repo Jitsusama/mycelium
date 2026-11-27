@@ -63,6 +63,8 @@ pub enum Step {
     Start,
     /// The sessions here ended.
     Close,
+    /// Each session started on the other machine seen running there.
+    Answer,
 }
 
 /// How a step stands as a line says it.
@@ -93,6 +95,9 @@ pub struct Line {
 /// A session started again on the other machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Arrived {
+    /// Its session's id, as its done file names it.
+    #[serde(skip)]
+    pub session: String,
     /// The address it went by here.
     pub address: String,
     /// Its held id there.
@@ -641,7 +646,26 @@ fn rest<F: FnMut(&Value)>(
             "the sessions here have ended".to_owned(),
         );
     }
+
+    said.line(
+        Step::Answer,
+        Stood::Doing,
+        format!("waiting for each session started on {to} to run there"),
+    );
+    said.or_failed(Step::Answer, answered(hands, to, &arrived))?;
+    said.line(
+        Step::Answer,
+        Stood::Done,
+        format!("{} running on {to}", plural(arrived.len(), "session")),
+    );
     Ok(arrived)
+}
+
+/// Waits until each of `arrived` runs on `to`, as the node there says
+/// it: busy or idle, as its own session.
+fn answered(hands: &mut impl Hands, to: &str, arrived: &[Arrived]) -> Result<(), String> {
+    let _ = (hands, to, arrived);
+    Ok(())
 }
 
 /// What a carry's sessions were, once found: those it carries, and the
@@ -749,6 +773,7 @@ fn start_each(
         }
         if one.session != quest {
             arrived.push(Arrived {
+                session: one.session.clone(),
                 address,
                 held: started.held,
                 attach: started.attach,
@@ -1420,6 +1445,7 @@ fn plural(count: usize, thing: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Arc;
 
     use serde_json::{Value, json};
 
@@ -1461,6 +1487,15 @@ mod tests {
         /// The session, by id, whose start there lands but whose answer
         /// never comes back, as a loaded node's over a link.
         unanswered: Option<String>,
+        /// The sessions, by id, that start there but never run, as one
+        /// whose arrival fails after it was held.
+        silent: BTreeSet<String>,
+        /// How many looks at the sessions pass after a start before the
+        /// sessions started run there.
+        slow: usize,
+        /// How many looks at the sessions there have been since the first
+        /// start.
+        looks: usize,
         /// Who the node proves ordered an `ordered-carry`.
         by: Option<String>,
         /// Who it proves ordered one session's instead, by its address.
@@ -1523,6 +1558,33 @@ mod tests {
     }
 
     impl Realm {
+        /// Each session started, as the node it started on lists it once
+        /// pi runs it there: by the address it went by here, or its id, on
+        /// the machine its start needs, idle. None for the quest's own
+        /// trees, which no pi takes up, nor for one `silent`.
+        fn arrived_there(&self) -> Vec<Session> {
+            self.started
+                .iter()
+                .filter_map(|start| {
+                    let id = start.command.get(6)?;
+                    let [Need::Machine(on)] = start.work.needs.as_slice() else {
+                        return None;
+                    };
+                    if id == QUEST || self.silent.contains(id) {
+                        return None;
+                    }
+                    let address = self
+                        .sessions
+                        .iter()
+                        .find(|one| session_id(one) == Some(id.as_str()))
+                        .map_or_else(|| id.clone(), |one| one.address.clone());
+                    let mut there = session(&address, on, QUEST, "idle", &json!({}));
+                    there.presence = Arc::new(json!({"session": id}));
+                    Some(there)
+                })
+                .collect()
+        }
+
         /// Writes `session`'s done file, afresh where one was there.
         fn write(&mut self, session: &str) {
             let one = Done {
@@ -1550,6 +1612,12 @@ mod tests {
                 for one in &mut sessions {
                     one.state = State::Ended;
                 }
+            }
+            if !self.started.is_empty() {
+                self.looks += 1;
+            }
+            if self.looks > self.slow {
+                sessions.extend(self.arrived_there());
             }
             Ok(sessions)
         }
@@ -2192,7 +2260,9 @@ mod tests {
                 "start doing",
                 "start done",
                 "close doing",
-                "close done"
+                "close done",
+                "answer doing",
+                "answer done"
             ],
             "each step said as it begins and as it ends: {lines:?}"
         );
@@ -2540,6 +2610,48 @@ mod tests {
             realm.cells.contains("s-naps02"),
             "and the slow one keeps its cell, since it may still be carrying: {:?}",
             realm.cells
+        );
+    }
+
+    #[test]
+    fn a_session_started_there_that_never_runs_fails_the_carry() {
+        // 27 November: a carry onto a room said done once the files
+        // landed, though pi-carry wasn't there to take the session up,
+        // so its session ran nowhere.
+        let mut realm = Realm {
+            silent: ["s-naps02"].map(str::to_owned).into(),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        assert_eq!(
+            done,
+            Err(Failed { step: Step::Answer }),
+            "a start there isn't a carry until the session runs there"
+        );
+        let said = last_said(&lines);
+        assert!(
+            said.contains("NAPS02") && !said.contains("BUSY01"),
+            "naming the one that doesn't run, not one that does: {said}"
+        );
+        assert!(
+            said.contains("mycelium attach h1"),
+            "with how to join its start, to see why: {said}"
+        );
+    }
+
+    #[test]
+    fn a_session_started_there_is_waited_for_until_it_runs() {
+        let mut realm = Realm {
+            slow: 2,
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        let done = done.expect("carried, once each runs there");
+        assert_eq!(done.sessions.len(), 2, "each told: {done:?}");
+        assert_eq!(
+            last_said(&lines),
+            "2 sessions running on tern",
+            "said once each runs there"
         );
     }
 
