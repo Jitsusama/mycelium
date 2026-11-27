@@ -2478,7 +2478,8 @@ line names no asker takes only the person's. The person's own starts
 go only to a machine booked for the person or for no asker, never to
 one an agent's make booked, whose worker home that agent wrote. A
 preview is held to it as its run would be, and an ordered carry there
-of another's session is refused; only a start pinned to the machine
+of another's session is refused but to a room, below; only a start
+pinned to the machine
 made for it is not held to it. The booking is the making node's, kept
 while it runs and made again as it redials its book. Like the judging
 of a run, this fences habit, not an agent set on passing as another,
@@ -2523,8 +2524,11 @@ named in the file, only where they name it, never to one an agent's
 make booked, and even then that machine is full one session short of
 the most it holds, kept for the person, where it says or was promised
 a most. A start of its that no machine takes goes on to a make. A
-carry takes no account of rooms, since it asks as its session, which
-never says whether it is the person's. The file is written by whatever
+carry asks as its session, which never says whether it is the
+person's, so a room another's make booked takes any session carried
+there in the agent fence at least, as it takes the person's run: one
+that ran unfenced comes back fenced, and the person's own login still
+never runs in that worker home. The file is written by whatever
 keeps the rooms, and any session on the node can write it, so it
 fences habit as the booking does; a writer puts a new file beside it
 and renames it into place, so a placement never reads one half
