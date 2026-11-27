@@ -3418,7 +3418,13 @@ go as the connection closes. It refuses a session, or any address,
 that a session living or parked here or elsewhere answers to, and a
 session another connection holds. Later lines on it are another
 `Presence`, when it changes, or `{"Send": {"message": {...}}}`, the
-message as the harness writes its file, each answered in turn.
+message as the harness writes its file, each answered in turn, or
+`{"End": {"held"}}`, an end of the hold the session runs in. The
+node ends it only where the kernel shows the connection's process
+below that hold's program here, refusing any other with `{"Err":
+"why"}`, since the presence proves nothing, and answers `{"Ok":
+"Ending"}` before it begins, as the person's own end does, its
+ending said on the node's log. An end opening a connection is refused.
 
 The node writes a message again with only the fields the mesh reads,
 keeping it only when its id is of the mesh's shape, names its sender
@@ -4410,7 +4416,9 @@ holding it in `sessions` names its `orchestrator` by address: the asker
 must head that orchestrator's open quest by this node's record and by
 that quest's record, and the mesh must put the ended quest's sessions
 and the asker in that orchestrator's group. Only that orchestrator
-ends them so, never one above it. Anyone else is refused, saying
+ends them so, never one above it. A session also ends the hold it
+runs in, here, once the kernel shows its process below that hold's
+program; a parked hold runs none. Anyone else is refused, saying
 why. An id held here is ended here; one held on more than one other
 machine is refused. Another machine's hold is known by the presence
 of the session running in it, or, where none does, by the node's

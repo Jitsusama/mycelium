@@ -2204,6 +2204,31 @@ struct Vouched {
     unfenced: Option<Vec<(String, serde_json::Value)>>,
 }
 
+/// Whether process `pid` runs in the program held here as `held`, among
+/// `holds`, as the kernel tells its forebears in `processes`, so a session
+/// ends only the hold it runs in. A parked hold runs no program, so
+/// nothing runs in it.
+fn runs_in(
+    holds: &[hold::Held],
+    held: &str,
+    pid: i32,
+    processes: &Processes,
+) -> Result<(), String> {
+    let one = holds
+        .iter()
+        .find(|one| one.id == held)
+        .ok_or_else(|| format!("nothing is held here as {held}"))?;
+    let program = i32::try_from(one.pid)
+        .ok()
+        .filter(|program| *program > 1 && !one.parked)
+        .ok_or_else(|| format!("{held} is parked, so nothing runs in it"))?;
+    if processes.runs_below(pid, program) {
+        Ok(())
+    } else {
+        Err(format!("it doesn't run in {held}"))
+    }
+}
+
 /// What the node's loop and every client share.
 struct Shared<S> {
     store: S,
@@ -5733,17 +5758,24 @@ impl<S: Store> Shared<S> {
     /// one only here, where both run, and only once this node's record of
     /// orchestrations proves it orchestrates the held one's quest, as an
     /// ordered carry is proved; a presence naming its orchestrator proves
-    /// nothing, since a session writes its own. Its presence leaves the
-    /// sessions as its program's ends, and its hold's record goes with its
-    /// holder.
+    /// nothing, since a session writes its own. A session also ends the
+    /// hold it runs in, where the kernel shows it asking from below that
+    /// hold's program. Its presence leaves the sessions as its program's
+    /// ends, and its hold's record goes with its holder.
     async fn end(&self, held: &str) -> Reply {
         let (asker, asking) = self.ender().await?;
         let sessions = self.lock().state.sessions();
         let folder = self.held.clone();
-        if hold::held(&folder).iter().any(|one| one.id == held) {
+        let holds = hold::held(&folder);
+        if holds.iter().any(|one| one.id == held) {
             if let (hold::end::Asker::Session(address), Some(asking)) = (&asker, &asking) {
-                self.orchestrates_held(held, address, asking, &sessions)
-                    .await?;
+                let its_own = self
+                    .client
+                    .is_some_and(|pid| runs_in(&holds, held, pid, &self.processes).is_ok());
+                if !its_own {
+                    self.orchestrates_held(held, address, asking, &sessions)
+                        .await?;
+                }
             }
             let id = held.to_owned();
             let ending =
@@ -13852,6 +13884,57 @@ esac
         assert!(
             !held.join("e0d4.json").exists() && !held.join("e0d4.sock").exists(),
             "its record and socket are taken away"
+        );
+    }
+
+    // WCJQSG (2026-11-27): a session held in a room couldn't end its own
+    // hold, so only the person could. The kernel proves it runs in the
+    // hold, where its presence, which it writes itself, proves nothing.
+    #[tokio::test]
+    async fn a_session_ends_the_hold_it_runs_in_once_the_kernel_shows_it_runs_there() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        let (held, holder, program) = harbour_held(&store, &socket).await;
+
+        let refused = ends_e0d4(&socket, 7003).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.contains("HARBOR isn't proved to orchestrate")),
+            "HARBOR's presence names the hold, but nothing shows it runs there: {refused:?}"
+        );
+        assert!(held.join("e0d4.json").exists(), "HARBOR is still held");
+
+        // HARBOR's pi now runs below the hold's program, as a held pi
+        // runs below its launcher.
+        asks_below(&socket, 7003);
+        let procs = procs_of(&socket);
+        let in_hold = procs.join(program.to_string());
+        fs::create_dir_all(&in_hold).expect("its folder is made");
+        fs::write(in_hold.join("status"), "Name:\tenv\nPPid:\t1\n").expect("written");
+        fs::write(
+            procs.join("7003").join("status"),
+            format!("Name:\tpi\nPPid:\t{program}\n"),
+        )
+        .expect("written");
+        let end = Request::End {
+            held: "e0d4".to_owned(),
+        };
+        assert_eq!(
+            ask(socket.clone(), end).await,
+            Ok(Response::Ended {
+                machine: "skiff".to_owned(),
+                held: "e0d4".to_owned(),
+                ending: hold::end::Ending::Gently,
+            }),
+            "HARBOR, running below the hold's program, ends it"
+        );
+        assert!(
+            !runs(holder) && !runs(program),
+            "its holder and program are gone"
         );
     }
 
