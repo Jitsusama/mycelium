@@ -1505,6 +1505,54 @@ mod tests {
     }
 
     #[test]
+    fn the_way_out_of_a_make_cut_short_says_where_to_release_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let (whole, named, placed) = wrens_make(soon);
+        let placed_book = Book::at(dir.path().join("placed.jsonl")).of_realm("work");
+        cut_short(&placed_book.path, &whole[..placed + 4]);
+        assert_eq!(
+            placed_book.ends().doubt.way_out(),
+            "a whole make of each again, or its release where it was made (wren at \
+             p2), ends the doubt, as does mending the line cut short",
+            "naming the place its line cut short still says, so a reader knows \
+             where to release it"
+        );
+        let unplaced = Book::at(dir.path().join("unplaced.jsonl")).of_realm("work");
+        cut_short(&unplaced.path, &whole[..named + 4]);
+        assert_eq!(
+            unplaced.ends().doubt.way_out(),
+            "a whole make of each again, or its release where it was made (wren at \
+             a place no line cut short still says), ends the doubt, as does mending \
+             the line cut short",
+            "and saying its place can't be told where its line was cut before it"
+        );
+    }
+
+    #[test]
+    fn a_realms_book_reads_its_ends_afresh_of_the_unscoped_ones() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("made.jsonl");
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        Book::at(path.clone())
+            .of_realm("work")
+            .made(&made_at("tern", "p1", soon))
+            .expect("a make is kept");
+        let unscoped = Book::at(path);
+        assert_eq!(
+            unscoped.ends(),
+            Ends::default(),
+            "a book naming no realm ends none of a realm's makes"
+        );
+        assert_eq!(
+            unscoped.of_realm("work").ends().until,
+            BTreeMap::from([("tern".to_owned(), soon)]),
+            "the realm's book reads its own ends, though the book is unchanged \
+             since the unscoped one read and kept its own"
+        );
+    }
+
+    #[test]
     fn a_book_it_couldnt_read_is_read_again_once_it_can() {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().expect("a temporary folder");
