@@ -5851,7 +5851,11 @@ mod tests {
             _stop: oneshot::channel().0,
         };
         let (mut runs, _said) = Runs::new();
-        assert_eq!(runs.under_way(), 0, "with nothing asked, nothing is under way");
+        assert_eq!(
+            runs.under_way(),
+            0,
+            "with nothing asked, nothing is under way"
+        );
         runs.here.insert(1, running());
         assert_eq!(runs.under_way(), 1, "a run asked of this machine is");
         runs.here.clear();
@@ -5859,7 +5863,11 @@ mod tests {
         assert_eq!(runs.under_way(), 1, "so is a lend this machine serves");
         runs.lending.clear();
         runs.asked.insert(3, mpsc::unbounded_channel().0);
-        assert_eq!(runs.under_way(), 1, "so is a run asked of the other machine");
+        assert_eq!(
+            runs.under_way(),
+            1,
+            "so is a run asked of the other machine"
+        );
         runs.asked.clear();
         runs.borrowed.insert(4, mpsc::unbounded_channel().0);
         assert_eq!(
