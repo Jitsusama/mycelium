@@ -105,6 +105,13 @@ pub struct Folders {
     kept: Arc<Mutex<BTreeMap<PathBuf, Kept>>>,
     /// Whether each session's process lives, as last judged.
     judged: Arc<Judged>,
+    /// The machines a link last said it reached as a worker since this
+    /// store opened, by its admission or its puts. That is the link's
+    /// alone to say, and every link that says it runs in the node, so a
+    /// machine read back is a worker only where it is named here, never
+    /// by its file, which any session running as this account could
+    /// write.
+    workers: Arc<Mutex<BTreeSet<String>>>,
 }
 
 /// Whether each session's process lives, as last judged, kept until an end
@@ -153,6 +160,7 @@ impl Folders {
             told: Arc::default(),
             kept: Arc::default(),
             judged: Arc::default(),
+            workers: Arc::default(),
         })
     }
 
@@ -734,14 +742,36 @@ impl Store for Folders {
             })
             .filter_map(|entry| read(&entry.path()))
             .collect();
+        let workers = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
+        for machine in &mut machines {
+            machine.worker = workers.contains(&machine.name);
+        }
+        drop(workers);
         machines.sort_by(|a, b| a.name.cmp(&b.name));
         machines
     }
 
     fn put_machine(&self, machine: &Machine) -> io::Result<()> {
         let file = format!("{}{SAID}", safe(&machine.name)?);
+        self.mark_worker(&machine.name, machine.worker);
         let body = serde_json::to_value(machine).map_err(io::Error::other)?;
         write_whole(&self.claims, &file, &body)
+    }
+
+    fn mark_worker(&self, machine: &str, worker: bool) {
+        let mut workers = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
+        if worker {
+            workers.insert(machine.to_owned());
+        } else {
+            workers.remove(machine);
+        }
+    }
+
+    fn is_worker(&self, machine: &str) -> bool {
+        self.workers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(machine)
     }
 
     fn told_carries(&self) -> BTreeMap<String, Vec<Value>> {
@@ -2481,6 +2511,68 @@ mod tests {
         })
         .await;
         assert!(told.is_ok(), "the message was told within {PATIENCE:?}");
+    }
+
+    // Whether a machine is a worker is its node's link's to say, and that
+    // link runs in the node: a record a session wrote, either way, says
+    // nothing of it, nor does a worker's record to a node opening again.
+    #[test]
+    fn a_machine_is_a_worker_only_as_this_stores_own_put_says() {
+        let (dir, store) = store();
+        let record = dir.path().join("claims").join(format!("tern{SAID}"));
+        let worker = |store: &Folders| {
+            let machines = store.machines();
+            machines
+                .iter()
+                .find(|one| one.name == "tern")
+                .map(|one| one.worker)
+        };
+        let mut tern = crate::placement::tests::machine("tern", "linux", 32, &[]);
+        tern.worker = true;
+        fs::write(&record, serde_json::to_vec(&tern).expect("JSON")).expect("a session writes");
+        assert_eq!(
+            worker(&store),
+            Some(false),
+            "a record a session wrote makes no worker"
+        );
+        store.put_machine(&tern).expect("its link keeps it");
+        assert_eq!(worker(&store), Some(true), "its link's put makes one");
+        let mut unsaid = tern.clone();
+        unsaid.worker = false;
+        fs::write(&record, serde_json::to_vec(&unsaid).expect("JSON")).expect("a session writes");
+        assert_eq!(
+            worker(&store),
+            Some(true),
+            "a record a session wrote unmakes none either"
+        );
+        store.put_machine(&tern).expect("its link keeps it");
+        let again = Folders::open(&dir.path().join("mesh"), &dir.path().join("claims"))
+            .expect("the store opens again");
+        assert_eq!(
+            worker(&again),
+            Some(false),
+            "a node opening again takes no worker from a record it didn't put"
+        );
+        store.put_machine(&unsaid).expect("its link keeps it");
+        assert_eq!(
+            worker(&store),
+            Some(false),
+            "its link saying it is none unmakes one"
+        );
+        // A node opening again knows a worker by its link's admission, so
+        // one that hasn't said what it is yet is one all the same.
+        again.mark_worker("tern", true);
+        fs::write(&record, serde_json::to_vec(&unsaid).expect("JSON")).expect("a session writes");
+        assert_eq!(
+            worker(&again),
+            Some(true),
+            "its link's admission makes one, whatever a session writes of it"
+        );
+        fs::remove_file(&record).expect("a session takes it away");
+        assert!(
+            again.is_worker("tern"),
+            "a record taken away unmakes no worker either"
+        );
     }
 
     #[tokio::test]

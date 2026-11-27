@@ -138,8 +138,10 @@ pub struct Machine {
     /// Whether the node keeping these facts reached the machine as a
     /// worker, one a provider made that may be administered by others, so
     /// all it says of itself, its costs included, is its own word. Set by
-    /// that node's link alone, never taken from what the machine says;
-    /// measuring leaves it unset.
+    /// that node's link alone, never taken from what the machine says,
+    /// nor read back from the record the node's store keeps, which a
+    /// session may write ([`crate::store::Store::machines`]); measuring
+    /// leaves it unset.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub worker: bool,
     /// Whom the node deciding where work goes holds it for. Set by that
