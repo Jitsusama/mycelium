@@ -178,8 +178,12 @@ pub struct Book {
     /// The ends last read, with the file as it was then, so the book is
     /// read again only once it changes, and the journal says once each
     /// time that changes why the book can't say every end.
-    ends_read: Arc<Mutex<Option<(Option<Stamp>, Ends)>>>,
+    ends_read: Arc<Mutex<Option<EndsRead>>>,
 }
+
+/// The ends last read, with the stamp the book had as they were read;
+/// none where its stamp couldn't be taken, so they're read again.
+type EndsRead = (Option<Stamp>, Ends);
 
 /// A file as its metadata tells it apart from itself once changed: its
 /// inode, its length and when it was last written.
