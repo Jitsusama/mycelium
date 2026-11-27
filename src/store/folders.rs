@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 use notify::event::ModifyKind;
-use notify::{EventKind, RecursiveMode, Watcher};
+use notify::{EventKind, RecursiveMode};
 use rustix::fs::FlockOperation;
 use serde::Deserialize;
 use serde_json::Value;
@@ -856,18 +856,24 @@ impl Store for Folders {
             }
         })
         .map_err(io::Error::other)?;
-        watcher
-            .watch(&self.messages(), RecursiveMode::NonRecursive)
-            .map_err(io::Error::other)?;
-        watcher
-            .watch(&self.presence(), RecursiveMode::NonRecursive)
-            .map_err(io::Error::other)?;
-        watcher
-            .watch(&self.leases(), RecursiveMode::NonRecursive)
-            .map_err(io::Error::other)?;
-        watcher
-            .watch(&self.claims, RecursiveMode::NonRecursive)
-            .map_err(io::Error::other)?;
+        // In one batch, so macOS's stream starts once, not once a folder.
+        let folders = [
+            self.messages(),
+            self.presence(),
+            self.leases(),
+            PathBuf::clone(&self.claims),
+        ];
+        let new = folders
+            .iter()
+            .map(|folder| (folder.clone(), RecursiveMode::NonRecursive))
+            .collect::<Vec<_>>();
+        let answers = crate::watching::watch_all(&mut watcher, &[], &new);
+        if let Some(at) = answers.iter().position(|took| !took) {
+            return Err(io::Error::other(format!(
+                "{} can't be watched",
+                folders[at].display()
+            )));
+        }
         Ok(Changes {
             changes,
             keep: Box::new((watcher, ends)),
@@ -1353,6 +1359,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn an_unchanged_presence_is_judged_without_opening_its_file() {
+        use notify::Watcher as _;
+
         let (dir, folders) = store();
         let presence = dir.path().join("mesh/presence");
         for name in ["s-one", "s-two"] {

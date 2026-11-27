@@ -1120,19 +1120,20 @@ impl WaitingFolder {
             (Some((_, was)), Some(now)) if *was == now && !self.again => Vec::new(),
             (_, Some(now)) => {
                 self.again = false;
-                // A watch on a folder since removed is gone or stale.
-                let _ = watcher.unwatch(folder);
-                self.deaf = watcher
-                    .watch(folder, notify::RecursiveMode::NonRecursive)
-                    .is_err();
-                let real = fs::canonicalize(folder).unwrap_or_else(|_| folder.clone());
-                self.heard = Some((real, now));
+                // A watch on a folder since removed is gone or stale, so
+                // it's given back and taken again, with the parent that
+                // awaited it, in one batch.
+                let mut gone = vec![folder.clone()];
                 if self.awaited
                     && let Some(parent) = parent
                 {
-                    let _ = watcher.unwatch(parent);
+                    gone.push(parent.to_owned());
                     self.awaited = false;
                 }
+                let new = [(folder.clone(), notify::RecursiveMode::NonRecursive)];
+                self.deaf = crate::watching::watch_all(watcher, &gone, &new) != [true];
+                let real = fs::canonicalize(folder).unwrap_or_else(|_| folder.clone());
+                self.heard = Some((real, now));
                 let files: BTreeSet<PathBuf> = fs::read_dir(folder)
                     .map(|entries| {
                         entries
@@ -1307,10 +1308,9 @@ fn round(
         .round(store, living);
     let keeping: BTreeSet<PathBuf> = kept.iter().flat_map(|id| folders(store, id)).collect();
     if let Some(watcher) = watcher {
-        for gone in listened_to.difference(&keeping) {
-            // A folder already gone is no longer watched.
-            let _ = watcher.unwatch(gone);
-        }
+        // A folder already gone is no longer watched.
+        let gone: Vec<PathBuf> = listened_to.difference(&keeping).cloned().collect();
+        crate::watching::watch_all(watcher, &gone, &[]);
     }
     listened_to.retain(|folder| keeping.contains(folder));
     kept
@@ -1324,13 +1324,19 @@ fn listen_to(
     due: &BTreeSet<String>,
     listened_to: &mut BTreeSet<PathBuf>,
 ) {
-    for folder in due.iter().flat_map(|id| folders(store, id)) {
-        if !listened_to.contains(&folder)
-            && folder.is_dir()
-            && watcher
-                .watch(&folder, notify::RecursiveMode::NonRecursive)
-                .is_ok()
-        {
+    // In one batch, so macOS's stream starts once, not once a folder.
+    let new: BTreeSet<PathBuf> = due
+        .iter()
+        .flat_map(|id| folders(store, id))
+        .filter(|folder| !listened_to.contains(folder) && folder.is_dir())
+        .collect();
+    let modes: Vec<(PathBuf, notify::RecursiveMode)> = new
+        .iter()
+        .map(|folder| (folder.clone(), notify::RecursiveMode::NonRecursive))
+        .collect();
+    let answers = crate::watching::watch_all(watcher, &[], &modes);
+    for (folder, took) in new.into_iter().zip(answers) {
+        if took {
             listened_to.insert(folder);
         }
     }
