@@ -11,6 +11,9 @@
 //! Each make and release is kept, a JSON line each, in the node's book
 //! ([`Book`]), so what was made, for how long and at what rate can always
 //! be read back and summed.
+//!
+//! Long because its tests, nearly half of it, run each make through a
+//! program and each book through a file of its own.
 
 use std::collections::BTreeSet;
 use std::fs::OpenOptions;
@@ -18,11 +21,12 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::declared::Effect;
 use crate::offer::{Costs, Offer};
 
 /// How long a program has to make a machine: a provider makes one in
@@ -40,6 +44,11 @@ pub const PERSON: &str = "person";
 
 /// What [`ASKER`] says where who asked can't be told.
 pub const UNKNOWN: &str = "unknown";
+
+/// The taint an offer declares, as `prefer_not`, on a shape made as a
+/// room kept for agents to share, so the person's work goes there only
+/// when nowhere else will do ([`Made::kept_room`]).
+pub const KEPT_ROOM: &str = "kept-room";
 
 /// A machine a provider made.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +75,24 @@ pub struct Made {
     /// machines it makes without changing what they run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sessions_at_most: Option<u32>,
+    /// Whether an agent's make had it made from an offer declaring it a
+    /// room kept for agents ([`KEPT_ROOM`]), so it is one of
+    /// [`Book::agent_rooms`] while it stands, though no rooms file names
+    /// it. One the person had made, or a session under their grant,
+    /// stays theirs whatever its offer declares.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub kept_room: bool,
+}
+
+/// Whether `offer` declares its shape a room kept for agents: the
+/// [`KEPT_ROOM`] taint, as `prefer_not`.
+fn declares_kept_room(offer: &Offer) -> bool {
+    offer.facts.declared.as_ref().is_some_and(|declared| {
+        declared
+            .taints
+            .iter()
+            .any(|taint| taint.key == KEPT_ROOM && taint.effect == Effect::PreferNot)
+    })
 }
 
 /// What a program says it made.
@@ -136,6 +163,7 @@ pub async fn make(offer: &Offer, lasting: Duration, asker: &str) -> Result<Made,
             .declared
             .as_ref()
             .and_then(|declared| declared.sessions_at_most),
+        kept_room: asker != PERSON && declares_kept_room(offer),
     })
 }
 
@@ -174,6 +202,18 @@ pub struct Book {
     /// Why the rooms file last couldn't be read, if it couldn't, so the
     /// journal says so once each time that changes, not on every read.
     rooms_unread: Arc<Mutex<Option<String>>>,
+    /// The rooms this realm's makes kept for agents, as the book last
+    /// read said them, with its length and change time then, so a
+    /// placement reads the book again only once it has changed.
+    kept_rooms_read: Arc<Mutex<Option<KeptRead>>>,
+}
+
+/// The rooms a book's makes kept for agents, as one read of it said them.
+#[derive(Debug)]
+struct KeptRead {
+    length: u64,
+    changed: Option<SystemTime>,
+    rooms: Vec<Made>,
 }
 
 /// The most of the rooms file read, far past any list of machines, so a
@@ -201,6 +241,7 @@ impl Book {
             path,
             realm: None,
             rooms_unread: Arc::default(),
+            kept_rooms_read: Arc::default(),
         }
     }
 
@@ -209,6 +250,7 @@ impl Book {
     pub fn of_realm(self, realm: &str) -> Self {
         Self {
             realm: Some(realm.to_owned()),
+            kept_rooms_read: Arc::default(),
             ..self
         }
     }
@@ -238,8 +280,60 @@ impl Book {
     /// time that changes, since agents' work then goes back to the
     /// machines it would leave. Only its first [`ROOMS_AT_MOST`] bytes
     /// are read.
+    ///
+    /// The rooms this realm's node made for agents ([`Made::kept_room`])
+    /// are added while they stand: made, not yet released, and not past
+    /// their `until`.
     #[must_use]
     pub fn agent_rooms(&self) -> BTreeSet<String> {
+        let mut rooms = self.rooms_named();
+        let now = jiff::Timestamp::now();
+        rooms.extend(
+            self.kept_rooms()
+                .into_iter()
+                .filter(|made| now < made.until)
+                .map(|made| made.machine),
+        );
+        rooms
+    }
+
+    /// The rooms this realm's makes kept for agents and haven't released,
+    /// ended or not, read again only once the book has changed. A book
+    /// that can't be read keeps none, so agents' work goes back to the
+    /// machines the rooms file names; why is said where the node reads its
+    /// book on starting.
+    fn kept_rooms(&self) -> Vec<Made> {
+        let Ok(about) = std::fs::metadata(&self.path) else {
+            return Vec::new();
+        };
+        let (length, changed) = (about.len(), about.modified().ok());
+        let mut last = self
+            .kept_rooms_read
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(read) = last.as_ref()
+            && read.length == length
+            && read.changed == changed
+        {
+            return read.rooms.clone();
+        }
+        let rooms: Vec<Made> = self
+            .standing()
+            .map(|standing| standing.made)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|made| made.kept_room)
+            .collect();
+        *last = Some(KeptRead {
+            length,
+            changed,
+            rooms: rooms.clone(),
+        });
+        rooms
+    }
+
+    /// The rooms the rooms file names, as [`Self::agent_rooms`] says.
+    fn rooms_named(&self) -> BTreeSet<String> {
         let path = self.path.with_file_name(AGENT_ROOMS);
         let read = rooms_said(&path);
         let unread = read
@@ -466,6 +560,7 @@ mod tests {
                 costs: offer_of(String::new()).costs,
                 asker: Some("person".to_owned()),
                 sessions_at_most: None,
+                kept_room: false,
             },
             "what was made, where, until when, at what rate and for whom"
         );
@@ -486,6 +581,97 @@ mod tests {
             ),
             (&json!("0.12"), &json!("its work was done")),
             "each make and release is kept, a line each, in order"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_an_agents_make_from_a_kept_room_offer_keeps_a_room() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let program = provider(
+            dir.path(),
+            r#"echo '{"place": "p1", "machine": "wren", "until": "2026-10-31T20:00:00Z"}'"#,
+        );
+        let tainted = |key: &str, effect: Effect| {
+            let mut offer = offer_of(program.clone());
+            offer.facts.declared = Some(crate::declared::Declared {
+                taints: vec![crate::declared::Taint {
+                    key: key.to_owned(),
+                    effect,
+                    why: "kept for agents".to_owned(),
+                }],
+                ..crate::declared::Declared::default()
+            });
+            offer
+        };
+        let lasting = Duration::from_secs(3600);
+        let kept = async |offer: Offer, asker: &str| {
+            make(&offer, lasting, asker).await.expect("made").kept_room
+        };
+        let room = tainted(KEPT_ROOM, Effect::PreferNot);
+        assert!(
+            kept(room.clone(), "P9R1KI").await,
+            "an agent's make keeps a room"
+        );
+        assert!(
+            !kept(room, PERSON).await,
+            "the person's, or a granted session's, stays theirs"
+        );
+        assert!(
+            !kept(tainted(KEPT_ROOM, Effect::Never), "P9R1KI").await,
+            "a taint refusing all work marks no room"
+        );
+        assert!(
+            !kept(tainted("person-works", Effect::PreferNot), "P9R1KI").await,
+            "nor does another taint"
+        );
+        assert!(
+            !kept(offer_of(program.clone()), "P9R1KI").await,
+            "nor an offer declaring nothing"
+        );
+    }
+
+    #[test]
+    fn the_rooms_a_realms_makes_kept_are_agents_rooms_while_they_stand() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("made.jsonl");
+        let book = Book::at(path.clone()).of_realm("work");
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let earlier = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(1);
+        let room = |machine: &str, until: jiff::Timestamp| Made {
+            kept_room: true,
+            ..made_at(machine, machine, until)
+        };
+        fs::write(dir.path().join(AGENT_ROOMS), "harbour\n").expect("written");
+        for made in [
+            room("wren", later),
+            room("tern", earlier),
+            room("kestrel", later),
+            made_at("skiff", "skiff", later),
+        ] {
+            book.made(&made).expect("kept");
+        }
+        Book::at(path.clone())
+            .of_realm("home")
+            .made(&room("osprey", later))
+            .expect("kept");
+        assert_eq!(
+            book.agent_rooms(),
+            BTreeSet::from(["harbour", "kestrel", "wren"].map(str::to_owned)),
+            "the file's, and this realm's kept rooms not past their time"
+        );
+        book.released(&room("kestrel", later), "its work was done")
+            .expect("kept");
+        assert_eq!(
+            book.agent_rooms(),
+            BTreeSet::from(["harbour", "wren"].map(str::to_owned)),
+            "a room released is read as gone"
+        );
+        let kept = fs::read_to_string(&path).expect("the book");
+        let marked = kept.matches("\"kept_room\":true").count();
+        assert_eq!(
+            (marked, kept.matches("kept_room").count()),
+            (4, 4),
+            "only the makes keeping a room say so: {kept}"
         );
     }
 
@@ -566,6 +752,7 @@ mod tests {
             costs: offer_of(String::new()).costs,
             asker: None,
             sessions_at_most: None,
+            kept_room: false,
         };
         std::thread::scope(|scope| {
             for _ in 0..8 {
@@ -594,6 +781,7 @@ mod tests {
             costs: offer_of(String::new()).costs,
             asker: None,
             sessions_at_most: None,
+            kept_room: false,
         }
     }
 

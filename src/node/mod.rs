@@ -26101,6 +26101,7 @@ esac
             },
             asker: None,
             sessions_at_most: None,
+            kept_room: false,
         }
     }
 
