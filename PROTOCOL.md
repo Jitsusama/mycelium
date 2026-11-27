@@ -2504,8 +2504,9 @@ which runs as the same account; an agent's process left with no agent
 above it is judged the person's. A machine named in `agent-rooms`,
 beside the node's book of makes, a name a line, past blank lines and
 what follows a `#` on any line, is a room made for agents to share:
-already up and paid for by being so. The node alone writes it, as
-`mycelium rooms add` and `rooms remove` ask, holding
+already up and paid for by being so. The node writes it as
+`mycelium rooms add` and `rooms remove` ask, though placement
+trusts every line, one written by hand included, holding
 `agent-rooms.lock` beside it, giving up after 20 tries 50 ms apart,
 and putting the new file in place whole: every other line kept as it
 stood, its line endings too, synced before it is renamed in, mode
@@ -2519,9 +2520,10 @@ person names it one, never another agent, whose work its booking
 kept out; a session the person granted names one only as itself,
 though it makes as the person. It is judged again once written, and
 a machine released is taken out, so no name outlives what it was
-judged on. Anyone may take one out, which only sends work back to
-the machines it would go to anyway; whoever asks, the node says on
-its log who. A file past the most read is never written again.
+judged on, and an add whose second judgement refuses takes out
+only a name it wrote. Anyone may take one out, which only sends work
+back to the machines it would go to anyway; whoever asks, the node
+says on its log who. A file past the most read is never written again.
 Every agent's start or run may be placed there, a granted session's
 and one from no one known included, whoever it is booked for, since
 its booking says who pays for it and may let it go,

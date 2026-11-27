@@ -2247,10 +2247,12 @@ fn name_room_for(book: &Book, machine: &str, who: &str) -> Result<bool, String> 
     let named = book
         .name_room(machine)
         .map_err(|error| format!("{machine} isn't named a room: {error}"))?;
+    // Only a name this ask wrote is taken back: one there before it is
+    // left to its own release or remove.
     if let Err(why) = may_name_room(book, machine, who) {
-        return Err(match book.unname_room(machine) {
-            Ok(_) => refused(why),
-            Err(error) => refused(format!("{why}; and it stays named one: {error}")),
+        return Err(match named.then(|| book.unname_room(machine)) {
+            None | Some(Ok(_)) => refused(why),
+            Some(Err(error)) => refused(format!("{why}; and it stays named one: {error}")),
         });
     }
     Ok(named)
@@ -6920,19 +6922,18 @@ impl<S: Store> Shared<S> {
     async fn rooms_asked(&self, act: crate::wire::RoomsAct, machine: Option<String>) -> Reply {
         // A session the person granted makes as the person, but names a
         // room only as itself, so it opens no other agent's machine.
-        let who = match act {
-            crate::wire::RoomsAct::List => String::new(),
-            _ => {
-                let asker = self.asker_of_a_make().await;
-                asker.granted.unwrap_or(asker.told)
-            }
+        let who = if matches!(act, crate::wire::RoomsAct::List) {
+            String::new()
+        } else {
+            let asker = self.asker_of_a_make().await;
+            asker.granted.unwrap_or(asker.told)
         };
         self.rooms_asked_by(act, machine, &who).await
     }
 
     /// As [`Self::rooms_asked`], asked by `who`, as [`Self::asker_of_a_make`]
-    /// tells it, a granted session by its own address. This node alone
-    /// writes `agent-rooms`, and names a machine
+    /// tells it, a granted session by its own address. This node writes
+    /// `agent-rooms` as asked, and names a machine
     /// a room only where its own book holds it standing, made by this
     /// realm's node for a proven agent, and only for that agent or the
     /// person: never one made for the person, whose own sessions run
@@ -6977,7 +6978,6 @@ impl<S: Store> Shared<S> {
             rooms: self.book.agent_rooms().into_iter().collect(),
         })
     }
-
 
     /// Frees `quest` from the session holding it by this node's record of
     /// orchestrations, where the person's own login asks.
@@ -11655,6 +11655,12 @@ mod tests {
         ]);
         let providers = providers_of(socket);
         let book = Book::at(socket.with_file_name("made.jsonl"));
+        // A test of what a realm's node judges by its own makes names the
+        // realm beside the socket before its node starts.
+        let book = match fs::read_to_string(socket.with_file_name("realm")) {
+            Ok(realm) => book.of_realm(realm.trim()),
+            Err(_) => book,
+        };
         let parked = parks_of(socket);
         let held = held_of(socket);
         let kernel = Processes::Folder(procs_of(socket));
@@ -25621,10 +25627,18 @@ esac
         use crate::wire::RoomsAct;
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
+        fs::create_dir_all(dir.path().join("skiff")).expect("the machine's folder");
+        fs::write(socket.with_file_name("realm"), "work").expect("the realm is named");
         let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
         asks_below(&socket, 7001);
-        let book = Book::at(socket.with_file_name("made.jsonl"));
-        for (name, asker) in [("tern", "ASKER1"), ("wren", "WCJQSG")] {
+        let book = Book::at(socket.with_file_name("made.jsonl")).of_realm("work");
+        // Its own make, asked before its grant, is booked for its address;
+        // one asked under the grant is booked for the person, as osprey.
+        for (name, asker) in [
+            ("tern", "ASKER1"),
+            ("wren", "WCJQSG"),
+            ("osprey", made::PERSON),
+        ] {
             let mut made = made_by("/usr/bin/lend", name, a_day_out());
             made.asker = Some(asker.to_owned());
             book.made(&made).expect("the make is kept");
@@ -25647,6 +25661,13 @@ esac
                 .as_ref()
                 .is_err_and(|why| why.contains("for WCJQSG, since it was made for ASKER1")),
             "though it makes as the person, it opens no other agent's machine: {refused:?}"
+        );
+        let refused = ask(socket.clone(), add("osprey")).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.contains("since it was made for the person")),
+            "nor one booked for the person, whose own sessions run there: {refused:?}"
         );
         let named = ask(socket.clone(), add("wren")).await;
         assert!(
