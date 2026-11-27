@@ -579,6 +579,39 @@ mod tests {
     }
 
     #[test]
+    fn a_load_is_over_exactly_when_past_a_limit_or_its_lively_ceiling() {
+        let mut hot = machine("tern", 16, 64, 40, 45.0, 20);
+        hot.declared
+            .get_or_insert_with(Default::default)
+            .kept_lively = Some(Lively {
+            cpu: 30,
+            memory_available: None,
+            memory_full: None,
+        });
+        // What each is past: a limit of its queue's, and its ceiling.
+        let loads = [
+            (machine("osprey", 12, 48, 41, 86.0, 40), (true, false)),
+            (hot, (false, true)),
+            (machine("kestrel", 16, 64, 40, 4.6, 20), (false, false)),
+        ];
+        for (one, past) in loads {
+            let load = load(&one, &[], now());
+            assert_eq!(
+                (!load.past.is_empty(), load.lively.is_some()),
+                past,
+                "{} is past what it is: {load:?}",
+                load.machine
+            );
+            assert_eq!(
+                load.over,
+                !load.past.is_empty() || load.lively.is_some(),
+                "{} is over exactly when past a limit or its ceiling",
+                load.machine
+            );
+        }
+    }
+
+    #[test]
     fn a_machine_over_while_another_has_room_is_flagged() {
         // As on 15 November at 18:39: one machine stalled on its
         // processors, the other with every core to spare.
