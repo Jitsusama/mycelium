@@ -252,7 +252,7 @@ enum Action {
     /// most, closed documents are counted, and each row is cut to fit.
     /// Named by its address or its quest's id, one cell's forage, with
     /// its purpose as far as its node read it and every document. Into a
-    /// pipe nothing more is cut.
+    /// pipe, as `watch` and `less` read it, nothing more is cut.
     #[command(after_help = "Example:\n  mycelium forage HARBOR")]
     Forage(ForageAsked),
     /// Says how a receptor stands, as the receptor.
@@ -465,11 +465,19 @@ enum Action {
     ///
     /// What is said goes into the steer inbox of the session going by
     /// ADDRESS, on whichever machine it runs. The steer is read from
-    /// input, as the harness writes one: `{"text": "..."}`, with `act`
-    /// and `id` if it pauses, resumes, stops, closes or opens a talk,
-    /// `to` for a carry, and `{"act": "park", "at": "..."}`, with `from`
-    /// and nothing else, if it parks the session, its program ended, to
-    /// wake when spoken to.
+    /// input, as the harness writes one: `{"text": "..."}`, words for the
+    /// session, with `"now": true` to say them in the turn under way, or
+    /// an `id` to open a talk whose replies come back. Or it does something,
+    /// as its `act`: pause, resume, stop or close; fill, putting its `text`
+    /// in the prompt; park, saying when it was asked as `at` and nothing
+    /// but who it is `from`; wake, saying nothing; answer, naming its
+    /// `want` or `look` and a choice's `value`, or a want's words as
+    /// `other`; move, `to` attended, background or pi; or carry, `to` a
+    /// machine. An ordered-carry, an orchestrator's, says `why` and may
+    /// name sessions going `with` it; the node names who it is `by` from
+    /// its own record, and takes it only from the orchestrating session,
+    /// on the machine both run on. A self-carry is a session's own, `to`
+    /// a machine and saying `why`, taken only from that session.
     #[command(after_help = "Example:\n  echo '{\"text\": \"ship it\"}' | mycelium steer HARBOR")]
     Steer {
         /// The session's address.
@@ -2667,10 +2675,6 @@ const SWARM_WITHIN: std::time::Duration = std::time::Duration::from_secs(4);
 /// seconds a link gives another machine to say it was told.
 const STEER_WITHIN: std::time::Duration = std::time::Duration::from_secs(35);
 
-/// How wide the swarm is drawn into a pipe, until its tables can be drawn
-/// whole there, as every command's should be.
-const SWARM_WIDTH: usize = 100;
-
 /// How wide a terminal is drawn on where neither `COLUMNS` nor the
 /// terminal says.
 const WIDTH_UNSAID: usize = 80;
@@ -2698,10 +2702,11 @@ fn swarm(socket: &Path, realm: &str, team: Option<&str>, json: bool) -> io::Resu
 /// narrower. It's read as a terminal's own width is, at most a `u16`,
 /// and no wider than a terminal that says, since a line past its edge
 /// only wraps. Into a pipe `COLUMNS` isn't read, as the
-/// kit's commands don't read it there, and the width is [`SWARM_WIDTH`].
+/// kit's commands don't read it there, and everything is drawn
+/// [`WHOLE`](mycelium::swarm::WHOLE).
 fn width(terminal: bool, columns: Option<&str>, said: Option<u16>) -> usize {
     if !terminal {
-        return SWARM_WIDTH;
+        return mycelium::swarm::WHOLE;
     }
     let said = said.filter(|cells| *cells > 0);
     columns
@@ -3806,10 +3811,21 @@ mod tests {
 
     use mycelium::wire::Request;
 
+    #[test]
+    fn the_steer_help_names_every_act_a_node_takes() {
+        let help = Command::command()
+            .find_subcommand("steer")
+            .and_then(|steer| steer.get_long_about().map(ToString::to_string))
+            .expect("steer has a long help");
+        for act in mycelium::steer::acts() {
+            assert!(help.contains(act), "the help names {act}: {help}");
+        }
+    }
+
     use super::{
-        Action, Command, HELP_WIDTH, SAID_MOST, SWARM_WIDTH, SwarmAsked, Tree, held_through,
-        in_place, kit, need, orchestrates, processes_here, reader_left, room_of, said_text,
-        swarm_asked, tree, width, within, write_line,
+        Action, Command, HELP_WIDTH, SAID_MOST, SwarmAsked, Tree, held_through, in_place, kit,
+        need, orchestrates, processes_here, reader_left, room_of, said_text, swarm_asked, tree,
+        width, within, write_line,
     };
 
     #[test]
@@ -3923,7 +3939,7 @@ mod tests {
 
     #[test]
     fn into_a_pipe_columns_is_not_read() {
-        assert_eq!(width(false, Some("60"), Some(120)), SWARM_WIDTH);
+        assert_eq!(width(false, Some("60"), Some(120)), mycelium::swarm::WHOLE);
     }
 
     #[test]

@@ -102,7 +102,7 @@ async fn requests_asked_at_once_never_pass_the_cap_together() {
 }
 
 #[tokio::test]
-async fn spend_watch_silent_or_stale_or_past_an_allowance_lends_no_model() {
+async fn spend_watch_silent_stale_undeclaring_or_past_an_allowance_lends_no_model() {
     let lend_file = json!({
         "vms": [{"prefix": "agents-", "budget": "models", "requests_a_day": 100,
                  "usd_a_day": 10.0}],
@@ -129,14 +129,64 @@ async fn spend_watch_silent_or_stale_or_past_an_allowance_lends_no_model() {
     lending.spend_watch_says(&json!([{"name": "elsewhere", "allowances": []}]));
     let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
     assert_eq!(refusal(&mut answers).await, 503, "silent of its budget");
+    // As the live word has it: a probe spent under a name nobody declared,
+    // beside a declared budget with no allowance of its own.
+    let refused = "spend-watch declares no budget proxy, so no model is lent; declare it in \
+                   spend-watch, or lend under a budget it declares";
+    let beside = |name: &str| {
+        json!([
+            {"name": "declared-uncapped", "allowances": []},
+            {"name": name, "undeclared": true, "allowances": []},
+        ])
+    };
+    lending.spend_watch_says(&beside("proxy"));
+    let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
+    let (status, why) = refusal_and_why(&mut answers).await;
+    assert_eq!(
+        (status, why.as_str()),
+        (503, refused),
+        "a budget it has only seen spent, and not for being silent"
+    );
+    // A marker it can't read is held to be one, rather than making the
+    // whole word unreadable; and a second entry of the name is read too.
+    for word in [
+        json!([{"name": "proxy", "undeclared": "yes", "allowances": []}]),
+        json!([
+            {"name": "proxy", "allowances": []},
+            {"name": "proxy", "undeclared": true, "allowances": []},
+        ]),
+    ] {
+        lending.spend_watch_says(&word);
+        let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
+        let (status, why) = refusal_and_why(&mut answers).await;
+        assert_eq!((status, why.as_str()), (503, refused), "{word}");
+    }
     lending.spend_watch_says(&proxy(100.0));
     let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
     assert_eq!(refusal(&mut answers).await, 429, "a budget spent");
     assert!(!lending.relay.was_asked(), "none was carried");
     assert_eq!(lending.spent("agents-1"), 0, "and none spent any");
-    lending.spend_watch_says(&proxy(1.0));
+    // The undeclared probe beside it doesn't stop a declared budget
+    // lending.
+    let mut word = proxy(1.0);
+    word.as_array_mut()
+        .expect("a list")
+        .extend(beside("ys-probe").as_array().expect("a list").clone());
+    lending.spend_watch_says(&word);
     let _answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
     lending.relay.asked().await;
+}
+
+#[tokio::test]
+async fn a_budget_marked_declared_as_false_or_null_lends() {
+    for marker in [json!(false), serde_json::Value::Null] {
+        let mut lending = capped(10.0);
+        lending.spend_watch_says(&json!([{"name": "proxy", "undeclared": marker,
+            "allowances": [{"label": "Week", "unit": "dollars", "allowance": 100.0,
+                "spent": 1.0}]}]));
+        let _answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
+        lending.relay.asked().await;
+    }
 }
 
 #[tokio::test]

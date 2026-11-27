@@ -67,6 +67,14 @@ pub struct Room {
     /// node too old to judge, when placement judges the pressure itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub saturated: Option<bool>,
+    /// The share of the last minute in which some work waited on a
+    /// processor, machine-wide, in percent, as the machine's own kernel
+    /// says it ([`cpu_minute`]): steadier than the ten seconds of
+    /// [`Pressure::cpu`], for a ceiling a burst shouldn't cross. Unknown
+    /// from a queue's record as read, from a kernel that says none, as a
+    /// Mac's, or from a node too old to say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_minute: Option<f64>,
 }
 
 /// A limit of the queue's that a machine can be past.
@@ -219,7 +227,19 @@ fn said(record: &[u8], now: i64) -> Option<Room> {
                 .collect()
         }),
         saturated: None,
+        cpu_minute: None,
     })
+}
+
+/// The share of the last minute in which some task waited on a processor,
+/// machine-wide, as `procs`' `pressure/cpu` says it (Linux's `/proc`, or a
+/// stand-in for it), or none where it says none, as on a Mac.
+#[must_use]
+pub fn cpu_minute(procs: &Path) -> Option<f64> {
+    stalled_over(
+        &fs::read_to_string(procs.join("pressure/cpu")).ok()?,
+        "avg60=",
+    )
 }
 
 /// This machine's room as its own kernel says it, read from `procs`
@@ -277,6 +297,7 @@ fn felt_from(cpu: &str, memory: &str, io: &str, meminfo: &str, at: &str) -> Opti
         },
         over: Some(over),
         saturated: None,
+        cpu_minute: stalled_over(cpu, "avg60="),
     })
 }
 
@@ -309,7 +330,13 @@ fn memory_over(pressure: &Pressure) -> bool {
 /// The share of the last ten seconds in which some task stalled, in
 /// percent, as a pressure file's `some` line says it.
 fn stalled(pressure: &str) -> Option<f64> {
-    stall(pressure, "some ", "avg10=")
+    stalled_over(pressure, "avg10=")
+}
+
+/// The share in which some task stalled, in percent, over the window a
+/// pressure file's `some` line names by `average` (`avg10=` or `avg60=`).
+fn stalled_over(pressure: &str, average: &str) -> Option<f64> {
+    stall(pressure, "some ", average)
 }
 
 /// The share a pressure file's `line` says in its `field`, in percent.
@@ -391,6 +418,22 @@ mod tests {
     }
 
     #[test]
+    fn a_rooms_minute_crosses_the_wire_only_when_said() {
+        let mut room = said(&record(1, KEPT_AT), KEPT_AT + 30).expect("a room");
+        let unsaid = serde_json::to_value(&room).expect("a room is json");
+        assert!(
+            unsaid.get("cpu_minute").is_none(),
+            "a room with no minute says none, as an older node's does"
+        );
+        let older: Room = serde_json::from_value(unsaid).expect("an older room reads");
+        assert_eq!(older.cpu_minute, None, "and reads back as none");
+        room.cpu_minute = Some(31.5);
+        let said_on = serde_json::to_string(&room).expect("a room is json");
+        let heard: Room = serde_json::from_str(&said_on).expect("a room reads");
+        assert_eq!(heard.cpu_minute, Some(31.5), "a minute said is heard");
+    }
+
+    #[test]
     fn a_kept_queue_says_the_room_it_starts_work_by() {
         assert_eq!(
             said(&record(1, KEPT_AT), KEPT_AT + 30),
@@ -409,6 +452,7 @@ mod tests {
                 },
                 over: Some(vec![Limit::Memory]),
                 saturated: None,
+                cpu_minute: None,
             }),
             "its free memory in bytes, its pressure, what it would start, and \
              the limits it is past that this build knows"
@@ -438,10 +482,12 @@ mod tests {
 
     const FELT_AT: &str = "2026-11-17T23:50:00Z";
 
-    /// A pressure file as Linux writes it, `some` at `avg10`.
+    /// A pressure file as Linux writes it, `some` at `avg10` and its minute
+    /// at half that, so each file of a kernel says a minute of its own.
     fn psi(avg10: f64) -> String {
+        let avg60 = avg10 / 2.0;
         format!(
-            "some avg10={avg10:.2} avg60=1.00 avg300=0.50 total=123456\n\
+            "some avg10={avg10:.2} avg60={avg60:.2} avg300=0.50 total=123456\n\
              full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
         )
     }
@@ -475,6 +521,11 @@ mod tests {
             "a session carried is no build"
         );
         assert_eq!(room.saturated, None, "saturation is placement's to judge");
+        assert_eq!(
+            room.cpu_minute,
+            Some(43.0),
+            "and its minute is the kernel's, of its processors alone"
+        );
     }
 
     #[test]
@@ -622,6 +673,16 @@ mod tests {
             None,
             "no kernel's files at all, as on a Mac"
         );
+        assert_eq!(
+            cpu_minute(Path::new("/nowhere/proc")),
+            None,
+            "nor its minute"
+        );
+        assert_eq!(
+            stalled_over("some avg10=1.00 avg60=nan\n", "avg60="),
+            None,
+            "a minute that is no number is none"
+        );
     }
 
     #[test]
@@ -634,6 +695,11 @@ mod tests {
         fs::write(procs.path().join("meminfo"), MEMINFO).expect("written");
         let room = felt(procs.path(), FELT_AT).expect("room felt");
         assert_eq!(room.over, Some(vec![Limit::Cpu]));
+        assert_eq!(
+            cpu_minute(procs.path()),
+            Some(43.0),
+            "the minute is read from the kernel's own file of its processors"
+        );
         fs::remove_file(procs.path().join("pressure").join("io")).expect("removed");
         assert_eq!(
             felt(procs.path(), FELT_AT),

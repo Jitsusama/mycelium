@@ -331,15 +331,25 @@ impl Asks {
 
     /// Asks `machine` to end the session held there as `held` for good,
     /// for `by`, as this machine's node judged who asks, through the link
-    /// reaching it, answering how it ended. An end gives the session a
-    /// grace to save what it holds, so it is waited on for as long as the
-    /// link stands.
+    /// reaching it, answering how it ended. An end gives the session
+    /// [`crate::hold::end::GRACE`] to save what it holds before it is
+    /// killed, so it is waited on that long past the `ANSWERED_WITHIN`
+    /// a run or a steer has, and no longer: a machine that says nothing by then
+    /// may still end it, but the person isn't kept waiting on it.
     pub async fn end(&self, machine: &str, held: &str, by: Asker) -> Reply {
         let asked = Asked::End {
             held: held.to_owned(),
             by,
         };
-        self.send(machine, asked, None).await?
+        let within = crate::hold::end::GRACE + ANSWERED_WITHIN;
+        match self.send(machine, asked, Some(within)).await {
+            Ok(reply) => reply,
+            // Once sent, the end may still be under way there.
+            Err(Unsent { why, sent: true }) => Err(format!(
+                "{why}; it went to the link, so it may still end there"
+            )),
+            Err(unsent) => Err(unsent.into()),
+        }
     }
 
     /// Sends `asked` to `machine` through the link reaching it, and waits
@@ -720,6 +730,31 @@ mod tests {
             ],
             "a start relayed to kestrel is kestrel's or none, so no other machine's \
              session is booked on its word"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_end_waits_out_the_holds_grace_and_then_says_it_may_still_end() {
+        let asks = Asks::default();
+        let there: There = Arc::new(|_: &str, words: &[String]| words.to_vec());
+        let (mut asked, _reaching) = asks.reach("kestrel", there);
+        let asked_at = tokio::time::Instant::now();
+        let (ended, kept) = tokio::join!(asks.end("kestrel", "h-1", Asker::Person), async {
+            // Kestrel takes the end and says nothing, as one still saving.
+            asked.recv().await.expect("kestrel is asked")
+        });
+        let waited = asked_at.elapsed();
+        drop(kept);
+        let within = crate::hold::end::GRACE + ANSWERED_WITHIN;
+        assert!(
+            waited >= within && waited < within + Duration::from_secs(1),
+            "an end is waited on past the grace its session has to save, and no longer: \
+             {waited:?}"
+        );
+        let why = ended.expect_err("a silent machine's end isn't said to have ended");
+        assert!(
+            why.ends_with("; it went to the link, so it may still end there"),
+            "the person is told it may still end, not that it failed: {why}"
         );
     }
 }

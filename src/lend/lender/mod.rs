@@ -142,8 +142,8 @@ struct Budget {
     #[serde(default)]
     prices: BTreeMap<String, Price>,
     /// The budget in spend-watch whose money a model's requests spend,
-    /// refused while spend-watch is silent or says it is past an
-    /// allowance.
+    /// refused while spend-watch is silent, says it never declared it,
+    /// or says it is past an allowance.
     #[serde(default)]
     spend_watch: Option<String>,
 }
