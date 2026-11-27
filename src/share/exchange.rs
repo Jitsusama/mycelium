@@ -1124,7 +1124,8 @@ impl Exchange {
     /// the key of each file that changed. Held anew, not taken from the
     /// look, so nothing kept since is lost, and shaped from what is held,
     /// so a holder between them that moved its folders or set its record
-    /// aside has its ledger scanned as it stands now.
+    /// aside has its ledger scanned as it stands now. None where the
+    /// quest was stopped since the look, so it is neither shared nor held.
     fn scan_held(
         ledgers: &Ledgers,
         id: &str,
@@ -1132,13 +1133,13 @@ impl Exchange {
         machine: &str,
         scans: bool,
         walk: &BTreeSet<String>,
-    ) -> io::Result<(Arc<Ledger>, Vec<String>)> {
+    ) -> io::Result<Option<(Arc<Ledger>, Vec<String>)>> {
         let mut held = ledgers.hold(id)?;
         // Stopped since the look, as another link may stop it: with the
-        // ledger held, that stands, and nothing is kept that would share
-        // the quest again.
+        // ledger held, that stands, and nothing is kept or said that would
+        // share the quest again.
         if !ledgers.shares(id) {
-            return Ok((Arc::new(held.ledger), Vec::new()));
+            return Ok(None);
         }
         let quest = shape(&held.ledger);
         let scan = if scans {
@@ -1157,7 +1158,7 @@ impl Exchange {
         if scan.is_new || clones_changed || dropped {
             held.keep()?;
         }
-        Ok((Arc::new(held.ledger), scan.changed))
+        Ok(Some((Arc::new(held.ledger), scan.changed)))
     }
 
     /// Looks at every shared quest as [`Self::look`] does, asking for no
@@ -1205,9 +1206,6 @@ impl Exchange {
             let anew = !self.told.contains_key(&id)
                 || reopened
                 || self.whole.contains(&id) == carried.readme_alone;
-            if !carried.readme_alone {
-                whole.insert(id.clone());
-            }
             let (walk, record) = self.watch.to_look_at(&id, &looked.scratch);
             let record = record || anew;
             // A record waiting to move aside is none of the shared quest's,
@@ -1218,15 +1216,23 @@ impl Exchange {
             let scans = record || !walk.is_empty();
             let found = quest.clones()?;
             let writes = scans || clones_from(&looked, &walk, &found) != looked.clones;
-            let (ledger, scanned) = if writes {
+            let held = if writes {
                 let shape = |ledger: &Ledger| {
                     let quest = self.quest(&id, ledger).walking(&walk);
                     quest.record_waits(ledger.aside)
                 };
                 Self::scan_held(&ledgers, &id, shape, &self.machine, scans, &walk)?
             } else {
-                (looked, Vec::new())
+                Some((looked, Vec::new()))
             };
+            // Stopped since the look, so it is left out as a quest stopped
+            // before it would be.
+            let Some((ledger, scanned)) = held else {
+                continue;
+            };
+            if !carried.readme_alone {
+                whole.insert(id.clone());
+            }
             let mut changed: BTreeSet<String> = scanned.into_iter().collect();
             changed.extend(self.unsaid.remove(&id).unwrap_or_default());
             self.above_again |= changed.contains(README);
@@ -3952,16 +3958,15 @@ mod tests {
         let ledgers = kestrel.places.ledgers();
         ledgers.stop(QUEST).expect("stopped");
         let shape = |ledger: &Ledger| near.quest(QUEST, ledger);
-        let (ledger, changed) =
-            Exchange::scan_held(&ledgers, QUEST, shape, "kestrel", true, &BTreeSet::new())
-                .expect("scanned");
+        let held = Exchange::scan_held(&ledgers, QUEST, shape, "kestrel", true, &BTreeSet::new())
+            .expect("scanned");
         assert!(
             !ledgers.shares(QUEST),
             "a quest stopped meanwhile stays stopped"
         );
         assert!(
-            changed.is_empty() && ledger.files.is_empty(),
-            "and nothing of it is said"
+            held.is_none(),
+            "and the look is told so, so it names the quest in no share or hold"
         );
     }
 
