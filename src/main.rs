@@ -3307,6 +3307,7 @@ fn run_there(socket: &Path, asked: Running) -> io::Result<ExitCode> {
         // The node judges who asks, and where from.
         by: None,
         from: None,
+        asked_by: None,
     };
     let mut client = Client::connect(socket)?;
     match client.ask(&Request::Run(run))? {
