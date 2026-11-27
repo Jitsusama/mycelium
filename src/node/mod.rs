@@ -5826,10 +5826,12 @@ impl<S: Store> Shared<S> {
         // is any asker, since its sessions ask on the worker socket and
         // only the node's own account reaches this one, as the link's
         // end does; where they run as that account they may signal any
-        // hold themselves, so taking their ask gains them nothing. Where a person
-        // works, the link's end is judged the person's and books no start
-        // as relayed, so only the node's own process is taken.
+        // hold themselves, so taking their ask gains them nothing. Where a
+        // person works, the node's own process and the person's login are
+        // taken, and a start one of them relayed is never booked as an
+        // agent's, so none of its ends is found below.
         if !(self.processes.is_unattended() || asker::relays(self.client, by)) {
+            eprintln!("{from:?} asked to end {held:?} for {cell:?}, refused: asked by {by}");
             return Err(format!(
                 "{} takes a starter's end only where no person works, as from a link's end, \
                  and a person works here, so this asker, judged {by}, isn't taken",
@@ -5851,7 +5853,10 @@ impl<S: Store> Shared<S> {
             tokio::task::spawn_blocking(move || hold::end::end(&folder, &id, hold::end::GRACE))
                 .await
                 .map_err(|error| format!("its end stopped: {error}"))?
-                .map_err(|error| format!("{held} didn't end: {error}"))?;
+                .map_err(|error| {
+                    eprintln!("{from:?} asked to end {held:?} for {cell:?}, failed: {error}");
+                    format!("{held} didn't end: {error}")
+                })?;
         eprintln!("ended {held:?}, held here, for {cell:?}, whose start {from:?} relayed");
         Ok(Response::Ended {
             machine: self.machine.clone(),

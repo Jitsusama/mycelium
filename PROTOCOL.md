@@ -4465,8 +4465,11 @@ starts names as having asked a start that landed on another machine,
 proved to be that cell, ends it there as its starter: the link sends
 it as such, and that machine's node ends it only where its own book
 took that start as an agent's relayed from this machine, logging the
-hold, the cell, the machine and when. A machine where the person
-works books no start relayed to it so, and refuses every such end.
+hold, the cell and the machine, the log stamping when. A machine
+where the person works takes such an end only from its node's own
+process, so it refuses those a link's end asks there. The end goes
+only over a link whose far key proved it, as one this machine dials
+to that machine by ssh is, never over one that machine dialled.
 Anyone else is refused, saying why. An id held here is ended here;
 one held on more than one other machine is refused. Another machine's hold is known by the presence
 of the session running in it, or, where none does, by the node's
