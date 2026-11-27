@@ -1912,10 +1912,13 @@ at once waited on memory, machine-wide, in percent (`full avg60` of
 `/proc/pressure/memory`), left out as `cpu_minute` is, and its
 `io_full_minute` the same of its disks (`full avg60` of
 `/proc/pressure/io`), left out alike; where its `kept_lively` names
-`io_full_from`, control groups as paths below `/sys/fs/cgroup`, it is
-the worst of their `io.pressure` instead, left out where none says
-one, since machine-wide a task held back by its own cap, as a capped
-survey of the disks, counts as waiting on them. The room is
+`io_full_from`, control groups as paths below `/sys/fs/cgroup`
+(`agents.slice`, or `/agents.slice` as the kernel prints it), it is
+the worst of their `io.pressure` instead, since machine-wide a task
+held back by its own cap, as a capped survey of the disks, counts as
+waiting on them; where none of them says one it is the machine's,
+said on its node's log, so a misspelt group holds it to the stricter
+minute rather than to none. The room is
 `null` where
 no harness keeps a queue, or where the queue's record is of another
 shape or unwritten for two minutes. A machine keeps no reserve of
@@ -2185,9 +2188,10 @@ with room before it. Work tolerating `kept-lively` ranks it as any
 machine. A ceiling in another shape spoils only itself, and a node
 older than the field ranks it as any machine. A `memory_full` or
 `io_full` not a whole percent spoils only itself, holding the machine
-to the rest of its ceiling; so does a node placing work that is older
-than the part, so in a realm of mixed builds each part holds only for
-work begun on a node that reads it. Within a tier, the most
+to the rest of its ceiling, and is said on its node's log; so does a
+node older than the part, so in a realm of mixed builds each part
+holds only where both the node placing the work and the machine's own
+node read it. Within a tier, the most
 preferences met goes first,
 then the most headroom, then by name; of the first and each as good but
 for headroom within 0.05 of it (`NEAR_BEST`), one is chosen at random,
