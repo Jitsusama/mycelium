@@ -2040,9 +2040,15 @@ mod tests {
                 .any(|line| line["choice"] == "carry")
         };
         assert!(carried(Vec::new()), "with nothing seeded, s1 is carried");
+        let deciding = first_carry_ago();
         assert!(
-            !carried(vec![moved("s0", within_cooldown())]),
-            "a carry its lines say a minute short of the cooldown ago holds it"
+            !carried(vec![moved("s0", deciding + within_cooldown())]),
+            "a carry its lines say a minute short of the cooldown before the look that \
+             would carry holds it"
+        );
+        assert!(
+            carried(vec![moved("s0", deciding + ease::COOLDOWN.as_mins())]),
+            "and one the whole cooldown before it holds none"
         );
         assert!(
             !carried(vec![moved("s1", 3 * 60)]),
@@ -2217,7 +2223,7 @@ mod tests {
         let kept = |by: &str| {
             [Kept {
                 id: "s0:then".to_owned(),
-                at: ago(within_cooldown()),
+                at: ago(first_carry_ago() + within_cooldown()),
                 line: json!({"by": by, "session": "s0", "from": "skiff", "to": "osprey"}),
             }]
         };
@@ -2351,15 +2357,34 @@ mod tests {
     }
 
     /// How many minutes ago the `each`th of a day's carries was made:
-    /// twenty minutes apart, the latest two hours ago, so a day's fit
-    /// within it and none holds the cooldown.
+    /// the latest two hours ago, or once the cooldown is out if that is
+    /// longer, and the rest spread evenly over the day before it, so a
+    /// day's fit within it and none holds the cooldown.
     fn apart(each: i64) -> i64 {
-        each * 20 + 120
+        let latest = ease::COOLDOWN.as_mins().max(119) + 1;
+        let step = ((ease::DAY.as_mins() - latest) / daily()).max(1);
+        latest + each * step
     }
 
     /// A minute short of the cooldown, in minutes.
     fn within_cooldown() -> i64 {
         ease::COOLDOWN.as_mins() - 1
+    }
+
+    /// How many minutes ago [`looks`] first carries s1 with nothing
+    /// seeded, so a carry seeded by it is in the past of the look it
+    /// holds back, not ahead of it.
+    fn first_carry_ago() -> i64 {
+        let lines = looks(&mut Easing::after(&[], Vec::new()), &[cell("s1")]);
+        let at: Timestamp = lines
+            .iter()
+            .find(|line| line["choice"] == "carry")
+            .expect("a carry with nothing seeded")["at"]
+            .as_str()
+            .expect("a time")
+            .parse()
+            .expect("a time");
+        now().duration_since(at).as_mins()
     }
 
     /// Each line `easing` would keep at skiff, looking each minute from 20
@@ -2526,8 +2551,12 @@ mod tests {
         // One more goes idle each minute until the 30th, listed newest
         // first so one never slept would be the first carried, and who
         // orchestrates comes into doubt once none has gone idle for a few
-        // minutes, within a cooldown.
-        let doubted = 33;
+        // minutes, halfway through the first cooldown begun from then.
+        // The first carry is at the 15th, and one follows each cooldown.
+        let first_carried = 15;
+        let doubted = first_carried
+            + cooldown * ((30 - first_carried + cooldown - 1) / cooldown)
+            + (cooldown + 1) / 2;
         let lines: Vec<Value> = (0..=50)
             .filter_map(|minute: i64| {
                 let at = ago(50 - minute);
@@ -2598,10 +2627,8 @@ mod tests {
             "within the cooldown each sleep says why: {cooling:?}"
         );
         assert!(
-            said_again
-                .iter()
-                .all(|line| line["orchestrators_unknown"] == json!(doubt)),
-            "within the cooldown only a doubt says more than a sleep: {cooling:?}"
+            said_again.is_empty(),
+            "within the first cooldown, with no doubt, each line is a sleep: {cooling:?}"
         );
         let held = cooldown_holding(&lines, &carries, doubt);
         assert_eq!(
