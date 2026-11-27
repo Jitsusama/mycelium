@@ -414,7 +414,9 @@ pub const CONTINUED_MOST: usize = 8;
 pub struct Logs {
     /// Each log found, by the session its name says it keeps: all of
     /// them, where several are named for one session, as a log planted
-    /// under another folder can't be told from its own.
+    /// under another folder can't be told from its own. Each session's
+    /// are in their paths' order, not the order the folders read, so
+    /// what [`Self::disagreeing`] says of them is the same every scan.
     found: BTreeMap<String, Vec<PathBuf>>,
     /// Each folder in it that couldn't be read, and why, passed over.
     unread: Vec<String>,
@@ -478,6 +480,9 @@ impl Logs {
                 }
             }
         }
+        for found in scanned.found.values_mut() {
+            found.sort();
+        }
         Ok(scanned)
     }
 
@@ -527,7 +532,9 @@ impl Logs {
 
     /// The sentence naming each log of `session`, by its path, where they
     /// don't all say what it continues ([`Self::follows`]), so the copy
-    /// that isn't its own can be found; none where they agree.
+    /// that isn't its own can be found; none where they agree. It says
+    /// nothing of a claim, as it's said wherever a lapse's walk meets
+    /// the session, a claim held behind it ([`Lapsed::Held`]) or none.
     #[must_use]
     pub fn disagreeing(&self, session: &str) -> Option<String> {
         self.follows(session).err()?;
@@ -537,8 +544,8 @@ impl Logs {
             .map(|log| shown(&log.display().to_string()))
             .collect();
         Some(format!(
-            "the {} logs named for {} don't all say what it continues, so a claim it may \
-             lead to is kept until the one that isn't its own is moved: {}",
+            "the {} logs named for {} don't all say what it continues, so it can't be told \
+             until the one that isn't its own is moved: {}",
             found.len(),
             shown(session),
             paths.join(", ")
@@ -1752,6 +1759,83 @@ mod tests {
             found.disagreeing("s-steward"),
             None,
             "a session with no logs here has none that disagree"
+        );
+    }
+
+    #[test]
+    fn logs_that_disagree_say_nothing_of_a_claim_none_may_be_behind() {
+        let logs = tempfile::tempdir().expect("a temporary folder");
+        // A session that claimed nothing, whose logs name two that
+        // claimed nothing either, so no claim is kept for its doubt.
+        for (folder, continues) in [
+            ("--home-kestrel--", "s-elsewhere"),
+            ("--home-wren--", "s-older"),
+        ] {
+            let folder = logs.path().join(folder);
+            fs::create_dir_all(&folder).expect("made");
+            fs::write(
+                folder.join("2026-11-23T11-31-00-000Z_s-stray.jsonl"),
+                format!("{{\"id\":\"s-stray\",\"parentSession\":\"{continues}\"}}\n"),
+            )
+            .expect("written");
+        }
+        let found = Logs::scan(logs.path()).expect("scanned");
+        let mut record = nested();
+        let said = record.lapse(&standing(&[("s-stray", None)]), || {
+            Some(|session: &str| found.follows(session))
+        });
+        assert!(
+            !said
+                .iter()
+                .any(|lapsed| matches!(lapsed, Lapsed::Held { .. })),
+            "no claim is held for its doubt: {said:?}"
+        );
+        let why = found.disagreeing("s-stray").expect("its logs disagree");
+        assert!(
+            why.starts_with("the 2 logs named for s-stray don't all say what it continues"),
+            "{why}"
+        );
+        assert!(
+            !why.contains("claim") && !why.contains("kept"),
+            "a node says this of every doubtful session a lapse's walk meets, held claim or \
+             none behind it, so it says nothing of one: {why}"
+        );
+    }
+
+    #[test]
+    fn logs_that_disagree_are_named_in_one_order_however_the_folders_read() {
+        let logs = tempfile::tempdir().expect("a temporary folder");
+        let log = "2026-11-23T11-31-00-000Z_s-weigh.jsonl";
+        // Eight copies, made out of their order, so a folder read in the
+        // order its entries were made, or the reverse, lists them out of
+        // theirs, as one read in a hashed order does all but one time in
+        // 40,320.
+        for at in [5, 2, 7, 0, 3, 6, 1, 4] {
+            let folder = logs.path().join(format!("--home-kestrel-{at}--"));
+            fs::create_dir_all(&folder).expect("made");
+            fs::write(
+                folder.join(log),
+                format!("{{\"id\":\"s-weigh\",\"parentSession\":\"s-elder-{at}\"}}\n"),
+            )
+            .expect("written");
+        }
+        let paths: Vec<String> = (0..8)
+            .map(|at| {
+                let folder = logs.path().join(format!("--home-kestrel-{at}--"));
+                folder.join(log).display().to_string()
+            })
+            .collect();
+        assert_eq!(
+            Logs::scan(logs.path())
+                .expect("scanned")
+                .disagreeing("s-weigh"),
+            Some(format!(
+                "the 8 logs named for s-weigh don't all say what it continues, so it can't \
+                 be told until the one that isn't its own is moved: {}",
+                paths.join(", ")
+            )),
+            "in their paths' order, so the sentence a node says once is the same at every \
+             lapse's scan, never said again as a folder reads in another order"
         );
     }
 
