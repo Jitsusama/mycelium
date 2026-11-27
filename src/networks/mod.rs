@@ -29,7 +29,6 @@ mod made;
 mod shown;
 mod subjects;
 
-use made::slug;
 pub use made::{FORMED, MOST_SUBJECTS, read, subjects};
 pub use shown::{cell, cells, network, overview};
 pub use subjects::Subjects;
@@ -353,8 +352,7 @@ pub struct Cell {
     /// The repository a session works in, where it says.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
-    /// The subjects a session says it works on, as its presence declares
-    /// them: the first [`made::MOST_SUBJECTS`] that are short plain text.
+    /// The subjects its presence declares, as [`made::subjects`] keeps them.
     #[serde(skip_serializing_if = "Subjects::is_empty")]
     pub subjects: Subjects,
     /// What a session has spent today, as its presence says it.
