@@ -434,9 +434,10 @@ pub fn addresses(said: &Value) -> Vec<String> {
 /// The joins `said` lists, as a presence's `serves` or `relies` does,
 /// passing over each entry that names no cell by address, says no need
 /// but blanks, or dates it at no ISO time, and keeping at most
-/// [`LISTED_MOST`]. Each need is kept as [`one_line`] says it, trimmed,
-/// and each time as the node reads it, so two presences dating a join
-/// alike say it alike.
+/// [`LISTED_MOST`]. Each need is kept as [`one_line`] says it, trimmed
+/// and cut, then cleaned again, as a share's `for` is, so a cut leaves
+/// no joiner joining nothing and no space at its end; and each time as
+/// the node reads it, so two presences dating a join alike say it alike.
 #[must_use]
 pub fn joins(said: &Value) -> Vec<Join> {
     said.as_array()
@@ -444,12 +445,17 @@ pub fn joins(said: &Value) -> Vec<Join> {
         .flatten()
         .filter_map(|join| {
             let cell = join["cell"].as_str().filter(|cell| is_address(cell))?;
-            let need = one_line(join["need"].as_str()?);
+            let cut: String = one_line(join["need"].as_str()?)
+                .trim()
+                .chars()
+                .take(LONGEST_PURPOSE)
+                .collect();
+            let need = one_line(&cut);
             let need = Some(need.trim()).filter(|need| !need.is_empty())?;
             let since = join["since"].as_str()?.parse::<jiff::Timestamp>().ok()?;
             Some(Join {
                 cell: cell.to_owned(),
-                need: need.chars().take(LONGEST_PURPOSE).collect(),
+                need: need.to_owned(),
                 since: since.to_string(),
             })
         })
@@ -2438,6 +2444,24 @@ mod tests {
             .map(|n| json!(format!("CELL{n}")))
             .collect();
         assert_eq!(addresses(&Value::Array(many)).len(), LISTED_MOST);
+    }
+
+    #[test]
+    fn a_need_cut_beside_a_joiner_or_a_space_ends_on_neither() {
+        let letters = "\u{915}".repeat(LONGEST_PURPOSE - 1);
+        let joins = joins(&json!([
+            {"cell": "OSPREY", "need": format!("{letters}\u{200D}\u{915}"), "since": "2026-11-16T09:00:00Z"},
+            {"cell": "TERNSS", "need": format!("{} y", "x".repeat(LONGEST_PURPOSE - 1)), "since": "2026-11-16T09:00:00Z"},
+        ]));
+        assert_eq!(
+            joins[0].need, letters,
+            "a joiner the cut parts from its letter joins nothing, so it goes"
+        );
+        assert_eq!(
+            joins[1].need,
+            "x".repeat(LONGEST_PURPOSE - 1),
+            "a space the cut leaves at the end goes"
+        );
     }
 
     #[test]
