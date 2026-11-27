@@ -3832,9 +3832,10 @@ fn keep_receptors(
 enum Counts {
     /// None: an ask of where, which may lead to a start.
     Never,
-    /// None, and it takes no session's room: a run, which ends when its
-    /// asker stops and starts no session, so a machine holding the most
-    /// sessions it holds still takes it.
+    /// None, and it takes no session's room: a run, which no hold keeps
+    /// and which ends when its asker stops waiting, so a machine holding
+    /// the most sessions it holds still takes it. Its load still weighs
+    /// it, as it weighs every placement.
     Run,
     /// Every one: a start this node makes.
     Always,
@@ -25513,6 +25514,41 @@ esac
             Some("wren"),
             "but a run, which starts no session, still reaches it"
         );
+    }
+
+    // A machine holding all the sessions it says it holds still runs what
+    // is asked of it, as a run through the node finds, so a filled room
+    // still builds and tests.
+    #[tokio::test]
+    async fn a_run_asked_of_the_node_runs_on_a_machine_holding_all_it_holds() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(socket.parent().expect("its folder"))
+            .expect("made");
+        let mut said = fenced("skiff", &["remote"]).declared.expect("it declares");
+        said.sessions_at_most = Some(0);
+        fs::write(
+            socket.with_file_name("declared.json"),
+            serde_json::to_vec(&said).expect("it is JSON"),
+        )
+        .expect("this machine's declaration is written");
+        let store = Memory::default();
+        let (stop, node) = alone(&store, "skiff", &socket);
+        asks_as_person(&socket);
+        let came = run_through(socket.clone(), run_of("skiff", "echo ran"))
+            .await
+            .expect("a run reaches a machine holding all it holds");
+        assert_eq!(
+            (came.out.as_slice(), came.ended),
+            (b"ran\n".as_slice(), Some(Ran::Exited(0)))
+        );
+        drop(stop);
+        node.await
+            .expect("the node runs to its end")
+            .expect("it stops cleanly");
     }
 
     #[tokio::test]
