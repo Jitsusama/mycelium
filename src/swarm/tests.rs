@@ -978,9 +978,9 @@ fn width_is_counted_in_the_cells_a_terminal_draws() {
             3,
             "a one-cell pictograph joined to an emoji takes its own cell beside the emoji's two",
         ),
-        // Joined after a letter, a skin tone starts no cluster, being no
-        // letter, so it is measured with the letter, and Unicode's widths
-        // give it its two beside the letter's one, as a terminal draws.
+        // Joined after a letter, a skin tone is given its two beside the
+        // letter's one by Unicode's widths, as a terminal draws, whether
+        // it is measured with the letter or apart.
         (
             "a\u{200D}\u{1F3FD}",
             3,

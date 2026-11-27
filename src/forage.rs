@@ -466,12 +466,15 @@ pub fn joins(said: &Value) -> Vec<Join> {
 }
 
 /// `cut` without what a cut can leave at its end holding nothing: what
-/// its text counts `blank`, a joiner, or a Khmer coeng (U+17D2) with no
-/// letter after it to subscript, as the swarm's `within` leaves none
-/// either. All are trimmed together, as any could be left last once
-/// another after it goes.
+/// its text counts `blank`, a joiner or non-joiner, or a Khmer coeng
+/// (U+17D2) with no letter after it to subscript, as the swarm's `within`
+/// leaves none either. All are trimmed together, as any could be left
+/// last once another after it goes: a coeng keeps a joiner or a space
+/// before it, which its going leaves last.
 pub(crate) fn cut_ended(cut: &str, blank: fn(char) -> bool) -> &str {
-    cut.trim_end_matches(|each: char| blank(each) || matches!(each, '\u{200D}' | '\u{17D2}'))
+    cut.trim_end_matches(|each: char| {
+        blank(each) || matches!(each, '\u{200C}' | '\u{200D}' | '\u{17D2}')
+    })
 }
 
 /// The most characters a cell's address holds.
@@ -2473,10 +2476,15 @@ mod tests {
     fn a_need_cut_beside_a_joiner_a_space_or_a_coeng_ends_on_none() {
         let letters = "\u{915}".repeat(LONGEST_PURPOSE - 1);
         let khmer = "\u{1780}".repeat(LONGEST_PURPOSE - 1);
+        let shorter = "\u{1780}".repeat(LONGEST_PURPOSE - 2);
         let joins = joins(&json!([
             {"cell": "OSPREY", "need": format!("{letters}\u{200D}\u{915}"), "since": "2026-11-16T09:00:00Z"},
             {"cell": "TERNSS", "need": format!("{} y", "x".repeat(LONGEST_PURPOSE - 1)), "since": "2026-11-16T09:00:00Z"},
             {"cell": "HERONS", "need": format!("{khmer}\u{17D2}\u{1780}"), "since": "2026-11-16T09:00:00Z"},
+            {"cell": "EGRETS", "need": format!("{shorter}\u{200C}\u{17D2}\u{1780}"), "since": "2026-11-16T09:00:00Z"},
+            {"cell": "WRENSS", "need": format!("{shorter}\u{200D}\u{17D2}\u{1780}"), "since": "2026-11-16T09:00:00Z"},
+            {"cell": "SKIFFS", "need": format!("{shorter} \u{17D2}\u{1780}"), "since": "2026-11-16T09:00:00Z"},
+            {"cell": "KESTRL", "need": "\u{1780}\u{17D2}", "since": "2026-11-16T09:00:00Z"},
         ]));
         assert_eq!(
             joins[0].need, letters,
@@ -2490,6 +2498,16 @@ mod tests {
         assert_eq!(
             joins[2].need, khmer,
             "a Khmer coeng the cut parts from the letter it subscripts goes"
+        );
+        for (at, what) in [(3, "a non-joiner"), (4, "a joiner"), (5, "a space")] {
+            assert_eq!(
+                joins[at].need, shorter,
+                "{what} a cut coeng leaves last goes with it"
+            );
+        }
+        assert_eq!(
+            joins[6].need, "\u{1780}",
+            "a need ends in no lone coeng, cut or not"
         );
     }
 
@@ -3739,8 +3757,8 @@ mod tests {
             "a joiner before a blood type was capped"
         );
         assert!(
-            crate::swarm::drawn_width(&blood) >= 8,
-            "a chain of blood types counted fewer cells than its letters"
+            crate::swarm::drawn_width(&blood) >= 16,
+            "a chain of blood types counted fewer than the two cells each draws"
         );
     }
 

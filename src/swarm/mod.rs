@@ -226,10 +226,10 @@ pub(crate) fn unmarked(text: &str) -> String {
         .to_owned()
 }
 
-/// `text` cut short and cleaned again as [`unmarked`] cleans it, so it
-/// ends in no space, and in no joiner or Khmer coeng the cut parted from
-/// what it joins.
-pub(crate) fn unmarked_after_a_cut(text: &str) -> String {
+/// `text` cleaned as [`unmarked`] cleans it and ended as a cut is, so,
+/// cut short or not, it ends in no space, and in no joiner or Khmer coeng
+/// left joining nothing.
+pub(crate) fn unmarked_and_ended(text: &str) -> String {
     crate::forage::cut_ended(&unmarked(text), |each| {
         each.is_whitespace() || each == BRAILLE_BLANK
     })

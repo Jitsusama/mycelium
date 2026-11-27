@@ -94,10 +94,10 @@ fn shares_of(presence: &Value) -> Vec<Share> {
         share.folder = drawable(&share.folder);
         if let Some((cut, _)) = share.about.char_indices().nth(SHARE_FOR_MOST) {
             share.about.truncate(cut);
-            // Cleaned again, so a cut falling after a space ends in none,
-            // and one after a joiner or coeng leaves none joining nothing.
-            share.about = swarm::unmarked_after_a_cut(&share.about);
         }
+        // Ended again, cut or not, so it ends in no space, and in no joiner
+        // or coeng joining nothing, as a need does.
+        share.about = swarm::unmarked_and_ended(&share.about);
         // Cleaning and a cut keep what was read, so a long `for` held in
         // every cell would still cost its whole length without this.
         share.about.shrink_to_fit();
