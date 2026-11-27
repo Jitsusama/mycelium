@@ -1451,4 +1451,23 @@ mod tests {
             "a signal, where it said nothing at all"
         );
     }
+
+    #[test]
+    fn pi_carry_failing_silently_quotes_its_last_line_escaped_and_cut() {
+        let last = format!("\u{1b}[2J{}", "x".repeat(4000));
+        let why = failed_why(last.as_bytes(), b"", ExitStatus::from_raw(1 << 8));
+        assert!(
+            !why.contains('\u{1b}'),
+            "what it printed can't pass as the node's own words: {why:?}"
+        );
+        assert!(
+            why.starts_with("it exited 1, saying nothing of why; its last line was \\u{1b}[2J"),
+            "escaped, not dropped: {why:?}"
+        );
+        assert!(
+            why.ends_with("...") && why.chars().count() < 400,
+            "and cut, so one line can't swamp the node's log: {} characters",
+            why.chars().count()
+        );
+    }
 }

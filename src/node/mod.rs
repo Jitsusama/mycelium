@@ -573,16 +573,27 @@ fn continuing(
 /// once each, through `unreadable`, as it's held again at every lapse
 /// until the logs can tell.
 fn said_lapsed(lapsed: &[chain::Lapsed], kept: bool, unreadable: &through::Unreadable) {
-    for lapsed in lapsed {
-        let line = lapsed.to_string();
-        let said = match lapsed {
-            chain::Lapsed::Held { .. } => unreadable.first(&line),
-            chain::Lapsed::Handed { .. } | chain::Lapsed::Forgotten { .. } => kept,
-        };
-        if said {
-            eprintln!("{line}");
-        }
+    for line in lapsed_lines(lapsed, kept, unreadable) {
+        eprintln!("{line}");
     }
+}
+
+/// The lines [`said_lapsed`] says of `lapsed`, in order.
+fn lapsed_lines(
+    lapsed: &[chain::Lapsed],
+    kept: bool,
+    unreadable: &through::Unreadable,
+) -> Vec<String> {
+    lapsed
+        .iter()
+        .map(ToString::to_string)
+        .zip(lapsed)
+        .filter(|(line, lapsed)| match lapsed {
+            chain::Lapsed::Held { .. } => unreadable.first(line),
+            chain::Lapsed::Handed { .. } | chain::Lapsed::Forgotten { .. } => kept,
+        })
+        .map(|(line, _)| line)
+        .collect()
 }
 
 /// Whether `session` stands where a carry reaches it: running, or parked
@@ -11316,6 +11327,45 @@ mod tests {
             fs::read_dir(&logs).expect_err("not a folder")
         );
         assert!(!unreadable.first(&why), "it was said: {why}");
+    }
+
+    #[test]
+    fn a_held_claim_is_said_once_and_a_passed_one_only_where_its_record_is_kept() {
+        let lapsed = [
+            chain::Lapsed::Held {
+                claimer: "s-steward".to_owned(),
+                heads: "QEST-20261007-WCJQSG".to_owned(),
+                doubting: "s-other".to_owned(),
+            },
+            chain::Lapsed::Handed {
+                claimer: "s-weigh".to_owned(),
+                heir: "s-weigh-2".to_owned(),
+                heads: "QEST-20261111-OSPHT4".to_owned(),
+            },
+            chain::Lapsed::Forgotten {
+                claimer: "s-elder".to_owned(),
+                heads: "QEST-20261122-1OGSE7".to_owned(),
+                why: "no standing session continues it".to_owned(),
+            },
+        ];
+        let unreadable = through::Unreadable::default();
+        let all: Vec<String> = lapsed.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            lapsed_lines(&lapsed, true, &unreadable),
+            all,
+            "each, where the record keeping the change was kept"
+        );
+        assert_eq!(
+            lapsed_lines(&lapsed, true, &unreadable),
+            all[1..],
+            "a held claim, held again at every lapse, is said only the first time"
+        );
+        assert_eq!(
+            lapsed_lines(&lapsed, false, &through::Unreadable::default()),
+            all[..1],
+            "where the record was only read, a claim passed on or let go of isn't said, \
+             as nothing changed"
+        );
     }
 
     #[test]

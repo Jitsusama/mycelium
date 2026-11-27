@@ -239,6 +239,7 @@ impl Orchestrations {
                 lapsed.push(Lapsed::Held {
                     claimer: claimer.clone(),
                     heads: claim.heads.clone(),
+                    doubting: String::new(),
                 });
                 continue;
             }
@@ -519,6 +520,15 @@ impl Logs {
         continued
     }
 
+    /// The sentence naming each log of `session`, by its path, where they
+    /// don't all say what it continues ([`Self::follows`]), so the copy
+    /// that isn't its own can be found; none where they agree.
+    #[must_use]
+    pub fn disagreeing(&self, session: &str) -> Option<String> {
+        let _ = session;
+        None
+    }
+
     /// What the log at `log` continues, as its first line names it, where
     /// that line names `session` as its own.
     fn header_continues(log: &Path, session: &str) -> Option<String> {
@@ -565,6 +575,10 @@ pub enum Lapsed {
         claimer: String,
         /// The quest it heads.
         heads: String,
+        /// The session whose logs don't all say what it continues, the
+        /// first such a walk back to the claim met, so the copies can be
+        /// found ([`Logs::disagreeing`]).
+        doubting: String,
     },
     /// Let go of, for the reason `why`.
     Forgotten {
@@ -591,7 +605,7 @@ impl std::fmt::Display for Lapsed {
                 shown(claimer),
                 shown(heir)
             ),
-            Self::Held { claimer, heads } => write!(
+            Self::Held { claimer, heads, .. } => write!(
                 out,
                 "the claim to head {} is kept for {}, which no longer stands, as logs that may \
                  continue it disagree on what they continue",
@@ -1214,18 +1228,32 @@ mod tests {
                 Lapsed::Held {
                     claimer: "s-steward".to_owned(),
                     heads: "QEST-20261007-WCJQSG".to_owned(),
+                    doubting: "s-other".to_owned(),
                 },
                 Lapsed::Held {
                     claimer: "s-weigh".to_owned(),
                     heads: "QEST-20261111-OSPHT4".to_owned(),
+                    doubting: "s-other".to_owned(),
                 },
             ],
-            "and each is said to be held, so a claim kept with no end names its cause"
+            "and each is said to be held, naming whose logs can't be told, so a claim kept \
+             with no end names its cause"
         );
         assert_eq!(
             said[0].to_string(),
             "the claim to head QEST-20261007-WCJQSG is kept for s-steward, which no longer \
-             stands, as logs that may continue it disagree on what they continue"
+             stands, as the logs named for s-other, which may continue it, don't all say what \
+             it continues (one that can't be read says none)"
+        );
+        let planted = Lapsed::Held {
+            claimer: "s-steward".to_owned(),
+            heads: "QEST-20261007-WCJQSG\nforged".to_owned(),
+            doubting: "s-other\nforged".to_owned(),
+        }
+        .to_string();
+        assert!(
+            !planted.contains('\n') && planted.matches("\\nforged").count() == 2,
+            "each name the asker or a log chose is escaped, so the line stays one: {planted}"
         );
     }
 
@@ -1338,6 +1366,7 @@ mod tests {
                 Lapsed::Held {
                     claimer: "s-weigh".to_owned(),
                     heads: "QEST-20261111-OSPHT4".to_owned(),
+                    doubting: "s-stray".to_owned(),
                 },
             ],
             "a claim no doubtful log may lead to passes on, though others can't be told"
@@ -1646,6 +1675,25 @@ mod tests {
             found.follows("s-weigh"),
             Err(vec!["s-elder".to_owned()]),
             "one naming none and one naming a session can't be told apart, so what the one names may be continued"
+        );
+        let said = found.disagreeing("s-weigh").unwrap_or_default();
+        for log in [
+            own.join("2026-11-23T11-31-00-000Z_s-weigh.jsonl"),
+            planted.join("2026-11-23T12-00-00-000Z_s-weigh.jsonl"),
+        ] {
+            assert!(
+                said.contains(&log.display().to_string()),
+                "it names each copy, so the stray can be found: {said:?}"
+            );
+        }
+        assert!(
+            said.contains("s-weigh"),
+            "and whose logs they are: {said:?}"
+        );
+        assert_eq!(
+            found.disagreeing("s-steward"),
+            None,
+            "a session with no logs here has none that disagree"
         );
     }
 
