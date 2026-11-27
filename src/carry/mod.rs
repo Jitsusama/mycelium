@@ -2655,9 +2655,9 @@ mod tests {
 
     #[test]
     fn a_session_started_there_that_never_runs_fails_the_carry() {
-        // 27 November: a carry onto a room said done once the files
-        // landed, though pi-carry wasn't there to take the session up,
-        // so its session ran nowhere.
+        // 27 November: a carry onto a room was held there, but its
+        // arrival exited at once, as the room had no pi-carry, so its
+        // session ran nowhere.
         let mut realm = Realm {
             silent: ["s-naps02"].map(str::to_owned).into(),
             ..realm()
