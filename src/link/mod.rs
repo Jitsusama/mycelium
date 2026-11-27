@@ -2180,9 +2180,9 @@ impl<S: Store> End<S> {
             let _ = answering.send((ask, refused));
             return;
         };
-        let (here, from) = (self.here.clone(), self.other.clone());
+        let (named, proven) = ((self.here.clone(), self.other.clone()), self.proven);
         tokio::spawn(async move {
-            let reply = starts::answer(node, here, from, start).await;
+            let reply = starts::answer(node, named, start, proven).await;
             // A link that dropped meanwhile has nobody to answer.
             let _ = answering.send((ask, reply));
         });
@@ -5477,7 +5477,7 @@ mod tests {
         let relayed = async {
             loop {
                 match heard.recv().await {
-                    Some(crate::wire::Request::Relayed { from, start }) => break (from, start),
+                    Some(crate::wire::Request::Relayed { from, start, .. }) => break (from, start),
                     Some(_) => {}
                     None => panic!("its node is asked to start it"),
                 }

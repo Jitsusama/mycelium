@@ -66,6 +66,13 @@ pub enum Request {
         from: String,
         /// What it was asked to start.
         start: Start,
+        /// Whether the link's key proved `from` the machine asking, said
+        /// by the link's end. Only a room's node takes it, where no
+        /// person works and only its own account reaches its socket, as
+        /// the link's end does. Left out when not, so an older node still
+        /// reads the start.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        proven: bool,
     },
     /// Start a session of new work, held in no window, as `mycelium
     /// sprout` says: the node finds its folder as the asker would see it,

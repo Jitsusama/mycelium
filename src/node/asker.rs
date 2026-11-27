@@ -1852,6 +1852,23 @@ pub fn declaring(by: By, declared: Option<DeclaredFence>) -> By {
     }
 }
 
+/// Who asks a start relayed to a room, where its link's end was judged
+/// `by` and the start declares `declared`, where `opens_nothing` says the
+/// room fences its held starts, the link's key proved the node relaying
+/// it, and the room's agent fence opens no forge and no secret. There an
+/// agent's start runs in the fence it declares, never looser than the
+/// agent fence, since a session there holds nothing of the person's a
+/// stranger's text could reach but the room's other sessions; a start
+/// that declares none stays as judged. Anywhere else a declaration only
+/// raises the judgement, as [`declaring`] says.
+#[must_use]
+pub fn relayed_to_a_room(by: By, declared: Option<DeclaredFence>, opens_nothing: bool) -> By {
+    match (by, declared) {
+        (By::Agent(_), Some(declared)) if opens_nothing => By::Agent(declared.kind.into()),
+        _ => declaring(by, declared),
+    }
+}
+
 /// Why [`unclaimed_because`] says an asker is an agent's where the
 /// kernel names no process at it.
 pub const UNNAMED: &str = "the kernel names no process at it";
@@ -4444,5 +4461,46 @@ mod tests {
                 "and the person's starts are judged as they were: {from:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_room_that_opens_nothing_takes_the_fence_a_relayed_start_declares() {
+        let declared = |kind| {
+            Some(DeclaredFence {
+                kind,
+                from: FenceFrom::Spawn,
+            })
+        };
+        let strict = By::Agent(Kind::Strict);
+        assert_eq!(
+            relayed_to_a_room(strict, declared(FenceKind::Fence), true),
+            By::Agent(Kind::Fence),
+            "a room opening nothing takes the agent fence declared"
+        );
+        assert_eq!(
+            relayed_to_a_room(strict, declared(FenceKind::Strict), true),
+            strict,
+            "and strict, declared so"
+        );
+        assert_eq!(
+            relayed_to_a_room(strict, None, true),
+            strict,
+            "a start declaring none stays as judged"
+        );
+        assert_eq!(
+            relayed_to_a_room(strict, declared(FenceKind::Fence), false),
+            strict,
+            "a room that opens a door, or a link no key proved, keeps it strict"
+        );
+        assert_eq!(
+            relayed_to_a_room(By::Agent(Kind::None), declared(FenceKind::Fence), true),
+            By::Agent(Kind::Fence),
+            "never looser than the agent fence"
+        );
+        assert_eq!(
+            relayed_to_a_room(By::Person, declared(FenceKind::Strict), true),
+            By::Person,
+            "and the person's starts are judged as they were"
+        );
     }
 }

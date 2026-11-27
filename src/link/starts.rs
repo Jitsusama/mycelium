@@ -463,11 +463,20 @@ impl Drop for Reaching {
 /// Hands a start the other end, the machine `from`, asks of `here` to
 /// this machine's node at `node`, pinned to this machine, so nothing is
 /// made for it here, and as relayed, since `from`'s node already judged,
-/// counted and booked it.
-pub(super) async fn answer(node: PathBuf, here: String, from: String, mut start: Start) -> Reply {
+/// counted and booked it; `proven` says this end's key proved `from`.
+pub(super) async fn answer(
+    node: PathBuf,
+    (here, from): (String, String),
+    mut start: Start,
+    proven: bool,
+) -> Reply {
     start.work.needs.push(Need::Machine(here));
     start.may_cost = false;
-    let relayed = Request::Relayed { from, start };
+    let relayed = Request::Relayed {
+        from,
+        start,
+        proven,
+    };
     let asked = tokio::task::spawn_blocking(move || Client::connect(&node)?.ask(&relayed)).await;
     match asked {
         Ok(Ok(reply)) => reply,

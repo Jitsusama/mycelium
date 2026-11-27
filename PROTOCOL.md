@@ -281,8 +281,10 @@ same code, each line a JSON value:
    whose write the other end takes none of for three minutes ends too.
 8. `{"Start": {"ask", "start"}}`: start a session held on the other
    end's machine, as a `"Start"` request says it. The other end hands it
-   to its own node's socket as `{"Relayed": {"from", "start"}}`, `from`
-   the machine that asked, with a need for its own machine added.
+   to its own node's socket as `{"Relayed": {"from", "start",
+   "proven"}}`, `from` the machine that asked, with a need for its own
+   machine added, and `proven` true only once its link is proven, left
+   out otherwise.
    That node takes `"Relayed"` as a linked node's only from its own
    process or one it judges the person's, as a link's end is: none in
    an agent's unit, below a pi or a session's claim, or barred or
@@ -295,7 +297,14 @@ same code, each line a JSON value:
    works, an agent's SSH login can't be told from a link's end, so
    every relay but its own process's is taken so, and a machine made
    from a basin still takes the starts placed on it, where its strict
-   fence declares `runs` (The Socket). Elsewhere, a
+   fence declares `runs` (The Socket). An agent's start relayed there
+   starts strict, whatever fence it declares, but for one: where the
+   node fences its held starts and its agent fence declares no forge
+   and no secret, a relay marked `proven` takes the fence it declares,
+   never looser than the agent fence, and the node logs each it so
+   takes, with the machine that relayed it, what it runs, its name and
+   the session it holds. Only the node's own account reaches its
+   socket there, so only a link's end can mark a relay so. Elsewhere, a
    link's end an agent ran is taken so too, as is one whose owner the
    kernel can't tell, but one marked as the person's carry is refused,
    so the person hears the carry failed rather than finding its
