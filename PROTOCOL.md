@@ -1612,7 +1612,7 @@ reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Starts": {"act"}}` | `{"Starts": {"stopped", "newest"}}`, `stop`, `resume` or `list` from the person's own login |
 | `{"Update": {"machine"}}` | `{"Updated": ending}`, as its updater said it |
 | `{"End": {"held"}}` | `{"Ended": {"machine", "held", "ending"}}`, `ending` `gently` or `killed` (A Held Session) |
-| `{"Run": {"work", "folder", "command", "by", "from"}}` | `{"Running": {"machine"}}`, then a `Ran` a line |
+| `{"Run": {"work", "folder", "command", "by", "from", "asked_by"}}` | `{"Running": {"machine"}}`, then a `Ran` a line |
 | `{"Lend": {"budget", "method", "path", "headers", "body"}}` | a `Lent` a line, no reply first (Borrowing a Lend) |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
@@ -2515,21 +2515,23 @@ the person's own login still never runs in a worker home an agent
 wrote. Such a run is placed as an agent's run is: the asking machine
 must declare the agent fence and the room must say it runs commands in
 it, or the run is refused, its refusal saying the person asked it and
-it was sent as an agent's. The asking node's runs journal keeps
-`asked_by` beside its `by`; the room's own journal, and a refusal the
-room itself sends back, read as an agent's, since a run crossing the
-link carries no asker. One machine named twice is still one, and this
-node's own machine stays the person's whatever the file names. Since
-any session may write the file, naming a machine there only ever fences
-the person's runs to it, never loosens them, and never fences them to
-a machine that is no worker and no agent's make booked, as the
-person's own machines aren't. Work that names none of
-the workers may go to it though it costs money, ranked by its room as
-any machine is, so before a machine kept lively while it has room, and
-after one within its ceiling once it is over a limit. The node marks
-each one `"held_for": "agents"` as it places, from its own file, and
-every other as booked, never from what the machine says, and a link
-keeps nothing a machine says of it. A
+it was sent as an agent's; a refusal the room itself sends back reads
+as an agent's. The run says `"asked_by": "Person"`, which only a node
+says: one that whoever asks puts there is cleared. The room runs it
+through `/bin/sh -c`, never the login shell, so no profile of the home
+the agent wrote runs before it or shadows its command, and each runs
+journal keeps `asked_by` beside its `by`. One machine named twice is
+still one, and this node's own machine stays the person's whatever the
+file names. Since any session may write the file, naming a machine
+there only ever fences the person's runs to it, never loosens them,
+and never fences them to a machine that is no worker and no agent's
+make booked, as the person's own machines aren't. Work that names
+none of the workers may go to it though it costs
+money, ranked by its room as any machine is, so before a machine kept
+lively while it has room, and after one within its ceiling once it is
+over a limit. The node marks each one `"held_for": "agents"` as it
+places, from its own file, and every other as booked, never from what
+the machine says, and a link keeps nothing a machine says of it. A
 session the person granted is booked as the person but isn't one: its
 starts go to a machine booked for the person or for no asker, and not
 named in the file, only where they name it, never to one an agent's
@@ -2974,9 +2976,10 @@ ending comes back, and then the ask fails, saying so; the machine's
 
 `"Run"` runs `command` on the machine placement chooses for `work`,
 never on one made for it, in `folder` as for `"Start"`, through the
-person's login shell there without a terminal, its kit's tools first on
-its path as for `"Start"`, and with nothing on its
-input. This machine runs it as the node's own; another, through the link
+person's login shell there without a terminal (the person's run sent
+to a room as an agent's, through `/bin/sh -c`, reading no profile),
+its kit's tools first on its path as for `"Start"`, and with nothing on
+its input. This machine runs it as the node's own; another, through the link
 reaching it, as A Link says. The node judges who asks, as `by`,
 `"Person"` or `{"Agent": kind}`: an agent, in the strictest fence the
 presences of its process and its forebears say, and in a strict one

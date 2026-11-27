@@ -397,17 +397,34 @@ pub fn login_shell(realm: &str, kit: Option<&Path>) -> Vec<String> {
     } else {
         Vec::new()
     };
-    through.extend([
+    through.extend(in_its_realm(shell, "-lic", realm, kit));
+    through
+}
+
+/// The words that run a program in `realm` through `shell` with `flags`,
+/// with the `kit`'s tools first on its path ([`IN_ITS_REALM`]).
+fn in_its_realm(shell: String, flags: &str, realm: &str, kit: Option<&Path>) -> [String; 6] {
+    [
         shell,
-        "-lic".to_owned(),
+        flags.to_owned(),
         IN_ITS_REALM.to_owned(),
         "mycelium".to_owned(),
         realm.to_owned(),
         // Always a word, empty for none, so the program's own start where
         // the script shifts to.
         kit.map(|kit| kit.display().to_string()).unwrap_or_default(),
-    ]);
-    through
+    ]
+}
+
+/// The words that run a command in `realm` as [`login_run`] does, but
+/// through `/bin/sh`, which run so reads no profile, for a run whose
+/// home another may have written: the person's run sent to a room an
+/// agent's make booked, whose profile that agent could make shadow the
+/// command or fake its end. It has the environment its launcher gives
+/// it, with the kit's tools first on its path.
+#[must_use]
+pub fn plain_run(realm: &str, kit: Option<&Path>) -> Vec<String> {
+    in_its_realm("/bin/sh".to_owned(), "-c", realm, kit).to_vec()
 }
 
 /// The words that run a command in `realm` through the person's login
@@ -584,10 +601,13 @@ mod tests {
     /// by `sh` standing for the person's shell, with `profile`'s
     /// variables standing for what a profile sets before the script runs.
     fn run_through(words: &[String], program: &str, profile: &[(&str, &str)]) -> String {
+        // A login shell's flags first, since a Mac's yielding words hold
+        // a `-c` of their own before them.
         let script = words
             .iter()
             .position(|word| word == "-lic" || word == "-lc")
-            .expect("the words run a login shell");
+            .or_else(|| words.iter().position(|word| word == "-c"))
+            .expect("the words run a shell");
         let said = Command::new("sh")
             .arg("-c")
             .args(&words[script + 1..])
@@ -710,6 +730,32 @@ mod tests {
                 "what said no agent, as a Mac's hold, is left as the profile has it"
             );
         }
+    }
+
+    // Followup 487: the person's run sent to a room an agent wrote the
+    // home of runs through a shell reading no profile there, yet in its
+    // realm with the kit's tools first, as a login run is.
+    #[test]
+    fn a_plain_run_reads_no_profile_and_keeps_its_realm_and_kit() {
+        let words = plain_run("harbour", Some(Path::new("/nix/store/kit")));
+        assert_eq!(
+            words[..2],
+            ["/bin/sh".to_owned(), "-c".to_owned()],
+            "a plain shell, never a login one, whatever this login's shell is"
+        );
+        assert!(
+            !words.iter().any(|word| word == "-lc" || word == "-lic"),
+            "{words:?}"
+        );
+        assert_eq!(
+            run_through(
+                &words,
+                r#"printf '%s|%s' "$MYCELIUM_REALM" "${PATH%%:*}""#,
+                &[("MYCELIUM_REALM", "lighthouse")]
+            ),
+            "harbour|/nix/store/kit/bin",
+            "in the realm it runs in, with the kit's tools first"
+        );
     }
 
     #[test]

@@ -9801,6 +9801,7 @@ impl<S: Store> Shared<S> {
         let (by, admits) = self.as_a_room_takes(by, &asked.work, self.admits().await);
         let recast = by != who_asked;
         asked.by = Some(by);
+        asked.asked_by = asked_by(recast, who_asked, &asked);
         let fence = match by {
             By::Agent(kind) => Some(kind),
             By::Person => None,
@@ -9833,9 +9834,10 @@ impl<S: Store> Shared<S> {
             "command": asked.command,
         });
         // Who asked is kept beside how it ran, so the journal tells the
-        // person's run sent to a room from an agent's own.
-        if recast {
-            started["asked_by"] = serde_json::json!(who_asked);
+        // person's run sent to a room from an agent's own, here and on the
+        // room alike.
+        if let Some(person) = asked.asked_by {
+            started["asked_by"] = serde_json::json!(person);
         }
         let said = if machine == self.machine {
             let home =
@@ -9843,7 +9845,10 @@ impl<S: Store> Shared<S> {
             let folder = start::begins_in(asked.folder.as_deref(), &home);
             let (folder, ground) = self.ground(folder, by, asked.from.as_deref()).await?;
             let launcher = self.launcher(by, ground.as_ref(), &from, &mut started)?;
-            let words = run::words(launcher, &self.realm, self.kit(), asked.command);
+            // The person's run sent here as an agent's reads no profile
+            // of this home, which the agent may have written.
+            let profile = asked.asked_by != Some(By::Person);
+            let words = run::words(launcher, &self.realm, self.kit(), asked.command, profile);
             // An agent's fence grants the work trees its session holds, so
             // the run is told the session the kernel and pi's records prove
             // asks, never one its words name; none where none is proved,
@@ -10667,6 +10672,19 @@ fn nowhere_now(misses: &[Miss]) -> String {
         "nowhere now, though a machine out of reach would do: {}",
         placement::said(misses)
     )
+}
+
+/// Who asked `asked` where its `by` isn't them: `asker` where this node
+/// `recast` it, as another machine's node said where it came from there,
+/// and never as whoever asks here says, since only a node says it.
+fn asked_by(recast: bool, asker: By, asked: &Run) -> Option<By> {
+    if recast {
+        Some(asker)
+    } else if asked.from.is_some() {
+        asked.asked_by
+    } else {
+        None
+    }
 }
 
 /// Why a run is refused, `why`, saying where it was `recast` that the
@@ -19125,6 +19143,7 @@ esac
             command: ["/bin/sh", "-c", script].map(str::to_owned).to_vec(),
             by: None,
             from: None,
+            asked_by: None,
         }
     }
 
@@ -25618,6 +25637,34 @@ esac
                 "but a machine that is no worker stays the person's, though a session listed it"
             );
         }
+    }
+
+    // Followup 487: who asked a run recast to a room is said only by a
+    // node, the one recasting it or the one it came from, so the room
+    // runs it reading no profile; whoever asks here can't say it.
+    #[test]
+    fn only_a_node_says_the_person_asked_a_recast_run() {
+        let fenced = By::Agent(Kind::Fence);
+        let said = |from: Option<&str>| Run {
+            from: from.map(str::to_owned),
+            asked_by: Some(By::Person),
+            ..run_of("tern", "true")
+        };
+        assert_eq!(
+            asked_by(true, By::Person, &run_of("tern", "true")),
+            Some(By::Person),
+            "the node recasting it says so"
+        );
+        assert_eq!(
+            asked_by(false, fenced, &said(Some("skiff"))),
+            Some(By::Person),
+            "the room keeps what the node it came from said"
+        );
+        assert_eq!(
+            asked_by(false, fenced, &said(None)),
+            None,
+            "and whoever asks here saying it is not heard"
+        );
     }
 
     #[test]

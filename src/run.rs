@@ -157,9 +157,10 @@ pub const PIECE: usize = 64 * 1024;
 pub const BACKLOG: usize = 4;
 
 /// The words that run `command` here in `realm`: through `launcher`, a
-/// fence's words or none for a person, then the person's login shell
-/// with the realm's `kit` first on its path where there is one, then
-/// the command. What an ask says comes only after both, and a
+/// fence's words or none for a person, then the person's login shell,
+/// or with no `profile` a shell reading none
+/// ([`crate::hold::start::plain_run`]), with the realm's `kit` first on
+/// its path where there is one, then the command. What an ask says comes only after both, and a
 /// launcher's words end with `--` ([`crate::declared::launcher`] takes
 /// no other), so none of it is read as the launcher's own options where
 /// the launcher reads `--` as their end, as pi-fence does: no ask spares
@@ -170,9 +171,14 @@ pub fn words(
     realm: &str,
     kit: Option<&Path>,
     command: Vec<String>,
+    profile: bool,
 ) -> Vec<String> {
     let mut words = launcher;
-    words.extend(crate::hold::start::login_run(realm, kit));
+    words.extend(if profile {
+        crate::hold::start::login_run(realm, kit)
+    } else {
+        crate::hold::start::plain_run(realm, kit)
+    });
     words.extend(command);
     words
 }
@@ -443,7 +449,7 @@ mod tests {
         ]
         .map(str::to_owned)
         .to_vec();
-        let words = words(launcher.clone(), "work", None, asked.clone());
+        let words = words(launcher.clone(), "work", None, asked.clone(), true);
         let options = words
             .iter()
             .position(|word| word == "--")
@@ -461,6 +467,12 @@ mod tests {
             words[launcher.len()..words.len() - asked.len()],
             crate::hold::start::login_run("work", None),
             "the login shell stands between them"
+        );
+        let plain = super::words(launcher.clone(), "work", None, asked.clone(), false);
+        assert_eq!(
+            plain[launcher.len()..plain.len() - asked.len()],
+            crate::hold::start::plain_run("work", None),
+            "or, with no profile, a shell reading none"
         );
     }
 
