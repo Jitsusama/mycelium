@@ -2739,7 +2739,9 @@ mod tests {
             "KESTRL  on kestrel  QEST-1\n  Kestrel learns to hover over one\n  field.\n  plan  build  2 of 4 ticked     Hover…\n"
         );
         assert!(
-            drawn.lines().all(|line| line.chars().count() <= 40),
+            drawn
+                .lines()
+                .all(|line| crate::swarm::drawn_width(line) <= 40),
             "no line passes the terminal's width"
         );
     }
@@ -2961,7 +2963,9 @@ mod tests {
         let drawn = draw(std::slice::from_ref(&cell), Some("KESTRL"), 12);
         assert!(
             drawn.contains("\n  abcd abcd\n  \u{2026}\n")
-                && drawn.lines().all(|line| line.chars().count() <= 12),
+                && drawn
+                    .lines()
+                    .all(|line| crate::swarm::drawn_width(line) <= 12),
             "the mark didn't take a line of its own: {drawn}"
         );
     }

@@ -897,7 +897,9 @@ mod tests {
         for width in [40, 60, 80] {
             let drawn = drawn(&records(ASKED), &look(), Some(width));
             assert!(
-                drawn.lines().all(|line| line.chars().count() <= width),
+                drawn
+                    .lines()
+                    .all(|line| crate::swarm::drawn_width(line) <= width),
                 "a line passes {width} columns:\n{drawn}"
             );
             let said: Vec<&str> = drawn
@@ -956,7 +958,7 @@ mod tests {
                 .expect("the question's line");
             assert!(
                 heading.ends_with(", 25 min so far  [c0cd280e]")
-                    && heading.chars().count() <= width,
+                    && crate::swarm::drawn_width(heading) <= width,
                 "the wait or the id was cut at {width}:\n{drawn}"
             );
             assert!(
@@ -984,7 +986,7 @@ mod tests {
                 .expect("the question's line");
             assert!(
                 heading.ends_with(", 25 min so far  [c0cd280e]")
-                    && heading.chars().count() <= width
+                    && crate::swarm::drawn_width(heading) <= width
                     && !heading.contains("deadbeef"),
                 "the wait or the id was lost at {width}:\n{drawn}"
             );
@@ -1001,7 +1003,7 @@ mod tests {
             // its sender's end before the wait or the id does.
             let heading = drawn.lines().nth(1).expect("the question's line");
             assert!(
-                heading.chars().count() <= width && !heading.contains("deadbeef"),
+                crate::swarm::drawn_width(heading) <= width && !heading.contains("deadbeef"),
                 "a forged id was drawn at {width}:\n{drawn}"
             );
         }

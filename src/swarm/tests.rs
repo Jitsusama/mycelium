@@ -696,7 +696,7 @@ fn drawn_whole_a_long_name_is_never_cut_and_runs_on_alone() {
         lines
             .iter()
             .filter(|line| !line.starts_with("reef"))
-            .all(|line| line.chars().count() <= 80),
+            .all(|line| drawn_width(line) <= 80),
         "one long name pushed the other rows past 80 columns:\n{shown}"
     );
 }
