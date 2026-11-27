@@ -14,7 +14,17 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 /// The most of a file one frame carries, in bytes.
-pub const PIECE: u64 = 1 << 20;
+///
+/// Small enough that every piece a turn asks for crosses well within the
+/// time the asker waits on them, on the slowest link a machine keeps. On
+/// 27 November the links to cloud machines through their provider's tunnel
+/// carried 26 to 70 KB a second each. A turn of eight 1 MB pieces, about
+/// 11 MB once written as base64, could never cross in the two minutes its
+/// asker waits, so every turn lapsed and was asked again from the start,
+/// and those files never arrived. Eight of these cross in under half a
+/// minute at the slowest of those rates. An asker of any version takes a
+/// piece of any length, asking next from where it ended.
+pub const PIECE: u64 = 64 * 1024;
 
 /// Where the pieces from one machine are staged.
 #[derive(Debug, Clone)]

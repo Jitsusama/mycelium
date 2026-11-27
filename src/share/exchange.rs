@@ -4397,7 +4397,7 @@ mod tests {
         let at = |machine: &Machine| machine.places.scratch.join(QUEST).join("bench/run.bin");
         let bytes: Vec<u8> = (0..=u8::MAX)
             .cycle()
-            .take(usize::try_from(2 * PIECE).expect("a size") + 512 * 1024)
+            .take(usize::try_from(2 * PIECE + PIECE / 2).expect("a size"))
             .collect();
         fs::create_dir_all(at(&skiff).parent().expect("a folder")).expect("made");
         fs::write(at(&skiff), &bytes).expect("written");
@@ -4435,7 +4435,7 @@ mod tests {
         let piece = usize::try_from(PIECE).expect("a size");
         assert_eq!(
             pieces,
-            [(0, piece), (PIECE, piece), (2 * PIECE, 512 * 1024)],
+            [(0, piece), (PIECE, piece), (2 * PIECE, piece / 2)],
             "it crossed in three pieces, each asked for once the last was staged"
         );
         assert!(
