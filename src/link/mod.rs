@@ -370,7 +370,10 @@ pub async fn run(
     let (claim, asked_before) = takeover::claimed(&store, &other.machine).await?;
     let reach = reach_start(&store, &other.machine);
     // As it stood before admission, which marks a machine never linked
-    // as of now.
+    // as of now. Admission comes before `asked_of`: the room gate reads
+    // the worker mark it sets as soon as the node can ask anything of
+    // the machine, so a worker's first asks would otherwise be judged as
+    // a peer's.
     let began = admitted(&store, &other.machine, worker)?;
     let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine).await;
     let (answering, mut answered) = mpsc::unbounded_channel();

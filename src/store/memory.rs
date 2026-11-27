@@ -565,6 +565,8 @@ impl Store for Memory {
         } else {
             held.workers.remove(machine)
         };
+        // As the folders store does: a worker admitted whose far end says
+        // nothing of itself changes only here, so a mark that moves is told.
         if moved {
             held.tell(&Change::Machine(machine.to_owned()));
         }

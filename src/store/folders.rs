@@ -790,7 +790,9 @@ impl Store for Folders {
             workers.remove(machine)
         };
         drop(workers);
-        // The mark is in memory alone, so no file's watch tells it.
+        // The mark is in memory alone, so no file's watch tells it, and a
+        // worker admitted whose far end says nothing of itself changes only
+        // here: a watch of the machines would never hear of it.
         if moved {
             let change = Change::Machine(machine.to_owned());
             self.told
@@ -2665,6 +2667,38 @@ mod tests {
         assert!(
             store.is_worker("tern"),
             "a worker its link put stays one, its record taken away"
+        );
+    }
+
+    // Followup 544(6): a worker its admission alone made was told to no
+    // watch, which the file's watch can't see, being in memory alone.
+    #[tokio::test]
+    async fn a_worker_mark_that_moves_is_told_and_one_that_doesnt_isnt() {
+        let (_dir, store) = store();
+        let mut changes = store.changes().expect("the store tells its changes");
+        store.mark_worker("tern", true);
+        store.mark_worker("tern", true);
+        let tern = Change::Machine("tern".to_owned());
+        let told = tokio::time::timeout(PATIENCE, async {
+            loop {
+                match changes.changes.recv().await {
+                    Some(change) if change == tern => return,
+                    Some(_) => {}
+                    None => panic!("the store stopped telling"),
+                }
+            }
+        })
+        .await;
+        assert!(told.is_ok(), "the mark was told within {PATIENCE:?}");
+        // The mark is told as it moves, so a second is waiting already if
+        // it was told at all.
+        let mut after = Vec::new();
+        while let Ok(change) = changes.changes.try_recv() {
+            after.push(change);
+        }
+        assert!(
+            !after.contains(&tern),
+            "a mark that moves nothing tells nothing: {after:?}"
         );
     }
 
