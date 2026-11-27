@@ -673,6 +673,8 @@ pub struct Easing {
     acts_on_sleep: bool,
     /// Each session a look chose to carry, with when.
     gone: BTreeMap<String, Timestamp>,
+    /// Each session whose carry was refused as it was told, with when.
+    refused: BTreeMap<String, Timestamp>,
     /// The reason of the last line kept for doing nothing, with the doubt
     /// it said.
     said: Option<(String, Option<String>)>,
@@ -778,13 +780,24 @@ impl Easing {
 
     /// Takes the carries its node made to ease the machine that haven't
     /// landed yet, as [`on_way`] says, for the looks that follow.
-    pub fn on_way(&mut self, on_way: Vec<Moved>) {
+    /// One refused as its session was told of it, as [`Easing::refused`]
+    /// notes, isn't, though its record still stands ordered.
+    pub fn on_way(&mut self, mut on_way: Vec<Moved>) {
+        on_way.retain(|one| {
+            self.refused
+                .get(&one.session)
+                .is_none_or(|refused| *refused < one.at)
+        });
         self.history.on_way(on_way);
     }
 
     /// Notes that the carry of `session` its look chose was refused as
-    /// the session was told of it, `at`.
-    pub fn refused(&mut self, _session: &str, _at: Timestamp) {}
+    /// the session was told of it, `at`, so that carry holds no other
+    /// once the cooldown is out; a later carry of it still does. A
+    /// restart forgets it, so the carry holds again until it is stuck.
+    pub fn refused(&mut self, session: &str, at: Timestamp) {
+        self.refused.insert(session.to_owned(), at);
+    }
 
     /// What `here` would do now of its `cells`, by `reading`, as the line
     /// to keep for it; none where it would do nothing for the same reason

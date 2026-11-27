@@ -6376,6 +6376,13 @@ impl<S: Store> Shared<S> {
             }
             if let Some(line) = line {
                 let mut line = self.act_to_ease(eases.carries, line).await;
+                // Its record is kept before the session is told, so one
+                // refused then would stand ordered, on its way, till stuck.
+                if let Some(chosen) = easing::chosen(&line)
+                    && line.get("refused").is_some()
+                {
+                    easing.refused(&chosen.session, jiff::Timestamp::now());
+                }
                 if let Some(parking) = &mut parking {
                     self.sleep_to_ease(&mut line, parking, easing, now).await;
                 }
