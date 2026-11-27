@@ -166,15 +166,40 @@ impl Work {
     }
 
     /// This work as it is asked of the machine already chosen for it,
-    /// without the tools it would rather have: a preference can choose a
-    /// node too old to read a tool, which would drop the link rather than
-    /// answer, and once a machine is chosen a preference changes nothing.
-    /// A tool it needs stays, since only a node that names its kit, and so
-    /// reads a tool, can have been chosen for it.
+    /// with only the needs and preferences its node can read, as
+    /// [`Need::crosses`] says: a node that can't read one drops the link
+    /// rather than answer, and once a machine is chosen a preference
+    /// changes nothing.
     #[must_use]
     pub fn asked_there(mut self) -> Self {
-        self.prefers.retain(|need| !matches!(need, Need::Tool(_)));
+        self.needs.retain(|need| need.crosses(true));
+        self.prefers.retain(|need| need.crosses(false));
         self
+    }
+}
+
+impl Need {
+    /// Whether this need, `needed` or only preferred, goes with work asked
+    /// of the machine already chosen for it. Each need is named here, so a
+    /// new one says whether a node from before it, which can't read it,
+    /// may have been chosen.
+    fn crosses(&self, needed: bool) -> bool {
+        match self {
+            Self::Machine(_)
+            | Self::System(_)
+            | Self::Arch(_)
+            | Self::Reach(_)
+            | Self::Accelerator(_) => true,
+            // Only a node that names its kit, and so reads a tool, can
+            // have been chosen for a tool it needs; one preferred may
+            // have chosen any node.
+            Self::Tool(_) => needed,
+            // Met here, by the machine's declaration or its make, while a
+            // made machine's node may be too old to read it. The need for
+            // itself that the machine's node adds names it as the worker
+            // it is.
+            Self::Cloud => false,
+        }
     }
 }
 

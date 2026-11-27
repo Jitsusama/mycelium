@@ -2426,6 +2426,8 @@ start placed on
 another machine is asked of it through the link this node keeps to it,
 without the tools its work prefers, since a node too old to read one
 may have been preferred and would end the link rather than answer, and
+without any need or preference for `cloud`, which was met here and
+which a made machine's older node can't read either, and
 its `attach` comes back as the words that join it over the dial,
 as a held session's `attach` says, such as `mycelium --realm work
 attach --on kestrel <held> -- ssh -t -o ServerAliveInterval=5 -o
