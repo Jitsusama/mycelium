@@ -961,7 +961,7 @@ pub(super) mod tests {
 
     use super::*;
     use crate::balance;
-    use crate::declared::Doors;
+    use crate::declared::{Doors, Lively};
     use crate::facts::{self, Readiness, Sources};
     use crate::room::{Limit, Pressure, Room, Takes};
 
@@ -1563,6 +1563,77 @@ pub(super) mod tests {
         assert!(
             carries(&chose(&realm, &[cell("s1")], &hot_for(&realm, 10))).is_some(),
             "ten minutes over eases"
+        );
+    }
+
+    /// `machine` kept lively to `ceiling`.
+    fn kept_lively(mut machine: Machine, ceiling: Lively) -> Machine {
+        machine.declared.as_mut().expect("declared").kept_lively = Some(ceiling);
+        machine
+    }
+
+    #[test]
+    fn a_machine_over_only_past_its_lively_ceiling_eases_once_over_ten_minutes() {
+        // Pressure 45 is under the queue's line but past a ceiling of 30.
+        let skiff = kept_lively(
+            machine("skiff", 45.0),
+            Lively {
+                cpu: 30,
+                memory_available: None,
+                memory_full: None,
+            },
+        );
+        let realm = [skiff, machine("tern", 4.6)];
+        let load = reading(&realm, now()).machines.remove(0);
+        assert!(
+            load.over && load.past.is_empty() && load.lively.is_some(),
+            "over only by its lively ceiling: {load:?}"
+        );
+        assert!(
+            why_not(&chose(&realm, &[cell("s1")], &hot_for(&realm, 9))).ends_with("not 10 minutes"),
+            "nine minutes past its ceiling isn't ten"
+        );
+        assert_eq!(
+            carries(&chose(
+                &realm,
+                &[cell("s1")],
+                &hot_for(&realm, HOT_FOR.as_mins())
+            )),
+            Some(("s1", "tern")),
+            "ten minutes past its ceiling, it carries to the machine with room"
+        );
+    }
+
+    #[test]
+    fn a_machine_past_its_lively_ceiling_is_no_place_to_carry_to() {
+        // As much room as tern by its queue, but kept lively with more
+        // memory available than it has.
+        let roomy = machine("kestrel", 4.6);
+        let lively = kept_lively(
+            roomy.clone(),
+            Lively {
+                cpu: 30,
+                memory_available: Some(48 << 30),
+                memory_full: None,
+            },
+        );
+        let within = [machine("skiff", 86.0), roomy];
+        assert_eq!(
+            carries(&chose(&within, &[cell("s1")], &hot_for(&within, 11))),
+            Some(("s1", "kestrel")),
+            "within its ceiling it takes a carry as any machine with room does"
+        );
+        let past = [machine("skiff", 86.0), lively.clone()];
+        assert!(
+            why_not(&chose(&past, &[cell("s1")], &hot_for(&past, 11)))
+                .starts_with("skiff isn't held past its memory limit"),
+            "past its ceiling it has no room, so skiff has nowhere to carry to"
+        );
+        let beside = [machine("skiff", 86.0), lively, machine("tern", 4.6)];
+        assert_eq!(
+            carries(&chose(&beside, &[cell("s1")], &hot_for(&beside, 11))),
+            Some(("s1", "tern")),
+            "beside one with room, the machine past its ceiling is passed over"
         );
     }
 

@@ -119,7 +119,18 @@ pub fn said(reading: &Reading, realm: &str, width: usize, colour: bool) -> Strin
         }
     }
     out.push('\n');
-    let sentences: Vec<(&str, String)> = if reading.flags.is_empty() {
+    for (word, rest) in sentences(reading) {
+        out.push_str(&wrapped(&paint(BOLD, word), word, &rest, width));
+    }
+    out
+}
+
+/// The sentences under the table, each as its word and the rest: what
+/// each flag means, or that nothing is wrong, why each machine that
+/// stands lively is over, then the flags held most of the last ten
+/// minutes.
+fn sentences(reading: &Reading) -> Vec<(&'static str, String)> {
+    let mut sentences: Vec<(&str, String)> = if reading.flags.is_empty() {
         vec![(
             "nothing wrong",
             "no machine over while another has room, none stranded, every machine's \
@@ -133,15 +144,27 @@ pub fn said(reading: &Reading, realm: &str, width: usize, colour: bool) -> Strin
             .map(|flag| sentence(flag, reading))
             .collect()
     };
-    for (word, rest) in sentences {
-        out.push_str(&wrapped(&paint(BOLD, word), word, &rest, width));
-    }
+    // A machine that stands lively is over though its queue says it has
+    // room, so why is said, or it reads as one out of room.
+    sentences.extend(reading.machines.iter().filter_map(|one| {
+        let why = one.lively.as_deref().filter(|_| lively_only(one))?;
+        Some((
+            "lively",
+            format!(
+                "{} is over though its queue is past no limit, since {}",
+                unmarked(&one.machine),
+                unmarked(why),
+            ),
+        ))
+    }));
     if let Some(held) = reading.held.as_ref().filter(|held| !held.is_empty()) {
         let named: Vec<String> = held.iter().map(short).collect();
-        let rest = format!("{}, in most of the last ten minutes", named.join(", "));
-        out.push_str(&wrapped(&paint(BOLD, "held"), "held", &rest, width));
+        sentences.push((
+            "held",
+            format!("{}, in most of the last ten minutes", named.join(", ")),
+        ));
     }
-    out
+    sentences
 }
 
 /// One machine's figures, in the order of [`COLUMNS`].
@@ -173,10 +196,13 @@ fn aged(seconds: i64) -> String {
     }
 }
 
-/// How a machine stands, in a word.
+/// How a machine stands, in a word: lively where it is over only by the
+/// ceiling it is kept lively to, its queue past no limit.
 fn stands(one: &Load) -> &'static str {
     if !one.ready {
         "not ready"
+    } else if lively_only(one) {
+        "lively"
     } else if one.over {
         "over"
     } else if one.room {
@@ -184,6 +210,12 @@ fn stands(one: &Load) -> &'static str {
     } else {
         "no room"
     }
+}
+
+/// Whether `one` takes work and is over only by the ceiling it is kept
+/// lively to, its queue past no limit.
+fn lively_only(one: &Load) -> bool {
+    one.ready && one.over && one.past.is_empty() && one.lively.is_some()
 }
 
 /// The sentence saying what `flag` means and what follows from it, as
