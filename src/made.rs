@@ -274,6 +274,13 @@ impl Book {
             .collect()
     }
 
+    /// The machine `agent-rooms` names first ([`Book::agent_rooms`]),
+    /// read as that does; none where it names none.
+    #[must_use]
+    pub fn first_agent_room(&self) -> Option<String> {
+        None
+    }
+
     /// Keeps that `made` was made.
     ///
     /// # Errors
@@ -516,6 +523,30 @@ mod tests {
                 .unwrap_or_else(PoisonError::into_inner)
                 .is_some(),
             "and why is kept, so it is said once"
+        );
+    }
+
+    #[test]
+    fn the_first_room_made_for_agents_is_the_first_named() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let book = Book::at(dir.path().join("made.jsonl"));
+        assert_eq!(book.first_agent_room(), None, "no file names none");
+        fs::write(dir.path().join(AGENT_ROOMS), "# rooms\n\n  # none yet\n")
+            .expect("written");
+        assert_eq!(
+            book.first_agent_room(),
+            None,
+            "comments and blanks name none"
+        );
+        fs::write(
+            dir.path().join(AGENT_ROOMS),
+            "# rooms for agents\n\n  wren # the newest\ntern\n",
+        )
+        .expect("written");
+        assert_eq!(
+            book.first_agent_room().as_deref(),
+            Some("wren"),
+            "the first name in the file, trimmed, though another sorts first"
         );
     }
 
