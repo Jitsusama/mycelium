@@ -49,6 +49,16 @@ impl Worker {
         // The kernel names a connecting process by its effective account.
         (self.uid == rustix::process::geteuid().as_raw()).then(|| self.socket.clone())
     }
+
+    /// Whether the sessions its node starts run as this account rather
+    /// than the node's own, as a room's fence runs them (9R6RA6's image,
+    /// whose launcher runs each as `worker`), so none of them opens the
+    /// node's own socket, which only the node's account may. A machine
+    /// naming its node's own account here keeps nothing apart.
+    #[must_use]
+    pub fn keeps_starts_apart(&self) -> bool {
+        self.uid != rustix::process::geteuid().as_raw()
+    }
 }
 
 /// How far from the node's clock a message's time may be, in

@@ -299,12 +299,16 @@ same code, each line a JSON value:
    from a basin still takes the starts placed on it, where its strict
    fence declares `runs` (The Socket). An agent's start relayed there
    starts strict, whatever fence it declares, but for one: where the
-   node fences its held starts and its agent fence declares no forge
-   and no secret, a relay marked `proven` takes the fence it declares,
-   never looser than the agent fence, and the node logs each it so
-   takes, with the machine that relayed it, what it runs, its name and
-   the session it holds. Only the node's own account reaches its
-   socket there, so only a link's end can mark a relay so. Elsewhere, a
+   node's sessions run as a worker account of their own
+   (`--worker-uid` naming another account than the node's), and its
+   agent fence declares no forge and no secret and accepts none from
+   another machine, a relay marked `proven` takes the fence it
+   declares, never looser than the agent fence. The node logs each it
+   so takes, with the machine that relayed it, what it runs, its name,
+   the session it holds, how it judged the link's end and the cell it
+   charged. Only the node's own account opens its socket, and no
+   session runs as it there, so only a link's end can mark a relay so;
+   where sessions run as the node's account, nothing is. Elsewhere, a
    link's end an agent ran is taken so too, as is one whose owner the
    kernel can't tell, but one marked as the person's carry is refused,
    so the person hears the carry failed rather than finding its

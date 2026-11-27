@@ -68,9 +68,10 @@ pub enum Request {
         start: Start,
         /// Whether the link's key proved `from` the machine asking, said
         /// by the link's end. Only a room's node takes it, where no
-        /// person works and only its own account reaches its socket, as
-        /// the link's end does. Left out when not, so an older node still
-        /// reads the start.
+        /// person works and its sessions run as an account of their own,
+        /// so only its own account, as the link's end runs, opens its
+        /// socket. Left out when not, so an older node still reads the
+        /// start.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         proven: bool,
     },
@@ -692,6 +693,33 @@ mod tests {
         assert!(
             serde_json::from_str::<Request>(r#"{"Watch":{"groups":[]}}"#).is_err(),
             "a pattern is one string, never a list"
+        );
+    }
+
+    #[test]
+    fn a_relay_no_key_proved_says_nothing_of_it_so_an_older_node_reads_it() {
+        let start = |proven| Request::Relayed {
+            from: "tern".to_owned(),
+            start: serde_json::from_str(r#"{"work":{},"command":["pi"]}"#)
+                .expect("a start"),
+            proven,
+        };
+        let unproven = serde_json::to_value(start(false)).expect("a relay writes");
+        assert_eq!(
+            unproven["Relayed"].get("proven"),
+            None,
+            "a relay no key proved leaves it out: {unproven}"
+        );
+        assert_eq!(
+            serde_json::from_value::<Request>(unproven).expect("it reads back"),
+            start(false),
+            "and one that leaves it out reads as unproven"
+        );
+        let proven = serde_json::to_value(start(true)).expect("a relay writes");
+        assert_eq!(
+            proven["Relayed"]["proven"],
+            serde_json::Value::Bool(true),
+            "one a key proved says so"
         );
     }
 

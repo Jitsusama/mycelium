@@ -1854,8 +1854,9 @@ pub fn declaring(by: By, declared: Option<DeclaredFence>) -> By {
 
 /// Who asks a start relayed to a room, where its link's end was judged
 /// `by` and the start declares `declared`, where `opens_nothing` says the
-/// room fences its held starts, the link's key proved the node relaying
-/// it, and the room's agent fence opens no forge and no secret. There an
+/// room's sessions run as an account of their own, the link's key proved
+/// the node relaying it, and the room's agent fence opens no forge and no
+/// secret. There an
 /// agent's start runs in the fence it declares, never looser than the
 /// agent fence, since a session there holds nothing of the person's a
 /// stranger's text could reach but the room's other sessions; a start

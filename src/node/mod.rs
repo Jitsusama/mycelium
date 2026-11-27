@@ -1372,7 +1372,7 @@ where
     // is missing, costs only the workers' sessions, said as it fails: the
     // node runs on for its own, rather than leaving the machine with no
     // node at all.
-    let (serving, workers) = match serve_workers(given.worker.take()) {
+    let (serving, workers) = match serve_workers(given.worker.clone()) {
         Ok(served) => served.unzip(),
         Err(said) => {
             eprintln!("{said}");
@@ -2420,6 +2420,10 @@ struct Shared<S> {
     /// Whether it starts an agent's held session through its fence's
     /// launcher, as it says it does.
     fences_held: bool,
+    /// Whether the sessions it starts run as an account of their own,
+    /// the worker's, so none of them reaches its own socket, which only
+    /// its own account opens ([`Worker::keeps_starts_apart`]).
+    starts_apart: bool,
     /// The links this node asks other machines' starts through.
     asks: Asks,
     inner: Arc<Mutex<Inner>>,
@@ -2614,6 +2618,7 @@ impl<S: Clone> Clone for Shared<S> {
             updater: self.updater.clone(),
             starter: self.starter.clone(),
             fences_held: self.fences_held,
+            starts_apart: self.starts_apart,
             asks: self.asks.clone(),
             inner: self.inner.clone(),
             said: self.said.clone(),
@@ -4020,10 +4025,12 @@ impl<S: Store> Shared<S> {
             settles,
             lends_from,
             lend,
-            // Bound and served by `run` alone.
-            worker: _,
+            // Bound and served by `run` alone; here only whose account
+            // its sessions run as is kept.
+            worker,
             gates,
         } = given;
+        let starts_apart = worker.as_ref().is_some_and(Worker::keeps_starts_apart);
         let lender = lend.map(|file| {
             Arc::new(crate::lend::lender::Lender::from_file(
                 file,
@@ -4090,6 +4097,7 @@ impl<S: Store> Shared<S> {
             realm: hello.realm,
             starter: starter.map(Arc::new),
             fences_held,
+            starts_apart,
             asks: Asks::default(),
             said,
             flows: Arc::new(flows),
@@ -8573,12 +8581,12 @@ impl<S: Store> Shared<S> {
             eprintln!("a carry relayed from {from:?} is refused: {why}");
             // Where the node couldn't read the link's end, running it
             // elsewhere changes nothing; reading it does.
-            let when =
-                if claims.is_empty() && [asker::UNNAMED, asker::UNTOLD].contains(&unclaimed) {
-                    "its node can read the process at this machine's end of the link"
-                } else {
-                    "this machine's end of the link runs outside every agent's session"
-                };
+            let unread = [asker::UNNAMED, asker::UNTOLD].contains(&unclaimed);
+            let when = if claims.is_empty() && unread {
+                "its node can read the process at this machine's end of the link"
+            } else {
+                "this machine's end of the link runs outside every agent's session"
+            };
             return Err(format!(
                 "{} takes no carry from {from:?} here, so the carried session couldn't \
                  stand as its cell: {why}. Its files stay in the handover, so the carry \
@@ -8612,6 +8620,7 @@ impl<S: Store> Shared<S> {
         let by = asker::relayed_to_a_room(by, asked.work.fence, room);
         let looser = room && by == By::Agent(crate::declared::Kind::Fence);
         let (program, once) = (asked.command.first().cloned(), asked.once.clone());
+        let charged_to = charged.clone();
         let pinned = Start {
             carries: false,
             may_cost: false,
@@ -8630,7 +8639,8 @@ impl<S: Store> Shared<S> {
             // names the asking cell of.
             eprintln!(
                 "a start relayed from {from:?} runs in the agent fence it declares, as {} \
-                 opens no forge and no secret to it: {program:?}, named {once:?}, held {}",
+                 opens no forge and no secret to it: {program:?}, named {once:?}, held {}; \
+                 {judged}, and it is charged to {charged_to:?}",
                 self.machine, started.held
             );
         }
@@ -8643,18 +8653,31 @@ impl<S: Store> Shared<S> {
         })
     }
 
-    /// Whether this machine fences its held starts and the agent fence it
-    /// declares opens no forge and no secret, so a session in it holds
-    /// nothing of the person's. One that can't read what it declares, or
-    /// declares no agent fence, opens what it may.
+    /// Whether a session in this machine's agent fence holds nothing of
+    /// the person's and can't speak as the link's end: the fence it
+    /// declares opens no forge and no secret, here or, as it accepts,
+    /// on a machine it reaches from here, and its sessions run as an
+    /// account of their own, which can't open this node's socket to say
+    /// a link proved what it didn't. That holds however its held starts
+    /// are fenced, through the launcher or by pi itself, since each opens
+    /// what the machine declares. One that can't read what it declares,
+    /// or declares no agent fence, opens what it may.
     fn opens_nothing(&self) -> bool {
+        type Names = std::collections::BTreeSet<String>;
         let declared = crate::declared::read(&self.declared);
         let fence = declared
             .as_ref()
             .and_then(|declared| declared.fence.as_ref())
             .and_then(|fences| fences.get(&crate::declared::Kind::Fence));
-        self.fences_held
-            && fence.is_some_and(|doors| doors.forges.is_empty() && doors.secrets.is_empty())
+        let shut = |forges: &Names, secrets: &Names| forges.is_empty() && secrets.is_empty();
+        self.starts_apart
+            && fence.is_some_and(|doors| {
+                shut(&doors.forges, &doors.secrets)
+                    && doors
+                        .accepts
+                        .values()
+                        .all(|more| shut(&more.forges, &more.secrets))
+            })
     }
 
     /// Why the person's carry, taken as an agent's start where no person
@@ -27795,16 +27818,15 @@ esac
     }
 
     /// Declares at `declared` an agent fence beside the strict one, its
-    /// launcher's stand-in saying so, opening the forges `forges`.
-    fn declares_agent_fence(declared: &Path, forges: &[&str]) {
+    /// launcher's stand-in saying so, opening what `opening` adds.
+    fn declares_agent_fence(declared: &Path, opening: impl FnOnce(&mut crate::declared::Doors)) {
         let mut said = crate::declared::read(declared).expect("it declares");
         let fences = said.fence.get_or_insert_with(BTreeMap::new);
         let strict = fences
             .get(&crate::declared::Kind::Strict)
             .cloned()
             .expect("a strict fence");
-        let fence = crate::declared::Doors {
-            forges: forges.iter().map(|&one| one.to_owned()).collect(),
+        let mut fence = crate::declared::Doors {
             runs: strict
                 .runs
                 .iter()
@@ -27812,6 +27834,7 @@ esac
                 .collect(),
             ..strict
         };
+        opening(&mut fence);
         fences.insert(crate::declared::Kind::Fence, fence);
         fs::write(declared, serde_json::to_vec(&said).expect("it is JSON"))
             .expect("this machine's declaration is written");
@@ -27820,15 +27843,18 @@ esac
     // ISXEG8's ruling of 27 November [4b97ff55], (c): a room whose agent
     // fence opens no forge and no secret of the person's takes the fence
     // a start relayed over a link its key proved declares, never looser
-    // than the agent fence. Every other relay to it starts strict.
+    // than the agent fence. Every other relay to it starts strict. Its
+    // sessions run as an account of their own, so none of them can tell
+    // its node a link proved what it didn't.
     #[tokio::test]
     async fn a_room_opening_nothing_starts_a_proven_relay_in_the_fence_it_declares() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let unattended = Processes::Folder("/nowhere/proc".into()).unattended();
         let mut link = holding_skiff(dir.path(), Memory::default(), None, unattended);
         runs_commands(&mut link, dir.path());
-        declares_agent_fence(&link.declared, &[]);
+        declares_agent_fence(&link.declared, |_| {});
         link.fences_held = true;
+        link.starts_apart = true;
         // A `mycelium link` SSH started, never the node's own process.
         link.client = Some(1);
         let fenced = Start {
@@ -27847,26 +27873,13 @@ esac
             once: None,
         };
         let given = dir.path().join("given");
-        let ran_in = |proven: bool, start: Start| {
-            let link = &link;
-            let given = &given;
-            async move {
-                link.relayed_over("tern", start, proven)
-                    .await
-                    .expect("it starts here");
-                let words = fs::read_to_string(given).expect("the holder was given its words");
-                ["FENCED=fence", "FENCED=strict"]
-                    .into_iter()
-                    .find(|fence| words.contains(fence))
-            }
-        };
         assert_eq!(
-            ran_in(true, fenced.clone()).await,
+            fenced_as(&link, &given, true, fenced.clone()).await,
             Some("FENCED=fence"),
             "over a link its key proved, in the agent fence declared"
         );
         assert_eq!(
-            ran_in(false, fenced.clone()).await,
+            fenced_as(&link, &given, false, fenced.clone()).await,
             Some("FENCED=strict"),
             "over one no key proved, strict"
         );
@@ -27875,16 +27888,85 @@ esac
             ..fenced.clone()
         };
         assert_eq!(
-            ran_in(true, declaring_none).await,
+            fenced_as(&link, &given, true, declaring_none).await,
             Some("FENCED=strict"),
             "a start declaring no fence, strict"
         );
-        declares_agent_fence(&link.declared, &["github"]);
+        // Where pi fences itself, as on Linux, it opens what the room
+        // declares all the same.
+        link.fences_held = false;
         assert_eq!(
-            ran_in(true, fenced).await,
-            Some("FENCED=strict"),
-            "and on a room whose agent fence opens a forge, strict"
+            fenced_as(&link, &given, true, fenced.clone()).await,
+            Some("PI_SANDBOX=fence"),
+            "a room whose pi fences itself takes the agent fence declared too"
         );
+        link.fences_held = true;
+        link.starts_apart = false;
+        assert_eq!(
+            fenced_as(&link, &given, true, fenced.clone()).await,
+            Some("FENCED=strict"),
+            "a room whose sessions run as its node's own account, which may say a link \
+             proved anything, strict"
+        );
+        link.starts_apart = true;
+        declares_agent_fence(&link.declared, |doors| {
+            doors.forges.insert("github".to_owned());
+        });
+        assert_eq!(
+            fenced_as(&link, &given, true, fenced.clone()).await,
+            Some("FENCED=strict"),
+            "a room whose agent fence opens a forge, strict"
+        );
+        declares_agent_fence(&link.declared, |doors| {
+            doors.secrets.insert("github-token".to_owned());
+        });
+        assert_eq!(
+            fenced_as(&link, &given, true, fenced.clone()).await,
+            Some("FENCED=strict"),
+            "one whose agent fence opens a secret, strict"
+        );
+        declares_agent_fence(&link.declared, |doors| {
+            let wider = crate::declared::Accepted {
+                forges: ["github".to_owned()].into(),
+                ..crate::declared::Accepted::default()
+            };
+            doors.accepts.insert("kestrel".to_owned(), wider);
+        });
+        assert_eq!(
+            fenced_as(&link, &given, true, fenced.clone()).await,
+            Some("FENCED=strict"),
+            "one whose agent fence accepts a forge opened elsewhere, strict"
+        );
+        declares_agent_fence(&link.declared, |_| {});
+        link.processes = Arc::new(Processes::Folder("/nowhere/proc".into()));
+        assert_eq!(
+            fenced_as(&link, &given, true, fenced).await,
+            Some("FENCED=strict"),
+            "and a machine a person works on, strict"
+        );
+    }
+
+    /// The fence `link` starts `start` in, relayed from tern over a link
+    /// its key proved or not, as `proven` says, by the words its holder's
+    /// stand-in keeps in `given`.
+    async fn fenced_as(
+        link: &Shared<Memory>,
+        given: &Path,
+        proven: bool,
+        start: Start,
+    ) -> Option<&'static str> {
+        link.relayed_over("tern", start, proven)
+            .await
+            .expect("it starts here");
+        let words = fs::read_to_string(given).expect("the holder was given its words");
+        [
+            "FENCED=fence",
+            "FENCED=strict",
+            "PI_SANDBOX=fence",
+            "PI_SANDBOX=strict",
+        ]
+        .into_iter()
+        .find(|fence| words.contains(fence))
     }
 
     // That ruling holds only where the cell's strict fence runs a

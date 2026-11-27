@@ -5429,8 +5429,9 @@ mod tests {
 
     /// The start kestrel asks skiff's end of a link, marked as the
     /// person's carry, as skiff's node is handed it, the end judging
-    /// kestrel by `membership`.
-    async fn a_carry_as_handed_on(membership: impl Membership + 'static) -> Start {
+    /// kestrel by `membership`, with whether the end says its key proved
+    /// kestrel.
+    async fn a_carry_as_handed_on(membership: impl Membership + 'static) -> (Start, bool) {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("node.sock");
         let (_node, mut heard) = keeping_node(&socket);
@@ -5477,18 +5478,22 @@ mod tests {
         let relayed = async {
             loop {
                 match heard.recv().await {
-                    Some(crate::wire::Request::Relayed { from, start, .. }) => break (from, start),
+                    Some(crate::wire::Request::Relayed {
+                        from,
+                        start,
+                        proven,
+                    }) => break (from, start, proven),
                     Some(_) => {}
                     None => panic!("its node is asked to start it"),
                 }
             }
         };
-        let (from, start) = tokio::time::timeout(PATIENCE, relayed)
+        let (from, start, proven) = tokio::time::timeout(PATIENCE, relayed)
             .await
             .expect("its node is asked in time");
         skiff_end.abort();
         assert_eq!(from, "kestrel", "from the machine that asked");
-        start
+        (start, proven)
     }
 
     /// The end of h-1 kestrel asks skiff's end of a link for its starter
@@ -5604,14 +5609,30 @@ mod tests {
             by: realm("skiff"),
             far: "kestrel".to_owned(),
         };
-        assert!(
-            a_carry_as_handed_on(proven).await.carries,
-            "a proven end passes the mark on"
+        assert_eq!(
+            a_carry_as_handed_on(proven).await,
+            (a_carry(true), true),
+            "a proven end passes the mark on, and says its key proved the machine"
         );
-        assert!(
-            !a_carry_as_handed_on(realm("skiff")).await.carries,
-            "one whose other end is unproven clears it"
+        assert_eq!(
+            a_carry_as_handed_on(realm("skiff")).await,
+            (a_carry(false), false),
+            "one whose other end is unproven clears it, and says no key proved it"
         );
+    }
+
+    /// kestrel's start as skiff's node is handed it, pinned there, its
+    /// carry's mark kept as `carries` says.
+    fn a_carry(carries: bool) -> Start {
+        let mut start: Start = serde_json::from_value(json!({"work": {}, "command": ["pi"]}))
+            .expect("a start");
+        start
+            .work
+            .needs
+            .push(crate::placement::Need::Machine("skiff".to_owned()));
+        start.may_cost = false;
+        start.carries = carries;
+        start
     }
 
     #[tokio::test]
