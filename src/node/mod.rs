@@ -2900,12 +2900,11 @@ impl Looked {
     /// judges name them; one it missed is a fault ([`missed`]), and is
     /// read afresh, as a running holder is never taken as gone.
     fn holder(&self, folder: &Path, id: &str) -> Option<bool> {
-        match self.folders.get(folder) {
-            Some(holders) => steer::its_holder_among(id, holders),
-            None => {
-                missed(folder);
-                steer::its_holder_among(id, &hold::held(folder))
-            }
+        if let Some(holders) = self.folders.get(folder) {
+            steer::its_holder_among(id, holders)
+        } else {
+            missed(folder);
+            steer::its_holder_among(id, &hold::held(folder))
         }
     }
 
