@@ -431,11 +431,20 @@ mod tests {
     /// person's own; none where bubblewrap can't make one, as in a build's
     /// sandbox. It says its id and waits on its input.
     fn fenced(hidden: &Path, cwd: &Path) -> Option<(Fenced, i32)> {
+        fenced_making(hidden, None, cwd)
+    }
+
+    /// As [`fenced`], with `made` a folder made inside the view alone,
+    /// over `hidden`'s empty one, where none of the node's is.
+    fn fenced_making(hidden: &Path, made: Option<&Path>, cwd: &Path) -> Option<(Fenced, i32)> {
         use std::io::{BufRead, BufReader};
         use std::process::{Command, Stdio};
-        let mut child = Command::new("bwrap")
-            .args(["--dev-bind", "/", "/", "--tmpfs"])
-            .arg(hidden)
+        let mut bwrap = Command::new("bwrap");
+        bwrap.args(["--dev-bind", "/", "/", "--tmpfs"]).arg(hidden);
+        if let Some(made) = made {
+            bwrap.arg("--dir").arg(made);
+        }
+        let mut child = bwrap
             .arg("--chdir")
             .arg(cwd)
             .args(["sh", "-c", "echo $$; exec cat"])
@@ -492,6 +501,48 @@ mod tests {
 
         assert_eq!(refused, Err(not_here(&hidden)));
         assert_eq!(started.folder, Some(PathBuf::from("src/rows")));
+    }
+
+    /// An agent standing in a folder only its own view holds, where the
+    /// node holds another of the same name, is somewhere the node can't
+    /// name: its view is refused whole, and it starts nowhere, even naming
+    /// a folder both see, since the node would start it where it isn't.
+    #[test]
+    fn an_agent_standing_where_only_its_view_holds_is_refused_its_start() {
+        let place = tempfile::tempdir().expect("a place");
+        let home = place.path().canonicalize().expect("real").join("home");
+        let seen = home.join("src/rows");
+        let hidden = home.join("src/secret");
+        let own = hidden.join("own");
+        checkout(&seen);
+        fs::create_dir_all(&own).expect("the node's own folder of that name");
+        let Some((_fenced, pid)) = fenced_making(&hidden, Some(&own), &own) else {
+            eprintln!("bubblewrap can't make a mount view here, so nothing is proved");
+            return;
+        };
+        let procs = PathBuf::from("/proc");
+        let ticks = asker::started(&procs, pid).expect("the fenced process has started");
+        let processes = Processes::Folder(procs.clone());
+
+        let viewed = Viewed::of(&procs, pid, ticks).err();
+        let refused = super::super::sprouted(
+            &sprout_in(&seen),
+            By::Agent(Kind::Fence),
+            Some((pid, ticks)),
+            &processes,
+            &home,
+            "osprey",
+        );
+
+        assert_eq!(viewed.as_deref(), Some("where the asker is can't be told"));
+        assert_eq!(
+            refused,
+            Err(crate::wire::Answer::Err(
+                "an agent's sprout is judged on the disk as it sees it, and where the asker \
+                 is can't be told; the person can start it"
+                    .to_owned()
+            ))
+        );
     }
 
     #[test]
