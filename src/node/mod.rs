@@ -25295,7 +25295,10 @@ esac
         fs::write(dir.path().join(made::AGENT_ROOMS), "wren\n").expect("named");
         assert_eq!(
             (floors("wren"), floors("osprey")),
-            ((Some(Kind::Fence), Some(Kind::None)), (None, Some(Kind::None))),
+            (
+                (Some(Kind::Fence), Some(Kind::None)),
+                (None, Some(Kind::None))
+            ),
             "named as a room, it takes another's carry in the agent fence, and no other changes"
         );
         assert_eq!(
