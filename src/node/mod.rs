@@ -19082,6 +19082,11 @@ esac
                 .is_err_and(|why| why.starts_with("nowhere")),
             "a machine the realm doesn't have takes nothing: {nowhere:?}"
         );
+        // kestrel is booked nowhere here, so only a worker this node's link
+        // reached is a room.
+        let mut kestrel = placement::tests::machine("kestrel", "linux", 32, &[]);
+        kestrel.worker = true;
+        store.put_machine(&kestrel).expect("kept");
         fs::write(socket.with_file_name(made::AGENT_ROOMS), "kestrel\nskiff\n").expect("named");
         let recast = run_through(socket.clone(), run_of("kestrel", "true")).await;
         assert!(
