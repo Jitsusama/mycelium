@@ -119,6 +119,17 @@ pub fn said(reading: &Reading, realm: &str, width: usize, colour: bool) -> Strin
         }
     }
     out.push('\n');
+    for (word, rest) in sentences(reading) {
+        out.push_str(&wrapped(&paint(BOLD, word), word, &rest, width));
+    }
+    out
+}
+
+/// The sentences under the table, each as its word and the rest: what
+/// each flag means, or that nothing is wrong, why each machine that
+/// stands lively is over, then the flags held most of the last ten
+/// minutes.
+fn sentences(reading: &Reading) -> Vec<(&'static str, String)> {
     let mut sentences: Vec<(&str, String)> = if reading.flags.is_empty() {
         vec![(
             "nothing wrong",
@@ -146,15 +157,14 @@ pub fn said(reading: &Reading, realm: &str, width: usize, colour: bool) -> Strin
             ),
         ))
     }));
-    for (word, rest) in sentences {
-        out.push_str(&wrapped(&paint(BOLD, word), word, &rest, width));
-    }
     if let Some(held) = reading.held.as_ref().filter(|held| !held.is_empty()) {
         let named: Vec<String> = held.iter().map(short).collect();
-        let rest = format!("{}, in most of the last ten minutes", named.join(", "));
-        out.push_str(&wrapped(&paint(BOLD, "held"), "held", &rest, width));
+        sentences.push((
+            "held",
+            format!("{}, in most of the last ten minutes", named.join(", ")),
+        ));
     }
-    out
+    sentences
 }
 
 /// One machine's figures, in the order of [`COLUMNS`].
