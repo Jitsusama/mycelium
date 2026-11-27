@@ -31,7 +31,8 @@ const LOOK_EVERY: Duration = Duration::from_secs(2);
 const TIES_WITHIN: Duration = Duration::from_secs(30);
 
 /// How long a carry waits, all told, for the sessions to carry and then
-/// to end: time for a busy one to finish its turn and push.
+/// to end: time for a busy one to finish its turn and push. It then
+/// waits `ANSWERED_WITHIN` of its own for each to run there.
 pub const PATIENCE: Duration = Duration::from_secs(15 * 60);
 
 /// How long a carry waits, once the sessions here have ended, for each
@@ -69,7 +70,9 @@ pub struct Through {
 
 impl Through {
     /// Hands for carrying `quest` through the node at `socket`, with the
-    /// quest's share in `shares`, waiting no longer than `patience`.
+    /// quest's share in `shares`, waiting no longer than `patience` for
+    /// the sessions to carry and then to end, and `ANSWERED_WITHIN` more
+    /// for each to run there.
     #[must_use]
     pub fn new(socket: PathBuf, shares: Places, quest: &str, patience: Duration) -> Self {
         // The hostname, not the name the machine goes by in the realm:

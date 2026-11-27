@@ -246,7 +246,8 @@ const _: () = assert!(
 /// How long a carry the node carries on itself waits, all told, for its
 /// session to carry and then to end. Longer than a command's, since no
 /// one waits on it, and a session in a long turn took 18 minutes to carry
-/// on 23 November.
+/// on 23 November. Its answer, each session seen to run there, then
+/// waits the few minutes of its own every carry's does.
 const CARRIED_ON_WITHIN: Duration = Duration::from_secs(60 * 60);
 
 /// How many events a watch may fall behind by before the node lets it go;

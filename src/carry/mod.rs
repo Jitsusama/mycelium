@@ -14,7 +14,9 @@
 //! starts it again, waits until the sessions here have ended, and then
 //! until each runs on the other machine. A step that fails says why
 //! and nothing after it runs; what was done stays done, since each
-//! step can be taken again.
+//! step before the answer can be taken again. One that fails at the
+//! answer has nothing left to carry, its sessions here ended and each
+//! start there marked started, though a session may still come up there.
 //!
 //! What it does to the world goes through [`Hands`], whose one
 //! implementation is the command's, so the order is proved over a fake.
