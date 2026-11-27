@@ -9485,8 +9485,8 @@ impl<S: Store> Shared<S> {
                 })
             }
             (false, _, None) => self.start_on(machine, asked, (fence, within)).await,
-            (true, true) => self.asked_there(&machine, asked, true, within).await,
-            (true, false) => {
+            (true, true, _) => self.asked_there(&machine, asked, true, within).await,
+            (true, false, _) => {
                 if let Some(there) = &asked.once {
                     self.onces.unanswered(there, &machine, true, true);
                 }
