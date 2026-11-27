@@ -3973,6 +3973,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_session_heard_running_there_while_it_lives_here_stands_there_once_it_ends_here() {
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
+        // Carried from skiff, it came up on the Mac before it ended here,
+        // and the Mac says it only once, as nothing of it changes after.
+        skiff.start_here("moved", json!({"session": "moved"}), true);
+        kestrel.start_here("moved", json!({"session": "moved"}), true);
+        kestrel.start_here("zz-after", json!({"session": "zz-after"}), true);
+
+        let _link = linked(&skiff, &kestrel, 1 << 16);
+        // The Mac's sessions go in order, so once the later one is here,
+        // skiff has heard the moved one and kept its own.
+        until(&skiff, |store| {
+            store.presences().iter().any(|p| p.session == "zz-after")
+        })
+        .await;
+        skiff.start_here("moved", json!({"session": "moved"}), false);
+        until(&skiff, |store| {
+            store.presences().iter().any(|p| {
+                p.session == "moved" && p.elsewhere.as_deref() == Some("kestrel") && p.lives
+            })
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn each_end_says_what_its_machine_is_which_stays_out_of_reach_once_the_link_drops() {
         let skiff = Memory::default();
         let kestrel = Memory::default();
