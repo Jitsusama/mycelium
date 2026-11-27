@@ -7,7 +7,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -228,7 +228,7 @@ impl Hands for Through {
         } else {
             Err(format!(
                 "{PI_CARRY} failed: {}",
-                failed_why(&ran.stdout, &ran.stderr)
+                failed_why(&ran.stdout, &ran.stderr, ran.status)
             ))
         }
     }
@@ -629,7 +629,7 @@ pub(crate) fn short_host(host: &str) -> &str {
 /// Why `pi-carry` failed: what its `{"kind": "failed", "why"}` lines said
 /// on its output, since it says everything there, else what it wrote to
 /// its errors.
-fn failed_why(output: &[u8], errors: &[u8]) -> String {
+fn failed_why(output: &[u8], errors: &[u8], _ended: ExitStatus) -> String {
     let output = String::from_utf8_lossy(output);
     let said: Vec<String> = output
         .lines()
@@ -668,7 +668,9 @@ fn untaken(answer: Reply) -> Result<(), Untaken> {
 mod tests {
     use std::collections::BTreeSet;
     use std::fs;
+    use std::os::unix::process::ExitStatusExt;
     use std::path::Path;
+    use std::process::ExitStatus;
     use std::time::{Duration, SystemTime};
 
     use serde_json::{Value, json};
@@ -1354,15 +1356,37 @@ mod tests {
             "{\"kind\":\"tree\",\"path\":\"~/src/harbour\"}\n",
             "{\"kind\":\"failed\",\"why\":\"~/src/harbour has changes no commit holds\"}\n"
         );
+        let failed = ExitStatus::from_raw(1 << 8);
         assert_eq!(
-            failed_why(output.as_bytes(), b"node: warning"),
+            failed_why(output.as_bytes(), b"node: warning", failed),
             "~/src/harbour has changes no commit holds",
             "its failed line, not its errors"
         );
         assert_eq!(
-            failed_why(b"not a line\n", b"node: not found\n"),
+            failed_why(b"not a line\n", b"node: not found\n", failed),
             "node: not found",
             "its errors where it said nothing of its own"
+        );
+    }
+
+    #[test]
+    fn pi_carry_failing_silently_says_how_it_ended() {
+        // 0FX11G's carry, 27 November: the node said only "pi-carry
+        // failed: ", so nobody could tell which tree held it back.
+        let output = concat!(
+            "{\"kind\":\"tree\",\"path\":\"~/src/harbour\"}\n",
+            "{\"kind\":\"done\",\"files\":[]}\n"
+        );
+        assert_eq!(
+            failed_why(output.as_bytes(), b" \n", ExitStatus::from_raw(1 << 8)),
+            "it exited 1, saying nothing of why; its last line was \
+             {\"kind\":\"done\",\"files\":[]}",
+            "its exit and the last it said, where it said no why"
+        );
+        assert_eq!(
+            failed_why(b"", b"", ExitStatus::from_raw(9)),
+            "it was ended by signal 9, saying nothing",
+            "a signal, where it said nothing at all"
         );
     }
 }
