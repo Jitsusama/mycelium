@@ -673,7 +673,9 @@ pub struct Easing {
     acts_on_sleep: bool,
     /// Each session a look chose to carry, with when.
     gone: BTreeMap<String, Timestamp>,
-    /// Each session whose carry was refused as it was told, with when.
+    /// Each session whose carry was refused as it was told, with when,
+    /// until [`Easing::on_way`] finds it older than any carry that can
+    /// still be on its way.
     refused: BTreeMap<String, Timestamp>,
     /// The reason of the last line kept for doing nothing, with the doubt
     /// it said.
@@ -782,7 +784,13 @@ impl Easing {
     /// landed yet, as [`on_way`] says, for the looks that follow.
     /// One refused as its session was told of it, as [`Easing::refused`]
     /// notes, isn't, though its record still stands ordered.
-    pub fn on_way(&mut self, mut on_way: Vec<Moved>, _now: Timestamp) {
+    ///
+    /// None ordered longer than [`kept::STUCK_AFTER`] before `now` is
+    /// on its way, as it stands stuck, so a refusal from before then
+    /// can drop none of them and is forgotten.
+    pub fn on_way(&mut self, mut on_way: Vec<Moved>, now: Timestamp) {
+        let oldest = now - kept::STUCK_AFTER;
+        self.refused.retain(|_, refused| *refused >= oldest);
         on_way.retain(|one| {
             self.refused
                 .get(&one.session)
@@ -795,6 +803,8 @@ impl Easing {
     /// the session was told of it, `at`, so that carry holds no other
     /// once the cooldown is out; a later carry of it still does. A
     /// restart forgets it, so the carry holds again until it is stuck.
+    /// [`Easing::on_way`] forgets it once it is older than
+    /// [`kept::STUCK_AFTER`], when its carry stands stuck anyway.
     pub fn refused(&mut self, session: &str, at: Timestamp) {
         self.refused.insert(session.to_owned(), at);
     }
