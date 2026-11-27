@@ -1761,6 +1761,44 @@ mod tests {
     }
 
     #[test]
+    fn logs_that_disagree_say_nothing_of_a_claim_none_may_be_behind() {
+        let logs = tempfile::tempdir().expect("a temporary folder");
+        // A session that claimed nothing, whose logs name two that
+        // claimed nothing either, so no claim is kept for its doubt.
+        for (folder, continues) in [
+            ("--home-kestrel--", "s-elsewhere"),
+            ("--home-wren--", "s-older"),
+        ] {
+            let folder = logs.path().join(folder);
+            fs::create_dir_all(&folder).expect("made");
+            fs::write(
+                folder.join("2026-11-23T11-31-00-000Z_s-stray.jsonl"),
+                format!("{{\"id\":\"s-stray\",\"parentSession\":\"{continues}\"}}\n"),
+            )
+            .expect("written");
+        }
+        let found = Logs::scan(logs.path()).expect("scanned");
+        let mut record = nested();
+        let said = record.lapse(&standing(&[("s-stray", None)]), || {
+            Some(|session: &str| found.follows(session))
+        });
+        assert!(
+            !said.iter().any(|lapsed| matches!(lapsed, Lapsed::Held { .. })),
+            "no claim is held for its doubt: {said:?}"
+        );
+        let why = found.disagreeing("s-stray").expect("its logs disagree");
+        assert!(
+            why.starts_with("the 2 logs named for s-stray don't all say what it continues"),
+            "{why}"
+        );
+        assert!(
+            !why.contains("claim") && !why.contains("kept"),
+            "a node says this of every doubtful session a lapse's walk meets, held claim or \
+             none behind it, so it says nothing of one: {why}"
+        );
+    }
+
+    #[test]
     fn logs_that_disagree_are_named_in_one_order_however_the_folders_read() {
         let logs = tempfile::tempdir().expect("a temporary folder");
         let log = "2026-11-23T11-31-00-000Z_s-weigh.jsonl";
