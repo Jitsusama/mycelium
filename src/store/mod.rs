@@ -255,10 +255,16 @@ pub trait Store: Clone + Send + Sync + 'static {
     /// what it said before.
     fn put_machine(&self, machine: &Machine) -> io::Result<()>;
 
-    /// Keeps that a link let in with `machine` reached it as a worker, as
-    /// its way in alone says, so it reads as one from now until a put of
-    /// it says otherwise, whether or not it has said what it is.
-    fn mark_worker(&self, machine: &str);
+    /// Keeps whether a link let in with `machine` reached it as a
+    /// `worker`, as its way in alone says, so it reads so from now until a
+    /// put of it says otherwise, whether or not it has said what it is.
+    fn mark_worker(&self, machine: &str, worker: bool);
+
+    /// Whether this store last heard from its node's link, since it
+    /// opened, that `machine` is a worker ([`Store::machines`]), whether
+    /// or not a record of it can be read: a session may take a record away
+    /// as well as write one.
+    fn is_worker(&self, machine: &str) -> bool;
 
     /// The carries each machine's node last told of, by machine: this
     /// machine's own as its node put them, and each other's as its link
@@ -289,12 +295,21 @@ pub fn let_go(store: &impl Store, machine: &str, kept: impl Fn(&str) -> bool) {
 /// isn't, and every session it carried here is let go, since a machine
 /// released is never dialled again. One that declared nothing has no
 /// `leaves_at` to say it by, so it stays, out of reach, as any machine a
-/// link no longer reaches does.
+/// link no longer reaches does. Where no link holds the machine's claim,
+/// it holds it while it puts back what it read, as the start's sweep
+/// does, so no link is let in meanwhile; one a link holds is that link's,
+/// let in already. Either way, whether it is a worker is put back as its
+/// last link said just before.
 pub fn left(store: &impl Store, machine: &str, at: jiff::Timestamp) {
+    let _claim = store.claim(machine).unwrap_or_else(|error| {
+        eprintln!("couldn't claim {machine} while saying it has left: {error}");
+        None
+    });
     if let Some(mut said) = store.machines().into_iter().find(|one| one.name == machine)
         && let Some(declared) = said.declared.as_mut()
     {
         declared.leaves_at = Some(declared.leaves_at.map_or(at, |leaves| leaves.min(at)));
+        said.worker = store.is_worker(machine);
         if let Err(error) = store.put_machine(&said) {
             eprintln!("couldn't say {machine} has left: {error}");
         }

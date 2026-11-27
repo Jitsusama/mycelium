@@ -1084,14 +1084,13 @@ async fn superseded(store: &impl Store, machine: &str, claimed_at: i64) {
 /// ([`Hearing::linked_until`]), and a node killed before either leaves
 /// it there too, so the next link still reaches back that far. When it
 /// was let in is kept apart, as when the machine was last linked
-/// ([`store::last_linked`]). A `worker`'s machine is kept as one from
-/// now, by this end's way in alone, so what it says of itself, or
-/// leaves unsaid, decides nothing. Answers the mark as it stood before,
-/// none for a machine never linked.
+/// ([`store::last_linked`]). Whether its machine is a `worker` is kept
+/// from now, either way, by this end's way in alone, so what it says of
+/// itself, or leaves unsaid, decides nothing, and no earlier link's
+/// mark outlives it. Answers the mark as it stood before, none for a
+/// machine never linked.
 fn admitted(store: &impl Store, machine: &str, worker: bool) -> io::Result<Option<i64>> {
-    if worker {
-        store.mark_worker(machine);
-    }
+    store.mark_worker(machine, worker);
     let before = store.linked_until(machine);
     let at = now();
     if before.is_none() {
@@ -5639,6 +5638,21 @@ mod tests {
             waited.is_ok(),
             "a worker's machine read as one within {PATIENCE:?} of its hello alone"
         );
+    }
+
+    /// Each link's admission says whether its machine is a worker, either
+    /// way, so an earlier link's mark doesn't outlive a later one's.
+    #[test]
+    fn an_admission_says_a_worker_either_way() {
+        let store = Memory::default();
+        store.mark_worker("kestrel", true);
+        admitted(&store, "kestrel", false).expect("a memory store admits");
+        assert!(
+            !store.is_worker("kestrel"),
+            "one let in as none is none, whatever an earlier link said"
+        );
+        admitted(&store, "kestrel", true).expect("a memory store admits");
+        assert!(store.is_worker("kestrel"), "one let in as a worker is one");
     }
 
     #[test]

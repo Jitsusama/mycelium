@@ -546,19 +546,24 @@ impl Store for Memory {
     }
 
     fn put_machine(&self, machine: &Machine) -> io::Result<()> {
+        self.mark_worker(&machine.name, machine.worker);
         let mut held = self.held();
-        if machine.worker {
-            held.workers.insert(machine.name.clone());
-        } else {
-            held.workers.remove(&machine.name);
-        }
         held.machines.insert(machine.name.clone(), machine.clone());
         held.tell(&Change::Machine(machine.name.clone()));
         Ok(())
     }
 
-    fn mark_worker(&self, machine: &str) {
-        self.held().workers.insert(machine.to_owned());
+    fn mark_worker(&self, machine: &str, worker: bool) {
+        let mut held = self.held();
+        if worker {
+            held.workers.insert(machine.to_owned());
+        } else {
+            held.workers.remove(machine);
+        }
+    }
+
+    fn is_worker(&self, machine: &str) -> bool {
+        self.held().workers.contains(machine)
     }
 
     fn told_carries(&self) -> BTreeMap<String, Vec<Value>> {

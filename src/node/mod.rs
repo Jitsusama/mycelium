@@ -9933,12 +9933,7 @@ impl<S: Store> Shared<S> {
                 .as_deref()
                 .is_some_and(|booked| booked != made::PERSON)
         });
-        let an_agents = booked.unwrap_or_else(|| {
-            self.store
-                .machines()
-                .iter()
-                .any(|one| one.name == *room && one.worker)
-        });
+        let an_agents = booked.unwrap_or_else(|| self.store.is_worker(room));
         if by == By::Person && an_agents && self.book.agent_rooms().contains(room) {
             (By::Agent(crate::declared::Kind::Fence), Admits::Rooms)
         } else {

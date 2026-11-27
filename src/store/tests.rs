@@ -75,7 +75,7 @@ fn a_worker_stays_one_until_its_link_says_it_is_none() {
     tern.worker = false;
     store.put_machine(&tern).expect("kept");
     assert_eq!(worker(&store), Some(false), "a put saying none makes none");
-    store.mark_worker("tern");
+    store.mark_worker("tern", true);
     assert_eq!(
         worker(&store),
         Some(true),
@@ -93,6 +93,12 @@ fn a_worker_stays_one_until_its_link_says_it_is_none() {
         worker(&store),
         Some(false),
         "a put saying it is none unmakes one"
+    );
+    store.mark_worker("tern", true);
+    store.mark_worker("tern", false);
+    assert!(
+        !store.is_worker("tern"),
+        "a link let in as none unmakes an earlier link's mark"
     );
 }
 

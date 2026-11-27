@@ -753,22 +753,25 @@ impl Store for Folders {
 
     fn put_machine(&self, machine: &Machine) -> io::Result<()> {
         let file = format!("{}{SAID}", safe(&machine.name)?);
-        let mut workers = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
-        if machine.worker {
-            workers.insert(machine.name.clone());
-        } else {
-            workers.remove(&machine.name);
-        }
-        drop(workers);
+        self.mark_worker(&machine.name, machine.worker);
         let body = serde_json::to_value(machine).map_err(io::Error::other)?;
         write_whole(&self.claims, &file, &body)
     }
 
-    fn mark_worker(&self, machine: &str) {
+    fn mark_worker(&self, machine: &str, worker: bool) {
+        let mut workers = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
+        if worker {
+            workers.insert(machine.to_owned());
+        } else {
+            workers.remove(machine);
+        }
+    }
+
+    fn is_worker(&self, machine: &str) -> bool {
         self.workers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(machine.to_owned());
+            .contains(machine)
     }
 
     fn told_carries(&self) -> BTreeMap<String, Vec<Value>> {
@@ -2558,12 +2561,17 @@ mod tests {
         );
         // A node opening again knows a worker by its link's admission, so
         // one that hasn't said what it is yet is one all the same.
-        again.mark_worker("tern");
+        again.mark_worker("tern", true);
         fs::write(&record, serde_json::to_vec(&unsaid).expect("JSON")).expect("a session writes");
         assert_eq!(
             worker(&again),
             Some(true),
             "its link's admission makes one, whatever a session writes of it"
+        );
+        fs::remove_file(&record).expect("a session takes it away");
+        assert!(
+            again.is_worker("tern"),
+            "a record taken away unmakes no worker either"
         );
     }
 
