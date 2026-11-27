@@ -240,6 +240,19 @@ impl Book {
     /// are read.
     #[must_use]
     pub fn agent_rooms(&self) -> BTreeSet<String> {
+        self.rooms_in_order().into_iter().collect()
+    }
+
+    /// The machine `agent-rooms` names first ([`Book::agent_rooms`]),
+    /// read as that does; none where it names none.
+    #[must_use]
+    pub fn first_agent_room(&self) -> Option<String> {
+        self.rooms_in_order().into_iter().next()
+    }
+
+    /// The machines `agent-rooms` names, in the file's order, as
+    /// [`Book::agent_rooms`] reads them.
+    fn rooms_in_order(&self) -> Vec<String> {
         let path = self.path.with_file_name(AGENT_ROOMS);
         let read = rooms_said(&path);
         let unread = read
@@ -272,13 +285,6 @@ impl Book {
             .filter(|name| !name.is_empty())
             .map(str::to_owned)
             .collect()
-    }
-
-    /// The machine `agent-rooms` names first ([`Book::agent_rooms`]),
-    /// read as that does; none where it names none.
-    #[must_use]
-    pub fn first_agent_room(&self) -> Option<String> {
-        None
     }
 
     /// Keeps that `made` was made.
