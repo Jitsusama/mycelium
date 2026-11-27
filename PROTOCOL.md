@@ -2601,8 +2601,12 @@ instead. In any hour a cell starts at most 8
 and every agent together at most 32, and one past either is refused,
 saying which. A claim proves nothing, so the 8 are a cell's fair
 share, and the 32, with the ended sessions below, the bound no agent
-gets round. A start counts whether it started or failed, since a failed one may
-still have spent, and so does one still starting, so starts asked at
+gets round. A start placed needing a machine the node made, as its
+book of machines made stands, counts toward that machine's own 32
+instead of the node's, since it runs nothing here and the made
+machine's places bound how many it holds at once; it still counts
+toward its cell's 8. A start counts whether it started or failed,
+since a failed one may still have spent, and so does one still starting, so starts asked at
 once can't pass the limit; a refused one doesn't, nor one relayed to
 the node and refused there before anything began: placed elsewhere,
 not taken now, or not to be begun for want of a launcher, a starter,
@@ -2668,10 +2672,11 @@ write there could lift it, as it could stop the node. Every start,
 refused ones too, is kept in `starts.jsonl` beside `runs.jsonl` as a
 JSON line, `{"at", "by", "started_by", "folder", "program",
 "resumes", "reopens", "carried", "machine", "held",
-"failed", "refused"}`: `at` in milliseconds, `started_by` null for the
+"failed", "refused", "toward"}`: `at` in milliseconds, `started_by` null for the
 person's, `resumes` the id of the session it brings back uncounted,
 `reopens` the id of the session it brings back, counted or not,
 `carried` the id of the session a carry takes uncounted, as below,
+`toward` the made machine whose 32 it counts toward,
 `program` the command's first word alone, so no argument is kept,
 `failed` the node's reason alone, before the words naming the command,
 and the rest only where they apply. The node reads it again as it

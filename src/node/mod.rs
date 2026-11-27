@@ -1243,6 +1243,16 @@ impl<S: Store> Shared<S> {
             .standing()
             .is_ok_and(|standing| standing.made.iter().any(|made| made.machine == machine))
     }
+
+    /// The machine this node made that `work` needs, where it needs one,
+    /// so a start placed by it lands there alone and counts toward that
+    /// machine's number rather than this node's ([`starts::Kept::toward`]).
+    fn made_it_needs(&self, work: &Work) -> Option<String> {
+        work.needs.iter().find_map(|need| match need {
+            Need::Machine(machine) if self.was_made(machine) => Some(machine.clone()),
+            _ => None,
+        })
+    }
 }
 
 /// The kinds the node holds itself in the daemon interface, which no
@@ -7884,6 +7894,9 @@ impl<S: Store> Shared<S> {
             joined: 0,
             again: again.is_some(),
             declared: asked.work.fence,
+            toward: matches!(whither, Whither::Placed)
+                .then(|| self.made_it_needs(&asked.work))
+                .flatten(),
         };
         // After the join, so an ask again under its name is answered the
         // first's start rather than refused for it; and kept, as every
@@ -8986,6 +8999,7 @@ impl<S: Store> Shared<S> {
             joined: 0,
             again: false,
             declared: asked.work.fence,
+            toward: self.made_it_needs(&asked.work),
         };
         Ok((asked, kept))
     }
@@ -21431,6 +21445,71 @@ esac
             .await
             .expect_err("the next is two minutes off");
         assert!(refused.contains("room again in 2 minutes"), "{refused}");
+    }
+
+    #[tokio::test]
+    async fn a_start_needing_a_made_machine_spends_none_of_the_nodes_number() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(socket.parent().expect("its folder"))
+            .expect("made");
+        // The node's number spent this hour, by cells within their own.
+        let now = jiff::Timestamp::now().as_millisecond();
+        let mut book = (0..starts::NODE_AN_HOUR)
+            .map(|one| {
+                let cell = format!("CELL{:02}", one / starts::CELL_AN_HOUR);
+                let at = now - 60_000 + i64::try_from(one).expect("few");
+                json!({"at": at, "by": {"Agent": "fence"}, "started_by": cell}).to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        book.push('\n');
+        fs::write(socket.with_file_name("starts.jsonl"), book).expect("a book");
+        Book::at(socket.with_file_name("made.jsonl"))
+            .of_realm("work")
+            .made(&made_by("/usr/bin/lend", "harbour", a_day_out()))
+            .expect("harbour is booked");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        let start = |needs: Vec<Need>| {
+            Request::Start(Start {
+                work: work(needs),
+                folder: None,
+                strict: false,
+                command: vec!["pi".to_owned()],
+                may_cost: false,
+                carries: false,
+                once: None,
+            })
+        };
+        asks_below(&socket, 7001);
+        let refused = ask(socket.clone(), start(Vec::new()))
+            .await
+            .expect_err("the node's number is spent");
+        assert!(
+            refused.contains("agents started 32 sessions through this node"),
+            "{refused}"
+        );
+        let elsewhere = ask(
+            socket.clone(),
+            start(vec![Need::Machine("harbour".to_owned())]),
+        )
+        .await
+        .expect_err("harbour isn't linked here");
+        assert!(
+            !elsewhere.contains("sessions in the last hour"),
+            "harbour's number is its own: {elsewhere}"
+        );
+        let kept = fs::read_to_string(socket.with_file_name("starts.jsonl"))
+            .expect("the book reads");
+        assert!(
+            kept.contains(r#""toward":"harbour""#),
+            "the book says it counted toward harbour: {kept}"
+        );
     }
 
     #[tokio::test]
