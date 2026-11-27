@@ -532,7 +532,9 @@ impl Logs {
 
     /// The sentence naming each log of `session`, by its path, where they
     /// don't all say what it continues ([`Self::follows`]), so the copy
-    /// that isn't its own can be found; none where they agree.
+    /// that isn't its own can be found; none where they agree. It says
+    /// nothing of a claim, as it's said wherever a lapse's walk meets
+    /// the session, a claim held behind it ([`Lapsed::Held`]) or none.
     #[must_use]
     pub fn disagreeing(&self, session: &str) -> Option<String> {
         self.follows(session).err()?;
@@ -542,8 +544,8 @@ impl Logs {
             .map(|log| shown(&log.display().to_string()))
             .collect();
         Some(format!(
-            "the {} logs named for {} don't all say what it continues, so a claim it may \
-             lead to is kept until the one that isn't its own is moved: {}",
+            "the {} logs named for {} don't all say what it continues, so it can't be told \
+             until the one that isn't its own is moved: {}",
             found.len(),
             shown(session),
             paths.join(", ")
@@ -1826,8 +1828,8 @@ mod tests {
                 .expect("scanned")
                 .disagreeing("s-weigh"),
             Some(format!(
-                "the 8 logs named for s-weigh don't all say what it continues, so a claim it \
-                 may lead to is kept until the one that isn't its own is moved: {}",
+                "the 8 logs named for s-weigh don't all say what it continues, so it can't \
+                 be told until the one that isn't its own is moved: {}",
                 paths.join(", ")
             )),
             "in their paths' order, so the sentence a node says once is the same at every \
