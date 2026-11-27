@@ -1370,6 +1370,16 @@ impl Runs {
         (runs, said)
     }
 
+    /// How many runs and lends are still under way over this link, whichever
+    /// end asked: each goes over the link, so a machine with one hasn't
+    /// handed over, and an end with one takes no handover, which ends the
+    /// link and every run and lend still going over it. A room's own lend
+    /// is one it borrowed, while the machine that lent it holds it as
+    /// lending, so both kinds count at both ends.
+    fn under_way(&self) -> usize {
+        self.here.len() + self.lending.len() + self.asked.len() + self.borrowed.len()
+    }
+
     /// Hands what the run asked as `ask` of the other machine said on to
     /// its asker, letting go of it once it ends.
     fn ran(&mut self, ask: u64, ran: Ran) {
@@ -2649,7 +2659,7 @@ impl<S: Store> End<S> {
         }
         let held_as: Vec<Option<String>> = self.living().into_values().map(|(_, id)| id).collect();
         let held = self.held.as_deref().map(hold::held).unwrap_or_default();
-        let running = handover::running(&held_as, &held);
+        let running = handover::running(&held_as, &held) + self.runs.under_way();
         self.handover.ran |= running > 0;
         let Handover { leaves, ran, .. } = self.handover;
         if !handover::handed_over(leaves, jiff::Timestamp::now(), ran, running) {
@@ -2662,7 +2672,14 @@ impl<S: Store> End<S> {
     /// Takes the other end's word that its machine has handed over, if this
     /// end holds all it said: frames cross in the order they are said, so
     /// every file it holds has been heard of, and asked for if wanted.
+    /// The other end says it again at each keep, so one not taken while
+    /// this end's own runs there go on is taken once they have ended.
     fn heard_handed_over(&mut self) {
+        // Said again at each keep, so it goes unlogged rather than once a
+        // keep for as long as a run lasts.
+        if self.runs.under_way() > 0 {
+            return;
+        }
         let lacking = self.exchange.as_ref().map_or(0, Exchange::waiting);
         if self.handover.skipped_shares.load(Ordering::Relaxed) {
             eprintln!(
@@ -6103,6 +6120,43 @@ mod tests {
         assert!(
             !matches!(ended, Ok(Ending::HandedOver)),
             "the link ends as the other end leaves, not as handed over: {ended:?}"
+        );
+    }
+
+    // A machine with a run or lend under way hasn't handed over, and one
+    // whose own run or lend is under way over the link takes no handover,
+    // which would end the link and drop it, as kept rooms dropped runs
+    // at their first keep.
+    #[test]
+    fn a_run_or_lend_under_way_holds_its_link_through_a_handover() {
+        let running = || RunningHere {
+            window: Arc::new(tokio::sync::Semaphore::new(1)),
+            _stop: oneshot::channel().0,
+        };
+        let (mut runs, _said) = Runs::new();
+        assert_eq!(
+            runs.under_way(),
+            0,
+            "with nothing asked, nothing is under way"
+        );
+        runs.here.insert(1, running());
+        assert_eq!(runs.under_way(), 1, "a run asked of this machine is");
+        runs.here.clear();
+        runs.lending.insert(2, running());
+        assert_eq!(runs.under_way(), 1, "so is a lend this machine serves");
+        runs.lending.clear();
+        runs.asked.insert(3, mpsc::unbounded_channel().0);
+        assert_eq!(
+            runs.under_way(),
+            1,
+            "so is a run asked of the other machine"
+        );
+        runs.asked.clear();
+        runs.borrowed.insert(4, mpsc::unbounded_channel().0);
+        assert_eq!(
+            runs.under_way(),
+            1,
+            "and so is a lend this machine borrowed, as a room's own model calls are"
         );
     }
 

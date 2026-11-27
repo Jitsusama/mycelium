@@ -338,12 +338,16 @@ same code, each line a JSON value:
     each minute's Machine to an end that `releases`, once that machine
     declares `leaves_at`, no work runs there, and some ran there since
     the link came or its handover has begun. Work is a session living
-    there or a program held there, such as a build; a start this end
+    there, a program held there, such as a build, or a `Run` or `Lend`
+    the other end asked that is still under way there; a start this end
     answered counts as some having run, however soon it ended. The
-    sender first says all
-    it holds of the quests it shares. Frames cross in order, so if the
-    other end then waits on no file from it, it holds all of them: its
-    link ends, and its node releases the machine and dials it no more.
+    sender first says all it holds of the quests it shares. Frames
+    cross in order, so if the other end then waits on no file from it,
+    it holds all of them: its link ends, and its node releases the
+    machine and dials it no more. An end with a `Run` or `Lend` of its
+    own still under way there takes no handover yet, since ending the
+    link would end those too; it takes the one said at the next minute
+    once they have ended.
     An end older than this never hands over, so it is never released.
 14. `{"Update": {"ask"}}`: update the other end's machine to its
     configuration's main, as an `"Update"` request says it, answered by
