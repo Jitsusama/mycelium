@@ -1759,7 +1759,13 @@ how full that disk is as the machine's disk guard bands it (`healthy`,
 `filling`, `nearly-full` or `critically-full`, from the guard's
 `status.json` while its heartbeat is under two minutes old, and absent
 otherwise; the guard's earlier `pressure`, `urgent` and `critical` are
-read as those three, and a band a node doesn't know is read as absent),
+read as those three, and a band a node doesn't know is read as absent;
+a disk the guard calls critically full is `nearly-full` where the
+guard says all three of its `free` bytes above its `nix_floor` and
+`exhausted` false, since the guard may band it so by forecast hours
+before it fills, and `critically-full` otherwise, a guard saying less,
+or a figure in another shape, being taken at its word; no other band
+is changed),
 `accelerators` (each a `kind`, `gpu` or
 `npu`, and its `driver`), and `power`: `on_battery`, true only with a
 battery of its own and nothing plugged in, and `charge`, its own
