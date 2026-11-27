@@ -1463,16 +1463,17 @@ fn worker_refuses() -> Because {
 /// that says it stays reads as one of the person's own cloud machines,
 /// and only pinning every paid machine's work keeps a lent one's there;
 /// work asked on one of the person's own stays there too, which is the
-/// first place it would go. Another machine is a worker unless it is
-/// one of the person's own cloud machines, and needing a cloud machine
-/// names no worker, since the person's own are cloud machines too.
+/// first place it would go. Work naming a paid machine by name goes
+/// there, the person's own cloud machines among them, as it did before
+/// they took sessions, so a start on one of theirs may name a sibling.
+/// A network the person's own cloud machines reach, or needing a cloud
+/// machine, names no worker, so such work asked on a lent machine stays
+/// there rather than going to the person's own.
 #[must_use]
 pub fn asked_on(work: &Work, here: &Machine, machines: &[Machine], now: jiff::Timestamp) -> Work {
     let mut work = work.clone();
-    let is_worker = |one: &Machine| {
-        one.declared.as_ref().is_some_and(Declared::is_worker) && !is_the_persons_cloud(one, now)
-    };
-    let pins_here = here.declared.as_ref().is_some_and(Declared::is_worker);
+    let is_worker = |one: &Machine| one.declared.as_ref().is_some_and(Declared::is_worker);
+    let pins_here = is_worker(here);
     let lasting = lasting_reach(machines, now);
     let names_one = work.needs.iter().any(|need| match need {
         Need::Reach(network) => !lasting.contains(network.as_str()),
@@ -3667,6 +3668,21 @@ pub(crate) mod tests {
                 "work needing {need:?} asked on a lent worker stays there, off the person's own"
             );
         }
+        // Work naming one of the person's own cloud machines goes there,
+        // so a start on a sibling may name it, as before they took
+        // sessions.
+        let named = needing(vec![Need::Machine("wren".to_owned())]);
+        with_theirs.push(kept_room.clone());
+        assert_eq!(
+            asked_on(&named, &kept_room, &with_theirs, now()),
+            named,
+            "work asked on one of the person's cloud machines may name a sibling"
+        );
+        assert_eq!(
+            placed(&place(&named, &with_theirs)),
+            Some("wren"),
+            "and is placed there"
+        );
     }
 
     // Work placed past every heard machine's room is placed where a
