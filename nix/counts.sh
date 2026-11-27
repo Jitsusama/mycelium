@@ -50,7 +50,7 @@ fi
 sorted="$(sort <<< "${listed}")"
 
 # The code files, by code-health's extensions, less what's generated.
-code_pattern='\.(bash|c|cc|cjs|cpp|go|h|js|lua|mjs|nix|py|qml|rb|rs|sh|tf|ts|tsx)$'
+code_pattern='\.(bash|c|cc|cjs|cpp|cts|go|h|js|jsx|lua|mjs|mts|nix|py|pyi|qml|rb|rs|sh|tf|ts|tsx)$'
 coded="$(grep -E "${code_pattern}" <<< "${sorted}" \
   | grep -Ev '(^|/)node_modules/|\.min\.js$' || true)"
 
@@ -621,7 +621,7 @@ function comment(line, mark, markers,    rest, at, offset, said, n, i, list) {
 function suppresses(path, line,    extension, terraform) {
   extension = path
   sub(/^.*\./, "", extension)
-  if (extension == "py") {
+  if (extension == "py" || extension == "pyi") {
     return comment(line, "#", "noqa|type: ignore|pyright: ignore|pylint: disable")
   }
   if (extension == "sh" || extension == "bash") {
@@ -630,7 +630,7 @@ function suppresses(path, line,    extension, terraform) {
   if (extension == "qml") {
     return comment(line, "//", "qmllint disable")
   }
-  if (extension ~ /^(js|mjs|cjs|ts|tsx)$/) {
+  if (extension ~ /^(js|mjs|cjs|jsx|ts|mts|cts|tsx)$/) {
     return comment(line, "//", \
       "biome-ignore|eslint-disable|@ts-ignore|@ts-expect-error|@ts-nocheck")
   }

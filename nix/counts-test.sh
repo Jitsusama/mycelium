@@ -410,6 +410,18 @@ lines c.sh 801
 put nix/suppressions-waiting.txt "b.py 1"
 names $'a.ts 1\nb.py 2\nb.py 3' \
   "each line turning a linter off is named by its file and line, and nothing is compared"
+# Each extension a language's files take is read as that language, as
+# code-health reads it: Python's stubs, and JavaScript and TypeScript's
+# JSX and module-kind extensions.
+tree
+put a.pyi "x: int  # type: ignore"
+put b.mts "// @ts-expect-error"
+put c.cts "// eslint-disable-next-line"
+put d.jsx "// biome-ignore lint: it reads a stream"
+lines f.mts 801
+names $'a.pyi 1\nb.mts 1\nc.cts 1\nd.jsx 1' \
+  "a suppression in a .pyi, .mts, .cts or .jsx file is named as its language's"
+expect fails $'don\'t say why:\nf.mts' "a long .mts file is counted"
 tree
 put a.ts "let a = 1;"
 names "" "a tree turning nothing off names nothing"
