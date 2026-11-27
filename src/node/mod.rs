@@ -25823,6 +25823,13 @@ esac
             (By::Agent(Kind::Fence), Admits::Rooms),
             "and one room named twice is one room, so naming it again keeps no login unfenced"
         );
+        // Followup 501: the rooms-only admits the recast run carries take
+        // a worker booked nowhere here, as every admits take one.
+        assert_eq!(
+            placed(&naming(&["tern"]), &Admits::Rooms).as_deref(),
+            Some("tern"),
+            "so the person's run recast for tern reaches tern"
+        );
         let mut unasked = made_by("/usr/bin/lend", "tern", a_day_out());
         unasked.asker = None;
         shared.book_for(&unasked);

@@ -646,6 +646,24 @@ mod tests {
         );
     }
 
+    // Followup 507(b): a run saying who asked it is read and written as
+    // PROTOCOL.md says, so a node clearing it has it to clear.
+    #[test]
+    fn a_run_saying_who_asked_it_reads_and_writes_as_said() {
+        let said = r#"{"Run":{"work":{},"command":["true"],"asked_by":"Person"}}"#;
+        let request = serde_json::from_str::<Request>(said).expect("a run reads");
+        let Request::Run(run) = &request else {
+            panic!("a run: {request:?}");
+        };
+        assert_eq!(run.asked_by, Some(By::Person), "{said}");
+        let written = serde_json::to_string(&request).expect("a run writes");
+        assert!(written.contains(r#""asked_by":"Person""#), "{written}");
+        assert_eq!(
+            serde_json::from_str::<Request>(&written).expect("it reads back"),
+            request
+        );
+    }
+
     #[test]
     fn a_spawner_is_said_and_answered_as_the_protocol_writes_it() {
         let said = r#"{"Spawned":{"pid":82,"started":5,"session":"s-one"}}"#;
