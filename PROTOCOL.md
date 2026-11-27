@@ -3044,10 +3044,16 @@ machine so refused still counts for what the person's lasting machines
 reach, and a placement's record keeps it as `refused`, so a replay
 refuses it too. There it runs as its fence's declared `runs`, then the
 login shell, then `command`; a machine declaring no `runs` for it
-refuses it, as does one whose
-`runs` doesn't end with `--`, so nothing `command` says is read as
-`runs`' own options. `runs` saying `--shared-tree`, or a shortening
-of it, as a word of its own refuses every run, so pi-fence refuses a
+refuses it, as does one whose `runs` doesn't end with `--`, so
+nothing `command` says is read as `runs`' own options. Where no person works, as on a machine made
+from a basin, the person's run goes through `fence.none.runs`, the
+launcher declared for the machine's unfenced sessions, held to the
+same rules, or is refused where none is declared, so nothing an
+asker says runs as the node's own account, which holds its socket,
+its record of runs and the grant its machine lends on. A machine
+where a person works runs the person's run as the person. A
+launcher's `runs` saying `--shared-tree`, or a shortening of it, as
+a word of its own refuses every run, so pi-fence refuses a
 run started in a work tree its asker doesn't hold. Only the node says
 it, before the `--`, and only for an agent's run another machine
 asked, whose folder, opened and named as the kernel names the open

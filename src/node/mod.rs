@@ -9619,6 +9619,11 @@ impl<S: Store> Shared<S> {
     /// The launcher a run `by` asks goes through here, standing on
     /// `ground` where it was judged, from machine `from`; it keeps in
     /// `started` the folder a judged run entered and what it was spared.
+    /// Where no person works, as on a machine made from a basin, the
+    /// person's run goes through the launcher declared for the machine's
+    /// unfenced sessions, `fence.none.runs`, or not at all, so nothing
+    /// an asker says ever runs as the node's own account, which holds
+    /// its socket, its record of runs and the grant the machine lends on.
     fn launcher(
         &self,
         by: By,
@@ -9626,20 +9631,30 @@ impl<S: Store> Shared<S> {
         from: &str,
         started: &mut serde_json::Value,
     ) -> Result<Vec<String>, String> {
-        let launcher = match by {
-            By::Person => Vec::new(),
-            By::Agent(kind) => {
-                crate::declared::launcher(&self.declared, kind, &self.runs.declarers)
-                    .map_err(|why| {
-                        let here = self.here_to(Some(from));
+        let kind = match by {
+            By::Person if !self.processes.is_unattended() => None,
+            By::Person => Some(crate::declared::Kind::None),
+            By::Agent(kind) => Some(kind),
+        };
+        let launcher = match kind {
+            None => Vec::new(),
+            Some(kind) => crate::declared::launcher(&self.declared, kind, &self.runs.declarers)
+                .map_err(|why| {
+                    let here = self.here_to(Some(from));
+                    if by == By::Person {
+                        format!(
+                            "no person works {here}, so the person's run runs there only as \
+                             its unfenced sessions do: {why}"
+                        )
+                    } else {
                         format!("this asks as {by}, so it runs {here} only in that fence: {why}")
-                    })
-                    .inspect_err(|why| {
-                        if ground.is_some() {
-                            refused(why);
-                        }
-                    })?
-            }
+                    }
+                })
+                .inspect_err(|why| {
+                    if ground.is_some() {
+                        refused(why);
+                    }
+                })?,
         };
         // A run judged is kept with the folder it entered, which a link
         // swapped since the ask no longer names.
@@ -26504,6 +26519,48 @@ esac
                 && refused.contains("agents of no known cell started 8 sessions")
                 && !refused.contains("orchestrator"),
             "the person reads why, and isn't sent to an orchestrator: {refused}"
+        );
+    }
+
+    // ISXEG8's ruling of 27 November [ad8869cf]: where no person works,
+    // nothing an asker says runs as the node's own account, the person's
+    // run included, which goes through the launcher declared for the
+    // machine's unfenced sessions or not at all.
+    #[test]
+    fn where_no_person_works_the_persons_run_goes_through_its_unfenced_launcher() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("node.sock");
+        declares_runs(&socket, true);
+        let unattended = Processes::Folder("/nowhere/proc".into()).unattended();
+        let mut node = holding_skiff(dir.path(), Memory::default(), None, unattended);
+        node.declared = socket.with_file_name("declared.json");
+        node.runs = Arc::new(runs_of(&socket));
+        let mut started = json!({});
+        let refused = node
+            .launcher(By::Person, None, "tern", &mut started)
+            .expect_err("no launcher is declared for an unfenced run");
+        assert!(
+            refused.starts_with("no person works on skiff")
+                && refused.contains("as its unfenced sessions run"),
+            "it runs nothing as the node's account: {refused}"
+        );
+        let mut said: serde_json::Value =
+            serde_json::from_slice(&fs::read(&node.declared).expect("declared")).expect("JSON");
+        said["fence"]["none"] = said["fence"]["strict"].clone();
+        fs::write(&node.declared, said.to_string()).expect("declared again");
+        let strict = node
+            .launcher(By::Agent(crate::declared::Kind::Strict), None, "tern", &mut started)
+            .expect("a strict run has its launcher");
+        assert_eq!(
+            node.launcher(By::Person, None, "tern", &mut started),
+            Ok(strict),
+            "declared, the person's run goes through the unfenced sessions' launcher"
+        );
+        node.processes = Processes::Folder("/nowhere/proc".into());
+        assert_eq!(
+            node.launcher(By::Person, None, "tern", &mut started),
+            Ok(Vec::new()),
+            "where a person works, the person's run runs as the person"
         );
     }
 
