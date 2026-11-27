@@ -1010,6 +1010,57 @@ mod tests {
         );
     }
 
+    // Followup 507(c): a plain run is for a home another may have written,
+    // so no shell start file there may run before its command: not the
+    // home's .profile, nor a file ENV or BASH_ENV names.
+    #[test]
+    fn a_plain_run_reads_no_start_file_in_its_home() {
+        let made = tempfile::tempdir().expect("a temporary home");
+        // Where it leads, as a Mac's temporary folder is behind a link.
+        let home = fs::canonicalize(made.path()).expect("the home's place");
+        let marker = |file: &str| home.join(format!("{file}.read"));
+        // Each start file, if read, leaves a marker of its own in the home.
+        let start_files = [
+            (".profile", "the home's .profile"),
+            ("env.sh", "the file ENV names"),
+            ("bash_env.sh", "the file BASH_ENV names"),
+        ];
+        for (file, _) in start_files {
+            let leave = format!(": > '{}'\n", marker(file).display());
+            fs::write(home.join(file), leave).expect("a start file");
+        }
+        let plain = plain_run("harbour", None, &home);
+        let ran = Command::new(&plain[0])
+            .args(&plain[1..])
+            .arg("true")
+            .env("HOME", &home)
+            .env("ENV", home.join("env.sh"))
+            .env("BASH_ENV", home.join("bash_env.sh"))
+            .output()
+            .expect("the plain run starts");
+        assert!(
+            ran.status.success(),
+            "the plain run of true ends well: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        for (file, named) in start_files {
+            assert!(!marker(file).exists(), "a plain run read {named}");
+        }
+        // Each start file does leave its marker when read, so no marker
+        // above means none was.
+        for (file, named) in start_files {
+            let read = Command::new(the_shell())
+                .args(["-c", r#". "$1""#, "sh"])
+                .arg(home.join(file))
+                .status()
+                .expect("a shell reads the start file");
+            assert!(
+                read.success() && marker(file).exists(),
+                "{named} leaves its marker when read"
+            );
+        }
+    }
+
     #[test]
     fn a_holder_is_told_the_worker_socket_only_where_its_node_serves_one() {
         let told = |worker_socket: Option<&str>| {
