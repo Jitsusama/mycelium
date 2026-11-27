@@ -677,6 +677,9 @@ pub struct Easing {
     /// until [`Easing::on_way`] finds it older than any carry that can
     /// still be on its way.
     refused: BTreeMap<String, Timestamp>,
+    /// Why the carries on their way couldn't be read, while they
+    /// couldn't, as [`Easing::on_way`] was last told.
+    on_way_unread: Option<String>,
     /// The reason of the last line kept for doing nothing, with the doubt
     /// it said.
     said: Option<(String, Option<String>)>,
@@ -788,8 +791,16 @@ impl Easing {
     /// None ordered longer than [`kept::STUCK_AFTER`] before `now` is
     /// on its way, as it stands stuck, so a refusal from before then
     /// can drop none of them and is forgotten.
+    ///
+    /// Where they can't be read, it is told why, and the looks that
+    /// follow carry none until it is told them again, since one of its
+    /// own may still be on its way.
     pub fn on_way(&mut self, on_way: Result<Vec<Moved>, String>, now: Timestamp) {
-        let mut on_way = on_way.unwrap_or_default();
+        let (mut on_way, unread) = match on_way {
+            Ok(on_way) => (on_way, None),
+            Err(why) => (Vec::new(), Some(why)),
+        };
+        self.on_way_unread = unread;
         let oldest = now - kept::STUCK_AFTER;
         self.refused.retain(|_, refused| *refused >= oldest);
         on_way.retain(|one| {
@@ -817,7 +828,9 @@ impl Easing {
     /// the record of carries says `here`'s node made within the day, as
     /// [`eased`] counts them, or why that can't be told; the larger of
     /// it and what the node remembers is what counts against
-    /// [`ease::DAILY`], so a record cut short lifts nothing.
+    /// [`ease::DAILY`], so a record cut short lifts nothing. Where the
+    /// carries on their way couldn't be read, as [`Easing::on_way`] was
+    /// told, that is why it can't be told, so the look carries none.
     pub fn look(
         &mut self,
         here: &Here,
@@ -829,6 +842,10 @@ impl Easing {
     ) -> Option<Value> {
         reading.held = Some(self.watch.take(&reading));
         self.history.read(here.name, &reading);
+        let kept_eases = match (&self.on_way_unread, kept_eases) {
+            (Some(why), Ok(_)) => Err(why.clone()),
+            (_, kept_eases) => kept_eases,
+        };
         self.history.kept_eases(kept_eases);
         // A session in a turn is awake, whatever it would have been put
         // to sleep for.
