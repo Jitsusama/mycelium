@@ -1644,6 +1644,10 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
         ["xyz b"],
         "the letters after a pile were lost, or spread over lines"
     );
+}
+
+#[test]
+fn a_selector_or_a_joiner_moves_down_with_what_it_joins() {
     // A selector that doesn't fit still moves with its emoji to the next.
     assert_eq!(
         wrapped("abc\u{2764}\u{FE0F}", "", "", 4),
