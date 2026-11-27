@@ -878,8 +878,11 @@ in order and says each step:
    the carry, naming it. What a bundle or a log holds isn't read. The
    node logs each carried session started on a worker, naming it, its
    quest and the worker. A machine gone out of reach since the find, or
-   whose node restarted and hasn't heard it since, is refused as the
-   find refuses it, so nothing is shared unscreened.
+   whose node restarted and hasn't heard it since, is refused, saying
+   its sessions wait in the handover here. One gone from the node's
+   machines since the find is shared as one of the person's own,
+   unscreened, but given nothing; a worker's link serves only the
+   quests given to it, so a worker there is served none of it.
 4. `start`: each carried session starts again on the machine, held:
    those told to carry first, then the quest's own, then those the find
    couldn't ask of, so a refusal the ask couldn't foresee meets no

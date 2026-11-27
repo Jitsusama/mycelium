@@ -4383,7 +4383,11 @@ mod tests {
             .expect("the link calls its node in time")
             .expect("the node takes the call");
         let mut node = BufReader::new(called).lines();
-        let first = node.next_line().await.expect("it asks").expect("a line");
+        let first = tokio::time::timeout(PATIENCE, node.next_line())
+            .await
+            .expect("the link asks its node in time")
+            .expect("it asks")
+            .expect("a line");
         assert!(first.contains("Carry"), "the link asks to carry: {first}");
         assert!(
             kestrel.is_worker("skiff"),
