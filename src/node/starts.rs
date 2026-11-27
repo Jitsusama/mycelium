@@ -2,7 +2,8 @@
 //! a number an hour. Cells start cells, so one gone wrong could start
 //! them without end, each spending on the person's account: the node
 //! refuses an agent's start past what one cell, and all of them together,
-//! may start in an hour, and every one while the person has stopped them,
+//! may start in an hour through it, or on each machine it made, and
+//! every one while the person has stopped them,
 //! which takes one act. The person's own starts are never held back, and
 //! nor is pi's first start in the hour bringing back a session that
 //! ended, since it begins no new work, up to [`RESUMED_AN_HOUR`] through
@@ -13,7 +14,8 @@
 //! with the session's id when it brings one back uncounted, `"reopens"`
 //! with it when it brings one back counted or not, then where it
 //! started (`"machine"` and `"held"`), or why it didn't (`"failed"`), or
-//! why it was refused (`"refused"`). The person's stop is the file
+//! why it was refused (`"refused"`), and `"toward"` with the machine
+//! made for the realm that it was asked to start on alone. The person's stop is the file
 //! `starts.stopped` beside it, there for as long as starts are stopped.
 
 use std::collections::{BTreeMap, VecDeque};
@@ -44,7 +46,10 @@ const RESUMING: [&str; 1] = ["--session"];
 pub const CELL_AN_HOUR: usize = 8;
 
 /// The most sessions agents together may start through one node in an
-/// hour.
+/// hour, beside those asked to start on one machine the node made,
+/// which each such machine holds to its own number as many: a session
+/// there runs nothing here, so it spends none of this machine, and the
+/// made machine's own places bound how many it holds at once.
 pub const NODE_AN_HOUR: usize = 32;
 
 /// What a refusal of an agent's start, while the person's stop stands,
@@ -184,6 +189,13 @@ pub struct Kept {
         deserialize_with = "crate::placement::declared_or_none"
     )]
     pub declared: Option<crate::placement::DeclaredFence>,
+    /// The machine it was asked to start on alone, where that is one the
+    /// node made: it counts toward that machine's number of agents'
+    /// starts rather than the node's ([`NODE_AN_HOUR`]), though toward
+    /// its cell's all the same. None for any other, and for a line kept
+    /// before there was this, so those count toward the node's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toward: Option<String>,
 }
 
 /// Whether no ask joined a start, so its line says nothing of it.
@@ -726,7 +738,20 @@ impl Starts {
             .filter(|one| one.started_by == asked.started_by)
             .map(|one| one.at)
             .collect();
-        let all: Vec<i64> = counted.iter().map(|one| one.at).collect();
+        // Agents' number is the node's for a start toward no machine it
+        // made, and each made machine's own for those toward it.
+        let all: Vec<i64> = counted
+            .iter()
+            .filter(|one| one.toward == asked.toward)
+            .map(|one| one.at)
+            .collect();
+        let through = asked
+            .toward
+            .as_deref()
+            .map_or_else(
+                || "through this node".to_owned(),
+                |made| format!("on {made}"),
+            );
         let cell = asked
             .started_by
             .as_deref()
@@ -743,8 +768,8 @@ impl Starts {
         });
         let node_limit = room_after(all.clone(), NODE_AN_HOUR).map(|room| {
             let why = format!(
-                "agents started {} sessions through this node in the last hour, and they start \
-                 at most {NODE_AN_HOUR} an hour",
+                "agents started {} sessions {through} in the last hour, and they start at most \
+                 {NODE_AN_HOUR} an hour",
                 all.len()
             );
             (why, room)
@@ -1145,6 +1170,7 @@ mod tests {
             joined: 0,
             again: false,
             declared: None,
+            toward: None,
         }
     }
 
@@ -1412,6 +1438,64 @@ mod tests {
             .expect_err("new work past the node's number still waits");
         assert!(refused.contains("agents started 32 sessions"), "{refused}");
         started(&starts, resuming("SKIFFS", "s-last", NOW + 200), "h");
+    }
+
+    #[test]
+    fn starts_on_a_made_machine_count_toward_its_own_number_not_the_nodes() {
+        let (_dir, starts) = book();
+        let toward = |cell: &str, at: i64, made: &str| Kept {
+            toward: Some(made.to_owned()),
+            ..agent(cell, at)
+        };
+        for one in 0..NODE_AN_HOUR {
+            let at = NOW + i64::try_from(one).expect("few");
+            let cell = format!("CELL{:02}", one / CELL_AN_HOUR);
+            started(&starts, toward(&cell, at, "harbour"), "h");
+        }
+        let refused = starts
+            .admit(toward("SKIFFS", NOW + 100, "harbour"))
+            .expect_err("harbour's number is spent");
+        assert!(
+            refused.contains("agents started 32 sessions on harbour in the last hour"),
+            "{refused}"
+        );
+        started(&starts, toward("SKIFFS", NOW + 100, "wren"), "h");
+        for one in 0..NODE_AN_HOUR {
+            let at = NOW + 200 + i64::try_from(one).expect("few");
+            let cell = format!("NODE{:02}", one / CELL_AN_HOUR);
+            started(&starts, agent(&cell, at), "h");
+        }
+        let refused = starts
+            .admit(agent("TERNS", NOW + 300))
+            .expect_err("the node's number is its own");
+        assert!(
+            refused.contains("agents started 32 sessions through this node"),
+            "{refused}"
+        );
+    }
+
+    #[test]
+    fn a_cells_starts_on_a_made_machine_still_count_toward_its_number() {
+        let (_dir, starts) = book();
+        for one in 0..CELL_AN_HOUR {
+            let at = NOW + i64::try_from(one).expect("few");
+            let asked = Kept {
+                toward: Some("harbour".to_owned()),
+                ..agent("OSPREY", at)
+            };
+            started(&starts, asked, "h");
+        }
+        let refused = starts
+            .admit(agent("OSPREY", NOW + 100))
+            .expect_err("the cell's number counts every start");
+        assert!(refused.contains("OSPREY started 8 sessions"), "{refused}");
+    }
+
+    #[test]
+    fn a_line_kept_before_toward_counts_toward_the_node() {
+        let line = r#"{"at":1,"by":{"Agent":"fence"},"started_by":"OSPREY"}"#;
+        let kept: Kept = serde_json::from_str(line).expect("an old line reads");
+        assert_eq!(kept.toward, None);
     }
 
     #[test]
