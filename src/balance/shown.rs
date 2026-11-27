@@ -302,6 +302,16 @@ fn wrapped(drawn: &str, word: &str, rest: &str, width: usize) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn wide_words_wrap_by_the_cells_they_take() {
+        // Each word takes four cells, so three after `held:` fill twenty,
+        // where counted by character five would.
+        assert_eq!(
+            wrapped("held", "held", &["港湾"; 6].join(" "), 20),
+            "held: 港湾 港湾 港湾\n      港湾 港湾 港湾\n"
+        );
+    }
+
     fn machine(name: &str, load: f64, busy: usize, per_core: f64) -> Load {
         Load {
             machine: name.to_owned(),
