@@ -11,6 +11,10 @@
 //! Each make and release is kept, a JSON line each, in the node's book
 //! ([`Book`]), so what was made, for how long and at what rate can always
 //! be read back and summed.
+//!
+//! Long because its tests, nearly half of it, walk each way the book is
+//! kept and read back: grants, rooms, lines kept at once, restarts,
+//! releases, a line cut short and a book that changes between reads.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
