@@ -61,6 +61,7 @@ The rest of the tests sit beside the code they prove, in `src/`.
 - `stopped.rs`: a node told to stop while a client watches it, letting
   go, taking its socket away and ending well
 - `unanswered.rs`: what waits on the mesh into a pipe, text for a person
-  with nothing cut, and as JSON lines with `-o json` or `--json`
+  with nothing cut and each time stamped with its date and zone, and as
+  JSON lines with `-o json` or `--json`
 - `unread.rs`: a command's failure said to a pipe nobody reads any more
   ending as a failure, not a panic

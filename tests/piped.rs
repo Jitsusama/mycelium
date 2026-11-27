@@ -42,9 +42,15 @@ fn printed(home: &Path, args: &[&str]) -> String {
 }
 
 /// When kestrel was last measured, as the node at `home` says in JSON,
-/// stamped as a pipe draws it; none if the JSON doesn't say it.
-fn measured(home: &Path) -> Option<String> {
+/// stamped as a pipe draws it; the JSON itself if it doesn't say, so a
+/// failure shows what it said instead.
+fn measured(home: &Path) -> Result<String, String> {
     let json = printed(home, &["machines", "-o", "json"]);
+    stamp(&json).ok_or(json)
+}
+
+/// When kestrel was measured, from the first line of the node's `json`.
+fn stamp(json: &str) -> Option<String> {
     let said: serde_json::Value = serde_json::from_str(json.lines().next()?).ok()?;
     let at = said["Ok"]["Machines"]
         .as_array()?
@@ -96,14 +102,14 @@ fn into_a_pipe_a_machine_says_when_it_was_measured_with_its_day_and_zone() {
     let after = measured(home);
     drop(node);
 
-    assert!(
-        before.is_some(),
-        "the JSON didn't say when kestrel was measured:\n{page}"
-    );
+    let (Ok(before), Ok(after)) = (before, after) else {
+        panic!("the JSON didn't say when kestrel was measured: {before:?} {after:?}");
+    };
     let said = line(&page, "measured").map(str::to_owned);
     assert!(said.is_some(), "the page didn't say when:\n{page}");
+    let said = said.as_deref();
     assert!(
-        said == before || said == after,
+        said == Some(before.as_str()) || said == Some(after.as_str()),
         "into a pipe, the time kestrel was measured wasn't stamped as {before:?} or \
          {after:?}:\n{page}"
     );

@@ -539,8 +539,8 @@ mod tests {
     use crate::group::Group;
 
     /// `records` drawn as [`super::drawn`] draws them at `look`'s time, in
-    /// `width` columns, or whole into a pipe where none: `look` is built
-    /// here from the width, so `look`'s own is never read.
+    /// `width` columns, or whole into a pipe where none: `width` takes the
+    /// place of `look`'s own, which is never read.
     fn drawn(records: &[Value], look: &Look, width: Option<usize>) -> String {
         super::drawn(
             records,
