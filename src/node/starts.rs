@@ -754,13 +754,10 @@ impl Starts {
             .filter(|one| one.toward == asked.toward)
             .map(|one| one.at)
             .collect();
-        let through = asked
-            .toward
-            .as_deref()
-            .map_or_else(
-                || "through this node".to_owned(),
-                |made| format!("on {made}"),
-            );
+        let through = asked.toward.as_deref().map_or_else(
+            || "through this node".to_owned(),
+            |made| format!("on {made}"),
+        );
         let cell = asked
             .started_by
             .as_deref()

@@ -22058,8 +22058,8 @@ esac
             !elsewhere.contains("sessions through this node"),
             "harbour's number is its own: {elsewhere}"
         );
-        let kept = fs::read_to_string(socket.with_file_name("starts.jsonl"))
-            .expect("the book reads");
+        let kept =
+            fs::read_to_string(socket.with_file_name("starts.jsonl")).expect("the book reads");
         assert!(
             kept.contains(r#""toward":"harbour""#),
             "the book says it counted toward harbour: {kept}"
@@ -29930,6 +29930,13 @@ esac
     fn only_a_machine_this_node_made_takes_a_start_off_its_number() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let shared = made_for(dir.path(), &[("harbour", "CELL01"), ("skiff", "CELL01")]);
+        // Booked as a make writes its book, which is what the node reads.
+        for name in ["harbour", "skiff"] {
+            shared
+                .book
+                .made(&made_by("/usr/bin/lend", name, a_day_out()))
+                .expect("it is booked");
+        }
         let on = |machine: &str| shared.made_it_needs(&work(vec![Need::Machine(machine.into())]));
         assert_eq!(on("harbour"), Some("harbour".to_owned()), "one it made");
         assert_eq!(on("tern"), None, "one it didn't make");
@@ -29954,7 +29961,10 @@ esac
         };
         assert_eq!(
             pinned_to_made(asked, "harbour").work.needs,
-            vec![Need::System("linux".into()), Need::Machine("harbour".into())],
+            vec![
+                Need::System("linux".into()),
+                Need::Machine("harbour".into())
+            ],
             "made fresh for it, it lands there alone and makes no other"
         );
     }
