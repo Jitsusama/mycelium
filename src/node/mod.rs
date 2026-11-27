@@ -5150,6 +5150,26 @@ impl<S: Store> Shared<S> {
             .collect()
     }
 
+    /// `machines`, each this node booked for an agent's make marked a
+    /// worker, as its link marks it ([`Shared::book_for`]), so one isn't
+    /// listed as the person's own while its link is down, as it is from
+    /// this node's start till the link returns, since the store knows a
+    /// worker only by a link's word this run. The booking only ever adds
+    /// the mark, so nothing a session writes takes it away. A worker this
+    /// node made none of, as one dialling in that another node made, is
+    /// still unmarked while its link is down.
+    fn with_makes_marked(&self, mut machines: Vec<facts::Machine>) -> Vec<facts::Machine> {
+        let inner = self.lock();
+        for machine in &mut machines {
+            machine.worker |= inner
+                .booked
+                .get(&machine.name)
+                .is_some_and(|(_, asker)| asker.as_deref() != Some(made::PERSON));
+        }
+        drop(inner);
+        machines
+    }
+
     /// `machines` as a carry reads them: each this node made leaving no
     /// later than its make ends ([`leaving_as_made`]), since a carried
     /// session lasts. Only carries read them so: a make lives as long as
@@ -5488,7 +5508,9 @@ impl<S: Store> Shared<S> {
             Request::Machine => Ok(Response::Machine(Box::new(self.measure()))),
             // A carry's hands read the realm through this, so it answers
             // each machine as a carry reads it.
-            Request::Machines => Ok(Response::Machines(self.as_carried(self.machines()))),
+            Request::Machines => Ok(Response::Machines(
+                self.with_makes_marked(self.as_carried(self.machines())),
+            )),
             Request::Builders => Ok(Response::Builders(self.builders.builders())),
             Request::StartedBy(held) => {
                 let sessions = self.lock().state.sessions();
@@ -29069,6 +29091,18 @@ esac
             to_dial,
         );
         let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        // Kept with no link's word on it, as from the node's start till
+        // its link returns.
+        let kestrel = placement::tests::machine("kestrel", "linux", 32, &[]);
+        shared.store.put_machine(&kestrel).expect("kept");
+        let listed = || {
+            shared
+                .with_makes_marked(shared.others())
+                .into_iter()
+                .find(|one| one.name == "kestrel")
+                .map(|one| one.worker)
+        };
+        assert_eq!(listed(), Some(false), "booked for nobody, it is no worker");
         for (asker, worker) in [
             (Some(made::PERSON), false),
             (Some("P9R1KI"), true),
@@ -29081,6 +29115,11 @@ esac
                 shared.book_for(&made).worker,
                 worker,
                 "a machine made for {asker:?} is a worker: {worker}"
+            );
+            assert_eq!(
+                listed(),
+                Some(worker),
+                "and is listed as one before its link says so: {worker}"
             );
         }
     }
