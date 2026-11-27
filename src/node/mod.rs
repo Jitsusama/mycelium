@@ -9703,9 +9703,9 @@ impl<S: Store> Shared<S> {
             By::Agent(kind) => By::Agent(kind.max(crate::declared::Kind::Fence)),
             By::Person => By::Person,
         };
-        let asker = by;
+        let who_asked = by;
         let (by, admits) = self.as_a_room_takes(by, &asked.work, self.admits().await);
-        let recast = by != asker;
+        let recast = by != who_asked;
         asked.by = Some(by);
         let fence = match by {
             By::Agent(kind) => Some(kind),
@@ -9741,7 +9741,7 @@ impl<S: Store> Shared<S> {
         // Who asked is kept beside how it ran, so the journal tells the
         // person's run sent to a room from an agent's own.
         if recast {
-            started["asked_by"] = serde_json::json!(asker);
+            started["asked_by"] = serde_json::json!(who_asked);
         }
         let said = if machine == self.machine {
             let home =
