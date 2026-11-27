@@ -381,10 +381,6 @@ pub async fn run(
         realm: membership.hello().realm,
         proven: membership.proves(),
         worker,
-        // A way in that releases the machine it reaches is its provider's,
-        // so a machine reached that way and not a worker is one this
-        // node made for the person ([`dial::Program::worker`]).
-        borrows: worker || releases,
         shows: membership.hello().shows && other.shows && !releases && !other.releases && !worker,
         handover: Handover::new(other.releases, skipped_shares),
         // Two ends that both take facts each say their machine every
@@ -400,7 +396,10 @@ pub async fn run(
         health: health_of(starting.as_ref()),
         declared: declared_of(starting.as_ref()),
         heard_declared: declared_heard::DeclaredHeard::default(),
-        lender: lender_of(starting.as_ref()),
+        // A way in that releases the machine it reaches is its provider's,
+        // so a machine reached that way and not a worker is one this
+        // node made for the person ([`dial::Program::worker`]).
+        lends: lends_to(worker || releases, starting.as_ref()),
         housed: if matches!(
             starting
                 .as_ref()
@@ -989,10 +988,26 @@ fn health_of(starting: Option<&Starting>) -> OwnHealth {
     }
 }
 
-/// What this machine lends the other end, as `starting` says; none where
-/// the link carries no starts, so every lend it asks is refused.
-fn lender_of(starting: Option<&Starting>) -> Option<Arc<Lender>> {
-    starting.and_then(|starting| starting.lender.clone())
+/// What this machine lends the other end, which `borrows` or not, as
+/// `starting` says; nothing where the link carries no starts, so every
+/// lend it asks is refused.
+fn lends_to(borrows: bool, starting: Option<&Starting>) -> Lends {
+    match starting.and_then(|starting| starting.lender.clone()) {
+        _ if !borrows => Lends::NotTo,
+        Some(lender) => Lends::By(lender),
+        None => Lends::Nothing,
+    }
+}
+
+/// What this machine lends the other end of a link, judged as it starts.
+enum Lends {
+    /// The other end borrows, and this machine lends through this.
+    By(Arc<Lender>),
+    /// The other end borrows, but this machine lends nothing.
+    Nothing,
+    /// The other end is neither a worker of this machine nor one its node
+    /// made for the person, so it borrows nothing, whatever this lends.
+    NotTo,
 }
 
 /// The gates this machine answers its workers, if its node names any.
@@ -1227,11 +1242,6 @@ enum Housed {
 }
 
 /// This end of a link, and what it knows of the other.
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each says one thing the other end proved or is, read apart where a frame is \
-              taken or refused"
-)]
 struct End<S> {
     store: S,
     /// This end's machine.
@@ -1245,10 +1255,6 @@ struct End<S> {
     /// Whether the other end is a worker, which asks nothing of this
     /// machine and speaks only for its own sessions ([`Connection::worker`]).
     worker: bool,
-    /// Whether the other end may borrow what this machine lends: a
-    /// worker, or a machine this node made for the person, whose sessions
-    /// think by this machine's lends as a worker's do.
-    borrows: bool,
     /// Whether the two ends tell each other of the carries their nodes
     /// ordered: both said they do, neither releases the other, and the
     /// other isn't a worker, since quest ids and reasons aren't work.
@@ -1278,8 +1284,10 @@ struct End<S> {
     housed: Housed,
     /// This machine's node's socket, which starts asked of it go to.
     node: Option<PathBuf>,
-    /// What answers the lends a worker asks of this machine, if it lends.
-    lender: Option<Arc<Lender>>,
+    /// What this machine lends the other end: only a worker, or a machine
+    /// this node made for the person, whose sessions think by this
+    /// machine's lends as a worker's do, borrows, and only where it lends.
+    lends: Lends,
     /// The gates this machine answers for the workers it names, which
     /// are the one start a worker may ask of it ([`crate::gate`]).
     gates: Option<Arc<Gates>>,
@@ -1945,18 +1953,16 @@ impl<S: Store> End<S> {
     }
 
     /// Hands a lend the other end asks of this machine to its lender, only
-    /// when the other end [`End::borrows`] and this machine lends. The
-    /// lender knows the borrower by this link's other end.
+    /// when the other end borrows and this machine lends ([`End::lends`]).
+    /// The lender knows the borrower by this link's other end.
     fn lend_here(&mut self, ask: u64, lend: Lend) {
-        let lender = if self.borrows {
-            self.lender
-                .clone()
-                .ok_or_else(|| format!("{} lends nothing", self.here))
-        } else {
-            Err(format!(
+        let lender = match &self.lends {
+            Lends::By(lender) => Ok(lender.clone()),
+            Lends::Nothing => Err(format!("{} lends nothing", self.here)),
+            Lends::NotTo => Err(format!(
                 "{} lends only to its workers and the machines it made, and {} is neither",
                 self.here, self.other
-            ))
+            )),
         };
         let lender = match lender {
             Ok(lender) => lender,

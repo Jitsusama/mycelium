@@ -976,7 +976,7 @@ fn decide_at(
             // takes work that names none of the workers: only a machine
             // lent for a while, or Aquifer's, keeps to work that names it.
             if one.declared.as_ref().is_some_and(Declared::is_worker)
-                && !judged.cloud
+                && judged.pays == Pays::Apart
                 && one.held_for != HeldFor::Agents
                 && !names_worker(work, &lasting)
                 && !work.needs.contains(&Need::Machine(one.name.clone()))
@@ -1003,7 +1003,7 @@ fn decide_at(
         let (one, other) = (&judged[one], &judged[other]);
         rank(one)
             .cmp(&rank(other))
-            .then_with(|| other.cloud.cmp(&one.cloud))
+            .then_with(|| other.pays.cmp(&one.pays))
             .then_with(|| other.preferred.cmp(&one.preferred))
             .then_with(|| other.headroom.total_cmp(&one.headroom))
             .then_with(|| one.name.cmp(&other.name))
@@ -1016,7 +1016,7 @@ fn decide_at(
             .take_while(|&at| {
                 let one = &judged[at];
                 rank(one) == rank(best)
-                    && one.cloud == best.cloud
+                    && one.pays == best.pays
                     && one.preferred == best.preferred
                     && one.headroom >= best.headroom - weights.near_best
             })
@@ -1245,7 +1245,7 @@ fn judge_offer(work: &Work, offer: &Offer) -> Judged {
         unheard: false,
         saturated: false,
         kept: Kept::Not,
-        cloud: false,
+        pays: Pays::Apart,
     }
 }
 
@@ -1347,11 +1347,18 @@ pub fn taints(machine: &Machine) -> Vec<Taint> {
     taints
 }
 
+/// How a machine is paid for, as ranking reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Pays {
+    /// Apart from being up: the person's own at home, or one lent for a
+    /// while.
+    Apart,
+    /// By being up: one of the person's own cloud machines, so ranked
+    /// before those paid for apart in its tier.
+    ByBeingUp,
+}
+
 /// One machine, as work sees it.
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each is a judgement of its own that ranks or refuses a machine apart"
-)]
 struct Judged {
     name: String,
     /// Reasons it can't take the work at all.
@@ -1370,9 +1377,9 @@ struct Judged {
     saturated: bool,
     /// Whether it is kept lively, so ranked after machines that aren't.
     kept: Kept,
-    /// Whether it is a cloud machine, paid for by being up, so ranked
-    /// before the person's own machines in its tier.
-    cloud: bool,
+    /// How it is paid for, so a cloud machine ranks before the person's
+    /// own machines in its tier.
+    pays: Pays,
 }
 
 /// Why a machine kept lively to `lively` is past its ceiling, as `room`
@@ -1592,7 +1599,7 @@ fn judge(
         unheard: !lately,
         saturated,
         kept,
-        cloud,
+        pays: if cloud { Pays::ByBeingUp } else { Pays::Apart },
     }
 }
 
