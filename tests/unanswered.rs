@@ -68,8 +68,13 @@ fn a_pipe_reads_text_and_json_is_asked_for() {
         &home.join("r").join("mycelium").join("work.sock"),
         PATIENCE,
     );
+    // A POSIX rule needs no zone database, which the build's sandbox
+    // lacks, and half an hour off UTC it fails a stamp drawn in UTC.
     let printed = |args: &[&str]| {
-        let ran = mycelium(home, args).output().expect("mycelium runs");
+        let ran = mycelium(home, args)
+            .env("TZ", "<+0530>-5:30")
+            .output()
+            .expect("mycelium runs");
         assert!(ran.status.success(), "{args:?} failed: {ran:?}");
         String::from_utf8(ran.stdout).expect("UTF-8")
     };
@@ -85,6 +90,13 @@ fn a_pipe_reads_text_and_json_is_asked_for() {
             line.contains("KESTRL holds #all, until ") && line.ends_with("  [647648e1]")
         }),
         "no line for the hold:\n{text}"
+    );
+    assert_eq!(
+        lines
+            .get(1)
+            .map(|line| line.matches(" +0530 (+05:30)").count()),
+        Some(2),
+        "into a pipe, when the hold was put and until when weren't both stamped:\n{text}"
     );
     assert_eq!(
         lines.get(2),

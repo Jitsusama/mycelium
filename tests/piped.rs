@@ -6,20 +6,18 @@
 use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 use std::process::{Child, Stdio};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use notify::{RecursiveMode, Watcher};
 use process::{made, mycelium};
 
 mod process;
 
-/// The zone the node's times are drawn in: a POSIX rule, which needs no
+/// The zone the command draws its times in: a POSIX rule, which needs no
 /// zone database, as the build's sandbox has none to look `UTC` up in,
 /// and half an hour off UTC, so a stamp drawn in UTC regardless fails.
 const ZONE: &str = "<+0530>-5:30";
 
-/// How long the node has to start and measure its machine.
+/// How long the node has to start.
 const PATIENCE: Duration = Duration::from_secs(30);
 
 /// A node that is stopped once the test is done with it, however it ends.
@@ -44,9 +42,15 @@ fn printed(home: &Path, args: &[&str]) -> String {
 }
 
 /// When kestrel was last measured, as the node at `home` says in JSON,
-/// stamped as a pipe draws it; none until it has been measured.
-fn measured(home: &Path) -> Option<String> {
+/// stamped as a pipe draws it; the JSON itself if it doesn't say, so a
+/// failure shows what it said instead.
+fn measured(home: &Path) -> Result<String, String> {
     let json = printed(home, &["machines", "-o", "json"]);
+    stamp(&json).ok_or(json)
+}
+
+/// When kestrel was measured, from the first line of the node's `json`.
+fn stamp(json: &str) -> Option<String> {
     let said: serde_json::Value = serde_json::from_str(json.lines().next()?).ok()?;
     let at = said["Ok"]["Machines"]
         .as_array()?
@@ -89,29 +93,23 @@ fn into_a_pipe_a_machine_says_when_it_was_measured_with_its_day_and_zone() {
         &home.join("r").join("mycelium").join("work.sock"),
         PATIENCE,
     );
-    let (telling, told) = mpsc::channel();
-    let mut watcher = notify::recommended_watcher(telling).expect("a watcher");
-    watcher
-        .watch(home, RecursiveMode::Recursive)
-        .expect("the home is watched");
-    let deadline = Instant::now() + PATIENCE;
-    let (before, page, after) = loop {
-        let before = measured(home);
-        let page = printed(home, &["machines", "kestrel", "-o", "text"]);
-        let after = measured(home);
-        if before.is_some() && line(&page, "measured").is_some() {
-            break (before, page, after);
-        }
-        let left = deadline.saturating_duration_since(Instant::now());
-        assert!(!left.is_zero(), "kestrel was never measured:\n{page}");
-        // A watch that fails or times out has the node asked again.
-        let _ = told.recv_timeout(left);
-    };
+    // The node measures its own machine each time it is asked, so the
+    // first page already says when, and nothing is waited for. Each ask
+    // measures again, so the page's minute is the one read before it or
+    // the one read after, whichever side of a minute it fell.
+    let before = measured(home);
+    let page = printed(home, &["machines", "kestrel", "-o", "text"]);
+    let after = measured(home);
     drop(node);
 
+    let (Ok(before), Ok(after)) = (&before, &after) else {
+        panic!("the JSON didn't say when kestrel was measured: {before:?} {after:?}");
+    };
     let said = line(&page, "measured").map(str::to_owned);
+    assert!(said.is_some(), "the page didn't say when:\n{page}");
+    let said = said.as_deref();
     assert!(
-        said == before || said == after,
+        said == Some(before.as_str()) || said == Some(after.as_str()),
         "into a pipe, the time kestrel was measured wasn't stamped as {before:?} or \
          {after:?}:\n{page}"
     );

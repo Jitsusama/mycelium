@@ -137,12 +137,12 @@ The harness mesh's messages and presence, carried between machines:
   put to, with who asks whom and how long it has waited, and each hold
   still standing, with until when, each with its id and how it opens.
   It draws text into a pipe too, as `swarm` and `forage` do, each time
-  there with its date and zone so a kept copy still says when (the
-  other commands' piped times still say no year or zone); a
-  script reading the JSON lines it once printed asks for them with
-  `-o json`, which prints each whole as a JSON line. `mycelium said`
-  prints what you said to sessions through this machine, with when each
-  was taken up and answered.
+  there with its date and zone so a kept copy still says when, as
+  every page drawn into a pipe says its times; a script reading the
+  JSON lines it once printed asks for them with `-o json`, which prints
+  each whole as a JSON line. `mycelium said` prints what you said to
+  sessions through this machine, with when each was taken up and
+  answered.
 - `mycelium swarm` shows the realm's teams in a terminal, nested as
   they are and those needing you first, with how many of each one's
   sessions need you, are stuck, move or wait; `mycelium swarm <TEAM>`
