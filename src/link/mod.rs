@@ -3493,7 +3493,7 @@ mod tests {
     /// the facts a test expects are those it queued, measured at the
     /// same moment with the same disk free.
     fn facts_of_tern(cores: u32, declares_nothing: bool) -> Frame {
-        static TERN: std::sync::LazyLock<facts::Machine> =
+        static TERN: std::sync::LazyLock<Machine> =
             std::sync::LazyLock::new(|| facts::measure("tern", &facts::Sources::nowhere()));
         let mut machine = TERN.clone();
         machine.cpu.cores = Some(cores);
