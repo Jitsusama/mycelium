@@ -27255,6 +27255,36 @@ esac
         }
     }
 
+    // Followup 544(4): the room gate reads the worker mark, not the
+    // record, so a session taking a worker's record away leaves the
+    // person's run there fenced as an agent's.
+    #[tokio::test]
+    async fn a_worker_whose_record_is_taken_away_still_fences_the_persons_run() {
+        use crate::declared::Kind;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        fs::write(dir.path().join(made::AGENT_ROOMS), "tern\n").expect("named");
+        let mut tern = placement::tests::machine("tern", "linux", 32, &["basin"]);
+        tern.worker = true;
+        shared.store.put_machine(&tern).expect("its link keeps it");
+        shared.store.take_away_machine("tern");
+        assert!(
+            !shared.store.machines().iter().any(|one| one.name == "tern"),
+            "its record is gone"
+        );
+        let naming = work(vec![Need::Machine("tern".to_owned())]);
+        assert_eq!(
+            shared.recasts(By::Person, &naming),
+            Some(Recast::NoBooking),
+            "the person's run naming it is still recast, as no booking here is theirs"
+        );
+        assert_eq!(
+            shared.as_a_room_takes(By::Person, &naming, Admits::All),
+            (By::Agent(Kind::Fence), Admits::Rooms),
+            "and runs fenced, on rooms, as an agent's"
+        );
+    }
+
     // Followup 499: where a run would go is asked as the run is placed.
     #[tokio::test]
     async fn where_the_persons_run_would_go_is_placed_as_its_run_is_recast() {
