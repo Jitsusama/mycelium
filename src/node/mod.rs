@@ -14103,9 +14103,11 @@ esac
 
         assert_eq!(
             ask(socket.clone(), end("tern")).await,
-            Err("skiff ends e0d4 for its starter only where it took it as an agent's start \
+            Err(
+                "skiff ends e0d4 for its starter only where it took it as an agent's start \
                  relayed from tern, and its book says no such start landed as it"
-                .to_owned()),
+                    .to_owned()
+            ),
             "wren relayed it, not tern"
         );
         assert!(held.join("e0d4.json").exists(), "HARBOR is still held");
@@ -18875,9 +18877,11 @@ esac
         // read it as asked for its starter.
         assert_eq!(
             ended,
-            Err("kestrel ends a start for its starter only when asked over a link its key \
+            Err(
+                "kestrel ends a start for its starter only when asked over a link its key \
                  proved, which this one isn't"
-                .to_owned()),
+                    .to_owned()
+            ),
             "ASKER1's end of its own start goes to kestrel as its starter's"
         );
 

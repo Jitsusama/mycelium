@@ -2086,7 +2086,11 @@ mod tests {
         let again = Starts::at(dir.path().join("starts.jsonl"));
         for read in [&starts, &again] {
             assert_eq!(read.relayed_from("h-1", "kestrel").as_deref(), Some("wren"));
-            assert_eq!(read.relayed_from("h-1", "tern"), None, "it landed elsewhere");
+            assert_eq!(
+                read.relayed_from("h-1", "tern"),
+                None,
+                "it landed elsewhere"
+            );
             assert_eq!(read.relayed_from("h-2", "kestrel"), None, "the person's");
             assert_eq!(read.relayed_from("h-3", "kestrel"), None, "asked here");
             assert_eq!(read.relayed_from("h-4", "kestrel"), None, "the newest");

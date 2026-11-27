@@ -2390,11 +2390,13 @@ impl<S: Store> End<S> {
         // record of orchestrations, so across a link only the person's is.
         let may = folder.and_then(|folder| match by {
             hold::end::Asker::Person => Ok(folder),
-            hold::end::Asker::Session(address) | hold::end::Asker::Starter(address) => Err(format!(
-                "{} ends a held session over a link only for the person, not for {address}, \
+            hold::end::Asker::Session(address) | hold::end::Asker::Starter(address) => {
+                Err(format!(
+                    "{} ends a held session over a link only for the person, not for {address}, \
                  whose orchestration is proved only where both run",
-                self.here
-            )),
+                    self.here
+                ))
+            }
         });
         let folder = match may {
             Ok(folder) => folder,
@@ -2437,7 +2439,10 @@ impl<S: Store> End<S> {
     fn end_start(&self, ask: u64, held: String, cell: &str) {
         let node = match (self.proven, self.node.clone()) {
             (true, Some(node)) => Ok(node),
-            (true, None) => Err(format!("{} ends no held sessions over this link", self.here)),
+            (true, None) => Err(format!(
+                "{} ends no held sessions over this link",
+                self.here
+            )),
             (false, _) => Err(format!(
                 "{} ends a start for its starter only when asked over a link its key \
                  proved, which this one isn't",
@@ -4540,7 +4545,10 @@ mod tests {
             ends_starts: false,
             ..realm("kestrel").hello()
         };
-        assert_eq!(cannot_carry(&end(starter()), &realm("kestrel").hello()), None);
+        assert_eq!(
+            cannot_carry(&end(starter()), &realm("kestrel").hello()),
+            None
+        );
         assert_eq!(
             cannot_carry(&end(starter()), &older),
             Some("end a start for its starter")
@@ -5561,7 +5569,11 @@ mod tests {
             far: "kestrel".to_owned(),
         };
         let (reply, ended) = a_starters_end_as_handed_on(proven).await;
-        assert_eq!(reply, Err("it starts nothing".to_owned()), "the node's answer");
+        assert_eq!(
+            reply,
+            Err("it starts nothing".to_owned()),
+            "the node's answer"
+        );
         assert_eq!(
             ended,
             Some(crate::wire::Request::EndStart {
@@ -5573,9 +5585,11 @@ mod tests {
         let (reply, ended) = a_starters_end_as_handed_on(realm("skiff")).await;
         assert_eq!(
             reply,
-            Err("skiff ends a start for its starter only when asked over a link its key \
+            Err(
+                "skiff ends a start for its starter only when asked over a link its key \
                  proved, which this one isn't"
-                .to_owned())
+                    .to_owned()
+            )
         );
         assert_eq!(ended, None, "its node is never asked");
     }

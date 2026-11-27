@@ -4471,8 +4471,9 @@ process, so it refuses those a link's end asks there. The end goes
 only over a link whose far key proved it, as one this machine dials
 to that machine by ssh is, never over one that machine dialled.
 Anyone else is refused, saying why. An id held here is ended here;
-one held on more than one other machine is refused. Another machine's hold is known by the presence
-of the session running in it, or, where none does, by the node's
+one held on more than one other machine is refused. Another
+machine's hold is known by the presence of the session running in
+it, or, where none does, by the node's
 book of starts, which keeps the machine each start it holds landed
 on, up to 2048 of them, on disk, so a node started again knows. The
 book forgets nothing a hold ending does, so an end it routes says so,
