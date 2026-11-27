@@ -7,8 +7,8 @@
 use serde_json::{Value, json};
 
 use super::{
-    LONGEST_RUN, Look, Swarm, WHOLE, aligned, drawn_width, fit, most_steps, overview, padded, team,
-    typed, unmarked, within, wrapped,
+    LONGEST_RUN, Look, Swarm, WHOLE, aligned, drawn_width, fit, overview, padded, team, typed,
+    unmarked, within, wrapped,
 };
 
 /// A look 72 columns wide, without colour, at 17:00 on Thursday
@@ -1418,7 +1418,8 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
     );
     // A name buried in marks or joiners that draw nothing measures one
     // cell, so only the cap on steps keeps it from putting them all on
-    // the line.
+    // the line: eight steps to a cell, for a room of nine and one more,
+    // and the ellipsis. Written out, so a looser cap fails here.
     for buried in [
         format!("a{}", "\u{301}".repeat(10_000)),
         format!("a{}", "\u{200D}".repeat(10_000)),
@@ -1426,7 +1427,7 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
         let kept = fit(&buried, 10);
         let count = kept.chars().count();
         assert!(
-            kept.starts_with('a') && count <= most_steps(10 - 1) + 1,
+            kept.starts_with('a') && count <= 81,
             "a pile passed a cut whole, or its name went: {count} characters kept"
         );
     }
@@ -1468,12 +1469,11 @@ fn a_pile_of_marks_on_a_later_word_is_cut_as_one_on_the_first_is() {
     // is, so a pile joined whole to the line before it would bury what
     // is beside it, as a pile on the text's first word can't.
     let wrap = wrapped(&format!("x Reef{} b", "\u{301}".repeat(10_000)), "", "", 80);
+    // Eight steps to a cell, for a line of 80 and one more, written out
+    // so a looser cap fails here.
     let marks = wrap.matches('\u{301}').count();
     assert!(
-        marks < most_steps(80)
-            && wrap.starts_with('x')
-            && wrap.contains("Reef")
-            && wrap.ends_with("b\n"),
+        marks < 648 && wrap.starts_with('x') && wrap.contains("Reef") && wrap.ends_with("b\n"),
         "a pile after a later word passed whole, or a word went: {marks} marks on {:?}",
         wrap.lines()
             .map(|line| line.chars().count())
@@ -1489,7 +1489,7 @@ fn a_pile_of_marks_on_a_later_word_is_cut_as_one_on_the_first_is() {
     );
     let most = split.lines().map(|line| line.chars().count()).max();
     assert!(
-        split.matches("Reef").count() == 16 && most.is_some_and(|most| most <= most_steps(80)),
+        split.matches("Reef").count() == 16 && most.is_some_and(|most| most <= 648),
         "piles on short words added up on a line past the cap, or a word went: {most:?}"
     );
 }
