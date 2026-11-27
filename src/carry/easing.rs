@@ -2525,9 +2525,9 @@ mod tests {
         let cooldown = ease::COOLDOWN.as_mins();
         // One more goes idle each minute until the 30th, listed newest
         // first so one never slept would be the first carried, and who
-        // orchestrates comes into doubt partway through the cooldown after
-        // the first carry, at the 15th.
-        let doubted = 15 + cooldown / 2;
+        // orchestrates comes into doubt once none has gone idle for a few
+        // minutes, within a cooldown.
+        let doubted = 33;
         let lines: Vec<Value> = (0..=50)
             .filter_map(|minute: i64| {
                 let at = ago(50 - minute);
@@ -2597,13 +2597,33 @@ mod tests {
                     .is_some_and(|why| why.starts_with(&said))),
             "within the cooldown each sleep says why: {cooling:?}"
         );
-        assert_eq!(
+        assert!(
             said_again
                 .iter()
+                .all(|line| line["orchestrators_unknown"] == json!(doubt)),
+            "within the cooldown only a doubt says more than a sleep: {cooling:?}"
+        );
+        let doubting = lines
+            .iter()
+            .position(|line| line["orchestrators_unknown"] == json!(doubt))
+            .expect("a line saying the doubt");
+        let since = carries
+            .iter()
+            .rev()
+            .find(|&&carry| carry < doubting)
+            .expect("a carry before the doubt");
+        let until = carries
+            .iter()
+            .find(|&&carry| carry > doubting)
+            .map_or(lines.len(), |&carry| carry);
+        let held = &lines[since + 1..until];
+        assert_eq!(
+            held.iter()
+                .filter(|line| line["choice"] != "sleep")
                 .map(|line| (&line["at"], &line["orchestrators_unknown"]))
                 .collect::<Vec<_>>(),
             [(&json!(ago(50 - doubted).to_string()), &json!(doubt))],
-            "nothing says a sleep's why again until a doubt arises: {cooling:?}"
+            "nothing says a sleep's why again until a doubt arises: {held:?}"
         );
     }
 
