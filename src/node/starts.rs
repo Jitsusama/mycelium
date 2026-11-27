@@ -44,8 +44,9 @@ const RESUMING: [&str; 1] = ["--session"];
 pub const CELL_AN_HOUR: usize = 8;
 
 /// The most sessions agents together may start through one node in an
-/// hour.
-pub const NODE_AN_HOUR: usize = 32;
+/// hour: room for eight cells' whole hours at once, since a realm with a
+/// dozen cloud machines to start on outgrew four.
+pub const NODE_AN_HOUR: usize = 64;
 
 /// What a refusal of an agent's start, while the person's stop stands,
 /// ends by telling it to do: only the person lifts it, and an agent is
@@ -1436,7 +1437,10 @@ mod tests {
         let refused = starts
             .admit(agent("SKIFFS", NOW + 200))
             .expect_err("new work past the node's number still waits");
-        assert!(refused.contains("agents started 32 sessions"), "{refused}");
+        assert!(
+            refused.contains(&format!("agents started {NODE_AN_HOUR} sessions")),
+            "{refused}"
+        );
         started(&starts, resuming("SKIFFS", "s-last", NOW + 200), "h");
     }
 
