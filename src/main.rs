@@ -252,7 +252,7 @@ enum Action {
     /// most, closed documents are counted, and each row is cut to fit.
     /// Named by its address or its quest's id, one cell's forage, with
     /// its purpose as far as its node read it and every document. Into a
-    /// pipe nothing more is cut.
+    /// pipe, as `watch` and `less` read it, nothing more is cut.
     #[command(after_help = "Example:\n  mycelium forage HARBOR")]
     Forage(ForageAsked),
     /// Says how a receptor stands, as the receptor.
@@ -465,9 +465,19 @@ enum Action {
     ///
     /// What is said goes into the steer inbox of the session going by
     /// ADDRESS, on whichever machine it runs. The steer is read from
-    /// input, as the harness writes one: `{"text": "..."}`, with `act`
-    /// and `id` if it pauses, resumes, stops, closes or opens a talk, and
-    /// `to` for a carry.
+    /// input, as the harness writes one: `{"text": "..."}`, words for the
+    /// session, with `"now": true` to say them in the turn under way, or
+    /// an `id` to open a talk whose replies come back. Or it does something,
+    /// as its `act`: pause, resume, stop or close; fill, putting its `text`
+    /// in the prompt; park, saying when it was asked as `at` and nothing
+    /// but who it is `from`; wake, saying nothing; answer, naming its
+    /// `want` or `look` and a choice's `value`, or a want's words as
+    /// `other`; move, `to` attended, background or pi; or carry, `to` a
+    /// machine. An ordered-carry, an orchestrator's, says `why` and may
+    /// name sessions going `with` it; the node names who it is `by` from
+    /// its own record, and takes it only from the orchestrating session,
+    /// on the machine both run on. A self-carry is a session's own, `to`
+    /// a machine and saying `why`, taken only from that session.
     #[command(after_help = "Example:\n  echo '{\"text\": \"ship it\"}' | mycelium steer HARBOR")]
     Steer {
         /// The session's address.
@@ -830,18 +840,8 @@ struct Node {
     /// `health`; PROTOCOL.md says what is asked.
     #[arg(long)]
     health_socket: Option<PathBuf>,
-    /// Look each minute at what this machine would do to ease itself
-    /// while over its limits, sleeping or carrying, keeping each choice
-    /// in the state folder's `eases`, a file each day; it does none of
-    /// it.
-    #[arg(long)]
-    eases: bool,
-    /// Make the carries `--eases` chooses, under this node's own name,
-    /// each to ground as firm as an ordered carry's; it still puts no
-    /// session to sleep. Its sessions' harness must read a carry from
-    /// `node@<machine>`, or a carry is kept and told but never taken.
-    #[arg(long, requires = "eases")]
-    eases_carry: bool,
+    #[command(flatten)]
+    easing: EasesAsked,
     /// The machine this one borrows model calls from, through the link
     /// it was accepted by, as a worker's image names its maker. Unnamed,
     /// the node refuses every lend asked of it, so a lender's own node
@@ -855,13 +855,6 @@ struct Node {
     /// this machine is refused.
     #[arg(long)]
     lend: Option<PathBuf>,
-    /// Ask the harness to park the sessions `--eases` chooses to put to
-    /// sleep, each by a file named for it in this folder, the harness's
-    /// own, which parks one only once it is idle and its own rule holds;
-    /// each is taken back once the machine has been clear of its memory
-    /// limit for five minutes, and all of them as the node starts.
-    #[arg(long, requires = "eases")]
-    eases_sleep: Option<PathBuf>,
     /// Where this machine's sessions, running as the account
     /// `--worker-uid` names, are present and speak on the mesh through
     /// the node, which judges what each says, as a worker machine's do.
@@ -1221,7 +1214,8 @@ struct Starting {
     folder: Option<PathBuf>,
     /// Makes a machine for it from a provider's offer that costs money,
     /// where no machine of the realm takes it. One that costs nothing is
-    /// made without it.
+    /// made without it, as is one for the person's own start that names
+    /// a machine or needs the cloud.
     #[arg(long)]
     may_cost: bool,
     /// A name for this one start, given again when asking again after no
@@ -1236,9 +1230,18 @@ struct Starting {
 
 #[derive(clap::Args)]
 struct Sprouting {
-    /// The machine it starts on, by name; this one if none.
+    /// The machine it starts on, by name; if none, where placement
+    /// chooses, where its folder is a repository's own checkout under
+    /// `~/src` fetching from a remote or a bare repository's trunk (this
+    /// one where the machine chosen hasn't it), else this one. Name this
+    /// one for work on what a checkout holds uncommitted.
     #[arg(long)]
     on: Option<String>,
+    /// What the machine it starts on must be, as for `place`, such as
+    /// `cloud`; given again for each. Where no `--on` names one, it
+    /// starts on whichever meets them, made for the person if none does.
+    #[arg(long = "need", value_parser = need)]
+    needs: Vec<Need>,
     /// The folder it works in, or a place by name, such as
     /// `//system/reef` or `reef`.
     #[arg(long = "in")]
@@ -1277,8 +1280,8 @@ struct Running {
 struct Asked {
     /// What a machine must be, as `kind=value`: `machine`, `system`,
     /// `arch`, `reach`, `accelerator` or `tool` (one the realm's kit
-    /// holds), such as `system=linux` or `tool=gcloud`; given again for
-    /// each.
+    /// holds), such as `system=linux` or `tool=gcloud`, or `cloud` alone
+    /// for a machine that costs money; given again for each.
     #[arg(long = "need", value_parser = need)]
     needs: Vec<Need>,
     /// What a machine had rather be, in the same words, most wanted first.
@@ -2127,16 +2130,48 @@ fn gates_given(
         .transpose()
 }
 
-/// How the node eases its machine, kept under `state`, if it `eases` at
-/// all: whether it `carries`, and where it asks the harness to park the
-/// sessions it `sleeps`.
-fn eases_given(eases: bool, carries: bool, sleeps: Option<PathBuf>, state: &Path) -> Option<Eases> {
-    eases.then(|| Eases {
-        folder: state.join("eases"),
-        every: carry::easing::EVERY,
-        carries,
-        sleeps,
-    })
+/// What a node is asked to do to ease its machine.
+#[derive(clap::Args)]
+struct EasesAsked {
+    /// Look each minute at what this machine would do to ease itself
+    /// while over its limits, sleeping or carrying, keeping each choice
+    /// in the state folder's `eases`, a file each day; it does none of
+    /// it.
+    #[arg(long)]
+    eases: bool,
+    /// Make the carries `--eases` chooses, under this node's own name,
+    /// each to ground as firm as an ordered carry's; it still puts no
+    /// session to sleep. Its sessions' harness must read a carry from
+    /// `node@<machine>`, or a carry is kept and told but never taken.
+    #[arg(long, requires = "eases")]
+    eases_carry: bool,
+    /// A worker `--eases` may carry to, by its name, once for each: a
+    /// worker's word that it takes carries is only its own, so one not
+    /// named here takes none from this node. The person's own machines
+    /// need no naming; unnamed, no worker takes a carry from it.
+    #[arg(long, value_name = "MACHINE", requires = "eases")]
+    eases_onto: Vec<String>,
+    /// Ask the harness to park the sessions `--eases` chooses to put to
+    /// sleep, each by a file named for it in this folder, the harness's
+    /// own, which parks one only once it is idle and its own rule holds;
+    /// each is taken back once the machine has been clear of its memory
+    /// limit for five minutes, and all of them as the node starts.
+    #[arg(long, requires = "eases")]
+    eases_sleep: Option<PathBuf>,
+}
+
+impl EasesAsked {
+    /// How the node eases its machine, kept under `state`, if it eases at
+    /// all.
+    fn given(self, state: &Path) -> Option<Eases> {
+        self.eases.then(|| Eases {
+            folder: state.join("eases"),
+            every: carry::easing::EVERY,
+            carries: self.eases_carry,
+            sleeps: self.eases_sleep,
+            onto: self.eases_onto.into_iter().collect(),
+        })
+    }
 }
 
 /// Runs this machine's node on `socket`, as `node` says, until it is asked
@@ -2220,7 +2255,7 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
         placements: Some(mycelium::placements::Log::at(state.join("placements"))),
         health: node.health_socket,
         scratch,
-        eases: eases_given(node.eases, node.eases_carry, node.eases_sleep, &state),
+        eases: node.easing.given(&state),
         settles: Some(settles_kept(&state, &membership.name)),
         lends_from: node.lends_from,
         lend: node.lend,
@@ -2640,10 +2675,6 @@ const SWARM_WITHIN: std::time::Duration = std::time::Duration::from_secs(4);
 /// seconds a link gives another machine to say it was told.
 const STEER_WITHIN: std::time::Duration = std::time::Duration::from_secs(35);
 
-/// How wide the swarm is drawn into a pipe, until its tables can be drawn
-/// whole there, as every command's should be.
-const SWARM_WIDTH: usize = 100;
-
 /// How wide a terminal is drawn on where neither `COLUMNS` nor the
 /// terminal says.
 const WIDTH_UNSAID: usize = 80;
@@ -2671,10 +2702,11 @@ fn swarm(socket: &Path, realm: &str, team: Option<&str>, json: bool) -> io::Resu
 /// narrower. It's read as a terminal's own width is, at most a `u16`,
 /// and no wider than a terminal that says, since a line past its edge
 /// only wraps. Into a pipe `COLUMNS` isn't read, as the
-/// kit's commands don't read it there, and the width is [`SWARM_WIDTH`].
+/// kit's commands don't read it there, and everything is drawn
+/// [`WHOLE`](mycelium::swarm::WHOLE).
 fn width(terminal: bool, columns: Option<&str>, said: Option<u16>) -> usize {
     if !terminal {
-        return SWARM_WIDTH;
+        return mycelium::swarm::WHOLE;
     }
     let said = said.filter(|cells| *cells > 0);
     columns
@@ -3009,6 +3041,7 @@ fn sprout(socket: &Path, asked: Sprouting) -> io::Result<()> {
         folder,
         from: asked.from,
         on: asked.on,
+        needs: asked.needs,
         cwd: Some(cwd.clone()),
     };
     // Judged first here, where this process stands and sees the disk as
@@ -3038,10 +3071,16 @@ fn sprout(socket: &Path, asked: Sprouting) -> io::Result<()> {
     // A node from before sprouts were its own to judge is asked for the
     // Start judged here, as it was then. It knows nothing of what the
     // seed left out, so that is said here, once the session started, as
-    // a node of now would log it.
+    // a node of now would log it. It names this machine where the sprout
+    // names none, as sprouts did then, since that node can't begin it
+    // here where the machine it places it on hasn't its folder.
     let unknown = |why: &str| why.starts_with("not a request") && why.contains("Sprout");
     if matches!(&answer, Answer::Err(why) if unknown(why)) {
-        let reply = Client::connect(socket)?.ask(&Request::Start(start.clone()))?;
+        let mut then = start.clone();
+        if then.work.needs.is_empty() {
+            then.work.needs = vec![Need::Machine(here.clone())];
+        }
+        let reply = Client::connect(socket)?.ask(&Request::Start(then))?;
         for said in left_out.told(&reply) {
             tell!("mycelium sprout: {said}");
         }
@@ -3718,14 +3757,18 @@ fn write_line(out: &mut impl Write, value: &impl serde::Serialize) -> io::Result
 }
 
 fn need(said: &str) -> Result<Need, String> {
-    let (kind, value) = said
-        .split_once('=')
-        .ok_or_else(|| format!("{said:?} is not kind=value, such as system=linux"))?;
-    serde_json::from_value(serde_json::json!({ kind: value })).map_err(|_| {
+    // The cloud is a need with no value: any machine a provider made.
+    if said == "cloud" {
+        return Ok(Need::Cloud);
+    }
+    let not_one = || {
         format!(
-            "{said:?} is not a need: machine, system, arch, reach, accelerator (gpu, npu) or tool"
+            "{said:?} is not a need: cloud, machine, system, arch, reach, accelerator (gpu, \
+             npu) or tool, each but cloud as kind=value, such as system=linux"
         )
-    })
+    };
+    let (kind, value) = said.split_once('=').ok_or_else(not_one)?;
+    serde_json::from_value(serde_json::json!({ kind: value })).map_err(|_| not_one())
 }
 
 /// A kit's folder as it can go on a path: whole, since every session
@@ -3764,14 +3807,37 @@ mod tests {
     use clap::{CommandFactory as _, Parser as _};
 
     use std::io;
+    use std::path::Path;
 
     use mycelium::wire::Request;
 
+    #[test]
+    fn the_steer_help_names_every_act_a_node_takes() {
+        let help = Command::command()
+            .find_subcommand("steer")
+            .and_then(|steer| steer.get_long_about().map(ToString::to_string))
+            .expect("steer has a long help");
+        for act in mycelium::steer::acts() {
+            assert!(help.contains(act), "the help names {act}: {help}");
+        }
+    }
+
     use super::{
-        Action, Command, HELP_WIDTH, SAID_MOST, SWARM_WIDTH, SwarmAsked, Tree, held_through,
-        in_place, kit, orchestrates, processes_here, reader_left, room_of, said_text, swarm_asked,
-        tree, width, within, write_line,
+        Action, Command, HELP_WIDTH, SAID_MOST, SwarmAsked, Tree, held_through, in_place, kit,
+        need, orchestrates, processes_here, reader_left, room_of, said_text, swarm_asked, tree,
+        width, within, write_line,
     };
+
+    #[test]
+    fn the_cloud_is_a_need_with_no_value() {
+        use mycelium::placement::Need;
+        assert_eq!(need("cloud"), Ok(Need::Cloud));
+        assert_eq!(need("reach=basin"), Ok(Need::Reach("basin".to_owned())));
+        assert!(
+            need("clouds").is_err_and(|why| why.contains("cloud, machine")),
+            "a word that isn't one names those that are"
+        );
+    }
 
     #[test]
     fn a_held_program_starts_within_its_fence_outside_the_login_shell() {
@@ -3873,7 +3939,7 @@ mod tests {
 
     #[test]
     fn into_a_pipe_columns_is_not_read() {
-        assert_eq!(width(false, Some("60"), Some(120)), SWARM_WIDTH);
+        assert_eq!(width(false, Some("60"), Some(120)), mycelium::swarm::WHOLE);
     }
 
     #[test]
@@ -4086,6 +4152,26 @@ mod tests {
         assert!(
             node(&["--eases", "--eases-sleep", "/run/park"]).is_ok(),
             "one that eases can"
+        );
+        assert_eq!(
+            node(&["--eases-onto", "tern"])
+                .err()
+                .map(|error| error.kind()),
+            Some(clap::error::ErrorKind::MissingRequiredArgument),
+            "nor name workers to carry to"
+        );
+        let named = node(&["--eases", "--eases-onto", "tern", "--eases-onto", "osprey"]);
+        let Ok(Some(Action::Node(named))) = named.map(|asked| asked.action) else {
+            panic!("one that eases names its workers");
+        };
+        let onto = named
+            .easing
+            .given(Path::new("/state"))
+            .map(|eases| eases.onto);
+        assert_eq!(
+            onto,
+            Some(["osprey".to_owned(), "tern".to_owned()].into()),
+            "each it names"
         );
     }
 

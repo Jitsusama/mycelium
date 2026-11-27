@@ -13,14 +13,16 @@
 //! ("Bootstrap skiff to replace the old dinghy" is `skiff`). Else its
 //! leading words up to its first small one, two at most ("Quick Wins That
 //! Move Harbour Toward Lighthouse's Vision" is `quick-wins`). A name two
-//! teams would share, or that's one of the swarm's acts, goes to neither,
-//! and one worked out goes to none where a quest gives it to its own.
+//! teams would share, or that reads as one of the swarm's acts or as
+//! `team` once cleaned as a page draws it, goes to neither, and one
+//! worked out goes to none where a quest gives it to its own.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use super::{address, title};
+use super::{address, title, unmarked};
+use crate::forage::BRAILLE_BLANK;
 
 /// The small words that name nothing, which a short name never holds.
 const SMALL: [&str; 38] = [
@@ -31,6 +33,62 @@ const SMALL: [&str; 38] = [
 
 /// The swarm's acts, which a team named the same would hide.
 const ACTS: [&str; 3] = ["say", "pause", "resume"];
+
+/// Whether `name`, copied into a shell, reads as one word and nothing
+/// more: letters, digits, `-`, `_`, `.` and any of `also`, which no
+/// shell splits or acts on, led by a letter or digit, so no option is
+/// read from it.
+pub(crate) fn shell_word(name: &str, also: &[char]) -> bool {
+    name.chars().next().is_some_and(char::is_alphanumeric)
+        && name.chars().all(|each| {
+            each.is_alphanumeric() || matches!(each, '-' | '_' | '.') || also.contains(&each)
+        })
+}
+
+/// Whether `name`, copied after `swarm` into a shell, reads as one name
+/// and nothing more: a [`shell_word`], and neither an act, which `swarm`
+/// would do, nor `team`, which it reads as the person saying what
+/// follows.
+pub(super) fn one_word(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    shell_word(name, &[]) && !ACTS.contains(&lower.as_str()) && lower != "team"
+}
+
+/// Whether `name`, cleaned as a page draws it, holds a word `swarm` reads
+/// as other than a team's name: an act, `team` or a flag. Typed as a page
+/// drew it, `reef pause` would pause Reef, and `pause` reach no team.
+/// A short's words may be typed apart, so each part between hyphens
+/// counts as a word too: `reef-pause`, typed as `reef pause`, would pause
+/// Reef.
+fn acts_for(name: &str) -> bool {
+    let drawn = unmarked(name).to_lowercase();
+    let flagged = drawn.split(blank).any(|word| word.starts_with('-'));
+    flagged
+        || drawn
+            .split(|each: char| blank(each) || each == '-')
+            .any(|word| ACTS.contains(&word) || word == "team")
+}
+
+/// Whether `each` is drawn as a space between words.
+fn blank(each: char) -> bool {
+    each.is_whitespace() || each == BRAILLE_BLANK
+}
+
+/// `name` as a page draws it and a person types it: cleaned, so each
+/// control is the space it's drawn as, in lower case, and with each run
+/// of what's drawn as a space one hyphen, as a typed name's words are
+/// joined. So what a page draws is what reaches it: `tide plan` drawn as
+/// said would be typed as `tide-plan`, another team's, and a braille
+/// blank or a control drawn like a space would let `reef pause` through
+/// as one word.
+fn typed_form(name: &str) -> String {
+    unmarked(name)
+        .to_lowercase()
+        .split(blank)
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
 
 /// The most words before a colon that still read as a name.
 const NAME_WORDS: usize = 3;
@@ -100,9 +158,9 @@ fn short(title: &str, shared: &dyn Fn(&str) -> bool) -> Option<String> {
     (!leading.is_empty()).then(|| leading.join("-"))
 }
 
-/// The name `team`'s quest gives it in the swarm, as it's typed.
+/// The name `team`'s quest gives it in the swarm, in its [`typed_form`].
 fn given(team: &Value) -> Option<String> {
-    let name = team.get("swarm")?.as_str()?.trim().to_lowercase();
+    let name = typed_form(team.get("swarm")?.as_str()?);
     (!name.is_empty()).then_some(name)
 }
 
@@ -129,13 +187,26 @@ pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
             if let Some(name) = given(team) {
                 return Some((me, name));
             }
-            Some((me, short(title(team), &shared)?)).filter(|(_, name)| !chosen.contains(name))
+            // A worked-out name is held in its typed form too, as a
+            // title's word may hold a braille blank or a control.
+            Some((me, typed_form(&short(title(team), &shared)?)))
+                .filter(|(_, name)| !chosen.contains(name))
         })
-        .filter(|(_, name)| !ACTS.contains(&name.as_str()))
+        // One that cleans to nothing would be drawn blank, and offered to
+        // a shell as an empty word.
+        .filter(|(_, name)| !acts_for(name) && !name.is_empty())
         .collect();
     named
         .iter()
-        .filter(|(_, name)| named.iter().filter(|(_, other)| other == name).count() == 1)
+        // Two that clean alike are drawn alike, and typed reach both.
+        .filter(|(_, name)| {
+            let drawn = unmarked(name);
+            named
+                .iter()
+                .filter(|(_, other)| unmarked(other) == drawn)
+                .count()
+                == 1
+        })
         .map(|(team, name)| ((*team).to_owned(), name.clone()))
         .collect()
 }
@@ -154,10 +225,11 @@ pub fn shown<'a>(team: &Value, shorts: &'a BTreeMap<String, String>) -> Option<&
     (!says_again(title(team), short)).then_some(short.as_str())
 }
 
-/// Whether `short` only says `title` again, as `reef` says Reef.
+/// Whether `short` only says `title` again, as `reef` says Reef, the
+/// title's words in the [`typed_form`] a short is held in.
 pub(crate) fn says_again(title: &str, short: &str) -> bool {
     let spelt: Vec<String> = words(title).into_iter().map(|word| word.typed).collect();
-    spelt.join("-") == short
+    typed_form(&spelt.join("-")) == short
 }
 
 #[cfg(test)]

@@ -13,6 +13,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
+use unicode_width::UnicodeWidthStr as _;
+
+use crate::forage::BRAILLE_BLANK;
 
 mod asks;
 mod names;
@@ -23,8 +26,8 @@ pub mod steers;
 pub(crate) use asks::{ASKS_FIT, together};
 pub(crate) use asks::{asked, asking};
 pub use asks::{read, records};
-pub(crate) use names::says_again;
 pub use names::short_names;
+pub(crate) use names::{says_again, shell_word};
 pub use shapes::Shapes;
 
 /// The swarm as the node holds it.
@@ -184,7 +187,362 @@ const STEP: usize = 2;
 /// The narrowest a name is cut to, however narrow the terminal.
 pub(crate) const NARROWEST: usize = 16;
 
+/// The width a pipe is drawn at: nothing is cut to it, and no column is
+/// padded out to it, so a reader that greps or saves the text has all of
+/// it, each table's columns as wide as what is in them; a row too long
+/// to line up sets its counts on the next line, as [`aligned`] says.
+pub const WHOLE: usize = usize::MAX;
+
+/// Where a row's counts begin, as a table is drawn [`WHOLE`], for
+/// [`aligned`] to line them up once every row is drawn: a Unicode
+/// noncharacter, as no title has one once [`unmarked`].
+pub(crate) const COUNTS_AT: &str = "\u{fdd0}";
+
+/// Where a line's doing begins, as [`COUNTS_AT`] says its counts do.
+pub(crate) const DOING_AT: &str = "\u{fdd1}";
+
+/// Both marks, each a Unicode noncharacter, which no font draws and no
+/// text from outside should hold, unlike the private-use characters a
+/// theme's shape marks are drawn from.
+const MARKS: [char; 2] = ['\u{fdd0}', '\u{fdd1}'];
+
+/// `text` from a peer as a marked row draws it: on one line, as
+/// [`one_line`](crate::forage::one_line) says, so a break in a title can't
+/// split the block its counts line up in, with no noncharacter, so no
+/// mark [`aligned`] reads and a title can't move a column, and with no
+/// space or [`BRAILLE_BLANK`] of its own at either end, so a title's
+/// leading spaces can't pass for a row's indent once it runs on and set
+/// a figure under a header. Noncharacters go first, so the joiners
+/// kept are judged against what is kept, as PROTOCOL cleans a `for`: one
+/// dropped after would have started a run of joiners afresh, and leave
+/// the run it parted joined past the cap.
+pub(crate) fn unmarked(text: &str) -> String {
+    let drawn: String = text
+        .chars()
+        .filter(|each| !crate::forage::noncharacter(*each))
+        .collect();
+    crate::forage::one_line(&drawn)
+        .trim_matches(|each: char| each.is_whitespace() || each == BRAILLE_BLANK)
+        .to_owned()
+}
+
+/// `text` with no mark left in it, for a page that lines nothing up.
+pub(crate) fn without_marks(text: &str) -> String {
+    text.replace(MARKS, "")
+}
+
+/// The columns a table lined up [`WHOLE`] keeps its counts within, as a
+/// terminal of the narrowest common width shows them.
+const KEPT_WITHIN: usize = 80;
+
+/// The room kept after the widest lead for a doing, so what comes
+/// before a doing ends by column 48 however long the titles, and the
+/// doing begins after the gap that follows.
+const DOING_ROOM: usize = 32;
+
+/// `text` drawn [`WHOLE`] with its marks lined up: in each block of
+/// lines between blank ones, what comes before each mark is padded to
+/// the widest of the block's that leaves what follows room within
+/// [`KEPT_WITHIN`] (a block's widest counts, or [`DOING_ROOM`] for a
+/// doing), counts and doings each on their own. A line whose lead is
+/// wider, a pasted paragraph for a title, runs on alone and sets what
+/// follows on the next line under the column, so one name moves no
+/// other row's counts and no count sits under another's header; with
+/// nothing after its mark, it stays on its line. A doing's block where
+/// no lead fits sets its doings under the furthest column allowed. A
+/// line that runs on has each run of spaces after its indent drawn as
+/// one, its own gaps too, so a title can't space a figure out under a
+/// header. A mark left over is dropped. A colour's escape takes no
+/// column, should a pipe ever be drawn in colour.
+pub(crate) fn aligned(text: &str) -> String {
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let blocks: Vec<(usize, usize)> = {
+        let mut blocks = Vec::new();
+        let mut start = 0;
+        for (at, line) in lines.iter().enumerate() {
+            if line.is_empty() {
+                blocks.push((start, at));
+                start = at + 1;
+            }
+        }
+        blocks.push((start, lines.len()));
+        blocks
+    };
+    for mark in [DOING_AT, COUNTS_AT] {
+        for &(start, end) in &blocks {
+            let block = &mut lines[start..end];
+            let split = |line: &str| {
+                line.find(mark).map(|at| {
+                    let after = &line[at + mark.len()..];
+                    (at, drawn_width(&line[..at]), drawn_width(after))
+                })
+            };
+            let room = if mark == COUNTS_AT {
+                block
+                    .iter()
+                    .filter_map(|line| split(line).map(|(_, _, after)| after))
+                    .max()
+                    .unwrap_or_default()
+            } else {
+                DOING_ROOM
+            };
+            let within = KEPT_WITHIN.saturating_sub(room);
+            // A counts block always holds its header, whose lead fits, so
+            // only a doings block can find none.
+            let widest = block
+                .iter()
+                .filter_map(|line| split(line).map(|(_, before, _)| before))
+                .filter(|before| *before <= within)
+                .max()
+                .unwrap_or(within);
+            for line in block.iter_mut() {
+                if let Some((at, before, _)) = split(line) {
+                    let after = &line[at + mark.len()..];
+                    *line = if before > widest && after.trim().is_empty() {
+                        single_spaced(&line[..at])
+                    } else if before > widest {
+                        format!(
+                            "{}\n{}{after}",
+                            single_spaced(&line[..at]),
+                            " ".repeat(widest)
+                        )
+                    } else {
+                        format!("{}{}{after}", &line[..at], " ".repeat(widest - before))
+                    };
+                }
+            }
+        }
+    }
+    lines
+        .iter()
+        .flat_map(|line| line.split('\n'))
+        .map(|line| line.replace(MARKS, "").trim_end().to_owned())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `lead` as a line that runs on draws it: its indent kept, and each run
+/// of spaces after it drawn as one, with none at its end. A
+/// [`BRAILLE_BLANK`] counts as a space. The indent is the row's own, as
+/// [`unmarked`] leaves a peer's text no space at its start.
+fn single_spaced(lead: &str) -> String {
+    let body = lead.trim_start();
+    let indent = &lead[..lead.len() - body.len()];
+    let words: Vec<&str> = body
+        .split(|each: char| each.is_whitespace() || each == BRAILLE_BLANK)
+        .filter(|word| !word.is_empty())
+        .collect();
+    format!("{indent}{}", words.join(" "))
+}
+
+/// The cells `text` takes in a terminal, as Unicode's East Asian Width
+/// and emoji presentation say: two for a wide character or an emoji,
+/// none for a joiner or a combining mark, one for the rest, each letter
+/// its own however a script's ligature joins it ([`clusters`]). A colour's
+/// escape, which [`Look::paint`] writes and no peer's text keeps once
+/// [`unmarked`], takes none. So it measures only text cleaned or painted
+/// here: in a peer's raw text, an escape never closed would count all
+/// that follows it as no cells.
+pub(crate) fn drawn_width(text: &str) -> usize {
+    let mut count = 0;
+    let mut rest = text;
+    while let Some(at) = rest.find("\u{1b}[") {
+        count += clusters(&rest[..at]);
+        let after = &rest[at + 2..];
+        // An escape ends at its first letter or other final byte, each
+        // one byte long.
+        let end = after
+            .find(|each: char| ('@'..='~').contains(&each))
+            .map_or(after.len(), |end| end + 1);
+        rest = &after[end..];
+    }
+    count + clusters(rest)
+}
+
+/// The cells `text` takes, measured a cluster at a time, each starting at
+/// a character that takes a cell unless an emoji rule joins it to what's
+/// before: a skin tone, a flag's second letter, an emoji after a joiner
+/// that follows one. Unicode's width rules also narrow a few scripts'
+/// ligatures, Arabic's lam-alef, Hebrew's alef-lamed, a Khmer subscript
+/// and Tifinagh's, Lisu's, Buginese's, Old Turkic's and Kirat Rai's, to
+/// fewer cells than their letters. Terminals draw each of those letters in a
+/// cell of its own, so measured whole they'd pass the edge; each
+/// narrowing letter starts a cluster of its own here and counts.
+fn clusters(text: &str) -> usize {
+    let (mut count, mut from) = (0, 0);
+    let (mut drawn, mut before): (Option<char>, Option<char>) = (None, None);
+    for (at, each) in text.char_indices() {
+        if at > 0 && starts_a_cluster(drawn, before, each) {
+            count += text[from..at].width();
+            from = at;
+        }
+        if !draws_nothing(each) {
+            drawn = Some(each);
+        }
+        before = Some(each);
+    }
+    count + text[from..].width()
+}
+
+/// Whether `each` starts a cluster of its own, after `before`, where
+/// `drawn` is the last character before it that takes a cell: it takes a
+/// cell, and no emoji rule joins it.
+fn starts_a_cluster(drawn: Option<char>, before: Option<char>, each: char) -> bool {
+    let flag = |each: char| matches!(each, '\u{1F1E6}'..='\u{1F1FF}');
+    let joins = match before {
+        // A carriage return and its line feed are one.
+        Some('\r') => true,
+        // Only emoji join through a joiner; a letter's ligature doesn't,
+        // on either side of it, whatever the cluster began with.
+        Some('\u{200D}') => {
+            drawn.is_some_and(|drawn| !drawn.is_alphabetic()) && !each.is_alphabetic()
+        }
+        _ => matches!(each, '\u{1F3FB}'..='\u{1F3FF}') || (flag(each) && before.is_some_and(flag)),
+    };
+    !joins && !draws_nothing(each)
+}
+
+/// The longest start of `text` that takes at most `room` cells, as
+/// [`drawn_width`] counts them, so a wide character that would straddle
+/// the edge is left for what follows. Past [`LONGEST_RUN`] steps with no
+/// fresh start it may keep a little less, never more. A colour's escape is one step, so
+/// a cut never leaves one half written, though it may leave a colour
+/// open, which is why each caller paints after cutting. A joiner left at
+/// the cut goes, as it would join nothing, and a pile of marks past
+/// [`STEPS_PER_CELL`] steps to a cell is cut.
+pub(crate) fn within(text: &str, room: usize) -> &str {
+    // A selector widens the heart before it and a joiner makes two emoji
+    // one, so a start can draw wider or narrower than its characters
+    // summed. Unicode's width rules join a character to what's before it
+    // only in the cases `starts_afresh` names, so the cells up to any
+    // other are settled and only the run since is measured again: a cut
+    // costs what it walks, even into a pipe, where the room is the whole
+    // text, which may be a peer's message of 256 KiB. A character narrows
+    // the start it ends by at most a cell, by those rules: a text
+    // selector after an emoji, as no letter's ligature narrows once
+    // [`drawn_width`] counts each letter. So a start two cells past the room
+    // never comes back within it, and the walk stops once a start passes
+    // the room by more than that.
+    let mut kept = 0;
+    let (mut at, mut from, mut settled, mut since) = (0, 0, 0, 0);
+    let mut before: Option<char> = None;
+    for step in steps(text).take(most_steps(room)) {
+        if let Some(each) = step.chars().next().filter(|_| !step.starts_with("\u{1b}[")) {
+            if starts_afresh(before, each) || (since >= LONGEST_RUN && splits(before, each)) {
+                settled += drawn_width(&text[from..at]);
+                from = at;
+                since = 0;
+            }
+            before = Some(each);
+        }
+        since += 1;
+        at += step.len();
+        let drawn = settled + drawn_width(&text[from..at]);
+        if drawn <= room {
+            kept = at;
+        } else if drawn > room.saturating_add(2) {
+            break;
+        }
+    }
+    // A Khmer coeng left at the cut has no letter to subscript.
+    text[..kept].trim_end_matches(['\u{200D}', '\u{17D2}'])
+}
+
+/// Each step a cut takes through `text`: a colour's escape whole, else
+/// one character.
+fn steps(text: &str) -> impl Iterator<Item = &str> {
+    let mut rest = text;
+    std::iter::from_fn(move || {
+        let step = rest.strip_prefix("\u{1b}[").map_or_else(
+            || rest.chars().next().map_or(0, char::len_utf8),
+            |after| {
+                2 + after
+                    .find(|each: char| ('@'..='~').contains(&each))
+                    .map_or(after.len(), |end| end + 1)
+            },
+        );
+        let (taken, left) = rest.split_at(step);
+        rest = left;
+        (step > 0).then_some(taken)
+    })
+}
+
+/// Whether no width rule of Unicode's joins `each` to what's before it:
+/// it takes a cell of its own, isn't a modifier, a regional indicator or a
+/// letter of a script whose ligatures narrow, and follows no joiner.
+fn starts_afresh(before: Option<char>, each: char) -> bool {
+    let follows_a_joiner = matches!(before, Some('\u{200D}' | '\u{2D7F}' | '\u{17D2}' | '\r'));
+    let joins_what_is_before = matches!(
+        each,
+        // Emoji modifiers and regional indicators.
+        '\u{1F3FB}'..='\u{1F3FF}' | '\u{1F1E6}'..='\u{1F1FF}'
+        // Arabic, where an alef joins the lam before it.
+        | '\u{0600}'..='\u{08FF}' | '\u{FB50}'..='\u{FDFF}' | '\u{FE70}'..='\u{FEFF}'
+        // Lisu's tone letters, Kirat Rai's vowels and Tifinagh's joiner.
+        | '\u{A4F8}'..='\u{A4FF}' | '\u{16D40}'..='\u{16D7F}' | '\u{2D7F}'
+    );
+    !follows_a_joiner && !joins_what_is_before && !draws_nothing(each)
+}
+
+/// Whether `each` takes no cell of its own, as a selector, a joiner or a
+/// mark doesn't, so it draws on the character before it.
+fn draws_nothing(each: char) -> bool {
+    unicode_width::UnicodeWidthChar::width(each).is_none_or(|cells| cells == 0)
+}
+
+/// Whether a run measured apart before `each` counts at least the cells
+/// it draws: split anywhere else a sequence only counts more, so a cut
+/// keeps less, but a selector split from what it selects counts less.
+fn splits(before: Option<char>, each: char) -> bool {
+    let selector = |each: char| matches!(each, '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}');
+    !selector(each) || before.is_some_and(selector)
+}
+
+/// The most steps measured together before a cut settles them, which only
+/// a run with no fresh start reaches: a pile of marks, or many emoji
+/// joined with no space between. Anything Unicode joins is shorter.
+const LONGEST_RUN: usize = 32;
+
+/// The most steps a cut to `room` takes.
+const fn most_steps(room: usize) -> usize {
+    room.saturating_add(1).saturating_mul(STEPS_PER_CELL)
+}
+
+/// The most steps, a character or a colour's escape, a cut keeps for
+/// each cell of its room. An emoji joined from seven characters takes
+/// two cells, and writing that stacks its marks puts fewer than eight on
+/// one, so only a pile meant to bury what's beside it loses any.
+const STEPS_PER_CELL: usize = 8;
+
 impl Look {
+    /// Whether it is drawn [`WHOLE`], into a pipe.
+    pub(crate) const fn whole(&self) -> bool {
+        self.width == WHOLE
+    }
+
+    /// `mark` where it is drawn [`WHOLE`], for [`aligned`]; else nothing.
+    pub(crate) const fn mark(&self, mark: &'static str) -> &'static str {
+        if self.whole() { mark } else { "" }
+    }
+
+    /// `text` cut to `room`, as [`fit`] cuts it, unless drawn [`WHOLE`],
+    /// where nothing is cut, not even a pile of marks [`fit`] cuts at any
+    /// width, since a reader that greps or saves the text has all of it.
+    pub(crate) fn fitted(&self, text: &str, room: usize) -> String {
+        if self.whole() {
+            text.to_owned()
+        } else {
+            fit(text, room)
+        }
+    }
+
+    /// `lines` as one text, their columns lined up where it is drawn
+    /// [`WHOLE`].
+    pub(crate) fn joined(&self, lines: &[String]) -> String {
+        let text = lines.join("\n");
+        if self.whole() { aligned(&text) } else { text }
+    }
+
     /// `text` in `colour`, where it is drawn in colour.
     pub(crate) fn paint(&self, colour: &str, text: &str) -> String {
         if self.colour && !colour.is_empty() && !text.trim().is_empty() {
@@ -211,37 +569,105 @@ impl Look {
     }
 }
 
-/// `text` cut to `width` characters, its last one an ellipsis where cut.
+/// `text` cut to `width` cells, as [`drawn_width`] counts them, its last
+/// one an ellipsis where cut.
 pub(crate) fn fit(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
+    // What draws within the width is kept whole, unless it piles more
+    // steps on its cells than a cut keeps, joiners as much as marks.
+    if drawn_width(text) <= width && steps(text).nth(most_steps(width)).is_none() {
         return text.to_owned();
     }
-    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
-    format!("{}…", kept.trim_end())
+    format!("{}…", within(text, width.saturating_sub(1)).trim_end())
 }
 
-/// `text` wrapped at its spaces to `width` columns, its first line after
-/// `first` and each after it after `rest`. A word wider than a whole line's
-/// room, such as a path, is broken across lines rather than passing it.
+/// `text` wrapped at its spaces to `width` cells, as [`drawn_width`]
+/// counts them, its first line after `first` and each after it after
+/// `rest`. A word wider than a whole line's room, such as a path, is
+/// broken across lines rather than passing it, never before a character
+/// that draws nothing, and a pile of marks past a cut's cap on steps goes,
+/// as [`fit`] drops it.
 pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> String {
     let room = |at: usize| {
         let indent = if at == 0 { first } else { rest };
-        width.saturating_sub(indent.chars().count()).max(1)
+        width.saturating_sub(drawn_width(indent)).max(1)
     };
     let mut lines: Vec<String> = Vec::new();
+    // The cells the last line takes, added to as it grows rather than
+    // measured again for each word, as no sequence spans a space, so a
+    // long text drawn whole costs what it does once.
+    let mut drawn = 0;
+    // And the steps it takes, so a word joins it only within the cap on
+    // steps a cut of that line keeps: piles of marks on later words, or
+    // split over many short ones, are cut as one on the first is, rather
+    // than drawn whole. A word is walked only to just past the cap.
+    let mut stepped = 0;
     for word in text.split_whitespace() {
-        let joins = lines.last().is_some_and(|line| {
-            line.chars().count() + 1 + word.chars().count() <= room(lines.len() - 1)
+        let cells = drawn_width(word);
+        let joining = lines.len().checked_sub(1).map(|at| {
+            let most = most_steps(room(at));
+            // Into a pipe the cap is as many steps as there can be.
+            let walked = steps(word).take(most.saturating_add(1)).count();
+            (
+                drawn + 1 + cells <= room(at) && stepped + 1 + walked <= most,
+                walked,
+            )
         });
-        if let Some(line) = lines.last_mut().filter(|_| joins) {
+        if let Some((true, walked)) = joining
+            && let Some(line) = lines.last_mut()
+        {
             line.push(' ');
             line.push_str(word);
+            drawn += 1 + cells;
+            stepped += 1 + walked;
             continue;
         }
-        let mut left: Vec<char> = word.chars().collect();
+        let mut left = word;
         while !left.is_empty() {
-            let taken = room(lines.len()).min(left.len());
-            lines.push(left.drain(..taken).collect());
+            let mut taken = within(left, room(lines.len()));
+            // A wide character, or an emoji joined from several, that a
+            // line of one cell can't hold still takes a line of its own,
+            // whole, so the word ends.
+            if taken.is_empty() {
+                taken = within(left, 2);
+            }
+            if taken.is_empty() {
+                taken = &left[..left.chars().next().map_or(0, char::len_utf8)];
+            }
+            // A selector or a mark left to start the next line draws on
+            // nothing, and its base above is drawn wrong, so the break
+            // steps back to before the character it belongs to. Where
+            // that leaves nothing, or it walked back over marks to their
+            // base while the pile runs on past the cut in a mark, the cut
+            // stopped at its cap on steps in a pile of marks, and the rest
+            // of the pile goes, so a word isn't split at its pile's base. A
+            // joiner after the cut runs no pile on: a mark then a joiner
+            // is how a conjunct is written, so the conjunct moves down
+            // whole.
+            let mut back = taken.len();
+            while back > 0
+                && (left[back..].chars().next().is_some_and(draws_nothing)
+                    || left[..back].ends_with('\u{200D}'))
+            {
+                back = left[..back]
+                    .char_indices()
+                    .next_back()
+                    .map_or(0, |(at, _)| at);
+            }
+            let capped = left[back..taken.len()].chars().skip(1).any(draws_nothing)
+                && left[taken.len()..]
+                    .chars()
+                    .next()
+                    .is_some_and(|each| each != '\u{200D}' && draws_nothing(each));
+            let rest = if back > 0 && !capped {
+                taken = &left[..back];
+                &left[back..]
+            } else {
+                left[taken.len()..].trim_start_matches(draws_nothing)
+            };
+            drawn = drawn_width(taken);
+            stepped = steps(taken).count();
+            lines.push(taken.to_owned());
+            left = rest;
         }
     }
     lines
@@ -255,9 +681,10 @@ pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> Stri
         })
 }
 
-/// `text` padded with spaces to `width` characters.
+/// `text` padded with spaces to `width` cells, as [`drawn_width`] counts
+/// them.
 pub(crate) fn padded(text: &str, width: usize) -> String {
-    let short = width.saturating_sub(text.chars().count());
+    let short = width.saturating_sub(drawn_width(text));
     format!("{text}{}", " ".repeat(short))
 }
 
@@ -285,6 +712,49 @@ pub(crate) fn address(team: &Value) -> &str {
         .as_str()
         .and_then(|key| key.strip_prefix("team:"))
         .unwrap_or_default()
+}
+
+/// Each of the swarm's teams' short names, as [`shorts_beside`] keeps
+/// them beside its living sessions.
+pub(crate) fn shorts_of(swarm: &Swarm) -> BTreeMap<String, String> {
+    let living = swarm
+        .sessions
+        .iter()
+        .filter(|session| Standing::of(session).is_some())
+        .filter_map(|session| Some((session["address"].as_str()?, session["id"].as_str())));
+    shorts_beside(&swarm.teams, living)
+}
+
+/// Each team's short name, as [`short_names`] gives it, unless it cleans
+/// to another team's address, or to the address of a session among
+/// `living`, by its address and id, unless that session leads the team
+/// and the team goes by that address too. A steer typed with such a name
+/// reaches what has that address first, and a session leaves it to a
+/// team only where both hold, as `session_by_address` asks, so a page
+/// never draws, nor a hint offers, a name that reaches another.
+pub(crate) fn shorts_beside<'a>(
+    teams: &[Value],
+    living: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
+) -> BTreeMap<String, String> {
+    let living: Vec<(&str, Option<&str>)> = living.into_iter().collect();
+    let mut shorts = short_names(teams);
+    shorts.retain(|team, short| {
+        let short = unmarked(short);
+        let lead = teams
+            .iter()
+            .find(|each| address(each) == team)
+            .and_then(|each| each["lead"].as_str());
+        let a_team = teams
+            .iter()
+            .map(address)
+            .any(|other| other != team && other.eq_ignore_ascii_case(&short));
+        let its_own = team.eq_ignore_ascii_case(&short);
+        let a_session = living.iter().any(|(other, id)| {
+            other.eq_ignore_ascii_case(&short) && !(its_own && id.is_some() && *id == lead)
+        });
+        !a_team && !a_session
+    });
+    shorts
 }
 
 /// How many of a team's sessions stand as `each`.
@@ -340,7 +810,7 @@ fn shorts_width<'a>(
 ) -> usize {
     teams
         .filter_map(|team| names::shown(team, shorts))
-        .map(|short| short.chars().count())
+        .map(|short| drawn_width(&unmarked(short)))
         .max()
         .unwrap_or_default()
 }
@@ -356,27 +826,37 @@ pub(crate) fn row(
     strong: bool,
 ) -> String {
     let columns: Vec<Standing> = counts.iter().map(|(each, _)| *each).collect();
-    let room = look
-        .width
-        .saturating_sub(counts_width(&columns) + depth * STEP)
-        .max(NARROWEST);
-    let (plain, lead) = label.short.map_or_else(
-        || (label.title.to_owned(), room),
+    // Each part is cleaned before it is padded, so a character a peer's
+    // name loses can't move its title off the column.
+    let plain = label.short.map_or_else(
+        || unmarked(label.title),
         |short| {
-            (
-                format!("{}{GAP}{}", padded(short, label.width), label.title),
-                label.width + GAP.len(),
+            format!(
+                "{}{GAP}{}",
+                padded(&unmarked(short), label.width),
+                unmarked(label.title)
             )
         },
     );
-    let name = padded(&fit(&plain, room), room);
-    let head: String = name.chars().take(lead).collect();
-    let tail: String = name.chars().skip(lead).collect();
+    // Drawn whole, the name is as wide as it is, and its counts are lined
+    // up with the table's once it's drawn.
+    let room = if look.whole() {
+        drawn_width(&plain)
+    } else {
+        look.width
+            .saturating_sub(counts_width(&columns) + depth * STEP)
+            .max(NARROWEST)
+    };
+    let lead = label.short.map_or(room, |_| label.width + GAP.len());
+    let name = padded(&look.fitted(&plain, room), room);
+    let head = within(&name, lead);
+    let tail = &name[head.len()..];
     let mut line = format!(
-        "{}{}{}",
+        "{}{}{}{}",
         " ".repeat(depth * STEP),
-        look.paint(if strong { BOLD } else { "" }, &head),
-        look.paint(FAINT, &tail)
+        look.paint(if strong { BOLD } else { "" }, head),
+        look.paint(FAINT, tail),
+        look.mark(COUNTS_AT)
     );
     for &(each, count) in counts {
         let shown = if count == 0 {
@@ -392,6 +872,13 @@ pub(crate) fn row(
 
 /// The header over the counts of `columns`, lined up with them.
 pub(crate) fn header(look: &Look, depth: usize, columns: &[Standing]) -> String {
+    if look.whole() {
+        let mut line = format!("{}{COUNTS_AT}", " ".repeat(depth * STEP));
+        for &each in columns {
+            let _ = write!(line, "{GAP}{}", each.header());
+        }
+        return line;
+    }
     let room = look
         .width
         .saturating_sub(counts_width(columns) + depth * STEP)
@@ -470,7 +957,7 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
             .or_default()
             .push(team);
     }
-    let shorts = short_names(&swarm.teams);
+    let shorts = shorts_of(swarm);
     let shown = Shorts {
         width: shorts_width(swarm.teams.iter(), &shorts),
         by: &shorts,
@@ -493,7 +980,19 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
     let first = within
         .get("")
         .and_then(|top| ordered(top.iter().copied()).first().copied());
-    let example = first.map_or("<team>", |team| names::typed(team, &shorts));
+    // A chosen short name is a peer's text, and the example is copied
+    // into a shell, so it is given only as a word a shell and `swarm`
+    // read as one name, then as the team's address, and otherwise not.
+    let example = first
+        .and_then(|team| {
+            let typed = unmarked(names::typed(team, &shorts));
+            if names::one_word(&typed) {
+                Some(typed)
+            } else {
+                typeable(address(team)).then(|| address(team).to_owned())
+            }
+        })
+        .unwrap_or_else(|| "<team>".to_owned());
     lines.push(look.paint(
         FAINT,
         &format!(
@@ -501,17 +1000,20 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
             swarm.realm
         ),
     ));
-    lines.join("\n")
+    look.joined(&lines)
 }
 
 /// Each team as a person types it, its short name where it has one, in
-/// the order the overview lists them, for a shell to complete.
+/// the order the overview lists them, for a shell to complete. Each is
+/// cleaned as a page draws it, since a peer gives the name and a shell
+/// may draw what it completes; matching cleans both sides, so the
+/// cleaned name still reaches its team.
 #[must_use]
 pub fn typed(swarm: &Swarm) -> Vec<String> {
-    let shorts = short_names(&swarm.teams);
+    let shorts = shorts_of(swarm);
     ordered(swarm.teams.iter())
         .into_iter()
-        .map(|team| names::typed(team, &shorts).to_owned())
+        .map(|team| unmarked(names::typed(team, &shorts)))
         .collect()
 }
 
@@ -557,24 +1059,33 @@ fn nest<'a>(
 /// its title, or why none or several are, naming each of several as it's
 /// typed, so one can be picked.
 fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
-    let shorts = short_names(&swarm.teams);
+    let shorts = shorts_of(swarm);
     let naming = |team: &'a Value| Naming {
         address: address(team),
         short: shorts.get(address(team)).map(String::as_str),
         title: title(team),
     };
-    match picked(&swarm.teams, asked, naming) {
+    match picked(&swarm.teams, asked, true, naming) {
         Picked::One(team) => Ok(team),
         Picked::None => Err(format!("no team is named {asked}")),
-        Picked::Several(many) => Err(format!(
-            "{asked} could be {}",
-            either(
+        Picked::Several(many) => {
+            // Each is a peer's text, so it is held to one line.
+            let named = told_apart(
                 &many
                     .iter()
-                    .map(|team| names::typed(team, &shorts))
-                    .collect::<Vec<_>>()
-            )
-        )),
+                    .map(|team| {
+                        (
+                            unmarked(names::typed(team, &shorts)),
+                            Some(address(team)).filter(|address| typeable(address)),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            Err(format!(
+                "{asked} could be {}",
+                either(&named.iter().map(String::as_str).collect::<Vec<_>>())
+            ))
+        }
     }
 }
 
@@ -601,29 +1112,58 @@ pub(crate) enum Picked<'a, T> {
 
 /// The one of `things` that `asked` names: by its address or its short
 /// name whole, in either case, and else by a part of its title, as
-/// `naming` says each; or none, or each of several.
+/// `naming` says each; or none, or each of several. Where the address is
+/// `first`, as a team's is, it comes before a short name, which a peer
+/// picks and could clean to another's address to hide it; a network's
+/// name is a group a peer may pick as well, so it isn't. An address
+/// matched in its own case comes before one matched in another, so two
+/// keyed alike but for case are each reached by the address told apart.
+/// A short name and a title are matched as they are drawn, cleaned on
+/// both sides, so what a page or hint shows finds what it names.
 pub(crate) fn picked<'a: 'n, 'n, T>(
     things: &'a [T],
     asked: &str,
+    first: bool,
     naming: impl Fn(&'a T) -> Naming<'n>,
 ) -> Picked<'a, T> {
     // A short name's words may be typed apart, as `part deux`.
-    let joined = asked.split_whitespace().collect::<Vec<_>>().join("-");
-    let whole: Vec<&T> = things
+    let joined = unmarked(&asked.split_whitespace().collect::<Vec<_>>().join("-"));
+    let exactly: Vec<&T> = things
         .iter()
-        .filter(|thing| {
-            let named = naming(thing);
-            named.address.eq_ignore_ascii_case(asked)
-                || named
-                    .short
-                    .is_some_and(|short| short.eq_ignore_ascii_case(&joined))
-        })
+        .filter(|thing| naming(thing).address == asked)
         .collect();
-    let lower = asked.to_lowercase();
+    let by_address: Vec<&T> = if exactly.is_empty() {
+        things
+            .iter()
+            .filter(|thing| naming(thing).address.eq_ignore_ascii_case(asked))
+            .collect()
+    } else {
+        exactly
+    };
+    let by_short = |thing: &'a T| {
+        naming(thing)
+            .short
+            .is_some_and(|short| unmarked(short).eq_ignore_ascii_case(&joined))
+    };
+    let whole: Vec<&T> = if first && !by_address.is_empty() {
+        by_address
+    } else {
+        things
+            .iter()
+            .filter(|thing| {
+                by_address.iter().any(|one| std::ptr::eq(*one, *thing)) || by_short(thing)
+            })
+            .collect()
+    };
+    let lower = unmarked(asked).to_lowercase();
     let found = if whole.is_empty() {
         things
             .iter()
-            .filter(|thing| naming(thing).title.to_lowercase().contains(&lower))
+            .filter(|thing| {
+                unmarked(naming(thing).title)
+                    .to_lowercase()
+                    .contains(&lower)
+            })
             .collect()
     } else {
         whole
@@ -661,9 +1201,11 @@ pub fn team(swarm: &Swarm, asked: &str, look: &Look) -> Result<String, String> {
     if let Some(above) = team["within"].as_str().and_then(|above| titled.get(above)) {
         let _ = write!(head, " · within {above}");
     }
-    let mut lines = vec![look.paint(BOLD, &head)];
+    // Peer text off the table's rows is unmarked too, since a mark in a
+    // title here would line up with another's in its block.
+    let mut lines = vec![look.paint(BOLD, &unmarked(&head))];
     if let Some(landed) = landed(team, look) {
-        lines.push(look.paint(FAINT, &landed));
+        lines.push(look.paint(FAINT, &unmarked(&landed)));
     }
     let inner = ordered(
         swarm
@@ -672,7 +1214,7 @@ pub fn team(swarm: &Swarm, asked: &str, look: &Look) -> Result<String, String> {
             .filter(|other| other["within"] == json!(address(team))),
     );
     if !inner.is_empty() {
-        let shorts = short_names(&swarm.teams);
+        let shorts = shorts_of(swarm);
         let width = shorts_width(inner.iter().copied(), &shorts);
         lines.extend([String::new(), header(look, 0, &Standing::EACH)]);
         for other in inner {
@@ -699,9 +1241,9 @@ pub fn team(swarm: &Swarm, asked: &str, look: &Look) -> Result<String, String> {
     let meets = meetings(team, &titled, &sessions);
     if !meets.is_empty() {
         lines.push(String::new());
-        lines.extend(meets.iter().map(|line| look.paint(FAINT, line)));
+        lines.extend(meets.iter().map(|line| look.paint(FAINT, &unmarked(line))));
     }
-    Ok(lines.join("\n"))
+    Ok(look.joined(&lines))
 }
 
 /// What a team landed last, and when.
@@ -728,20 +1270,29 @@ fn member(look: &Look, standing: Standing, session: &Value) -> String {
         .unwrap_or_default();
     let doing = standing.doing(session);
     let room = look.width.saturating_sub(said + GAP.len());
-    let name_room = if doing.is_some() {
+    let name = unmarked(title(session));
+    // Drawn whole, the name is as wide as it is, and what it does is lined
+    // up with the others' once they're drawn.
+    let name_room = if look.whole() {
+        drawn_width(&name)
+    } else if doing.is_some() {
         (room / 2).max(NARROWEST)
     } else {
         room
     };
-    let name = fit(title(session), name_room);
     let mut line = format!(
         "{}{GAP}{}",
         look.paint(standing.colour(), &padded(standing.said(), said)),
-        padded(&name, name_room)
+        padded(&look.fitted(&name, name_room), name_room)
     );
     if let Some(doing) = doing {
         let left = room.saturating_sub(name_room + GAP.len()).max(NARROWEST);
-        let _ = write!(line, "{GAP}{}", look.paint(FAINT, &fit(doing, left)));
+        let _ = write!(
+            line,
+            "{}{GAP}{}",
+            look.mark(DOING_AT),
+            look.paint(FAINT, &fit(&unmarked(doing), left))
+        );
     }
     line.trim_end().to_owned()
 }
@@ -804,6 +1355,37 @@ fn meetings(
 /// with commas and a last and.
 pub(crate) fn listed(names: &[&str]) -> String {
     joined(names, "and")
+}
+
+/// Each of several choices by the name it's drawn with, and by its
+/// address too where another draws alike, so a refusal offering both
+/// still names something to type for each. An address is a peer's text
+/// too, so each is given only where typing it, where the refusal is
+/// answered, reaches the one it names, as its caller judges, and is
+/// `None` where it doesn't.
+pub(crate) fn told_apart(named: &[(String, Option<&str>)]) -> Vec<String> {
+    let alike = |name: &str| {
+        named
+            .iter()
+            .filter(|(other, _)| other.eq_ignore_ascii_case(name))
+            .count()
+            > 1
+    };
+    named
+        .iter()
+        .map(|(name, address)| match address {
+            _ if !alike(name) => name.clone(),
+            Some(address) => format!("{name} ({address})"),
+            None => format!("{name} (no address to type)"),
+        })
+        .collect()
+}
+
+/// Whether a peer's `address` can be typed alone after `swarm` to reach
+/// what it names: letters and digits, as a cell's is, and one word
+/// `swarm` reads as a name, not `PAUSE` or `TEAM`.
+fn typeable(address: &str) -> bool {
+    crate::forage::is_address(address) && names::one_word(address)
 }
 
 /// `names` as a sentence offers a choice of them: two joined by or, or

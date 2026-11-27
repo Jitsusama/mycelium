@@ -58,6 +58,16 @@ pub const STOPPED_FOR_AN_AGENT: &str =
 pub const PACED_FOR_AN_AGENT: &str =
     "It paces agents and isn't the person's to lift: tell your orchestrator, as a finding";
 
+/// How a refusal of a start of one session coming back already ends,
+/// telling its asker when to ask again, so an asker can tell it from a
+/// refusal of every start.
+pub const UNLESS_RUNNING: &str = " only if it isn't running";
+
+/// How a refusal of an agent's start opens where whether the person's
+/// stop stands can't be told, so it is held before anything begins.
+pub const UNTOLD_FOR_AN_AGENT: &str =
+    "agents' starts are held, since whether the person stopped them can't be told from ";
+
 /// The most ended sessions agents together may bring back through one
 /// node in an hour uncounted: past it, each counts as new work. A
 /// machine's sessions coming back after a restart fit within it, and an
@@ -592,7 +602,7 @@ impl Starts {
         if book.going.iter().any(|(_, going)| its(going)) {
             return Some(format!(
                 "{id} is coming back already, from a start of it still going; \
-                 ask again once it has gone only if it isn't running"
+                 ask again once it has gone{UNLESS_RUNNING}"
             ));
         }
         let let_go = book.kept.iter().any(|one| {
@@ -605,7 +615,7 @@ impl Starts {
         let_go.then(|| {
             format!(
                 "{id} is coming back already, from a start asked in the last {} seconds; \
-                 ask again after that only if it isn't running",
+                 ask again after that{UNLESS_RUNNING}",
                 COMING_BACK / 1000
             )
         })
@@ -686,11 +696,7 @@ impl Starts {
             }
             Err(error) => {
                 return Some((
-                    format!(
-                        "agents' starts are held, since whether the person stopped them \
-                         can't be told from {}: {error}",
-                        self.stopped.display()
-                    ),
+                    format!("{UNTOLD_FOR_AN_AGENT}{}: {error}", self.stopped.display()),
                     None,
                 ));
             }
@@ -765,6 +771,21 @@ impl Starts {
         }
         // Going and kept under one lock, so a start asked meanwhile never
         // sees it in neither.
+        let mut book = self.lock();
+        book.going.retain(|(going, _)| *going != id);
+        self.keep_line(&mut book, asked);
+    }
+
+    /// Keeps `admitted`, joined `joined` times, as refused for `why`,
+    /// where it was refused once admitted but before anything began, so
+    /// it spends none of the limits a start that began or failed counts
+    /// toward ([`Kept::counts`]).
+    pub fn keep_unbegun(&self, admitted: Admitted, why: &str, joined: u32) {
+        let Admitted { id, mut asked } = admitted;
+        asked.joined = joined;
+        // Cut as a failure is, to its first words, since what follows
+        // may be as long as the asker's words make it.
+        asked.refused = Some(failure(why));
         let mut book = self.lock();
         book.going.retain(|(going, _)| *going != id);
         self.keep_line(&mut book, asked);
@@ -845,6 +866,20 @@ impl Starts {
         Starters(starters)
     }
 
+    /// The machine the newest start the book keeps as `held` landed on,
+    /// if it keeps one: the book is kept on disk, so a node started
+    /// again still knows where it started each hold, as far back as
+    /// [`KEPT_MOST`] starts.
+    #[must_use]
+    pub fn landed_on(&self, held: &str) -> Option<String> {
+        self.lock()
+            .kept
+            .iter()
+            .rev()
+            .find(|one| one.held.as_deref() == Some(held))
+            .and_then(|one| one.machine.clone())
+    }
+
     /// Counts one more ask under the name `once`, by `by` for the cell
     /// `cell`, as joining the start still landing under it, as the list
     /// of starts shows it; the count its line keeps is its lead's.
@@ -913,7 +948,7 @@ fn room_after(mut ats: Vec<i64>, most: usize) -> Option<i64> {
 /// `why` a start is refused, said with when there is room again, `room`,
 /// as from `at`, and what an agent does then: it paces agents, so the
 /// person is no one to ask.
-fn paced(why: &str, room: i64, at: i64) -> String {
+pub fn paced(why: &str, room: i64, at: i64) -> String {
     let minutes = match u64::try_from(room - at).unwrap_or(0).div_ceil(60_000) {
         1 => "1 minute".to_owned(),
         minutes => format!("{minutes} minutes"),
@@ -1862,6 +1897,22 @@ mod tests {
     }
 
     #[test]
+    fn a_start_refused_once_admitted_but_begun_nowhere_counts_for_nothing() {
+        let (dir, starts) = book();
+        for _ in 0..=CELL_AN_HOUR {
+            let admitted = starts.admit(agent("OSPREY", NOW)).expect("within");
+            starts.keep_unbegun(admitted, "osprey doesn't take it now: it's over", 0);
+        }
+        started(&starts, agent("OSPREY", NOW), "h");
+        let book = std::fs::read_to_string(dir.path().join("starts.jsonl")).expect("kept");
+        assert!(
+            book.contains(r#""refused":"osprey doesn't take it now""#),
+            "{book}"
+        );
+        assert!(!book.contains("it's over"), "kept cut: {book}");
+    }
+
+    #[test]
     fn a_start_dated_ahead_counts_for_an_hour_ahead_and_no_further() {
         let (_dir, starts) = book();
         for _ in 0..CELL_AN_HOUR {
@@ -1964,6 +2015,28 @@ mod tests {
             .admit(agent("OSPREY", NOW + 3))
             .expect_err("and read back so after a restart");
         started(&again, agent("SKIFFS", NOW + 3), "h");
+    }
+
+    // The node ends a hold no presence shows where its book says it
+    // started it, so the book must say so after the node starts again,
+    // the newest start under the id winning.
+    #[test]
+    fn the_book_says_where_a_hold_landed_after_it_is_read_again() {
+        let (dir, starts) = book();
+        let person = || asked(By::Person, None, NOW);
+        let admitted = starts.admit(person()).expect("the person may start");
+        starts.keep(admitted, Ok(("osprey".to_owned(), "h-1".to_owned())), 0);
+        let admitted = starts.admit(person()).expect("the person may start");
+        starts.keep(admitted, Err("it didn't start".to_owned()), 0);
+        started(&starts, agent("OSPREY", NOW), "h-2");
+        let admitted = starts.admit(person()).expect("the person may start");
+        starts.keep(admitted, Ok(("tern".to_owned(), "h-1".to_owned())), 0);
+        let again = Starts::at(dir.path().join("starts.jsonl"));
+        for read in [&starts, &again] {
+            assert_eq!(read.landed_on("h-1").as_deref(), Some("tern"), "the newest");
+            assert_eq!(read.landed_on("h-2").as_deref(), Some("kestrel"));
+            assert_eq!(read.landed_on("h-3"), None, "no start landed as it");
+        }
     }
 
     #[test]

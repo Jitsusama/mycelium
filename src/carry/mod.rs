@@ -1426,7 +1426,7 @@ mod tests {
     use super::cell::Brought;
     use super::{
         Asked, Carried, Done, Failed, Hands, Lent, Ordered, PI_CARRY, Refused, Step, Told, Untaken,
-        carry, carry_told, runs_on, session_id, unordered_arrival,
+        carry, carry_told, ground, runs_on, session_id, unordered_arrival,
     };
     use crate::placement::Need;
     use crate::record::{Session, State};
@@ -2488,10 +2488,7 @@ mod tests {
         assert_eq!(done, Err(Failed { step: Step::Find }), "refused");
         assert_eq!(
             lines.last().and_then(|line| line["said"].as_str()),
-            Some(
-                "tern is a worker that doesn't declare it takes carries, so nothing is \
-                 carried there"
-            ),
+            Some(ground::takes_none("tern").as_str()),
             "saying why: {lines:?}"
         );
         assert!(

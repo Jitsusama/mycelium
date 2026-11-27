@@ -11,13 +11,14 @@
 //! won't take it, it is a line on the holder's standard error, which a
 //! node's holder shares with the node, so it lands on the node's log.
 
-use std::io::{self, Write};
+use std::io;
 use std::os::unix::net::UnixDatagram;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+use std::time::Duration;
 
-use super::holder::{PARKED, RELEASED};
+use super::holder::{PARKED, RELEASED, UNASKED, UNASKED_SIGNAL, logs_to};
 
 /// Where the journal takes entries in its own form.
 const JOURNAL_SOCKET: &str = "/run/systemd/journal/socket";
@@ -29,6 +30,13 @@ pub enum How {
     Exited(i32),
     /// It parked, to start again once woken.
     Parked,
+    /// It quit though nobody asked it to, by its own code or, as a pi
+    /// whose exit a name lookup held does, by [`UNASKED_SIGNAL`], and is
+    /// started again unless it has quit so too often.
+    Unasked {
+        /// Whether it quit so by the signal rather than its code.
+        by_signal: bool,
+    },
     /// A signal ended it, leaving a core or not.
     Killed {
         /// The signal's number.
@@ -44,6 +52,8 @@ impl How {
     pub fn of(status: ExitStatus) -> Self {
         match (status.code(), status.signal()) {
             (Some(PARKED), _) => Self::Parked,
+            (Some(UNASKED), _) => Self::Unasked { by_signal: false },
+            (None, Some(UNASKED_SIGNAL)) => Self::Unasked { by_signal: true },
             (Some(code), _) => Self::Exited(code),
             (None, signal) => Self::Killed {
                 signal: signal.unwrap_or_default(),
@@ -69,13 +79,19 @@ pub struct Ended {
 }
 
 impl Ended {
-    /// What it says, in a line, each name kept to it, so none can end
-    /// its entry's `MESSAGE` and start a field of its own.
+    /// What it says, in a line, each name [`escaped_name`], so none can end its
+    /// entry's `MESSAGE` and start a field of its own, or reach whoever
+    /// reads it with a control.
     #[must_use]
     pub fn line(&self) -> String {
         let how = match self.how {
             How::Exited(code) => format!("exited {code}"),
             How::Parked => format!("parked (exit {PARKED})"),
+            How::Unasked { by_signal: false } => format!("quit unasked (exit {UNASKED})"),
+            How::Unasked { by_signal: true } => format!(
+                "quit unasked (signal {UNASKED_SIGNAL}, {})",
+                signal_name(UNASKED_SIGNAL)
+            ),
             How::Killed { signal, core } => format!(
                 "was killed by signal {signal} ({}){}",
                 signal_name(signal),
@@ -84,9 +100,9 @@ impl Ended {
         };
         format!(
             "held {} in {}: {} (pid {}) {how}",
-            one_line(&self.id),
-            one_line(&self.realm),
-            one_line(&self.program),
+            escaped_name(&self.id),
+            escaped_name(&self.realm),
+            escaped_name(&self.program),
             self.pid
         )
     }
@@ -101,6 +117,12 @@ impl Ended {
         let (code, status, priority) = match self.how {
             How::Exited(code) => ("exited", code.to_string(), if fine(code) { 6 } else { 4 }),
             How::Parked => ("exited", PARKED.to_string(), 6),
+            // A program quitting unasked gave up on something, so it warns,
+            // whether or not it is started again.
+            How::Unasked { by_signal: false } => ("exited", UNASKED.to_string(), 4),
+            How::Unasked { by_signal: true } => {
+                ("killed", signal_name(UNASKED_SIGNAL).to_owned(), 4)
+            }
             How::Killed { signal, core } => (
                 if core { "dumped" } else { "killed" },
                 signal_name(signal).to_owned(),
@@ -111,9 +133,9 @@ impl Ended {
             ("MESSAGE", self.line()),
             ("PRIORITY", priority.to_string()),
             ("SYSLOG_IDENTIFIER", "mycelium".to_owned()),
-            ("MYCELIUM_HELD", one_line(&self.id)),
-            ("MYCELIUM_REALM", one_line(&self.realm)),
-            ("MYCELIUM_PROGRAM", one_line(&self.program)),
+            ("MYCELIUM_HELD", escaped_name(&self.id)),
+            ("MYCELIUM_REALM", escaped_name(&self.realm)),
+            ("MYCELIUM_PROGRAM", escaped_name(&self.program)),
             ("MYCELIUM_PROGRAM_PID", self.pid.to_string()),
             ("EXIT_CODE", code.to_owned()),
             ("EXIT_STATUS", status),
@@ -124,15 +146,84 @@ impl Ended {
     }
 }
 
-/// `text` with no line breaks, which the journal's simple form can't
-/// hold in a value.
-fn one_line(text: &str) -> String {
-    text.replace(['\n', '\r'], " ")
+/// A name a hold was given, as the node's log and the journal both
+/// write it: each control, backslash and character that doesn't show
+/// escaped as Rust writes it, so none breaks a line, starts a field of
+/// the journal's simple form or turns the text around it, and every
+/// other letter, quotes included, as itself. The holder's quotes of a
+/// program's output are escaped as bytes instead, as those needn't be
+/// text.
+pub(super) fn escaped_name(text: &str) -> String {
+    text.chars()
+        .fold(String::with_capacity(text.len()), |mut kept, letter| {
+            if matches!(letter, '\'' | '"') {
+                kept.push(letter);
+            } else {
+                kept.extend(letter.escape_debug());
+            }
+            kept
+        })
+}
+
+/// A held program parked for quitting unasked too often, rather than
+/// started again: said apart from its run's end, which reads as any
+/// unasked quit's, since a terminal's holder has no log but the journal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TooOften {
+    /// The hold's id.
+    pub id: String,
+    /// The realm it is held in.
+    pub realm: String,
+    /// The program that ran, as it was named.
+    pub program: String,
+    /// How many times it quit unasked, this last included.
+    pub quits: usize,
+    /// Within how long.
+    pub within: Duration,
+}
+
+impl TooOften {
+    /// What it says, in a line, each name [`escaped_name`], as an end's
+    /// line writes them.
+    #[must_use]
+    pub fn line(&self) -> String {
+        format!(
+            "held {} in {}: {} quit unasked {} times within {} s, so it is parked until a \
+             key in its window starts it",
+            escaped_name(&self.id),
+            escaped_name(&self.realm),
+            escaped_name(&self.program),
+            self.quits,
+            self.within.as_secs()
+        )
+    }
+
+    /// Its entry in the journal's own form, warning, since a program left
+    /// parked by its own quits needs someone to look.
+    #[must_use]
+    pub fn entry(&self) -> String {
+        [
+            ("MESSAGE", self.line()),
+            ("PRIORITY", "4".to_owned()),
+            ("SYSLOG_IDENTIFIER", "mycelium".to_owned()),
+            ("MYCELIUM_HELD", escaped_name(&self.id)),
+            ("MYCELIUM_REALM", escaped_name(&self.realm)),
+            ("MYCELIUM_PROGRAM", escaped_name(&self.program)),
+            ("MYCELIUM_PARKED", "too-often".to_owned()),
+        ]
+        .iter()
+        .flat_map(|(field, value)| [*field, "=", value.as_str(), "\n"])
+        .collect()
+    }
 }
 
 /// A signal's name as `kill -l` says it, for those a program is likeliest
 /// to end by, or a question mark.
 fn signal_name(signal: i32) -> &'static str {
+    // Their numbers differ between Linux and macOS, so they come from
+    // the system's own.
+    const USR1: i32 = rustix::process::Signal::USR1.as_raw();
+    const USR2: i32 = rustix::process::Signal::USR2.as_raw();
     match signal {
         1 => "HUP",
         2 => "INT",
@@ -146,6 +237,8 @@ fn signal_name(signal: i32) -> &'static str {
         13 => "PIPE",
         14 => "ALRM",
         15 => "TERM",
+        USR1 => "USR1",
+        USR2 => "USR2",
         _ => "?",
     }
 }
@@ -154,6 +247,9 @@ fn signal_name(signal: i32) -> &'static str {
 pub trait Journal: Send + Sync {
     /// Says `ended`.
     fn ended(&self, ended: &Ended);
+
+    /// Says the program was parked for quitting unasked too often.
+    fn too_often(&self, parked: &TooOften);
 }
 
 /// The machine's journal, or the holder's standard error where there is
@@ -189,22 +285,28 @@ impl Journal for SystemJournal {
     fn ended(&self, ended: &Ended) {
         if self.send(&ended.entry()).is_err() {
             // Nothing is left to say it to when even standard error is
-            // gone. Said in one write, as the holder's own lines are
-            // (holder.rs's logs), so another holder's can't split it.
-            let _ = io::stderr()
-                .lock()
-                .write_all(said_instead(ended).as_bytes());
+            // gone. Said as the holder's own lines are, in one write, so
+            // another holder's can't split it.
+            logs_to(&mut io::stderr().lock(), &said_instead(ended));
+        }
+    }
+
+    fn too_often(&self, parked: &TooOften) {
+        if self.send(&parked.entry()).is_err() {
+            // As with an end, standard error is all that's left, told
+            // in one write.
+            logs_to(
+                &mut io::stderr().lock(),
+                &format!("mycelium: {}", parked.line()),
+            );
         }
     }
 }
 
 /// What standard error is told of `ended` when the journal can't be:
-/// its line, with its line end, escaped so no control in the program's
-/// words reaches whoever reads the log. Escaped as text, not as bytes as
-/// the holder's quotes of a program's output are, as a line is text
-/// whose printable letters read as themselves.
+/// its line, each name in it written as the node's log writes it.
 fn said_instead(ended: &Ended) -> String {
-    format!("mycelium: {}\n", ended.line().escape_debug())
+    format!("mycelium: {}", ended.line())
 }
 
 #[cfg(test)]
@@ -219,6 +321,34 @@ mod tests {
             program: "pi".to_owned(),
             how,
         }
+    }
+
+    #[test]
+    fn a_park_for_quitting_too_often_warns_naming_its_bound_and_what_wakes_it() {
+        let parked = TooOften {
+            id: "trial1".to_owned(),
+            realm: "harbour".to_owned(),
+            program: "pi\n--session tern".to_owned(),
+            quits: 4,
+            within: Duration::from_secs(60),
+        };
+        let entry = parked.entry();
+        assert!(
+            entry.contains("PRIORITY=4\n") && entry.contains("MYCELIUM_PARKED=too-often\n"),
+            "it warns, marked as this park: {entry:?}"
+        );
+        assert!(
+            entry.contains(
+                "MESSAGE=held trial1 in harbour: pi\\n--session tern quit unasked 4 times \
+                 within 60 s, so it is parked until a key in its window starts it\n"
+            ),
+            "its line says the bound and the key, on one line, its names escaped as an \
+             end's are: {entry:?}"
+        );
+        assert!(
+            entry.contains("MYCELIUM_PROGRAM=pi\\n--session tern\n"),
+            "its program's field is written as an end's: {entry:?}"
+        );
     }
 
     #[test]
@@ -255,6 +385,37 @@ mod tests {
             ended(How::Parked).line().ends_with("parked (exit 75)"),
             "a park says it parked"
         );
+        let unasked = ended(How::of(ExitStatus::from_raw(UNASKED << 8)));
+        assert!(
+            unasked.line().ends_with("quit unasked (exit 79)")
+                && unasked.entry().contains("EXIT_STATUS=79\n")
+                && unasked.entry().contains("PRIORITY=4\n"),
+            "an unasked quit says so, and warns"
+        );
+        let signalled = ended(How::of(ExitStatus::from_raw(UNASKED_SIGNAL)));
+        assert!(
+            signalled
+                .line()
+                .ends_with(&format!("quit unasked (signal {UNASKED_SIGNAL}, USR2)")),
+            "one quitting so by its signal says so too: {}",
+            signalled.line()
+        );
+        assert!(
+            signalled
+                .entry()
+                .contains("EXIT_CODE=killed\nEXIT_STATUS=USR2\n")
+                && signalled.entry().contains("PRIORITY=4\n"),
+            "and warns as the code does, not erring as a kill: {}",
+            signalled.entry()
+        );
+        assert_eq!(
+            How::of(ExitStatus::from_raw(rustix::process::Signal::USR1.as_raw())),
+            How::Killed {
+                signal: rustix::process::Signal::USR1.as_raw(),
+                core: false
+            },
+            "another signal is a kill"
+        );
         let dumped = ended(How::Killed {
             signal: 11,
             core: true,
@@ -271,7 +432,7 @@ mod tests {
             ..ended(How::Exited(0))
         };
         assert!(
-            odd.entry().contains("MYCELIUM_PROGRAM=pi rm\n"),
+            odd.entry().contains("MYCELIUM_PROGRAM=pi\\nrm\n"),
             "a value keeps to its line: {}",
             odd.entry()
         );
@@ -283,7 +444,7 @@ mod tests {
         assert!(
             named
                 .entry()
-                .starts_with("MESSAGE=held trial1 PRIORITY=0 in harbour X: pi (pid 42)"),
+                .starts_with("MESSAGE=held trial1\\nPRIORITY=0 in harbour\\rX: pi (pid 42)"),
             "a name keeps to the message's line: {}",
             named.entry()
         );
@@ -292,13 +453,42 @@ mod tests {
     #[test]
     fn standard_error_is_told_an_end_escaped_in_one_line() {
         let odd = Ended {
+            id: "ana's".to_owned(),
             program: "pi\x1b]0;caught\x07 \u{e9}".to_owned(),
             ..ended(How::Exited(1))
         };
+        let mut told = Vec::new();
+        logs_to(&mut told, &said_instead(&odd));
         assert_eq!(
-            said_instead(&odd),
-            "mycelium: held trial1 in harbour: pi\\u{1b}]0;caught\\u{7} \u{e9} (pid 42) exited 1\n",
-            "its controls escaped, its letters as they are, its line end with it"
+            String::from_utf8(told).expect("text"),
+            "mycelium: held ana's in harbour: pi\\u{1b}]0;caught\\u{7} \u{e9} (pid 42) exited 1\n",
+            "its controls escaped, its letters and quotes as they are, its line end with it"
+        );
+        assert_eq!(
+            odd.entry().lines().next(),
+            Some(
+                "MESSAGE=held ana's in harbour: pi\\u{1b}]0;caught\\u{7} \u{e9} (pid 42) exited 1"
+            ),
+            "the journal is given the same line, no control reaching it raw"
+        );
+    }
+
+    #[test]
+    fn a_name_is_written_one_way_with_nothing_in_it_turning_the_text() {
+        assert_eq!(
+            escaped_name("trial1"),
+            "trial1",
+            "a plain name is as it was given"
+        );
+        assert_eq!(
+            escaped_name("ana's \"pi\" \u{e9}"),
+            "ana's \"pi\" \u{e9}",
+            "quotes and letters as themselves"
+        );
+        assert_eq!(
+            escaped_name("a\\b\nc\rd\x1b\u{202e}e"),
+            "a\\\\b\\nc\\rd\\u{1b}\\u{202e}e",
+            "a backslash, line breaks, a control and a right-to-left override escaped"
         );
     }
 

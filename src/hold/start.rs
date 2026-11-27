@@ -93,17 +93,22 @@ pub enum Scope {
     /// held there shared their memory's floor, and a call of theirs froze
     /// while it was reclaimed (23 November).
     Apart,
-    /// In the slice of the terminal that started it. A terminal's own
-    /// scope signals nothing when stopped (kitty makes its with
+    /// In a scope of its own, for a hold a terminal started. A terminal's
+    /// own scope signals nothing when stopped (kitty makes its with
     /// `KillMode=process` and no main process), so a holder left in it was
-    /// killed only once the shutdown gave up waiting (2026-11-11).
+    /// killed only once the shutdown gave up waiting (2026-11-11). Its
+    /// scope goes in the agents' slice, as [`Scope::Apart`]'s does, never
+    /// the terminal's: a terminal the person opened runs in their own
+    /// programs' slice, where 18 reopened sessions held 6 GiB of its
+    /// memory and its floor (25 November).
     Beside,
 }
 
 impl Scope {
-    /// The scope for a hold from a terminal: beside its slice where a user
-    /// service manager answers in `runtime`, the user's runtime folder,
-    /// and none otherwise, as on a Mac.
+    /// The scope for a hold from a terminal: one of its own in the agents'
+    /// slice where a user service manager answers in `runtime`, the
+    /// user's runtime folder, and none otherwise, as on a Mac. Its name
+    /// is from when it went beside the terminal's own slice.
     #[must_use]
     pub fn of_a_terminal(runtime: Option<&Path>) -> Self {
         let managed = runtime.is_some_and(|runtime| runtime.join("systemd/private").exists());
@@ -118,8 +123,7 @@ impl Scope {
     pub(crate) fn command(self, program: &Path, id: &str) -> Command {
         let slice = match self {
             Self::None => return Command::new(program),
-            Self::Apart => "--slice=agents.slice",
-            Self::Beside => "--slice-inherit",
+            Self::Apart | Self::Beside => "--slice=agents.slice",
         };
         let mut scoped = Command::new("systemd-run");
         // systemd-run expands `${...}` in the command it runs unless told
@@ -295,6 +299,11 @@ pub enum Needs {
     AwayFromHome,
 }
 
+/// What a machine, named before it, answers a start [`begins_strictly`]
+/// won't begin at home, said once so an asker can tell it began nothing.
+pub const AT_HOME_STRICTLY: &str = " would begin this start at home, which its strict fence won't \
+     let it write, so the start must name the folder of the work it's for";
+
 /// The folder a start begins in on `machine`, as [`begins_in`] finds it,
 /// or why it's refused, as it `needs`: it names a folder there is none of
 /// there, which the work it's for is in, so home won't do; or it would
@@ -312,22 +321,33 @@ pub fn begins_strictly(
     home: &Path,
     machine: &str,
 ) -> Result<PathBuf, String> {
-    let at_home = || {
-        Err(format!(
-            "{machine} would begin this start at home, which its strict fence won't let it \
-             write, so the start must name the folder of the work it's for"
-        ))
-    };
+    let at_home = || Err(format!("{machine}{AT_HOME_STRICTLY}"));
     match (found(folder, home), folder) {
         (Some(wanted), _) if needs == Needs::AwayFromHome && is_home(&wanted, home) => at_home(),
         (Some(wanted), _) => Ok(wanted),
-        (None, Some(named)) if needs != Needs::Nothing => Err(format!(
-            "{machine} has no folder {}, which the start names",
-            named.display()
-        )),
+        (None, Some(named)) if needs != Needs::Nothing => Err(no_folder(machine, named)),
         (None, None) if needs == Needs::AwayFromHome => at_home(),
         _ => Ok(home.to_owned()),
     }
+}
+
+/// What `machine` answers a start needing the `folder` it names, which it
+/// hasn't, as [`begins_strictly`] refuses it, before anything starts.
+#[must_use]
+pub fn no_folder(machine: &str, folder: &Path) -> String {
+    format!(
+        "{machine} has no folder {}, which the start names",
+        folder.display()
+    )
+}
+
+/// Whether `said`, the answer to a start naming `folder` asked of
+/// `machine`, is that machine's [`no_folder`], alone or as the last words
+/// of a refusal wrapping it, as a relay taken as an agent's says it.
+#[must_use]
+pub fn lacks_folder(said: &str, machine: &str, folder: &Path) -> bool {
+    let lacking = no_folder(machine, folder);
+    said == lacking || said.ends_with(&format!(": {lacking}"))
 }
 
 /// Whether `folder` is `home` itself, however it's named.
@@ -439,7 +459,7 @@ mod tests {
         );
         assert!(
             !says_on_its_log(Scope::Beside, false),
-            "nor does one beside a terminal's slice"
+            "nor does one a terminal started"
         );
     }
 
@@ -471,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn a_holder_beside_its_terminal_keeps_the_terminals_slice() {
+    fn a_holder_goes_among_the_agents_whatever_slice_started_it() {
         let words = |scope: Scope| -> Vec<String> {
             let command = scope.command(Path::new("/bin/mycelium"), "f00d");
             std::iter::once(command.get_program())
@@ -506,8 +526,8 @@ mod tests {
         );
         assert_eq!(
             words(Scope::Beside),
-            scoped("--slice-inherit"),
-            "a terminal's stays in the terminal's slice, weighed as it was"
+            scoped("--slice=agents.slice"),
+            "a terminal's goes among the agents too, never the person's programs' slice"
         );
     }
 
@@ -878,5 +898,27 @@ mod tests {
             Err("tern has no folder src/elsewhere, which the start names".to_owned()),
             "and one it hasn't is refused naming it"
         );
+    }
+
+    #[test]
+    fn a_machine_refusing_a_start_for_its_folder_alone_is_told_however_wrapped() {
+        let home = tempfile::tempdir().expect("a home");
+        let folder = Path::new("src/rows");
+        let refused = begins_strictly(Some(folder), Needs::ItsFolder, home.path(), "tern")
+            .expect_err("tern hasn't it");
+        assert!(lacks_folder(&refused, "tern", folder));
+        let relayed =
+            format!("tern takes a relayed start as an agent's, and refused it: {refused}");
+        assert!(lacks_folder(&relayed, "tern", folder), "wrapped: {relayed}");
+        assert!(
+            !lacks_folder(&refused, "ern", folder),
+            "another machine's refusal is no answer about this one"
+        );
+        assert!(
+            !lacks_folder(&refused, "tern", Path::new("src/other")),
+            "nor another folder's"
+        );
+        let silent = "tern didn't answer within 90s";
+        assert!(!lacks_folder(silent, "tern", folder), "nor no answer");
     }
 }

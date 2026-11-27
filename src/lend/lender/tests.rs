@@ -244,8 +244,14 @@ async fn next(answers: &mut mpsc::Receiver<Lent>) -> Option<Lent> {
 
 /// The status a lend is refused with, before any head.
 async fn refusal(answers: &mut mpsc::Receiver<Lent>) -> u16 {
+    refusal_and_why(answers).await.0
+}
+
+/// The status a lend is refused with, before any head, and why, so a
+/// test can tell refusals of one status apart.
+async fn refusal_and_why(answers: &mut mpsc::Receiver<Lent>) -> (u16, String) {
     match next(answers).await {
-        Some(Lent::Refused { status, .. }) => status,
+        Some(Lent::Refused { status, why }) => (status, why),
         other => panic!("the lend is refused, not {other:?}"),
     }
 }

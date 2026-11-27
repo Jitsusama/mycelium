@@ -15,7 +15,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{Standing, Swarm, address, asked, either, listed, names, short_names, title};
+use super::{
+    Standing, Swarm, address, asked, either, listed, names, shorts_of, title, told_apart, unmarked,
+};
 
 /// Who a steer is from: the person, as the harness's steers name them.
 const FROM: &str = "person";
@@ -70,11 +72,52 @@ fn paused(session: &Value) -> bool {
     session["presence"]["paused"] == json!(true)
 }
 
-/// The team or session `asked` names: a team by its address or its short
-/// name, then a living session by its address, then a team by a part of
-/// its name, then a living session by a part of its. Several are each
-/// named as they're typed, a team by its short name, so one can be
-/// picked.
+/// The living session `asked` names by its address, unless a team goes
+/// by that address and the session leads it, as an orchestrator's team
+/// goes by its lead's. A team is keyed by what its members say
+/// orchestrates them, so a peer could otherwise key one by a working
+/// session's address, lead it, and take the words meant for that
+/// session. One whose address is `asked` in its own case comes first.
+fn session_by_address<'a>(swarm: &'a Swarm, asked: &str) -> Option<&'a Value> {
+    let leads = |team: &Value, session: &Value| {
+        team["lead"]
+            .as_str()
+            .is_some_and(|lead| session["id"].as_str() == Some(lead))
+    };
+    let living = || {
+        swarm
+            .sessions
+            .iter()
+            .filter(|session| Standing::of(session).is_some())
+    };
+    living()
+        .find(|session| session["address"].as_str() == Some(asked))
+        .or_else(|| {
+            living().find(|session| {
+                session["address"]
+                    .as_str()
+                    .is_some_and(|address| address.eq_ignore_ascii_case(asked))
+            })
+        })
+        .filter(|session| {
+            !swarm
+                .teams
+                .iter()
+                .any(|team| address(team).eq_ignore_ascii_case(asked) && leads(team, session))
+        })
+}
+
+/// The team or session `asked` names: a living session by its address,
+/// as [`session_by_address`] finds it, then a team by its address, then
+/// a team by its short name, then a team by a part of its name, then a
+/// living session by a part of its. An address comes before a short
+/// name because a peer picks its team's short name, and could otherwise
+/// pick another's address and take the words meant for it, or clean to
+/// it and hide it. A team whose address is `asked` in its own case comes
+/// before one keyed alike but for case. Several are each named as
+/// they're typed, a team by its short name, so one can be picked; two
+/// teams whose short names clean alike are several, as `picked` finds
+/// them, so neither takes a steer meant for the other.
 fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
     let living = || {
         swarm
@@ -82,31 +125,56 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
             .iter()
             .filter(|session| Standing::of(session).is_some())
     };
-    let shorts = short_names(&swarm.teams);
-    // A short name's words may be typed apart, as `part deux`.
-    let joined = asked.split_whitespace().collect::<Vec<_>>().join("-");
-    if let Some(team) = swarm.teams.iter().find(|team| {
-        address(team).eq_ignore_ascii_case(asked)
-            || shorts
-                .get(address(team))
-                .is_some_and(|short| short.eq_ignore_ascii_case(&joined))
-    }) {
-        return Ok(Named::Team(team));
-    }
-    if let Some(session) = living().find(|session| {
-        session["address"]
-            .as_str()
-            .is_some_and(|address| address.eq_ignore_ascii_case(asked))
-    }) {
+    let shorts = shorts_of(swarm);
+    // A short name's words may be typed apart, as `part deux`. Short
+    // names and titles are matched as the swarm's pages draw them,
+    // cleaned on both sides, as `picked` matches them, so the name a page
+    // shows steers the team it names.
+    let joined = unmarked(&asked.split_whitespace().collect::<Vec<_>>().join("-"));
+    if let Some(session) = session_by_address(swarm, asked) {
         return Ok(Named::Session(session));
     }
-    let lower = asked.to_lowercase();
-    let matches = |record: &&Value| title(record).to_lowercase().contains(&lower);
-    let teams: Vec<&Value> = swarm.teams.iter().filter(matches).collect();
-    let mut found: Vec<Named<'_>> = if teams.is_empty() {
-        living().filter(matches).map(Named::Session).collect()
+    let exactly: Vec<Named<'_>> = swarm
+        .teams
+        .iter()
+        .filter(|team| address(team) == asked)
+        .map(Named::Team)
+        .collect();
+    let by_address: Vec<Named<'_>> = if exactly.is_empty() {
+        swarm
+            .teams
+            .iter()
+            .filter(|team| address(team).eq_ignore_ascii_case(asked))
+            .map(Named::Team)
+            .collect()
     } else {
-        teams.into_iter().map(Named::Team).collect()
+        exactly
+    };
+    let whole: Vec<Named<'_>> = if by_address.is_empty() {
+        swarm
+            .teams
+            .iter()
+            .filter(|team| {
+                shorts
+                    .get(address(team))
+                    .is_some_and(|short| unmarked(short).eq_ignore_ascii_case(&joined))
+            })
+            .map(Named::Team)
+            .collect()
+    } else {
+        by_address
+    };
+    let mut found: Vec<Named<'_>> = if whole.is_empty() {
+        let lower = unmarked(asked).to_lowercase();
+        let matches = |record: &&Value| unmarked(title(record)).to_lowercase().contains(&lower);
+        let teams: Vec<&Value> = swarm.teams.iter().filter(matches).collect();
+        if teams.is_empty() {
+            living().filter(matches).map(Named::Session).collect()
+        } else {
+            teams.into_iter().map(Named::Team).collect()
+        }
+    } else {
+        whole
     };
     if found.len() == 1
         && let Some(one) = found.pop()
@@ -116,13 +184,37 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
     match found.as_slice() {
         [] => Err(format!("nothing in the swarm is named {asked}")),
         many => {
-            let typed: Vec<&str> = many
-                .iter()
-                .map(|one| match one {
-                    Named::Team(record) => names::typed(record, &shorts),
-                    Named::Session(record) => title(record),
-                })
-                .collect();
+            // Each is a peer's text, so each is held to one line.
+            // Two drawn alike are each given their address too, where
+            // typing it steers the one it names. An act's word or `team`
+            // isn't, since `swarm` reads the first act it finds as the
+            // act, so typed before the act it would do another, and a
+            // team's address that a living session goes by steers that
+            // session, unless it leads the team.
+            let typeable =
+                |address: &str| crate::forage::is_address(address) && names::one_word(address);
+            let typed = told_apart(
+                &many
+                    .iter()
+                    .map(|one| match one {
+                        Named::Team(record) => (
+                            unmarked(names::typed(record, &shorts)),
+                            Some(address(record)).filter(|address| {
+                                typeable(address) && session_by_address(swarm, address).is_none()
+                            }),
+                        ),
+                        Named::Session(record) => (
+                            unmarked(title(record)),
+                            record["address"].as_str().filter(|address| {
+                                typeable(address)
+                                    && session_by_address(swarm, address)
+                                        .is_some_and(|found| found["id"] == record["id"])
+                            }),
+                        ),
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            let typed: Vec<&str> = typed.iter().map(String::as_str).collect();
             Err(format!("{asked} could be {}", either(&typed)))
         }
     }
@@ -175,7 +267,8 @@ fn team_within<'a>(swarm: &'a Swarm, at: &str) -> Option<&'a str> {
 fn aimed(session: &Value, steer: &Value) -> Aimed {
     Aimed {
         address: session["address"].as_str().unwrap_or_default().to_owned(),
-        name: title(session).to_owned(),
+        // A session's title is a peer's text, said back to the person.
+        name: unmarked(title(session)),
         steer: steer.clone(),
     }
 }
@@ -203,14 +296,14 @@ pub fn aim(swarm: &Swarm, act: Act, asked: &str) -> Result<Aim, String> {
     let (team, sessions) = match named(swarm, asked)? {
         Named::Session(session) if changes(session) => (None, vec![aimed(session, &steer)]),
         Named::Session(session) => {
-            let name = title(session);
+            let name = unmarked(title(session));
             return Err(match act {
                 Act::Resume => format!("{name} isn't paused"),
                 Act::Pause | Act::Say { .. } => format!("{name} is paused already"),
             });
         }
         Named::Team(team) => {
-            let name = title(team);
+            let name = unmarked(title(team));
             let sessions: Vec<Aimed> = match act {
                 Act::Say { .. } => team["lead"]
                     .as_str()
@@ -232,7 +325,7 @@ pub fn aim(swarm: &Swarm, act: Act, asked: &str) -> Result<Aim, String> {
                     Act::Resume => format!("none of {name}'s sessions is paused"),
                 });
             }
-            (Some(name.to_owned()), sessions)
+            (Some(name), sessions)
         }
     };
     Ok(Aim {
@@ -294,7 +387,8 @@ pub fn told(aim: &Aim, answers: &[Result<String, String>]) -> Result<String, Str
     for (aimed, answer) in aim.sessions.iter().zip(answers) {
         match answer {
             Ok(_) => reached.push(aimed.name.as_str()),
-            Err(why) => missed.push(format!("{} wasn't told: {why}", aimed.name)),
+            // The node's reason may carry another machine's words.
+            Err(why) => missed.push(format!("{} wasn't told: {}", aimed.name, unmarked(why))),
         }
     }
     let mut lines = Vec::new();
@@ -331,6 +425,7 @@ mod tests {
     use serde_json::json;
 
     use super::{Act, Aim, Aimed, aim, told};
+    use crate::forage::one_line;
     use crate::swarm::tests::swarm;
 
     /// The addresses `aim` tells, in order.
@@ -420,6 +515,180 @@ mod tests {
                  Busy one wasn't told: no session goes by BUSY now"
                 .to_owned()),
             "one not told is said, and why"
+        );
+    }
+
+    #[test]
+    fn what_a_steer_says_back_holds_peers_words_to_one_line() {
+        let (lead, busy, why) = (
+            "Harbour's \u{1b}]0;x\u{7}lead",
+            "Busy\r\none",
+            "tern said \u{1b}[2Jgone\nlater",
+        );
+        let mut dirty = swarm();
+        for session in &mut dirty.sessions {
+            if session["id"] == "s-lead" {
+                session["title"] = json!(format!("{lead}\u{fdd0}"));
+            }
+            if session["id"] == "s-busy" {
+                session["title"] = json!(busy);
+            }
+        }
+        let aimed = aim(&dirty, Act::Pause, "Harbour").expect("aimed");
+        let said = told(
+            &aimed,
+            &[
+                Ok("skiff".to_owned()),
+                Err(why.to_owned()),
+                Ok("skiff".to_owned()),
+            ],
+        );
+        assert_eq!(
+            said,
+            Err(format!(
+                "paused {} and Kelp's question, in Harbour\n{} wasn't told: {}",
+                one_line(lead),
+                one_line(busy),
+                one_line(why)
+            )),
+            "a session's title, or the node's reason, drew otherwise than on one line"
+        );
+    }
+
+    #[test]
+    fn a_steer_finds_a_team_by_the_name_its_page_shows() {
+        let mut short = swarm();
+        short.teams[1]["swarm"] = json!("do\u{200B}ck\u{fdd0}");
+        let mut titled = swarm();
+        titled.teams[1]["title"] = json!("Harb\u{200B}ou\u{fdd0}r");
+        for (swarm, asked) in [(short, "dock"), (titled, "arbou")] {
+            let aimed = aim(&swarm, Act::Pause, asked)
+                .unwrap_or_else(|why| panic!("{asked}, as the page shows it, missed: {why}"));
+            assert_eq!(
+                addresses(&aimed),
+                ["LEAD", "BUSY", "ASK"],
+                "{asked} steered another than Harbour"
+            );
+        }
+    }
+
+    #[test]
+    fn a_short_name_never_takes_a_session_s_address() {
+        let mut swarm = swarm();
+        swarm.teams[0]["swarm"] = json!("busy");
+        let say = Act::Say {
+            words: "Stop that".to_owned(),
+            now: false,
+        };
+        let aimed = aim(&swarm, say, "BUSY").expect("aimed");
+        assert_eq!(
+            addresses(&aimed),
+            ["BUSY"],
+            "a team named for a session's address took its words"
+        );
+    }
+
+    #[test]
+    fn a_peer_s_team_under_a_session_s_address_never_takes_its_words() {
+        // A team is keyed by what its members say orchestrates them, so
+        // a peer may key one by a working session's address and lead it.
+        let mut swarm = swarm();
+        swarm.teams[1]["key"] = json!("team:BUSY");
+        swarm.teams[2]["within"] = json!("BUSY");
+        let say = Act::Say {
+            words: "Stop that".to_owned(),
+            now: false,
+        };
+        let aimed = aim(&swarm, say, "BUSY").expect("aimed");
+        assert_eq!(
+            addresses(&aimed),
+            ["BUSY"],
+            "a team led by another took the words said to a session"
+        );
+    }
+
+    #[test]
+    fn a_team_goes_by_its_lead_s_address() {
+        let whole = aim(&swarm(), Act::Pause, "HARBOR").expect("aimed");
+        let mut swarm = swarm();
+        swarm.teams[1]["key"] = json!("team:LEAD");
+        swarm.teams[2]["within"] = json!("LEAD");
+        let aimed = aim(&swarm, Act::Pause, "LEAD").expect("aimed");
+        assert_eq!(
+            addresses(&aimed),
+            addresses(&whole),
+            "an orchestrator's team goes by its address, as it leads it"
+        );
+    }
+
+    #[test]
+    fn a_team_s_own_address_is_never_hidden_by_a_short_name_drawn_like_it() {
+        let whole = aim(&swarm(), Act::Pause, "HARBOR").expect("aimed");
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!("harbor");
+        swarm.teams[0]["swarm"] = json!("har\u{200B}bor");
+        let aimed = aim(&swarm, Act::Pause, "HARBOR").expect("its address reaches it");
+        assert_eq!(
+            addresses(&aimed),
+            addresses(&whole),
+            "a peer's short name cleaned to a team's address hid it"
+        );
+    }
+
+    #[test]
+    fn two_teams_whose_titles_clean_alike_are_each_named() {
+        // Short names that clean alike go to neither, so two teams are
+        // drawn alike only by titles that clean alike.
+        let mut swarm = swarm();
+        swarm.teams[1]["title"] = json!("Dock");
+        swarm.teams[0]["title"] = json!("Do\u{200B}ck");
+        let why = aim(&swarm, Act::Pause, "dock")
+            .expect_err("a steer to two teams drawn alike is refused");
+        assert_eq!(
+            why, "dock could be Dock (REEF01) or Dock (HARBOR)",
+            "each is named with what to type to reach it"
+        );
+        // `swarm` takes the first act it finds as the act, so an act's
+        // own word typed before it would do that act instead.
+        swarm.teams[0]["key"] = json!("team:RESUME");
+        assert_eq!(
+            aim(&swarm, Act::Pause, "dock"),
+            Err("dock could be Dock (no address to type) or Dock (HARBOR)".to_owned()),
+            "an act's word was given as an address to type"
+        );
+        swarm.teams[0]["key"] = json!("team:ALONE");
+        assert_eq!(
+            aim(&swarm, Act::Pause, "dock"),
+            Err("dock could be Dock (no address to type) or Dock (HARBOR)".to_owned()),
+            "an address that would steer a session instead is not given"
+        );
+    }
+
+    #[test]
+    fn a_team_keyed_like_another_but_for_case_never_hides_it() {
+        let whole = aim(&swarm(), Act::Pause, "HARBOR").expect("aimed");
+        let mut swarm = swarm();
+        swarm.teams[0]["key"] = json!("team:harbor");
+        assert_eq!(
+            addresses(&aim(&swarm, Act::Pause, "HARBOR").expect("its own case reaches it")),
+            addresses(&whole),
+            "a team keyed alike but for case hid Harbour"
+        );
+        assert_eq!(
+            addresses(&aim(&swarm, Act::Pause, "harbor").expect("its own case reaches it")),
+            ["CORAL"],
+            "the other was hidden in turn"
+        );
+    }
+
+    #[test]
+    fn two_sessions_named_alike_are_each_given_their_address() {
+        let mut swarm = swarm();
+        swarm.sessions[5]["title"] = json!("Busy one");
+        assert_eq!(
+            aim(&swarm, Act::Pause, "busy one"),
+            Err("busy one could be Busy one (BUSY) or Busy one (ALONE)".to_owned()),
+            "each session's own address reaches it, so each is given"
         );
     }
 

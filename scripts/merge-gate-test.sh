@@ -4,6 +4,7 @@
 # that doesn't hold main, or lacks a check there, or raises a count that
 # only falls, is refused, saying why. Then the merge train's: heads merged
 # onto main as one, landing only as main's own gate lets the train's tip.
+# A rise in what waits has cases of its own, in merge-gate-rise-test.sh.
 #
 #   merge-gate-test.sh GATE TRAIN COUNTS
 set -euo pipefail
@@ -12,24 +13,12 @@ usage="merge-gate-test.sh GATE TRAIN COUNTS"
 gate=$(realpath "${1:?Name the gate: ${usage}}")
 train=$(realpath "${2:?Name the train: ${usage}}")
 counts=$(realpath "${3:?Name the counts: ${usage}}")
-work=$(mktemp -d)
-trap 'rm -rf "${work}"' EXIT
-export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-export GIT_AUTHOR_NAME=gate GIT_AUTHOR_EMAIL=gate@example.org
-export GIT_COMMITTER_NAME=gate GIT_COMMITTER_EMAIL=gate@example.org
-export MERGE_GATE_PASSED="${work}/passed"
-mkdir "${MERGE_GATE_PASSED}"
-failed=0
+# shellcheck source=scripts/gate-test-kit.sh
+source "$(dirname "${BASH_SOURCE[0]}")/gate-test-kit.sh"
 
 git init -q --bare -b main "${work}/origin.git"
 git clone -q "${work}/origin.git" "${work}/tree" 2> /dev/null
 cd "${work}/tree"
-commit() {
-  echo "$1" >> said
-  git add said
-  git commit -q -m "$1"
-  git rev-parse HEAD
-}
 # Main holds the counts' rule and a list with one suppression waiting.
 mkdir nix src
 cp "${counts}" nix/counts.sh
@@ -39,34 +28,6 @@ git add nix src
 first=$(commit first)
 git push -q origin HEAD:main
 head=$(commit head)
-
-# Every Linux check kept as passed at a commit, but the ones named.
-pass() {
-  local sha=$1
-  shift
-  local check
-  for check in agents-cargo-goes-through-nix-offload counts-only-fall markdown-is-clean \
-    merge-gate-holds \
-    mycelium mycelium-needs-no-libraries mycelium-passes-clippy names-stay-out \
-    nix-is-clean rust-is-formatted toml-is-clean tree-keeps-its-rules; do
-    if [[ " $* " != *" ${check} "* ]]; then
-      printf '{"check":"checks.x86_64-linux.%s","dir":null}\n' "${check}"
-    fi
-  done > "${MERGE_GATE_PASSED}/${sha}"
-}
-
-# Whether the gate let `sha` merge (`merges`) or refused it (`refuses`),
-# and said `words`.
-expect() {
-  local meant=$1 sha=$2 words=$3 why=$4 said code=0
-  said=$(bash "${gate}" "${sha}" 2>&1) || code=$?
-  local did=merges
-  ((code == 0)) || did=refuses
-  if [[ ${did} != "${meant}" || ${said} != *"${words}"* ]]; then
-    echo "FAIL ${why}: it ${did}, saying: ${said}" >&2
-    failed=1
-  fi
-}
 
 pass "${head}"
 expect merges "${head}" "No Mac built it" \
@@ -633,4 +594,4 @@ rode refuses "main moved while the gate judged ${raced:0:12}" \
   "a train main moved under while its gate judged doesn't land" land "${raced}"
 points refs/heads/main "${interloper}" "main keeps the change that landed first"
 
-exit "${failed}"
+finish

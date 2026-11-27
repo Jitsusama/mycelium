@@ -15,7 +15,7 @@ use crate::facts::Machine;
 use crate::flow::{Crossing, Refusal};
 use crate::group::{Group, Pattern};
 use crate::offer::Offer;
-use crate::placement::{Placement, Work};
+use crate::placement::{Need, Placement, Work};
 use crate::record::{Intent, Message, Session};
 
 /// What a client asks of the node.
@@ -271,8 +271,17 @@ pub struct Taking {
 /// `words`, a link or what the work is, and its folder is the one named,
 /// the checkout a link's repository has under home, or where the asker
 /// is, judged as the asker could reach it and never home itself. It
-/// starts on `on`, or this machine, and never on one that costs money.
+/// starts on `on`; else where `needs` say, wherever its folder is; else
+/// where placement chooses, where its folder is a repository's own
+/// checkout under `~/src` fetching from a remote, or a bare repository's
+/// trunk, beginning here instead where the machine chosen hasn't it; here
+/// otherwise. It goes to one that costs money only where it names one or
+/// needs the cloud, or, the person's, where every machine heard is past
+/// its room and a cloud machine linked has room. A field it doesn't know
+/// is refused, so work needing what this node can't read, as `needs` was
+/// to nodes before it, never starts here unsaid.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Sprout {
     /// The work: a link alone, or words.
     pub words: Vec<String>,
@@ -285,6 +294,10 @@ pub struct Sprout {
     /// The machine it starts on, by name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<String>,
+    /// What the machine it starts on must be, such as `cloud`, where no
+    /// machine is named; placement chooses among those that are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<Need>,
     /// Where the asker says it is, which counts only for the person and
     /// only where the node can't see where the asker is itself, as on a
     /// Mac.
@@ -554,6 +567,11 @@ pub struct Offers {
     /// Why a program couldn't say what it offers, by the program, so
     /// none of them is taken as offering nothing.
     pub unanswered: BTreeMap<String, String>,
+    /// The needs without a value a sprout may name that this node places
+    /// by, such as [`Need::Cloud`], so a client offers work needing one
+    /// only where it is placed by it. A node from before says none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<Need>,
 }
 
 /// A change, as a watch sends it.
@@ -667,5 +685,35 @@ mod tests {
             serde_json::from_str::<Start>(later).is_ok(),
             "a start saying more than this end knows still reads"
         );
+    }
+
+    #[test]
+    fn a_sprout_saying_more_than_this_node_knows_is_refused() {
+        let cloud = r#"{"Sprout":{"words":["fix it"],"needs":["cloud"]}}"#;
+        let Request::Sprout(read) = serde_json::from_str::<Request>(cloud).expect("it reads")
+        else {
+            panic!("a sprout reads as a sprout");
+        };
+        assert_eq!(read.needs, vec![Need::Cloud]);
+        let later = r#"{"Sprout":{"words":["fix it"],"needs_later":["cloud"]}}"#;
+        assert!(
+            serde_json::from_str::<Request>(later).is_err(),
+            "a field it can't read may say where the work must go, so it never starts unsaid"
+        );
+    }
+
+    #[test]
+    fn the_needs_a_node_places_by_are_said_with_its_offers_and_an_older_node_says_none() {
+        let placed = Offers {
+            needs: vec![Need::Cloud],
+            ..Offers::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&placed).expect("offers write"),
+            r#"{"offers":[],"unanswered":{},"needs":["cloud"]}"#
+        );
+        let older: Offers = serde_json::from_str(r#"{"offers":[],"unanswered":{}}"#)
+            .expect("an older answer reads");
+        assert!(older.needs.is_empty(), "an older node places by none");
     }
 }

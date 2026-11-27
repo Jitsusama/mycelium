@@ -15,20 +15,21 @@
 //! room, and the latest reading says so too, and only once the readings
 //! [`SETTLE`] after its first sleep still say it is over. Those that
 //! wait anew sleep too: while it settles, and once it has, only where it
-//! carries none. It carries one asleep session at a time to a peer with
-//! room whose latest facts are fresh enough to place by, placed as any
-//! work is, onto ground as firm as here's, never one in a turn, on the
-//! person's screen, orchestrating
-//! other sessions, part way through something a carry would break, or
-//! whose quest runs elsewhere too; what can't be told of a session keeps
-//! it here. After a carry it waits [`COOLDOWN`], and it carries at most
+//! carries none. It carries one asleep session at a time to a peer, or a
+//! worker that says it takes carries and that its node names, with
+//! room whose latest facts are
+//! fresh enough to place by, placed as any work is, onto ground as
+//! firm as here's, never one in a turn, on the person's screen,
+//! orchestrating other sessions, part way through something a carry
+//! would break, or whose quest runs elsewhere too; what can't be told
+//! of a session keeps it here. After a carry it waits [`COOLDOWN`], and it carries at most
 //! [`DAILY`] within a [`DAY`], counted as the larger of what its node
 //! remembers and what the record of carries holds; a session moved by
 //! anyone stays put for [`PIN`]; and
 //! nothing goes to a machine a session came here from within
 //! [`NO_RETURN`]. This module only chooses; the node acts on its choice.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 
 use jiff::{SignedDuration, Timestamp};
 use serde::Serialize;
@@ -37,7 +38,7 @@ use super::ground;
 use crate::balance::{Flag, HELD_FROM, Reading, WINDOW};
 use crate::declared::{Declared, Kind};
 use crate::facts::Machine;
-use crate::placement::{self, Loads, Placement, Work};
+use crate::placement::{self, Loads, Need, Placement, Work};
 use crate::record::{Session, State};
 use crate::room::Limit;
 
@@ -60,9 +61,10 @@ pub const COOL_FOR: SignedDuration = SignedDuration::from_mins(5);
 /// say the machine is over before it carries one.
 pub const SETTLE: SignedDuration = SignedDuration::from_mins(5);
 
-/// How long after carrying a session it carries none again: stricter than
-/// three an hour.
-pub const COOLDOWN: SignedDuration = SignedDuration::from_mins(30);
+/// How long after carrying a session it carries none again: twelve an
+/// hour at most, so a machine short of memory for its many sessions
+/// sheds them over a night, as the velocity cell ruled on 26 November.
+pub const COOLDOWN: SignedDuration = SignedDuration::from_mins(5);
 
 /// How long after a session came here from a machine nothing goes there.
 pub const NO_RETURN: SignedDuration = SignedDuration::from_hours(1);
@@ -71,8 +73,9 @@ pub const NO_RETURN: SignedDuration = SignedDuration::from_hours(1);
 pub const PIN: SignedDuration = SignedDuration::from_hours(24);
 
 /// How many sessions a machine carries away to ease itself within a
-/// [`DAY`], at most, beside [`COOLDOWN`].
-pub const DAILY: usize = 6;
+/// [`DAY`], at most, beside [`COOLDOWN`]: four hours of carrying at its
+/// pace.
+pub const DAILY: usize = 48;
 
 /// The span [`DAILY`] counts over.
 pub const DAY: SignedDuration = SignedDuration::from_hours(24);
@@ -401,13 +404,22 @@ pub struct Here<'a> {
     pub machines: &'a [Machine],
     /// What each carries, as placement weighs it.
     pub loads: &'a Loads,
+    /// The workers it may carry to, by name, as its node was told: a
+    /// worker's word that it takes carries is only its own, so one this
+    /// doesn't name takes none from it.
+    pub workers: &'a BTreeSet<String>,
 }
 
 impl<'a> Here<'a> {
     /// The machine named `name` among the realm's `machines`, as its own
-    /// configuration says of it.
+    /// configuration says of it, carrying to the `workers` named.
     #[must_use]
-    pub fn of(name: &'a str, machines: &'a [Machine], loads: &'a Loads) -> Self {
+    pub fn of(
+        name: &'a str,
+        machines: &'a [Machine],
+        loads: &'a Loads,
+        workers: &'a BTreeSet<String>,
+    ) -> Self {
         Self {
             name,
             declared: machines
@@ -416,6 +428,7 @@ impl<'a> Here<'a> {
                 .and_then(|one| one.declared.as_ref()),
             machines,
             loads,
+            workers,
         }
     }
 }
@@ -575,8 +588,8 @@ fn carry(
     let peers = peers(here, reading, history, now);
     if peers.is_empty() {
         return nothing(
-            "no machine with room is a peer it may carry to, with facts fresh enough to place \
-             by, that no session came from within the hour"
+            "no machine with room is a peer or a worker named here taking carries it may carry \
+             to, with facts fresh enough to place by, that no session came from within the hour"
                 .to_owned(),
         );
     }
@@ -655,11 +668,15 @@ fn over(
 }
 
 /// The machines `here` may carry to: those with room while it is over,
-/// as the watch holds it and in `reading` itself, peers rather than
-/// workers, whose facts in `reading` aren't too old to place by, and
-/// none a session came from within the hour. A machine last heard
-/// minutes ago may have filled up since, or its link may be down, so a
-/// carry there may close a session here that it can't open there.
+/// as the watch holds it and in `reading` itself, peers or workers that
+/// declare they take carries and that `here` names, whose facts in
+/// `reading` aren't too old to place by, and none a session came from
+/// within the hour. A worker is where the person's load goes off their
+/// machines, so one named that says it takes carries is as good a place
+/// as a peer; [`ground::firm`] still keeps a strict session off it. A
+/// machine last heard minutes ago may have filled up since, or its link
+/// may be down, so a carry there may close a session here that it can't
+/// open there.
 fn peers(here: &Here, reading: &Reading, history: &History, now: Timestamp) -> Vec<Machine> {
     let cool = |flags: &[Flag], name: &str| {
         flags.iter().any(
@@ -682,10 +699,12 @@ fn peers(here: &Here, reading: &Reading, history: &History, now: Timestamp) -> V
                 && !stale(&machine.name)
         })
         .filter(|machine| {
-            machine
-                .declared
-                .as_ref()
-                .is_some_and(|declared| !declared.is_worker())
+            machine.declared.is_some()
+                && match ground::Lent::of(machine) {
+                    ground::Lent::Not => true,
+                    ground::Lent::TakesCarries => here.workers.contains(&machine.name),
+                    ground::Lent::TakesNone => false,
+                }
         })
         .filter(|machine| !history.came_from(here.name, &machine.name, now))
         .cloned()
@@ -750,36 +769,32 @@ fn carried(
         }
         let (peers, mut refused) = bringing_back(&peers, cell.fence);
         let (peers, apart) = alike(here, &peers, cell.fence);
-        if peers.is_empty() {
+        // Ground no carry may go to is left out before placing, so the
+        // one placed is never one the carry refuses, hiding the next.
+        let mut firm = Vec::new();
+        for machine in peers {
+            match ground::firm(cell.fence, here.declared, &machine.name, Some(&machine)) {
+                Ok(()) => firm.push(machine),
+                Err(why) => refused.push(why),
+            }
+        }
+        if firm.is_empty() {
             refused.extend(apart);
             why_not.push(format!("{who}: {}", refused.join("; ")));
             continue;
         }
+        let peers = firm;
         // Placed as of the reading's own time, so each room is judged heard
         // or not by when it was read, and the best takes it rather than
         // one drawn at random from those near it: a carry is one session
         // at a time, with nothing alike to spread.
-        let to = match placement::decide_as(
-            &work,
-            &peers,
-            here.loads,
-            &[],
-            now,
-            &placement::Weights::STARTING,
-        )
-        .placement
-        {
-            Placement::Placed { machine, .. } => machine,
-            Placement::Pending { misses } | Placement::Refused { misses } => {
-                why_not.push(format!("{who}: {}", placement::said(&misses)));
+        let to = match placed(&work, &peers, here.loads, now) {
+            Ok(to) => to,
+            Err(why) => {
+                why_not.push(format!("{who}: {why}"));
                 continue;
             }
         };
-        let there = peers.iter().find(|machine| machine.name == to);
-        if let Err(why) = ground::firm(cell.fence, here.declared, &to, there) {
-            why_not.push(format!("{who}: {why}"));
-            continue;
-        }
         return Choice::Carry {
             session: cell.session.id.clone(),
             why: why(here.name, &to, reading, history),
@@ -793,6 +808,59 @@ fn carried(
         why_not.extend(left_out);
         why_not.join("; ")
     })
+}
+
+/// Where `work` goes of `peers`, or why none takes it: the person's own
+/// machines first, and only where none of them takes it, the best of the
+/// rest. Placement keeps work that names no worker off every machine it
+/// counts a worker, the person's cloud machines among them, so each of
+/// those is placed by name, alone, and they are ranked here as placement
+/// ranks machines: by tier, then by headroom, then by name.
+fn placed(work: &Work, peers: &[Machine], loads: &Loads, now: Timestamp) -> Result<String, String> {
+    let weights = &placement::Weights::STARTING;
+    let (own, workers): (Vec<Machine>, Vec<Machine>) = peers.iter().cloned().partition(|machine| {
+        ground::Lent::of(machine) == ground::Lent::Not
+            && !machine.declared.as_ref().is_some_and(Declared::is_worker)
+    });
+    let mut refused = Vec::new();
+    if !own.is_empty() {
+        match placement::decide_as(work, &own, loads, &[], now, weights).placement {
+            Placement::Placed { machine, .. } => return Ok(machine),
+            Placement::Pending { misses } | Placement::Refused { misses } => {
+                refused.push(placement::said(&misses));
+            }
+        }
+    }
+    let mut taking = Vec::new();
+    for worker in &workers {
+        let mut named = work.clone();
+        named.needs.push(Need::Machine(worker.name.clone()));
+        // One of the person's own stays past the bar a carry holds it to,
+        // so it is placed for a session that long rather than refused for
+        // leaving at all, as the Mac would never be.
+        if ground::Lent::of(worker) == ground::Lent::Not {
+            named.lasts = Some(ground::STAYS_FOR);
+        }
+        let alone = std::slice::from_ref(worker);
+        let decision = placement::decide_as(&named, alone, loads, &[], now, weights);
+        match decision.placement {
+            Placement::Placed { .. } => taking.extend(decision.judged),
+            Placement::Pending { misses } | Placement::Refused { misses } => {
+                refused.push(placement::said(&misses));
+            }
+        }
+    }
+    let tier = |one: &placement::Judgement| (one.unheard, one.saturated, one.over);
+    taking
+        .into_iter()
+        .min_by(|one, other| {
+            tier(one)
+                .cmp(&tier(other))
+                .then_with(|| other.headroom.total_cmp(&one.headroom))
+                .then_with(|| one.machine.cmp(&other.machine))
+        })
+        .map(|best| best.machine)
+        .ok_or_else(|| refused.join("; "))
 }
 
 /// Those of `peers` the start bringing back a session in the fence `kind`
@@ -935,6 +1003,7 @@ pub(super) mod tests {
                 Vec::new()
             }),
             saturated: None,
+            cpu_minute: None,
         });
         machine
     }
@@ -1076,6 +1145,7 @@ pub(super) mod tests {
             declared: Some(&declared),
             machines,
             loads: &Loads::new(),
+            workers: &["osprey".to_owned(), "tern".to_owned()].into(),
         };
         choose(&here, cells, &reading(machines, now()), history, now())
     }
@@ -1141,6 +1211,7 @@ pub(super) mod tests {
             declared: Some(&declared),
             machines: &realm,
             loads: &Loads::new(),
+            workers: &BTreeSet::new(),
         };
         let mut unfelt = realm.clone();
         unfelt[0].room = None;
@@ -1221,6 +1292,7 @@ pub(super) mod tests {
                 declared: Some(&declared),
                 machines: latest,
                 loads: &Loads::new(),
+                workers: &BTreeSet::new(),
             };
             let mut on = reading(latest, now());
             on.held = balance::read(held, &[], now()).flags.into();
@@ -1277,7 +1349,7 @@ pub(super) mod tests {
             "nor one with room in a reading the watch doesn't hold yet"
         );
         let mut worker = realm();
-        worker[1].declared.as_mut().expect("declared").costs_money = true;
+        worker[1].worker = true;
         assert!(
             why_not(&choosing(&worker, &worker)).starts_with("no machine with room is a peer"),
             "where the only room is a worker's, nothing is put to sleep nor carried"
@@ -1346,14 +1418,18 @@ pub(super) mod tests {
         let mut skiff = machine("skiff", 4.6);
         skiff.declared = Some(declaring(&[Kind::Fence]));
         let machines = [tern, skiff];
-        let loads = Loads::new();
-        let here = Here::of("skiff", &machines, &loads);
+        let (loads, workers) = (Loads::new(), BTreeSet::new());
+        let here = Here::of("skiff", &machines, &loads, &workers);
         assert_eq!(
             here.declared,
             machines[1].declared.as_ref(),
             "skiff, listed second, by its own facts"
         );
-        assert!(Here::of("osprey", &machines, &loads).declared.is_none());
+        assert!(
+            Here::of("osprey", &machines, &loads, &workers)
+                .declared
+                .is_none()
+        );
     }
 
     #[test]
@@ -1410,6 +1486,7 @@ pub(super) mod tests {
             declared: Some(&declared),
             machines: &realm,
             loads: &Loads::new(),
+            workers: &BTreeSet::new(),
         };
         // The watch still holds it over, as it does just after one cool
         // reading among hot ones.
@@ -1648,8 +1725,9 @@ pub(super) mod tests {
             sleeps(
                 &["s2"],
                 Some(&format!(
-                    "it carried s9 at {}, and carries none again within 30 minutes",
-                    ago(1)
+                    "it carried s9 at {}, and carries none again within {} minutes",
+                    ago(1),
+                    COOLDOWN.as_mins()
                 ))
             )
         );
@@ -1897,7 +1975,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn none_is_carried_within_half_an_hour_of_the_last() {
+    fn none_is_carried_within_its_cooldown_of_the_last() {
         let realm = realm();
         let eased = |mins| {
             let mut history = hot_for(&realm, 60);
@@ -1910,45 +1988,54 @@ pub(super) mod tests {
             });
             chose(&realm, &[cell("s1")], &history)
         };
+        let cooldown = COOLDOWN.as_mins();
         assert!(
-            why_not(&eased(29)).ends_with("carries none again within 30 minutes"),
-            "29 minutes after the last"
+            why_not(&eased(cooldown - 1))
+                .ends_with(&format!("carries none again within {cooldown} minutes")),
+            "a minute short of the cooldown after the last"
         );
-        assert!(carries(&eased(30)).is_some(), "30 minutes after the last");
+        assert!(
+            carries(&eased(cooldown)).is_some(),
+            "the cooldown after the last"
+        );
     }
 
     #[test]
-    fn a_machine_carries_at_most_six_sessions_a_day() {
+    fn a_machine_carries_at_most_its_daily_sessions_a_day() {
         let realm = realm();
-        // `remembered` carries the node made, the last two hours ago, and
-        // `kept` the record of carries says it made.
+        let daily = i64::try_from(DAILY).expect("a day's carries are counted in an i64");
+        let full = format!(
+            "it carried {DAILY} sessions within the day, and carries at most {DAILY} a day"
+        );
+        // `remembered` carries the node made, twenty minutes apart and the
+        // last two hours ago, and `kept` the record of carries says it made.
         let eased = |remembered: i64, kept: Result<usize, String>| {
             let mut history = hot_for(&realm, 11);
-            for hour in 0..remembered {
+            for each in 0..remembered {
                 history.moved(Moved {
-                    session: format!("s-{hour}"),
+                    session: format!("s-{each}"),
                     from: "skiff".to_owned(),
                     to: "tern".to_owned(),
-                    at: ago((hour + 2) * 60),
+                    at: ago(each * 20 + 120),
                     eases: true,
                 });
             }
             history.kept_eases(kept);
             chose(&realm, &[cell("s1")], &history)
         };
-        assert!(carries(&eased(5, Ok(5))).is_some(), "five, so a sixth");
+        assert!(
+            carries(&eased(daily - 1, Ok(DAILY - 1))).is_some(),
+            "one short of the day's, so one more"
+        );
+        assert_eq!(why_not(&eased(daily, Ok(DAILY))), full);
         assert_eq!(
-            why_not(&eased(6, Ok(6))),
-            "it carried 6 sessions within the day, and carries at most 6 a day"
+            why_not(&eased(daily, Ok(0))),
+            full,
+            "a record of carries cut short still stops the next"
         );
         assert_eq!(
-            why_not(&eased(6, Ok(0))),
-            "it carried 6 sessions within the day, and carries at most 6 a day",
-            "a record of carries cut short still stops the seventh"
-        );
-        assert_eq!(
-            why_not(&eased(0, Ok(6))),
-            "it carried 6 sessions within the day, and carries at most 6 a day",
+            why_not(&eased(0, Ok(DAILY))),
+            full,
             "carries the record holds count though the node forgot them"
         );
         assert_eq!(
@@ -1963,49 +2050,55 @@ pub(super) mod tests {
                 .starts_with("the carries kept here haven't been read"),
             "a node that hasn't read the record carries nothing"
         );
-        // Five within the day, and a sixth `at` ago from `from`.
-        let with_sixth = |at: Timestamp, from: &str| {
+        // One short of the day's within it, and the last `at` ago from
+        // `from`.
+        let with_last = |at: Timestamp, from: &str| {
             let mut history = hot_for(&realm, 11);
-            for (hour, from) in (0..5).map(|hour| (hour, "skiff")).chain([(5, from)]) {
+            let last = daily - 1;
+            for (each, from) in (0..last).map(|each| (each, "skiff")).chain([(last, from)]) {
                 history.moved(Moved {
-                    session: format!("s-{hour}"),
+                    session: format!("s-{each}"),
                     from: from.to_owned(),
                     to: "osprey".to_owned(),
-                    at: if hour == 5 { at } else { ago((hour + 2) * 60) },
+                    at: if each == last {
+                        at
+                    } else {
+                        ago(each * 20 + 120)
+                    },
                     eases: true,
                 });
             }
             chose(&realm, &[cell("s1")], &history)
         };
         assert!(
-            carries(&with_sixth(now() - DAY, "skiff")).is_some(),
+            carries(&with_last(now() - DAY, "skiff")).is_some(),
             "a carry a day old counts no longer"
         );
         assert_eq!(
-            why_not(&with_sixth(
+            why_not(&with_last(
                 now() - DAY + SignedDuration::from_secs(1),
                 "skiff"
             )),
-            "it carried 6 sessions within the day, and carries at most 6 a day",
+            full,
             "a second short of a day it still counts"
         );
         assert!(
-            carries(&with_sixth(ago(60), "tern")).is_some(),
+            carries(&with_last(ago(60), "tern")).is_some(),
             "another machine's easing counts for none of skiff's"
         );
         let mut others = hot_for(&realm, 11);
-        for hour in 0..6 {
+        for each in 0..daily {
             others.moved(Moved {
-                session: format!("s-{hour}"),
+                session: format!("s-{each}"),
                 from: "skiff".to_owned(),
                 to: "osprey".to_owned(),
-                at: ago((hour + 2) * 60),
+                at: ago(each * 20 + 120),
                 eases: false,
             });
         }
         assert!(
             carries(&chose(&realm, &[cell("s1")], &others)).is_some(),
-            "six carried off skiff by others count for none of its node's six"
+            "a day's carries off skiff by others count for none of its node's"
         );
     }
 
@@ -2031,21 +2124,46 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_worker_with_room_is_never_where_a_session_goes() {
+    fn a_worker_with_room_takes_a_session_only_where_it_says_it_takes_carries() {
         let history = hot_for(&realm(), 11);
         let mut paid = realm();
-        paid[1].declared.as_mut().expect("declared").costs_money = true;
+        let lent = paid[1].declared.as_mut().expect("declared");
+        lent.costs_money = true;
+        lent.reach.push("aquifer".to_owned());
         assert!(
             why_not(&chose(&paid, &[cell("s1")], &history))
                 .starts_with("no machine with room is a peer"),
-            "a machine that costs money is a worker"
+            "a machine that reaches what only a lent one does is a worker, which takes none \
+             unsaid"
+        );
+        paid[1].declared.as_mut().expect("declared").takes_carries = true;
+        assert_eq!(
+            carries(&chose(&paid, &[cell("s1")], &history)),
+            Some(("s1", "tern")),
+            "a worker that says it takes carries takes one"
+        );
+        let mut both = paid;
+        // Under a quarter stalled, so with room.
+        both.push(machine("wren", 20.0));
+        assert_eq!(
+            carries(&chose(&both, &[cell("s1")], &hot_for(&both, 11))),
+            Some(("s1", "wren")),
+            "one of the person's own with room goes before a worker with more"
+        );
+        let mut linked = realm();
+        linked[1].worker = true;
+        assert!(
+            why_not(&chose(&linked, &[cell("s1")], &history))
+                .starts_with("no machine with room is a peer"),
+            "a machine its link marks a worker takes none unsaid"
         );
         let mut lent = realm();
-        lent[1].declared.as_mut().expect("declared").leaves_at = Some(now() + PIN);
+        let leaving = lent[1].declared.as_mut().expect("declared");
+        leaving.leaves_at = Some(now() + PIN);
+        leaving.takes_carries = true;
         assert!(
-            why_not(&chose(&lent, &[cell("s1")], &history))
-                .starts_with("no machine with room is a peer"),
-            "a machine that leaves is a worker"
+            why_not(&chose(&lent, &[cell("s1")], &history)).contains("tern leaves at"),
+            "a worker that leaves takes none, since a carried session lasts"
         );
         let mut untold = realm();
         untold[1].declared = None;
@@ -2053,6 +2171,152 @@ pub(super) mod tests {
             why_not(&chose(&untold, &[cell("s1")], &history))
                 .starts_with("no machine with room is a peer"),
             "a machine that says nothing of itself can't be told a peer"
+        );
+    }
+
+    #[test]
+    fn a_cloud_machine_of_the_persons_own_takes_a_session_eased_as_the_mac_does() {
+        let history = hot_for(&realm(), 11);
+        let mut cloud = realm();
+        cloud[1].declared.as_mut().expect("declared").costs_money = true;
+        assert_eq!(
+            carries(&chose(&cloud, &[cell("s1")], &history)),
+            Some(("s1", "tern")),
+            "one of the person's cloud machines takes a session, saying nothing of carries, \
+             though placement keeps unnamed work off it"
+        );
+        let mut kept = cloud.clone();
+        kept[1].declared.as_mut().expect("declared").leaves_at =
+            Some("9999-01-01T00:00:00Z".parse().expect("a time"));
+        assert_eq!(
+            carries(&chose(&kept, &[cell("s1")], &history)),
+            Some(("s1", "tern")),
+            "and so does one that says it leaves, long after a carry's bar"
+        );
+        let mut both = cloud;
+        both.push(machine("wren", 20.0));
+        assert_eq!(
+            carries(&chose(&both, &[cell("s1")], &hot_for(&both, 11))),
+            Some(("s1", "wren")),
+            "a machine placement takes unnamed goes first"
+        );
+    }
+
+    // #501's council (26 November): pin whether the node eases onto a
+    // room that says nothing of its leaving. The person ruled cloud
+    // machines full places for sessions, with no opt-in, so it does.
+    #[test]
+    fn a_room_its_node_names_takes_a_session_eased_with_no_word_of_its_own() {
+        let history = hot_for(&realm(), 11);
+        let mut rooms = realm();
+        rooms[1].worker = true;
+        rooms[1].declared.as_mut().expect("declared").costs_money = true;
+        assert!(
+            why_not(&chose(&rooms, &[cell("s1")], &history))
+                .starts_with("no machine with room is a peer"),
+            "unnamed, a machine a provider's link lent takes none unsaid"
+        );
+        rooms[1].held_for = facts::HeldFor::Agents;
+        assert_eq!(
+            carries(&chose(&rooms, &[cell("s1")], &history)),
+            Some(("s1", "tern")),
+            "named a room, and saying nothing of its leaving, it takes one"
+        );
+    }
+
+    #[test]
+    fn the_best_worker_takes_a_session_none_of_the_persons_own_takes() {
+        use crate::declared::{Effect, Taint};
+        let taking = |mut machine: Machine| {
+            machine.worker = true;
+            machine.declared.as_mut().expect("declared").takes_carries = true;
+            machine
+        };
+        let mut serviced = machine("wren", 20.0);
+        let taints = &mut serviced.declared.as_mut().expect("declared").taints;
+        taints.push(Taint {
+            key: "serviced".to_owned(),
+            effect: Effect::Never,
+            why: "it is being serviced".to_owned(),
+        });
+        let realm = vec![
+            machine("skiff", 86.0),
+            taking(machine("osprey", 20.0)),
+            taking(machine("tern", 4.6)),
+            serviced,
+        ];
+        let history = hot_for(&realm, 11);
+        assert_eq!(
+            carries(&chose(&realm, &[cell("s1")], &history)),
+            Some(("s1", "tern")),
+            "a worker takes what the person's own refuse, the roomiest first"
+        );
+        let named: BTreeSet<String> = ["osprey".to_owned()].into();
+        let declared = declaring(&[Kind::None, Kind::Fence]);
+        let here = Here {
+            name: "skiff",
+            declared: Some(&declared),
+            machines: &realm,
+            loads: &Loads::new(),
+            workers: &named,
+        };
+        let on = reading(&realm, now());
+        assert_eq!(
+            carries(&choose(&here, &[cell("s1")], &on, &history, now())),
+            Some(("s1", "osprey")),
+            "a worker its node doesn't name takes none, whatever it says of itself"
+        );
+        let mut leaving = realm.clone();
+        let tern = leaving[2].declared.as_mut().expect("declared");
+        tern.leaves_at = Some(now() + PIN);
+        assert_eq!(
+            carries(&chose(&leaving, &[cell("s1")], &hot_for(&leaving, 11))),
+            Some(("s1", "osprey")),
+            "a worker that refuses leaves the next to take it"
+        );
+        let mut unfenced = realm;
+        unfenced[3] = machine("wren", 20.0);
+        unfenced[3].declared = Some(declaring(&[Kind::None]));
+        assert_eq!(
+            carries(&chose(&unfenced, &[cell("s1")], &hot_for(&unfenced, 11))),
+            Some(("s1", "tern")),
+            "one of the person's own the carry refuses hides no worker"
+        );
+    }
+
+    // A worker's strict fence is only its own word, so easing carries no
+    // strict session to one, though it says it takes carries.
+    #[test]
+    fn a_strict_session_never_goes_to_a_worker() {
+        let kinds = [Kind::None, Kind::Fence, Kind::Strict];
+        let mut realm = realm();
+        for one in &mut realm {
+            one.declared = Some(declaring(&kinds));
+            one.system = Some("linux".to_owned());
+        }
+        realm[1].worker = true;
+        realm[1].declared.as_mut().expect("declared").takes_carries = true;
+        let mut strict = cell("s1");
+        strict.fence = Some(Kind::Strict);
+        let declared = declaring(&kinds);
+        let here = Here {
+            name: "skiff",
+            declared: Some(&declared),
+            machines: &realm,
+            loads: &Loads::new(),
+            workers: &["tern".to_owned()].into(),
+        };
+        let history = hot_for(&realm, 11);
+        let reading = reading(&realm, now());
+        assert_eq!(
+            why_not(&choose(&here, &[strict], &reading, &history, now())),
+            "S1: tern is a worker, whose strict fence is its own word, so no node carries a \
+             strict session there"
+        );
+        assert_eq!(
+            carries(&choose(&here, &[cell("s2")], &reading, &history, now())),
+            Some(("s2", "tern")),
+            "a fenced session still goes"
         );
     }
 
@@ -2099,6 +2363,7 @@ pub(super) mod tests {
                 declared: Some(&declared),
                 machines,
                 loads: &Loads::new(),
+                workers: &BTreeSet::new(),
             };
             let history = hot_for(machines, 11);
             choose(
