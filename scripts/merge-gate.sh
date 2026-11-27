@@ -70,6 +70,32 @@ if ! git merge-base --is-ancestor "${main}" "${sha}"; then
   exit 1
 fi
 
+# A train whose checks run holds main (merge-train.sh): while origin's
+# train-lease names a tip that still holds main and was made less than
+# `lease_for` seconds ago, only that tip merges, so no landing sends it
+# back to build again. On 26 November 2026 two landings did that to one
+# urgent train within an hour. A lease whose tip can't be fetched holds
+# nothing, as one gone between the two reads.
+lease_for=5400
+lease=$(git ls-remote origin refs/heads/train-lease)
+lease=${lease%%$'\t'*}
+if [[ -n ${lease} && ${lease} != "${sha}" ]]; then
+  git cat-file -e "${lease}^{commit}" 2> /dev/null ||
+    git fetch -q origin "${lease}" 2> /dev/null || lease=
+fi
+if [[ -n ${lease} && ${lease} != "${sha}" ]] &&
+  git merge-base --is-ancestor "${main}" "${lease}"; then
+  now=$(date +%s)
+  leased_at=$(git log -1 --format=%ct "${lease}")
+  left=$((leased_at + lease_for - now))
+  if ((left > 0)); then
+    echo "merge-gate: train ${lease:0:12} holds main for $(((left + 59) / 60)) more" \
+      "minutes while its checks run: land after it, made again on main as it" \
+      "leaves it." >&2
+    exit 1
+  fi
+fi
+
 # The counts that only fall (nix/counts.sh), judged by main's copy of the
 # rule over the head's own tree, each of the head's lists only shrinking
 # against main's but by the lines a sharper reader it brings sees on main,

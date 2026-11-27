@@ -26,7 +26,10 @@ Programs run beside the repository rather than built into the command:
   run of the checks, each named by its full sha. `make` lays them onto
   main as merge commits and pushes the tip as `train/<sha>`; `land` moves
   main to that tip once main's own gate lets it, which only goes if main
-  hasn't moved since. Run main's copy, as the gate is run.
+  hasn't moved since. A train made takes main's lease, `train-lease`
+  on origin, and while it holds it for up to 90 minutes the gate lets
+  no other head merge; `free` lets it go for a train that won't land.
+  Run main's copy, as the gate is run.
 - `merge-gate-test.sh`: the gate's cases and the train's, each in a
   repository made for it, which `nix/checks.nix` runs as
   `merge-gate-holds`

@@ -7,6 +7,7 @@
 #
 #   merge-train.sh make SHA...
 #   merge-train.sh land TIP
+#   merge-train.sh free TIP
 #
 # Each SHA is a reviewed head's full commit id, never a branch, so what
 # rides is what was reviewed even if its branch moves on.
@@ -25,6 +26,14 @@
 # and takes no other, since anyone who can push a branch could push a
 # train dated as no landing allows, or under another's name. The tip is pushed as train/<its
 # first twelve>, so a builder can fetch it, and said on the last line.
+#
+# A train made takes main's lease, origin's train-lease naming its tip,
+# where no other train holds it: one whose tip still holds main and was
+# made less than 90 minutes ago. While a train holds it, main's gate lets
+# only that tip merge, so nothing lands under a train whose checks run
+# and sends it back to build again; a train made while another holds it
+# says so, and is made again on main once that one lands. A train lets
+# the lease go as it lands, and `free` lets it go for one that won't.
 # Build every check the gate asks for there:
 #
 #   nix-offload there github:Jitsusama/mycelium/TIP checks.x86_64-linux.mycelium ...
@@ -41,7 +50,7 @@
 #     git show origin/main:scripts/merge-train.sh | bash -s -- make SHA...
 set -euo pipefail
 
-usage="merge-train.sh make SHA... | merge-train.sh land TIP"
+usage="merge-train.sh make SHA... | merge-train.sh land TIP | merge-train.sh free TIP"
 verb=${1:?${usage}}
 shift
 
@@ -133,6 +142,7 @@ make_train() {
     git push -q origin "${tip}:refs/heads/train/${tip:0:12}"
     echo "${tip}" >> "${trains_made}"
   fi
+  take_lease "${tip}" "${main}"
   echo "merge-train: the train is ${tip:0:12} on main ${main:0:12}, riding" \
     "${riding[*]}; ${#off[@]} left off. It's pushed as train/${tip:0:12}:" \
     "build the checks there, then land it."
@@ -153,6 +163,63 @@ sweep() {
         echo "merge-train: couldn't delete the spent ${ref#refs/heads/}." >&2
     fi
   done <<< "${trains}"
+}
+
+# Where origin keeps main's lease, and for how long a train holds it, as
+# main's gate reads it.
+lease_ref=refs/heads/train-lease
+lease_for=5400
+
+# The tip of the train origin's lease names, or nothing where it names
+# none.
+leased() {
+  local line
+  line=$(git ls-remote origin "${lease_ref}")
+  echo "${line%%$'\t'*}"
+}
+
+# Takes main's lease for `tip`, made on `main`, unless another train
+# holds it, saying so where one does. A lease whose tip no longer holds
+# main, or was made `lease_for` ago, holds nothing, so it is taken over;
+# the push takes it only if it is still what was read, so two trains made
+# at once never both hold it.
+take_lease() {
+  local tip=$1 main=$2 held here=yes now leased_at
+  held=$(leased)
+  if [[ ${held} == "${tip}" ]]; then
+    return
+  fi
+  # A tip that can't be fetched holds no lease, as main's gate reads it.
+  if [[ -n ${held} ]]; then
+    git cat-file -e "${held}^{commit}" 2> /dev/null ||
+      git fetch -q origin "${held}" 2> /dev/null || here=no
+  fi
+  if [[ -n ${held} && ${here} == yes ]] &&
+    git merge-base --is-ancestor "${main}" "${held}"; then
+    now=$(date +%s)
+    leased_at=$(git log -1 --format=%ct "${held}")
+    if ((leased_at + lease_for > now)); then
+      echo "merge-train: train ${held:0:12} holds main while its checks run, so" \
+        "this one can't land before it: make it again on main once it has." >&2
+      return
+    fi
+  fi
+  if ! git push -q --force-with-lease="${lease_ref}:${held}" origin \
+    "${tip}:${lease_ref}"; then
+    echo "merge-train: another train took main's lease first, so this one" \
+      "can't land before it: make it again on main once it has." >&2
+  fi
+}
+
+# Lets main's lease go where it names `tip`, and only then, so a train
+# taking it meanwhile keeps it.
+let_lease_go() {
+  local held
+  held=$(leased)
+  if [[ ${held} == "$1" ]]; then
+    git push -q --force-with-lease="${lease_ref}:$1" origin ":${lease_ref}" ||
+      echo "merge-train: main's lease moved on before ${1:0:12} let it go." >&2
+  fi
 }
 
 # Each train's tip this checkout pushed, one a line, shared by its trees.
@@ -227,14 +294,31 @@ land_train() {
       "didn't land: make the train again on main." >&2
     exit 1
   fi
+  let_lease_go "${tip}"
   git push -q origin --delete "train/${tip:0:12}" ||
     echo "merge-train: couldn't delete train/${tip:0:12}; it's spent." >&2
   echo "merge-train: main is now ${tip:0:12}, each rider's head in it as made."
 }
 
+# Lets main's lease go for a train that won't land, as one whose checks
+# failed, so the next needn't wait out its time.
+free_lease() {
+  local tip held
+  tip=$(known "${1:?Name the tip of the train: ${usage}}")
+  held=$(leased)
+  if [[ ${held} != "${tip}" ]]; then
+    echo "merge-train: train ${tip:0:12} doesn't hold main's lease, so there's" \
+      "nothing to let go." >&2
+    exit 1
+  fi
+  let_lease_go "${tip}"
+  echo "merge-train: train ${tip:0:12} holds main no more."
+}
+
 case ${verb} in
   make) make_train "$@" ;;
   land) land_train "$@" ;;
+  free) free_lease "$@" ;;
   *)
     echo "merge-train: no verb ${verb}: ${usage}" >&2
     exit 1
