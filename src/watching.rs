@@ -14,7 +14,7 @@
 //! November). Batched by [`watch_all`], a watcher's stream starts once for
 //! every path a change names.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use notify::{
     Config, EventHandler, EventKindMask, PathOp, RecommendedWatcher, RecursiveMode,
@@ -44,11 +44,12 @@ pub fn watcher<F: EventHandler>(handler: F) -> notify::Result<RecommendedWatcher
 pub enum Answer {
     /// It is watched.
     Watched,
-    /// The watcher holds it, but it isn't watched, as the stream didn't
-    /// start.
+    /// The watcher holds it, but it isn't watched: the stream didn't
+    /// start, or the watcher refused it yet holds it still, from before or
+    /// from taking part of it, as Linux's does when it runs out of watches
+    /// partway down a folder.
     Held,
-    /// The watcher refused it, so it holds the path only if it did
-    /// before.
+    /// The watcher refused it and holds nothing of it.
     Refused,
 }
 
@@ -94,9 +95,16 @@ pub fn answer_all(
         };
         match failed.origin {
             Some(PathOp::Watch(path, _)) => {
+                // A refusal can leave a path held, so it is given back
+                // unless the watcher says it holds nothing of it.
+                let refused = if holds(watcher, &path) {
+                    Answer::Held
+                } else {
+                    Answer::Refused
+                };
                 for (answer, (at, _)) in answers.iter_mut().zip(new) {
                     if *at == path {
-                        *answer = Answer::Refused;
+                        *answer = refused;
                     }
                 }
             }
@@ -118,6 +126,14 @@ pub fn answer_all(
     answers
 }
 
+/// Whether `watcher` holds `path`, or can't say what it holds.
+fn holds(watcher: &dyn Watcher, path: &Path) -> bool {
+    match watcher.watched_paths() {
+        Ok(held) => held.iter().any(|(at, _)| at.as_path() == path),
+        Err(_) => true,
+    }
+}
+
 /// A watcher for tests that counts how often its stream would start, as
 /// macOS's does: once for each change that alters what it watches, a path
 /// at a time or a batch at once. Like notify's, it keeps one watch a path,
@@ -125,7 +141,9 @@ pub fn answer_all(
 /// the first path that fails: one not there, or one given back unwatched.
 /// A path that fails alters nothing, as notify 9.0.0-rc.7's macOS watcher
 /// refuses it before holding it, and refuses to give back a path it
-/// doesn't hold before stopping anything.
+/// doesn't hold before stopping anything. Made to, it holds a path it
+/// refuses, as that version's Linux watcher keeps a folder and those under
+/// it it took before it ran out of watches.
 ///
 /// That watcher starts a batch's stream again only when a root's path,
 /// device or inode changes. It starts a single watch's again only when no
@@ -155,6 +173,8 @@ pub mod counting {
         watched: BTreeMap<PathBuf, ((u64, u64), RecursiveMode)>,
         /// A path it refuses to watch, if any.
         refused: Option<PathBuf>,
+        /// Whether it takes the path it refuses before refusing it.
+        partway: bool,
     }
 
     impl Counting {
@@ -166,6 +186,7 @@ pub mod counting {
                 starts: Arc::clone(&starts),
                 watched: BTreeMap::new(),
                 refused: None,
+                partway: false,
             };
             (watcher, starts)
         }
@@ -178,26 +199,48 @@ pub mod counting {
             (watcher, starts)
         }
 
+        /// A counting watcher that takes `path` and then refuses it, as
+        /// Linux's does running out of watches partway down a folder, and
+        /// its count.
+        #[must_use]
+        pub fn refusing_partway(path: PathBuf) -> (Self, Arc<AtomicUsize>) {
+            let (mut watcher, starts) = Self::refusing(path);
+            watcher.partway = true;
+            (watcher, starts)
+        }
+
+        /// Refuses `path` from now on, holding it still if it holds it.
+        pub fn refuse(&mut self, path: PathBuf) {
+            self.refused = Some(path);
+        }
+
         /// Applies `op`, answering whether it altered what's watched.
         fn apply(&mut self, op: &PathOp) -> notify::Result<bool> {
             match op {
-                PathOp::Watch(path, _) if self.refused.as_ref() == Some(path) => {
+                PathOp::Watch(path, config) if self.refused.as_ref() == Some(path) => {
+                    if self.partway {
+                        self.take(path, config.recursive_mode())?;
+                    }
                     Err(notify::Error::generic("the watch was refused").add_path(path.clone()))
                 }
-                PathOp::Watch(path, config) => {
-                    let file = path
-                        .metadata()
-                        .map_err(|_| notify::Error::path_not_found().add_path(path.clone()))?;
-                    let now = ((file.dev(), file.ino()), config.recursive_mode());
-                    let was = self.watched.insert(path.clone(), now);
-                    Ok(was != Some(now))
-                }
+                PathOp::Watch(path, config) => self.take(path, config.recursive_mode()),
                 PathOp::Unwatch(path) => self
                     .watched
                     .remove(path)
                     .map(|_| true)
                     .ok_or_else(notify::Error::watch_not_found),
             }
+        }
+
+        /// Holds `path` watched `mode`, answering whether that altered
+        /// what's watched.
+        fn take(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<bool> {
+            let file = path
+                .metadata()
+                .map_err(|_| notify::Error::path_not_found().add_path(path.to_owned()))?;
+            let now = ((file.dev(), file.ino()), mode);
+            let was = self.watched.insert(path.to_owned(), now);
+            Ok(was != Some(now))
         }
 
         /// Starts the stream again if `altered`.
@@ -405,7 +448,39 @@ mod tests {
         assert_eq!(
             watcher.watched_paths().expect("its paths listed"),
             [(a, RecursiveMode::NonRecursive)],
-            "the watcher holds only the path it took"
+            "the fake holds only the path it took"
+        );
+    }
+
+    #[test]
+    fn a_path_refused_partway_is_answered_held() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        for folder in [&a, &b] {
+            fs::create_dir(folder).expect("made");
+        }
+        // As Linux's watcher, out of watches partway down `b`, keeps what
+        // it took of it, so a forget must give it back.
+        let (mut watcher, _) = Counting::refusing_partway(b.clone());
+        let new = [(a, RecursiveMode::Recursive), (b, RecursiveMode::Recursive)];
+        assert_eq!(
+            answer_all(&mut watcher, &[], &new),
+            [Answer::Watched, Answer::Held],
+            "a path refused but held was answered as holding nothing"
+        );
+    }
+
+    #[test]
+    fn a_path_held_already_and_then_refused_is_answered_held() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (mut watcher, _) = Counting::made();
+        let new = [(dir.path().to_owned(), RecursiveMode::Recursive)];
+        assert_eq!(answer_all(&mut watcher, &[], &new), [Answer::Watched]);
+        watcher.refuse(dir.path().to_owned());
+        assert_eq!(
+            answer_all(&mut watcher, &[], &new),
+            [Answer::Held],
+            "a path the watcher still holds was answered as holding nothing"
         );
     }
 
