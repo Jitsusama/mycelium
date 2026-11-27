@@ -10147,6 +10147,28 @@ impl<S: Store> Shared<S> {
         }
     }
 
+    /// The fence, screen and machines `work` asked `by` is placed in and
+    /// among, `admits` as its asker is told. A run (`counts` of
+    /// [`Counts::Never`]) is first recast as [`Shared::run`] recasts it
+    /// ([`Shared::as_a_room_takes`]), so a person's run naming an agent's
+    /// room is placed on rooms in the agent fence, where it will run,
+    /// rather than told no machine takes it; work placed to start is held
+    /// to who asks.
+    fn placing_asked(
+        &self,
+        work: &Work,
+        counts: Counts,
+        by: By,
+        admits: Admits,
+    ) -> (Option<crate::declared::Kind>, Screen, Admits) {
+        if counts == Counts::Never {
+            let (by, admits) = self.as_a_room_takes(by, work, admits);
+            (fence_of(by), Screen::Run, admits)
+        } else {
+            (fence_of(by), held_screen(fence_of(by)), admits)
+        }
+    }
+
     /// Places `work` as [`Node::place`] does for whoever asks, held to an
     /// agent's ground where an agent asks, as a run of its would be, so
     /// what it is told would take the work is where the work can run. Work
@@ -10162,14 +10184,8 @@ impl<S: Store> Shared<S> {
         } else {
             declaring
         };
-        let fence = fence_of(by);
         // Held to the machines booked for whoever asks, as its run is.
-        let admits = self.admits().await;
-        let screen = if counts == Counts::Never {
-            Screen::Run
-        } else {
-            held_screen(fence)
-        };
+        let (fence, screen, admits) = self.placing_asked(work, counts, by, self.admits().await);
         let placement = self.place(work, counts, fence, screen, &admits);
         if counts != Counts::Here {
             return Ok(Response::Placement(placement));
@@ -25851,6 +25867,48 @@ esac
                 "but a machine that is no worker stays the person's, though a session listed it"
             );
         }
+    }
+
+    // Followup 499: where a run would go is asked as the run is placed.
+    #[tokio::test]
+    async fn where_the_persons_run_would_go_is_placed_as_its_run_is_recast() {
+        use crate::declared::Kind;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[("wren", made::PERSON), ("reef", "P9R1KI")]);
+        fs::write(dir.path().join(made::AGENT_ROOMS), "reef\nwren\ntern\n").expect("named");
+        // tern is booked nowhere here, a worker this node's link reached.
+        let mut tern = placement::tests::machine("tern", "linux", 32, &["basin"]);
+        tern.worker = true;
+        shared.store.put_machine(&tern).expect("kept");
+        let person = || Admits::Asker(made::PERSON.to_owned());
+        let naming = |name: &str| work(vec![Need::Machine(name.to_owned())]);
+        for room in ["reef", "tern"] {
+            assert_eq!(
+                shared.placing_asked(&naming(room), Counts::Never, By::Person, person()),
+                (Some(Kind::Fence), Screen::Run, Admits::Rooms),
+                "the person's run naming {room} is placed as its run is, on rooms, fenced"
+            );
+            assert_eq!(
+                shared.placing_asked(&naming(room), Counts::Here, By::Person, person()),
+                (None, held_screen(None), person()),
+                "but the person's start naming {room} is held to who asks"
+            );
+        }
+        assert_eq!(
+            shared.placing_asked(&naming("wren"), Counts::Never, By::Person, person()),
+            (None, Screen::Run, person()),
+            "and the person's run naming their own room is theirs"
+        );
+        assert_eq!(
+            shared.placing_asked(
+                &naming("reef"),
+                Counts::Never,
+                By::Agent(Kind::Strict),
+                person()
+            ),
+            (Some(Kind::Strict), Screen::Run, person()),
+            "and an agent's run is held to who asks, as before"
+        );
     }
 
     // Followup 487: who asked a run recast to a room is said only by a
