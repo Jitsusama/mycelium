@@ -2229,7 +2229,10 @@ mod tests {
             !carried("node@skiff"),
             "its node's carry a minute short of the cooldown ago"
         );
-        assert!(carried("WCJQSG"), "an orchestrator's carry starts no cooldown");
+        assert!(
+            carried("WCJQSG"),
+            "an orchestrator's carry starts no cooldown"
+        );
     }
 
     #[test]
@@ -2465,10 +2468,11 @@ mod tests {
                 .all(|two| two[0]["why"].is_null() || two[0]["why"] != two[1]["why"]),
             "nothing is said twice for the same reason in a row"
         );
-        let carry = lines
+        let carried = lines
             .iter()
-            .find(|line| line["choice"] == "carry")
+            .position(|line| line["choice"] == "carry")
             .expect("a carry");
+        let carry = &lines[carried];
         assert_eq!(
             (&carry["would"], &carry["at"], &carry["to"], &carry["holds"]),
             (
@@ -2498,7 +2502,7 @@ mod tests {
             "each line holds the reading it was chosen by, as the watch held it"
         );
         assert!(
-            lines.last().expect("a line")["why"]
+            lines.get(carried + 1).expect("a line after the carry")["why"]
                 .as_str()
                 .is_some_and(|why| why.starts_with("it carried s1 at")),
             "after the carry it waits out its cooldown: {lines:?}"
@@ -2518,13 +2522,16 @@ mod tests {
         };
         let mut easing = Easing::default();
         let doubt = "the quest records have not been read yet";
+        let cooldown = ease::COOLDOWN.as_mins();
         // One more goes idle each minute until the 30th, listed newest
         // first so one never slept would be the first carried, and who
-        // orchestrates comes into doubt at the 35th.
+        // orchestrates comes into doubt partway through the cooldown after
+        // the first carry, at the 15th.
+        let doubted = 15 + cooldown / 2;
         let lines: Vec<Value> = (0..=50)
             .filter_map(|minute: i64| {
                 let at = ago(50 - minute);
-                if minute == 35 {
+                if minute == doubted {
                     easing.doubt(Some(doubt.to_owned()));
                 }
                 let cells = (0..=minute.min(30))
@@ -2547,12 +2554,15 @@ mod tests {
         let carries: Vec<usize> = (0..lines.len())
             .filter(|&at| lines[at]["choice"] == "carry")
             .collect();
-        let [first, second] = carries[..] else {
+        let [first, second, ..] = carries[..] else {
             panic!("two carries among {:?}", chosen(&lines));
         };
         assert_eq!(
             [&lines[first]["at"], &lines[second]["at"]],
-            [&json!(ago(35).to_string()), &json!(ago(5).to_string())],
+            [
+                &json!(ago(35).to_string()),
+                &json!(ago(35 - cooldown).to_string())
+            ],
             "five minutes after the first sleep, though one slept each minute \
              since, and again once the cooldown is out"
         );
@@ -2592,7 +2602,7 @@ mod tests {
                 .iter()
                 .map(|line| (&line["at"], &line["orchestrators_unknown"]))
                 .collect::<Vec<_>>(),
-            [(&json!(ago(15).to_string()), &json!(doubt))],
+            [(&json!(ago(50 - doubted).to_string()), &json!(doubt))],
             "nothing says a sleep's why again until a doubt arises: {cooling:?}"
         );
     }

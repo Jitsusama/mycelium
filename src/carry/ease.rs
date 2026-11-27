@@ -2049,10 +2049,7 @@ pub(super) mod tests {
         let with_last = |at: Timestamp, from: &str| {
             let mut history = hot_for(&realm, 11);
             let last = daily - 1;
-            for (each, from) in (0..last)
-                .map(|each| (each, "skiff"))
-                .chain([(last, from)])
-            {
+            for (each, from) in (0..last).map(|each| (each, "skiff")).chain([(last, from)]) {
                 history.moved(Moved {
                     session: format!("s-{each}"),
                     from: from.to_owned(),
