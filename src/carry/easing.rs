@@ -788,7 +788,8 @@ impl Easing {
     /// None ordered longer than [`kept::STUCK_AFTER`] before `now` is
     /// on its way, as it stands stuck, so a refusal from before then
     /// can drop none of them and is forgotten.
-    pub fn on_way(&mut self, mut on_way: Vec<Moved>, now: Timestamp) {
+    pub fn on_way(&mut self, on_way: Result<Vec<Moved>, String>, now: Timestamp) {
+        let mut on_way = on_way.unwrap_or_default();
         let oldest = now - kept::STUCK_AFTER;
         self.refused.retain(|_, refused| *refused >= oldest);
         on_way.retain(|one| {
@@ -2590,7 +2591,7 @@ mod tests {
             }
             // As the node does before each look, from the record that
             // still stands it ordered.
-            easing.on_way(vec![going(ago(30))], ago(20));
+            easing.on_way(Ok(vec![going(ago(30))]), ago(20));
             first_carry(&looks(&mut easing, &[cell("s1")])).is_some()
         };
         assert!(!carried(None), "one on its way holds the next");
@@ -2601,6 +2602,33 @@ mod tests {
         assert!(
             !carried(Some(ago(31))),
             "a refusal before it holds no later carry of the session"
+        );
+    }
+
+    #[test]
+    fn a_look_that_cant_read_the_carries_on_their_way_carries_none() {
+        let unread = "the carries kept here can't be read (denied), so which of skiff's \
+                      carries are on their way can't be told";
+        let carried = |on_way: Result<Vec<Moved>, String>| {
+            let mut easing = Easing::after(&[], Vec::new());
+            // As the node does before each look, the day's count read.
+            easing.on_way(on_way, now());
+            looks_kept(&mut easing, &[cell("s1")], &Ok(0))
+        };
+        assert!(
+            first_carry(&carried(Ok(Vec::new()))).is_some(),
+            "with none on its way, it carries"
+        );
+        let lines = carried(Err(unread.to_owned()));
+        assert_eq!(
+            first_carry(&lines),
+            None,
+            "one of its own may be on its way: {lines:?}"
+        );
+        assert_eq!(
+            lines.last().expect("a line")["why"],
+            json!(unread),
+            "and it says why"
         );
     }
 
@@ -2619,7 +2647,7 @@ mod tests {
         easing.refused("s9", ago(stuck + 1));
         // As the node does before each look: one ordered longer ago than
         // kept::STUCK_AFTER stands stuck, so none older is on its way.
-        easing.on_way(vec![going(ago(stuck - 1))], now());
+        easing.on_way(Ok(vec![going(ago(stuck - 1))]), now());
         assert!(
             !easing.refused.contains_key("s9"),
             "a refusal older than any carry on its way is forgotten: {:?}",

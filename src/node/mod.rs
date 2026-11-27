@@ -6858,7 +6858,7 @@ impl<S: Store> Shared<S> {
         let here = ease::Here::of(&self.machine, &machines, &loads, onto);
         let reading = crate::balance::read(&machines, &sessions, now);
         easing.doubt(orchestrators.err());
-        easing.on_way(self.easing_on_way(now), now);
+        easing.on_way(Ok(self.easing_on_way(now)), now);
         let line = easing.look(&here, reading, cells, &holds, kept_eases, now);
         (line, sampler)
     }
