@@ -2517,9 +2517,12 @@ must declare the agent fence and the room must say it runs commands in
 it, or the run is refused, its refusal saying the person asked it and
 it was sent as an agent's; a refusal the room itself sends back reads
 as an agent's. The run says `"asked_by": "Person"`, which only a node
-says: one that whoever asks puts there is cleared. The room runs it
-through `/bin/sh -c`, never the login shell, so no profile of the home
-the agent wrote runs before it or shadows its command, and each runs
+says: one an asker puts there without naming a machine it comes from
+is cleared. The room runs it through `/bin/sh -c`, never the login
+shell, so no profile of the home the agent wrote runs before it, and
+takes every folder of that home off its path, by name or by where it
+leads, before the kit's tools go first, so nothing the home holds
+shadows its command: one found only there isn't found. Each runs
 journal keeps `asked_by` beside its `by`. One machine named twice is
 still one, and this node's own machine stays the person's whatever the
 file names. Since any session may write the file, naming a machine
@@ -2977,7 +2980,8 @@ ending comes back, and then the ask fails, saying so; the machine's
 `"Run"` runs `command` on the machine placement chooses for `work`,
 never on one made for it, in `folder` as for `"Start"`, through the
 person's login shell there without a terminal (the person's run sent
-to a room as an agent's, through `/bin/sh -c`, reading no profile),
+to a room as an agent's, through `/bin/sh -c`, reading no profile and
+with no folder of that home on its path),
 its kit's tools first on its path as for `"Start"`, and with nothing on
 its input. This machine runs it as the node's own; another, through the link
 reaching it, as A Link says. The node judges who asks, as `by`,

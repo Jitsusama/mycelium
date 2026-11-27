@@ -377,6 +377,14 @@ const YIELDING_ON_A_MAC: [&str; 3] = ["/usr/sbin/taskpolicy", "-c", "utility"];
 /// program.
 const IN_ITS_REALM: &str = r#"export MYCELIUM_REALM="$1"; if [ -n "$2" ]; then PATH="$2/bin${PATH:+:$PATH}"; export PATH; fi; if [ "${MYCELIUM_AGENT+said}" = said ]; then if [ -n "$MYCELIUM_AGENT" ]; then SSH_AUTH_SOCK="$MYCELIUM_AGENT"; export SSH_AUTH_SOCK; else unset SSH_AUTH_SOCK; fi; unset SSH_TPM_AUTH_SOCK MYCELIUM_AGENT; fi; shift 2; exec "$@""#;
 
+/// The shell's script that takes off its path, before [`IN_ITS_REALM`],
+/// every folder in its home, by name or by where it leads, and every one
+/// named relatively, which the run's folder in that home would hold: a
+/// service's path may name the home's own tools (`~/.local/bin`, a
+/// profile's `bin`), which whoever wrote the home could make shadow a
+/// command. With no home, or `/` for one, only the relative go.
+const OUT_OF_ITS_HOME: &str = r#"home=; real=; case ${HOME-} in /?*) home=${HOME%/}; real=$(cd -P "$home" 2>/dev/null && pwd -P) || real=;; esac; kept=; set -f; IFS=:; for dir in ${PATH-}; do case $dir in /*) led=$(cd -P "$dir" 2>/dev/null && pwd -P) || led=$dir; for at in "$home" "$real"; do case $at in '') ;; *) case $dir/ in "$at"/*) dir=;; esac; case $led/ in "$at"/*) dir=;; esac;; esac; done; [ -z "$dir" ] || kept=${kept:+$kept:}$dir;; esac; done; unset IFS; set +f; PATH=$kept; export PATH; "#;
+
 /// The words that run a program held in `realm` through the person's
 /// login shell, as a terminal would run it, so it has their environment
 /// rather than a service's: a pi started without it has no model token
@@ -397,17 +405,30 @@ pub fn login_shell(realm: &str, kit: Option<&Path>) -> Vec<String> {
     } else {
         Vec::new()
     };
-    through.extend(in_its_realm(shell, "-lic", realm, kit));
+    through.extend(in_its_realm(
+        shell,
+        "-lic",
+        IN_ITS_REALM.to_owned(),
+        realm,
+        kit,
+    ));
     through
 }
 
-/// The words that run a program in `realm` through `shell` with `flags`,
-/// with the `kit`'s tools first on its path ([`IN_ITS_REALM`]).
-fn in_its_realm(shell: String, flags: &str, realm: &str, kit: Option<&Path>) -> [String; 6] {
+/// The words that run a program in `realm` through `shell` with `flags`
+/// and `script`, which ends as [`IN_ITS_REALM`] does, with the `kit`'s
+/// tools first on its path.
+fn in_its_realm(
+    shell: String,
+    flags: &str,
+    script: String,
+    realm: &str,
+    kit: Option<&Path>,
+) -> [String; 6] {
     [
         shell,
         flags.to_owned(),
-        IN_ITS_REALM.to_owned(),
+        script,
         "mycelium".to_owned(),
         realm.to_owned(),
         // Always a word, empty for none, so the program's own start where
@@ -421,10 +442,13 @@ fn in_its_realm(shell: String, flags: &str, realm: &str, kit: Option<&Path>) -> 
 /// home another may have written: the person's run sent to a room an
 /// agent's make booked, whose profile that agent could make shadow the
 /// command or fake its end. It has the environment its launcher gives
-/// it, with the kit's tools first on its path.
+/// it, but with no folder of that home on its path ([`OUT_OF_ITS_HOME`]),
+/// and the kit's tools first. A command found only in the home isn't
+/// found, rather than found as the home's writer left it.
 #[must_use]
 pub fn plain_run(realm: &str, kit: Option<&Path>) -> Vec<String> {
-    in_its_realm("/bin/sh".to_owned(), "-c", realm, kit).to_vec()
+    let script = format!("{OUT_OF_ITS_HOME}{IN_ITS_REALM}");
+    in_its_realm("/bin/sh".to_owned(), "-c", script, realm, kit).to_vec()
 }
 
 /// The words that run a command in `realm` through the person's login
@@ -755,6 +779,69 @@ mod tests {
             ),
             "harbour|/nix/store/kit/bin",
             "in the realm it runs in, with the kit's tools first"
+        );
+    }
+
+    #[test]
+    fn a_plain_run_finds_nothing_in_its_home() {
+        let made = tempfile::tempdir().expect("a temporary folder");
+        // Where it leads, as a Mac's temporary folder is behind a link.
+        let at = fs::canonicalize(made.path()).expect("the folder's place");
+        let real = at.join("real");
+        let tools = real.join(".local/bin");
+        fs::create_dir_all(&tools).expect("the home's tools");
+        // The home by a link to it, as a service may be told it, and a
+        // folder outside that leads into it.
+        let home = at.join("home");
+        std::os::unix::fs::symlink(&real, &home).expect("a home by a link");
+        let leads = at.join("leads");
+        std::os::unix::fs::symlink(&tools, &leads).expect("a folder leading in");
+        let around = at.join("around");
+        fs::create_dir(&around).expect("a folder outside");
+        let (home, real, leads, around) = (
+            home.display().to_string(),
+            real.display().to_string(),
+            leads.display().to_string(),
+            around.display().to_string(),
+        );
+        let path = [
+            format!("{home}/.local/bin"),
+            "/usr/bin".to_owned(),
+            format!("{real}/.nix-profile/bin"),
+            "bin".to_owned(),
+            String::new(),
+            leads,
+            home.clone(),
+            around.clone(),
+            format!("{home}x/bin"),
+            "/bin".to_owned(),
+        ]
+        .join(":");
+        let print = r#"printf %s "$PATH""#;
+        let plain = plain_run("harbour", Some(Path::new("/nix/store/kit")));
+        assert_eq!(
+            run_through(
+                &plain,
+                print,
+                &[("HOME", &format!("{home}/")), ("PATH", &path)]
+            ),
+            format!("/nix/store/kit/bin:/usr/bin:{around}:{home}x/bin:/bin"),
+            "the home's folders go, by name or by where they lead, and relative ones"
+        );
+        let plain = plain_run("harbour", None);
+        assert_eq!(
+            run_through(&plain, print, &[("HOME", "/"), ("PATH", "/usr/bin:.:/bin")]),
+            "/usr/bin:/bin",
+            "a home of / takes off only the relative"
+        );
+        assert_eq!(
+            run_through(
+                &login_run("harbour", None),
+                print,
+                &[("HOME", &home), ("PATH", &path)]
+            ),
+            path,
+            "the person's own run keeps its path"
         );
     }
 
