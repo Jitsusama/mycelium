@@ -7114,14 +7114,26 @@ mod tests {
         says(&mut far_writing, &[want_readme(CHILD), want_readme(TOP)]).await;
         heard_until(&mut lines, |frame| carries_of(frame, TOP)).await;
 
-        tern.declared = Some(declares(true));
-        says(&mut far_writing, &[Frame::Machine(Box::new(tern))]).await;
+        // Costing money and leaving within the month, tern is a room lent
+        // for a while rather than the person's own, so it is withheld them.
+        let mut room = declares(true);
+        room.leaves_at = Some(jiff::Timestamp::now() + jiff::SignedDuration::from_hours(72));
+        tern.declared = Some(room);
+        says(&mut far_writing, &[Frame::Machine(Box::new(tern.clone()))]).await;
         says(&mut far_writing, &asks).await;
         let sent = heard_until(&mut lines, child_sent).await;
         assert!(
             !sent.iter().any(|frame| carries_of(frame, TOP)),
-            "once tern says it costs money, it is sent nothing of the parent: {sent:?}"
+            "once tern says it is a paid room that leaves, it is sent nothing of the parent: \
+             {sent:?}"
         );
+
+        // Costing money and staying, it is the person's own cloud machine,
+        // which is given the quests above as any of theirs is.
+        tern.declared = Some(declares(true));
+        says(&mut far_writing, &[Frame::Machine(Box::new(tern))]).await;
+        says(&mut far_writing, &[want_readme(CHILD), want_readme(TOP)]).await;
+        heard_until(&mut lines, |frame| carries_of(frame, TOP)).await;
     }
 
     #[tokio::test]
