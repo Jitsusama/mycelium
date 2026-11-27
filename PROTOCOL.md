@@ -3658,11 +3658,14 @@ grapheme, such as U+09BE; no nonspacing mark, conjoining jamo vowel or
 final, or selector is) and following no zero-width joiner kept, to the
 next, the rest dropped, a non-joiner (U+200C) never counted, nor a
 zero-width joiner before a letter (any character Unicode gives
-Alphabetic, as in Devanagari's half forms), each
+Alphabetic, as in Devanagari's half forms, by the Unicode tables the
+node's Rust toolchain carries for `char::is_alphabetic`, which a newer
+toolchain may widen), each
 judged against what is kept so far; and then is trimmed of such
 spaces and braille blanks (U+2800), and cut to its first 120 characters,
-then cleaned again, so it ends in no space and no joiner left joining
-nothing; `folder` is 1 to 1024 bytes. A
+then cleaned again, so it ends in no space, no joiner left joining
+nothing and no Khmer coeng (U+17D2) with no letter to subscript;
+`folder` is 1 to 1024 bytes. A
 `for` said as null or as anything but text is unsaid, and one unsaid,
 empty or cleaned to nothing is left out of the cell record. A cell's
 first 16 shares are read, those past these bounds are passed over,
@@ -4239,7 +4242,7 @@ cells', and a reader gathers them as `mycelium forage` does.
 | `documents` | each of its documents: `id`, `kind`, `title`, `stage`, and how many steps are `ticked` and `open` |
 | `waits` | only when there are any, what the quest waits on its person for: `id`, `title`, `why`, `minutes`, `when`, whether it's `ready`, and when it was `raised` |
 | `lineage` | `started_by`, the cell that asked this node to start it, else the orchestrator its presence names; beside one, `started_by_from`, `book` when this node's book of starts holds that start, else `presence`; `split_from`, the cell its presence says it split from, kept only as an address; only when there are any, `split_into`, the cells its presence says it split into; and `parent`, the quest its own sits under |
-| `serves`, `relies` | only when there are any, the needs its presence says it took from other cells, and handed them: each `cell`, by address, `need`, what it was about, and `since`, an ISO time. A `need` is drawn on one line and cleaned as `for` is, its joiners capped at three in a run alike, though it keeps any noncharacter and is trimmed only of whitespace, then cut to its first 280 characters and cleaned and trimmed again, so it ends in no space and no joiner left joining nothing |
+| `serves`, `relies` | only when there are any, the needs its presence says it took from other cells, and handed them: each `cell`, by address, `need`, what it was about, and `since`, an ISO time. A `need` is drawn on one line and cleaned as `for` is, its joiners capped at three in a run alike, though it keeps any noncharacter and is trimmed only of whitespace, then cut to its first 280 characters and cleaned and trimmed again, so it ends in no space, no joiner left joining nothing and no Khmer coeng with no letter to subscript |
 
 The node works out `started_by` and `started_by_from` itself and never
 takes either from a presence's `lineage`. It finds a session's start in
