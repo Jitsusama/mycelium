@@ -677,7 +677,10 @@ mod tests {
         let shell = the_shell();
         let folder = shell.parent().expect("the shell's folder");
         let system = fs::canonicalize(folder).expect("the shell's folder's place");
-        let above = system.parent().expect("a folder above the shell's").to_path_buf();
+        let above = system
+            .parent()
+            .expect("a folder above the shell's")
+            .to_path_buf();
         (system, above)
     }
 
