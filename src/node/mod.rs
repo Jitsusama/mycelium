@@ -27168,6 +27168,71 @@ esac
         }
     }
 
+    #[tokio::test]
+    async fn a_plain_run_here_has_none_of_its_nodes_variables_that_load_code() {
+        // Followup 549: the node's own environment must name them, and
+        // setting one in this process is unsafe, so the test runs itself
+        // again as a process whose environment names two, whose node runs
+        // the person's run sent from tern, and which writes what it had
+        // where it is told to.
+        const NAME: &str = "a_plain_run_here_has_none_of_its_nodes_variables_that_load_code";
+        const TOLD: &str = "MYCELIUM_TEST_TOLD";
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let Some(told) = std::env::var_os(TOLD) else {
+            let told = dir.path().join("told");
+            let startup = dir.path().join("startup");
+            fs::write(&startup, "").expect("a startup file is written");
+            let (_, tests) = module_path!().split_once("::").expect("in a crate");
+            let again = tokio::process::Command::new(std::env::current_exe().expect("this test"))
+                .arg(format!("{tests}::{NAME}"))
+                .arg("--exact")
+                .env(TOLD, &told)
+                // Empty, so nothing is preloaded into the test's own process.
+                .env("LD_PRELOAD", "")
+                .env("BASH_ENV", &startup)
+                .output();
+            let again = tokio::time::timeout(PATIENCE * 2, again)
+                .await
+                .expect("it ends in time")
+                .expect("it runs");
+            assert!(
+                again.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&again.stdout),
+                String::from_utf8_lossy(&again.stderr)
+            );
+            // Nothing written is a test that never ran, as a renamed one.
+            assert_eq!(
+                fs::read_to_string(&told).expect("the run's process wrote what it had"),
+                "told,",
+                "a plain run keeps the node's other variables, but none that loads code"
+            );
+            return;
+        };
+        let socket = dir.path().join("skiff").join("work.sock");
+        let (_stop, _node) = alone(&Memory::default(), "skiff", &socket);
+        asks_as_person(&socket);
+        let had = "printf %s, ${MYCELIUM_TEST_TOLD+told} ${LD_PRELOAD+LD_PRELOAD} \
+                   ${BASH_ENV+BASH_ENV}";
+        let came = run_through(
+            socket,
+            Run {
+                from: Some("tern".to_owned()),
+                asked_by: Some(By::Person),
+                ..run_of("skiff", had)
+            },
+        )
+        .await
+        .expect("the person's run sent from tern runs here");
+        assert_eq!(
+            came.ended,
+            Some(Ran::Exited(0)),
+            "{}",
+            String::from_utf8_lossy(&came.err)
+        );
+        fs::write(told, came.out).expect("what it had is written");
+    }
+
     #[test]
     fn a_recast_run_refused_says_the_person_asked_it() {
         assert_eq!(
