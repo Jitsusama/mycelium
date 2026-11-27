@@ -476,6 +476,20 @@ pub(super) async fn answer(node: PathBuf, here: String, from: String, mut start:
     }
 }
 
+/// Hands the end the other end, the machine `from`, asks of the session
+/// held here as `held`, for `cell`, whose start it is by `from`'s book,
+/// to this machine's node at `node`, which ends it only where it booked
+/// that start as an agent's relayed from `from`.
+pub(super) async fn end_start(node: PathBuf, from: String, held: String, cell: String) -> Reply {
+    let ending = Request::EndStart { held, from, cell };
+    let asked = tokio::task::spawn_blocking(move || Client::connect(&node)?.ask(&ending)).await;
+    match asked {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(error)) => Err(format!("its node didn't answer: {error}")),
+        Err(error) => Err(format!("its end stopped: {error}")),
+    }
+}
+
 /// How many pieces of a run's output the end running it sends before the
 /// asking end says it has taken one, so a run writing faster than its
 /// asker reads waits rather than filling the link.

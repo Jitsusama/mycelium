@@ -5528,6 +5528,9 @@ impl<S: Store> Shared<S> {
             Request::Offers => Err("offers are answered by `offers`".to_owned()),
             Request::Steer { .. } => Err("a steer is answered by `steer`".to_owned()),
             Request::End { .. } => Err("an end is answered by `end`".to_owned()),
+            Request::EndStart { .. } => {
+                Err("a starter's end is answered by `end_start`".to_owned())
+            }
             Request::Orchestrates { .. } => {
                 Err("an orchestration is answered by `orchestrates`".to_owned())
             }
@@ -5793,6 +5796,46 @@ impl<S: Store> Shared<S> {
         self.end_away(held, asker, &sessions).await
     }
 
+    /// Ends the session held here as `held` for good, as the node of the
+    /// linked machine `from` asks for `cell`, whose start that node's book
+    /// says it is: only from this node's own process or the person's, as
+    /// a link's end is, and only where this node's book let the start go
+    /// ahead as an agent's relayed from `from` and landed here, so no
+    /// machine ends the person's start, one asked here, or another
+    /// machine's. It ends as the person's own end does, and each is said,
+    /// with its hold, cell and relaying machine.
+    async fn end_start(&self, held: &str, from: &str, cell: &str) -> Reply {
+        let (by, _) = self.judged().await?;
+        if !asker::relays(self.client, by) {
+            return Err(format!(
+                "a starter's end is asked only by a link's end, and this asker is judged \
+                 {by}"
+            ));
+        }
+        let relayed = self.starts.relayed_from(held, &self.machine);
+        if relayed.as_deref() != Some(from) {
+            eprintln!("{from:?} asked to end {held} for {cell:?}, refused: not its start");
+            return Err(format!(
+                "{} ends {held} for its starter only where it took it as an agent's start \
+                 relayed from {from}, and its book says no such start landed as it",
+                self.machine
+            ));
+        }
+        let folder = self.held.clone();
+        let id = held.to_owned();
+        let ending =
+            tokio::task::spawn_blocking(move || hold::end::end(&folder, &id, hold::end::GRACE))
+                .await
+                .map_err(|error| format!("its end stopped: {error}"))?
+                .map_err(|error| format!("{held} didn't end: {error}"))?;
+        eprintln!("ended {held}, held here, for {cell:?}, whose start {from:?} relayed");
+        Ok(Response::Ended {
+            machine: self.machine.clone(),
+            held: held.to_owned(),
+            ending,
+        })
+    }
+
     /// Proves `address`, asking from its session `asking`, orchestrates the
     /// session held here as `held`, by its ordered carry or the quests it
     /// ended, so an agent ends only a hold it orchestrates.
@@ -5882,14 +5925,30 @@ impl<S: Store> Shared<S> {
             }
             [machine] => match asker {
                 hold::end::Asker::Person => self.asks.end(machine, held, asker).await,
+                // The cell this node's book names as the start's own, as
+                // proved asking here, ends it where it went, and the
+                // machine holding it takes that only where it booked the
+                // start as an agent's relayed from here.
+                hold::end::Asker::Session(address)
+                    if self.starts.starters().of(machine, held) == Some(address.as_str()) =>
+                {
+                    eprintln!("asking {machine} to end {held}, for {address}, whose start it is");
+                    let starter = hold::end::Asker::Starter(address);
+                    self.asks.end(machine, held, starter).await
+                }
                 hold::end::Asker::Session(address) => Err(format!(
-                    "{held} {} {machine}, and {address}'s end is proved only where both \
-                     run: only the person ends it from here",
+                    "{held} {} {machine}, and {address} didn't start it through this node, \
+                     whose book names who did, nor is its end proved where both run: only \
+                     the person or its starter ends it from here",
                     if by_book {
                         "was started, by this node's book, on"
                     } else {
                         "is held on"
                     }
+                )),
+                hold::end::Asker::Starter(address) => Err(format!(
+                    "{held} is held on {machine}, and {address}'s end as its starter is \
+                     judged only by the node that started it"
                 )),
             },
             many => Err(format!(
@@ -7779,7 +7838,7 @@ impl<S: Store> Shared<S> {
         }
         let asked = self.brought_back_declaring(asked);
         let (by, _, charged) = self.judged_declaring(asked.work.fence).await?;
-        self.counted((by, charged), asked, waits, Whither::Placed)
+        self.counted((by, charged), asked, waits, Whither::Placed, None)
             .await
     }
 
@@ -7833,16 +7892,18 @@ impl<S: Store> Shared<S> {
     /// Starts `asked`, from the asker judged `by` whose start counts
     /// toward `charged`'s cell, as [`Self::started`] does, where
     /// `whither` says: counted, limited and booked, and waiting for room
-    /// up to `waits` milliseconds. A name tells only the person from an
-    /// agent, so an ask again whose declared fence, or whose reading of
-    /// the claims above, came out otherwise still joins the first rather
-    /// than starting twice.
+    /// up to `waits` milliseconds, and booked as `relayed_from` the
+    /// machine whose node relayed it, where one did. A name tells only
+    /// the person from an agent, so an ask again whose declared fence, or
+    /// whose reading of the claims above, came out otherwise still joins
+    /// the first rather than starting twice.
     async fn counted(
         &self,
         (by, charged): (By, Option<String>),
         mut asked: Start,
         waits: i64,
         whither: Whither,
+        relayed_from: Option<&str>,
     ) -> Reply {
         asked.carries = marks_a_carry(by, &asked.command);
         let reopening = reopening(by, &asked);
@@ -7892,6 +7953,7 @@ impl<S: Store> Shared<S> {
             joined: 0,
             again: again.is_some(),
             declared: asked.work.fence,
+            relayed_from: relayed_from.map(str::to_owned),
         };
         // After the join, so an ask again under its name is answered the
         // first's start rather than refused for it; and kept, as every
@@ -8715,7 +8777,8 @@ impl<S: Store> Shared<S> {
                 },
                 ..asked
             };
-            let started = self.counted((by, charged), pinned, 0, Whither::Here).await;
+            let counted = self.counted((by, charged), pinned, 0, Whither::Here, Some(from));
+            let started = counted.await;
             return started.map_err(|why| {
                 if persons_carry {
                     self.carry_refused(&why)
@@ -8994,6 +9057,7 @@ impl<S: Store> Shared<S> {
             joined: 0,
             again: false,
             declared: asked.work.fence,
+            relayed_from: None,
         };
         Ok((asked, kept))
     }
@@ -10454,6 +10518,9 @@ async fn answered<S: Store>(shared: &Shared<S>, request: Result<Request, String>
         Ok(Request::Places {}) => shared.places().await.into(),
         Ok(Request::Steer { address, steer }) => shared.steer(&address, &steer).await.into(),
         Ok(Request::End { held }) => shared.end(&held).await.into(),
+        Ok(Request::EndStart { held, from, cell }) => {
+            shared.end_start(&held, &from, &cell).await.into()
+        }
         Ok(Request::Orchestrates { heads, quests }) => {
             shared.orchestrates(heads, quests).await.into()
         }
@@ -13931,6 +13998,57 @@ esac
                 ending: hold::end::Ending::Gently,
             }),
             "HARBOR, running below the hold's program, ends it"
+        );
+        assert!(
+            !runs(holder) && !runs(program),
+            "its holder and program are gone"
+        );
+    }
+
+    // ISXEG8 (a05068a5): a starter's end from afar is taken only for a
+    // start this node's book let go ahead as an agent's relayed from the
+    // machine asking, so no machine ends another's start.
+    #[tokio::test]
+    async fn a_starters_end_is_taken_only_from_the_machine_that_relayed_its_start() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        // Made as the node makes it, open to nobody else, so its socket goes
+        // there.
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(socket.parent().expect("its folder"))
+            .expect("made");
+        let at = jiff::Timestamp::now().as_millisecond();
+        let line = json!({"at": at, "by": {"Agent": "fence"}, "started_by": "HARBOR",
+                          "machine": "skiff", "held": "e0d4", "relayed_from": "wren"});
+        fs::write(socket.with_file_name("starts.jsonl"), format!("{line}\n")).expect("a book");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        let (held, holder, program) = harbour_held(&store, &socket).await;
+        let end = |from: &str| Request::EndStart {
+            held: "e0d4".to_owned(),
+            from: from.to_owned(),
+            cell: "HARBOR".to_owned(),
+        };
+
+        assert_eq!(
+            ask(socket.clone(), end("tern")).await,
+            Err("skiff ends e0d4 for its starter only where it took it as an agent's start \
+                 relayed from tern, and its book says no such start landed as it"
+                .to_owned()),
+            "wren relayed it, not tern"
+        );
+        assert!(held.join("e0d4.json").exists(), "HARBOR is still held");
+        assert_eq!(
+            ask(socket.clone(), end("wren")).await,
+            Ok(Response::Ended {
+                machine: "skiff".to_owned(),
+                held: "e0d4".to_owned(),
+                ending: hold::end::Ending::Gently,
+            }),
+            "wren, which relayed it, ends it for its starter"
         );
         assert!(
             !runs(holder) && !runs(program),
@@ -18573,6 +18691,90 @@ esac
         assert!(
             ended.as_ref().is_err_and(|why| why.starts_with(&routed)),
             "a hold started on kestrel is sent there, under its id, to judge: {ended:?}"
+        );
+
+        for (stop, node) in [near, far] {
+            drop(stop);
+            let stopped = node.await.expect("the node runs to its end");
+            assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
+        }
+    }
+
+    // ISXEG8 (a05068a5): the cell this node's book names as a start's
+    // own, proved asking, sends its end where the start went, as its
+    // starter's, for that machine to judge.
+    #[tokio::test]
+    async fn the_cell_that_started_a_hold_elsewhere_sends_its_end_there_as_its_starter() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (holder, _given) = stand_in_holder(dir.path());
+        let far_socket = dir.path().join("kestrel").join("work.sock");
+        let near_socket = dir.path().join("skiff").join("work.sock");
+        for socket in [&far_socket, &near_socket] {
+            declares_runs(socket, true);
+        }
+        let far_store = Memory::default();
+        let holds = Starter {
+            program: holder,
+            scope: start::Scope::None,
+            kit: None,
+            worker_socket: None,
+        };
+        let far = node(
+            &far_store,
+            "kestrel",
+            Vec::<Piped>::new(),
+            Some(holds),
+            &far_socket,
+        );
+        let near_store = Memory::default();
+        near_store.start_here(
+            "s-asker",
+            json!({"session": "s-asker", "addresses": ["ASKER1"], "groups": [],
+                   "busy": false, "state": "listening", "fence": "strict",
+                   "at": jiff::Timestamp::now().to_string(),
+                   "owner": {"pid": 7001, "startTicks": started_at(7001)}}),
+            true,
+        );
+        let dial = Piped {
+            store: far_store,
+            socket: far_socket,
+            held: dir.path().join("nothing.held"),
+            proven: false,
+            asks_back: false,
+            shares: None,
+        };
+        let near = node(&near_store, "skiff", vec![dial], None, &near_socket);
+        known_to(&near_store, "kestrel").await;
+        asks_below(&near_socket, 7001);
+        holds_log(&near_socket, 7001, "s-asker");
+        let asked = Request::Start(Start {
+            work: work(vec![Need::Machine("kestrel".to_owned())]),
+            folder: None,
+            strict: false,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        });
+        let started = ask(near_socket.clone(), asked).await;
+        let Ok(Response::Started(started)) = started else {
+            panic!("ASKER1's start goes to kestrel: {started:?}");
+        };
+        let ended = ask(
+            near_socket.clone(),
+            Request::End {
+                held: started.held.clone(),
+            },
+        )
+        .await;
+        // This link's key proved nothing, so kestrel refuses it, having
+        // read it as asked for its starter.
+        assert_eq!(
+            ended,
+            Err("kestrel ends a start for its starter only when asked over a link its key \
+                 proved, which this one isn't"
+                .to_owned()),
+            "ASKER1's end of its own start goes to kestrel as its starter's"
         );
 
         for (stop, node) in [near, far] {
