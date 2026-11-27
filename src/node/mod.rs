@@ -539,12 +539,13 @@ fn plain_quest(quest: &str) -> bool {
 /// What each log under `logs` continues, the folder scanned once, as a
 /// lapse of the record of orchestrations asks only where a claim lapses;
 /// none where the folder can't be read, so what lapses is kept until it
-/// can be. That, and each folder in it passed over as unreadable, is said
-/// once, so claims kept with no end name their cause; a claim kept as
-/// logs disagree is said by the lapse itself ([`said_lapsed`]).
+/// can be. That, each folder in it passed over as unreadable, and the
+/// paths of each session's logs that disagree are said once, so claims
+/// kept with no end name their cause and where to mend it; a claim kept
+/// as logs disagree is said by the lapse itself ([`said_lapsed`]).
 fn continuing(
     logs: &Path,
-    unreadable: &through::Unreadable,
+    unreadable: &Arc<through::Unreadable>,
 ) -> Option<impl Fn(&str) -> chain::Continued + use<>> {
     let say = |why: String| {
         if unreadable.first(&why) {
@@ -564,7 +565,17 @@ fn continuing(
             "the sessions logged in a folder that can't be read continue none: {why}"
         ));
     }
-    Some(move |session: &str| found.follows(session))
+    let unreadable = Arc::clone(unreadable);
+    Some(move |session: &str| {
+        let follows = found.follows(session);
+        if follows.is_err()
+            && let Some(why) = found.disagreeing(session)
+            && unreadable.first(&why)
+        {
+            eprintln!("{why}");
+        }
+        follows
+    })
 }
 
 /// Says what became of each claim in `lapsed` in the node's log, where
@@ -573,16 +584,27 @@ fn continuing(
 /// once each, through `unreadable`, as it's held again at every lapse
 /// until the logs can tell.
 fn said_lapsed(lapsed: &[chain::Lapsed], kept: bool, unreadable: &through::Unreadable) {
-    for lapsed in lapsed {
-        let line = lapsed.to_string();
-        let said = match lapsed {
-            chain::Lapsed::Held { .. } => unreadable.first(&line),
-            chain::Lapsed::Handed { .. } | chain::Lapsed::Forgotten { .. } => kept,
-        };
-        if said {
-            eprintln!("{line}");
-        }
+    for line in lapsed_lines(lapsed, kept, unreadable) {
+        eprintln!("{line}");
     }
+}
+
+/// The lines [`said_lapsed`] says of `lapsed`, in order.
+fn lapsed_lines(
+    lapsed: &[chain::Lapsed],
+    kept: bool,
+    unreadable: &through::Unreadable,
+) -> Vec<String> {
+    lapsed
+        .iter()
+        .map(ToString::to_string)
+        .zip(lapsed)
+        .filter(|(line, lapsed)| match lapsed {
+            chain::Lapsed::Held { .. } => unreadable.first(line),
+            chain::Lapsed::Handed { .. } | chain::Lapsed::Forgotten { .. } => kept,
+        })
+        .map(|(line, _)| line)
+        .collect()
 }
 
 /// Whether `session` stands where a carry reaches it: running, or parked
@@ -11305,7 +11327,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let logs = dir.path().join("sessions");
         fs::write(&logs, "not a folder\n").expect("written");
-        let unreadable = through::Unreadable::default();
+        let unreadable = Arc::new(through::Unreadable::default());
         assert!(
             continuing(&logs, &unreadable).is_none(),
             "read as empty, a claim that should pass on would lapse"
@@ -11319,6 +11341,45 @@ mod tests {
     }
 
     #[test]
+    fn a_held_claim_is_said_once_and_a_passed_one_only_where_its_record_is_kept() {
+        let lapsed = [
+            chain::Lapsed::Held {
+                claimer: "s-steward".to_owned(),
+                heads: "QEST-20261007-WCJQSG".to_owned(),
+                doubting: "s-other".to_owned(),
+            },
+            chain::Lapsed::Handed {
+                claimer: "s-weigh".to_owned(),
+                heir: "s-weigh-2".to_owned(),
+                heads: "QEST-20261111-OSPHT4".to_owned(),
+            },
+            chain::Lapsed::Forgotten {
+                claimer: "s-elder".to_owned(),
+                heads: "QEST-20261122-1OGSE7".to_owned(),
+                why: "no standing session continues it".to_owned(),
+            },
+        ];
+        let unreadable = through::Unreadable::default();
+        let all: Vec<String> = lapsed.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            lapsed_lines(&lapsed, true, &unreadable),
+            all,
+            "each, where the record keeping the change was kept"
+        );
+        assert_eq!(
+            lapsed_lines(&lapsed, true, &unreadable),
+            all[1..],
+            "a held claim, held again at every lapse, is said only the first time"
+        );
+        assert_eq!(
+            lapsed_lines(&lapsed, false, &through::Unreadable::default()),
+            all[..1],
+            "where the record was only read, a claim passed on or let go of isn't said, \
+             as nothing changed"
+        );
+    }
+
+    #[test]
     fn logs_that_read_say_what_each_continues() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let session = "01a1667f-f5bc-7ba6-9290-033e899fff34";
@@ -11329,8 +11390,7 @@ mod tests {
             format!("{{\"id\":\"{session}\",\"parentSession\":\"s-steward\"}}\n"),
         )
         .expect("written");
-        let continues = continuing(dir.path(), &through::Unreadable::default())
-            .expect("logs that read are read");
+        let continues = continuing(dir.path(), &Arc::default()).expect("logs that read are read");
         assert_eq!(continues(session), Ok(Some("s-steward".to_owned())));
     }
 
