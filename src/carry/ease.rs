@@ -996,6 +996,7 @@ pub(super) mod tests {
             }),
             saturated: None,
             cpu_minute: None,
+            memory_full_minute: None,
         });
         machine
     }

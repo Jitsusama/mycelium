@@ -137,6 +137,12 @@ pub struct Lively {
     /// keeps no more than any machine does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_available: Option<u64>,
+    /// The memory pressure it stays at or under, in percent of the last
+    /// minute in which all work at once waited on memory, machine-wide
+    /// (its room's `memory_full_minute`); none where it holds to no such
+    /// ceiling. A room that says no such minute is never past it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_full: Option<u32>,
 }
 
 /// What work begun here needs, wherever placement sends it, where it
@@ -1387,13 +1393,20 @@ mod tests {
                     "taints": [], "kept_lively": {lively}}}"#
             )
         };
-        // As core.nix writes it, with and without the memory it keeps.
-        for (said, memory_available) in [
+        // As core.nix writes it, with and without the memory it keeps and
+        // the memory pressure it holds to.
+        for (said, memory_available, memory_full) in [
             (
                 r#"{"cpu": 28, "memory_available": 25769803776}"#,
                 Some(24 << 30),
+                None,
             ),
-            (r#"{"cpu": 28}"#, None),
+            (r#"{"cpu": 28}"#, None, None),
+            (
+                r#"{"cpu": 28, "memory_available": 25769803776, "memory_full": 3}"#,
+                Some(24 << 30),
+                Some(3),
+            ),
         ] {
             fs::write(&file, with(said)).expect("written");
             let declared = read(&file).expect("it reads");
@@ -1401,7 +1414,8 @@ mod tests {
                 declared.kept_lively,
                 Some(Lively {
                     cpu: 28,
-                    memory_available
+                    memory_available,
+                    memory_full,
                 }),
                 "{said} reads as declared"
             );
@@ -1419,6 +1433,7 @@ mod tests {
             r#"{"cpu": -1}"#,
             r#"{"cpu": 28, "memory_available": "16G"}"#,
             r#"{"memory_available": 1024}"#,
+            r#"{"cpu": 28, "memory_full": 3.5}"#,
         ] {
             fs::write(&file, with(misshapen)).expect("written");
             let spoiled = read(&file).expect("a misshapen ceiling spoils only itself");

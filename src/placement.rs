@@ -1376,6 +1376,17 @@ fn past_lively(lively: Lively, room: &Room) -> Option<String> {
             cpu.ceil()
         ));
     }
+    // Over the last minute alone, since memory stalls that hold every task
+    // at once are what the person at the machine feels as it stopping.
+    if let (Some(most), Some(full)) = (lively.memory_full, room.memory_full_minute)
+        && full > f64::from(most)
+    {
+        return Some(format!(
+            "it is kept lively, at memory pressure {most} at most, and is at {:.1} over a minute",
+            // Rounded up to a tenth, as the processor's is to a whole.
+            (full * 10.0).ceil() / 10.0
+        ));
+    }
     lively
         .memory_available
         .filter(|&least| room.memory_available < least)
@@ -2003,6 +2014,7 @@ pub(crate) mod tests {
                 over: Some(Vec::new()),
                 saturated: None,
                 cpu_minute: None,
+                memory_full_minute: None,
             }),
             declared: Some(Declared {
                 reach: reach.iter().map(|&one| one.to_owned()).collect(),
@@ -2469,6 +2481,7 @@ pub(crate) mod tests {
         machine.declared.as_mut().expect("declared").kept_lively = Some(Lively {
             cpu,
             memory_available,
+            memory_full: None,
         });
         machine
     }
@@ -2761,6 +2774,58 @@ pub(crate) mod tests {
             Some("kestrel"),
             "a minute at the ceiling itself is within it"
         );
+    }
+
+    #[test]
+    fn a_machine_kept_lively_is_past_its_ceiling_once_memory_stalls_all_its_work() {
+        let saturated = pressed(machine("osprey", "macos", 8, &[]), 90.0);
+        let anything = needing(Vec::new());
+        let stalled = |most: Option<u32>, full: Option<f64>| {
+            let mut kestrel = lively(pressed(machine("kestrel", "linux", 60, &[]), 5.0), 28, None);
+            kestrel
+                .declared
+                .as_mut()
+                .and_then(|said| said.kept_lively.as_mut())
+                .expect("kept lively")
+                .memory_full = most;
+            kestrel.room.as_mut().expect("a room").memory_full_minute = full;
+            judged_now(&anything, &[kestrel, saturated.clone()])
+        };
+        let past = stalled(Some(3), Some(3.04));
+        assert_eq!(
+            placed(&past.placement),
+            Some("osprey"),
+            "a minute past its memory ceiling is past it, however light its processors"
+        );
+        assert_eq!(
+            said_of(&past),
+            "kestrel would rather not: it is kept lively, at memory pressure 3 at most, \
+             and is at 3.1 over a minute",
+            "and says which it read"
+        );
+        for (most, full, why) in [
+            (
+                Some(3),
+                Some(3.0),
+                "a minute at the ceiling itself is within it",
+            ),
+            (
+                Some(3),
+                None,
+                "a room saying no minute, as an older node's, is within it",
+            ),
+            (
+                None,
+                Some(40.0),
+                "a machine holding to no memory ceiling is never past one",
+            ),
+        ] {
+            assert_eq!(
+                placed(&stalled(most, full).placement),
+                Some("kestrel"),
+                "{why}"
+            );
+        }
     }
 
     #[test]
