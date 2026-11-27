@@ -270,6 +270,7 @@ fn answer<H: Holds + Steers>(
             keys,
             when,
             deep,
+            latest,
         } => {
             let deep = offered(holds.as_ref(), &kind, deep);
             // Asked again for the same records, as a launcher opening asks
@@ -279,6 +280,7 @@ fn answer<H: Holds + Steers>(
                 && running.kind == kind
                 && running.keys == keys
                 && running.deep == deep
+                && running.latest == latest
                 && !running.task.is_finished()
             {
                 running.when.send_replace(when);
@@ -295,7 +297,7 @@ fn answer<H: Holds + Steers>(
                     let task = tokio::spawn(keep_watching(
                         Arc::clone(holds),
                         id.clone(),
-                        (kind.clone(), keys.clone(), deep.clone()),
+                        (kind.clone(), keys.clone(), deep.clone(), latest),
                         told,
                         sent,
                         answering.clone(),
@@ -304,6 +306,7 @@ fn answer<H: Holds + Steers>(
                         kind,
                         keys,
                         deep,
+                        latest,
                         when: sends,
                         task,
                     };
