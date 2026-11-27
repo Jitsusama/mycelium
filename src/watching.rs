@@ -85,10 +85,14 @@ pub fn watch_all(
 /// at a time or a batch at once. Like notify's, it keeps one watch a path,
 /// a path watched again unchanged alters nothing, and a batch stops at
 /// the first path that fails: one not there, or one given back unwatched.
-/// A path that fails alters nothing, as notify's macOS watcher refuses it
-/// before holding it. That watcher starts again only when the stream's
-/// roots change, and a path inside a recursive root is none, so this
-/// counts a start at least as often as macOS does.
+/// A path that fails alters nothing, as notify 9.0.0-rc.7's macOS watcher
+/// refuses it before holding it. That watcher starts a batch's stream
+/// again only when a root's path, device or inode changes, and a single
+/// watch or unwatch only when no folder it watches recursively holds the
+/// path and, for a watch, the path's file or mode changed. This
+/// counts a start for any path whose file or mode changed, held inside a
+/// recursive root or not, so it counts a start at least as often as macOS
+/// does. It lists what it holds, as notify's own watchers do.
 #[cfg(test)]
 pub mod counting {
     use std::collections::BTreeMap;
@@ -104,8 +108,8 @@ pub mod counting {
     /// The watcher, sharing its count of starts with whoever made it.
     pub struct Counting {
         starts: Arc<AtomicUsize>,
-        /// Each path watched, by the file it was when watched.
-        watched: BTreeMap<PathBuf, (u64, u64)>,
+        /// Each path watched, by the file it was when watched and how.
+        watched: BTreeMap<PathBuf, ((u64, u64), RecursiveMode)>,
     }
 
     impl Counting {
@@ -123,12 +127,13 @@ pub mod counting {
         /// Applies `op`, answering whether it altered what's watched.
         fn apply(&mut self, op: &PathOp) -> notify::Result<bool> {
             match op {
-                PathOp::Watch(path, _) => {
+                PathOp::Watch(path, config) => {
                     let file = path
                         .metadata()
                         .map_err(|_| notify::Error::path_not_found().add_path(path.clone()))?;
-                    let was = self.watched.insert(path.clone(), (file.dev(), file.ino()));
-                    Ok(was != Some((file.dev(), file.ino())))
+                    let now = ((file.dev(), file.ino()), config.recursive_mode());
+                    let was = self.watched.insert(path.clone(), now);
+                    Ok(was != Some(now))
                 }
                 PathOp::Unwatch(path) => self
                     .watched
@@ -185,6 +190,14 @@ pub mod counting {
             }
             self.start(altered);
             Ok(())
+        }
+
+        fn watched_paths(&self) -> notify::Result<Vec<(PathBuf, RecursiveMode)>> {
+            Ok(self
+                .watched
+                .iter()
+                .map(|(path, (_, mode))| (path.clone(), *mode))
+                .collect())
         }
 
         fn kind() -> WatcherKind {
@@ -313,6 +326,28 @@ mod tests {
             starts.load(Ordering::SeqCst),
             2,
             "the path after it was held, so watching it again alters nothing"
+        );
+    }
+
+    #[test]
+    fn a_path_watched_again_another_way_starts_the_stream_again() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (mut watcher, starts) = Counting::made();
+        watcher
+            .watch(dir.path(), RecursiveMode::NonRecursive)
+            .expect("watched");
+        watcher
+            .watch(dir.path(), RecursiveMode::Recursive)
+            .expect("watched again");
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            2,
+            "macOS starts again for a path watched in another mode"
+        );
+        assert_eq!(
+            watcher.watched_paths().expect("its paths listed"),
+            [(dir.path().to_owned(), RecursiveMode::Recursive)],
+            "held the new way"
         );
     }
 
