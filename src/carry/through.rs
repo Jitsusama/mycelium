@@ -1115,7 +1115,9 @@ mod tests {
         assert_eq!(
             hands.share(quest, "tern"),
             Err(format!(
-                "{} names a secret, so {quest} isn't given to tern, a worker",
+                "{} names a secret, so {quest} isn't given to tern, a worker; its sessions wait \
+                 in the handover here, so take the secret out and carry again, or carry to a \
+                 machine of the person's own",
                 login.display()
             )),
             "a handover holding a login is refused, naming it"
@@ -1171,6 +1173,21 @@ mod tests {
             places.given("osprey", quest),
             "its link serves a worker only what it was given, so the room is given it"
         );
+        let login = notes.join("cells").join("auth.json");
+        fs::create_dir_all(notes.join("cells")).expect("a cells folder");
+        fs::write(&login, "{}").expect("a login");
+        fs::remove_dir_all(places.state.join("given")).expect("the gift taken back");
+        assert_eq!(
+            hands.share(quest, "osprey"),
+            Err(format!(
+                "{} names a secret, so {quest} isn't given to osprey, a room lent for agents; \
+                 its sessions wait in the handover here, so take the secret out and carry \
+                 again, or carry to a machine of the person's own",
+                login.display()
+            )),
+            "a handover holding a login is refused a room, as a worker, naming it"
+        );
+        assert!(!places.given("osprey", quest), "and nothing is given");
     }
 
     // 8855BD77's council (23 November): hands made once the session was

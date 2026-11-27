@@ -7852,15 +7852,17 @@ impl<S: Store> Shared<S> {
     }
 
     /// Says in this node's log a carried session, as `arriving` names it
-    /// ([`carried_words`]), started on a worker, as `started` says, so
-    /// every carry to a lent machine is kept here, on the person's own.
+    /// ([`carried_words`]), started on a lent machine, as `started` says
+    /// ([`crate::carry::ground::kept_as_lent`]), so every carry to one is
+    /// kept here, on the person's own.
     fn says_carried_to_a_worker(&self, arriving: Option<&str>, started: &Started) {
         let Some(arriving) = arriving else {
             return;
         };
-        let worker = self.as_carried(self.others()).into_iter().any(|one| {
-            one.name == started.machine && crate::carry::Lent::of(&one) != crate::carry::Lent::Not
-        });
+        let worker = self
+            .as_carried(self.others())
+            .into_iter()
+            .any(|one| one.name == started.machine && crate::carry::ground::kept_as_lent(&one));
         if worker {
             eprintln!(
                 "mycelium: carried {arriving} to {}, a worker",

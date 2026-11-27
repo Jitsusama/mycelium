@@ -2184,6 +2184,28 @@ pub(super) mod tests {
         );
     }
 
+    // #501's council (26 November): pin whether the node eases onto a
+    // room that says nothing of its leaving. The person ruled cloud
+    // machines full places for sessions, with no opt-in, so it does.
+    #[test]
+    fn a_room_its_node_names_takes_a_session_eased_with_no_word_of_its_own() {
+        let history = hot_for(&realm(), 11);
+        let mut rooms = realm();
+        rooms[1].worker = true;
+        rooms[1].declared.as_mut().expect("declared").costs_money = true;
+        assert!(
+            why_not(&chose(&rooms, &[cell("s1")], &history))
+                .starts_with("no machine with room is a peer"),
+            "unnamed, a machine a provider's link lent takes none unsaid"
+        );
+        rooms[1].held_for = facts::HeldFor::Agents;
+        assert_eq!(
+            carries(&chose(&rooms, &[cell("s1")], &history)),
+            Some(("s1", "tern")),
+            "named a room, and saying nothing of its leaving, it takes one"
+        );
+    }
+
     #[test]
     fn the_best_worker_takes_a_session_none_of_the_persons_own_takes() {
         use crate::declared::{Effect, Taint};

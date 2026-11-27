@@ -156,6 +156,13 @@ pub fn takes_none(to: &str) -> String {
     )
 }
 
+/// Whether a carry to `machine` is kept in the log of the person's own
+/// node.
+#[must_use]
+pub fn kept_as_lent(machine: &Machine) -> bool {
+    Lent::of(machine) != Lent::Not
+}
+
 /// Whether `there`, where it is a worker, takes a carry of a session
 /// running in `kind`: only one that declares it takes carries does, and
 /// never of a strict session from a node, since a worker's strict fence
@@ -955,6 +962,74 @@ mod tests {
             Lent::TakesNone,
             "but one reaching Aquifer stays a worker, whatever its node names it"
         );
+    }
+
+    // #501's council (26 November): a room reaching Aquifer only by a
+    // probe, or as its node last reached, passed as the person's own.
+    #[test]
+    fn a_room_reaching_aquifer_by_a_probe_or_as_last_reached_stays_a_worker() {
+        let now: jiff::Timestamp = "2026-11-26T17:00:00Z".parse().expect("a time");
+        let mut room = in_the_cloud(BTreeMap::new());
+        room.worker = true;
+        room.held_for = HeldFor::Agents;
+        assert_eq!(Lent::at(&room, now), Lent::Not, "a room, reaching nothing");
+        let mut probed = room.clone();
+        probed.declared.as_mut().expect("declared").probes = BTreeMap::from([(
+            "aquifer".to_owned(),
+            crate::declared::Probe::Connect("192.0.2.7:443".to_owned()),
+        )]);
+        assert_eq!(
+            Lent::at(&probed, now),
+            Lent::TakesNone,
+            "one that probes for Aquifer stays a worker"
+        );
+        let mut reached = room.clone();
+        reached.reached = BTreeMap::from([("aquifer".to_owned(), true)]);
+        assert_eq!(
+            Lent::at(&reached, now),
+            Lent::TakesNone,
+            "and so does one its node last reached Aquifer from"
+        );
+        let mut unreached = room;
+        unreached.reached = BTreeMap::from([("aquifer".to_owned(), false)]);
+        assert_eq!(
+            Lent::at(&unreached, now),
+            Lent::Not,
+            "while one that tried and failed to reach it, declaring no probe, is a room"
+        );
+    }
+
+    #[test]
+    fn a_room_that_declares_nothing_is_a_worker_taking_none_until_it_does() {
+        let now: jiff::Timestamp = "2026-11-26T17:00:00Z".parse().expect("a time");
+        let mut room = in_the_cloud(BTreeMap::new());
+        room.worker = true;
+        room.held_for = HeldFor::Agents;
+        room.declared = None;
+        assert_eq!(
+            Lent::at(&room, now),
+            Lent::TakesNone,
+            "whether it reaches Aquifer can't be told, so it keeps the worker's rules"
+        );
+    }
+
+    #[test]
+    fn a_carry_is_kept_in_the_log_wherever_a_providers_link_lent_the_machine() {
+        let now: jiff::Timestamp = "2026-11-26T17:00:00Z".parse().expect("a time");
+        let ours = in_the_cloud(BTreeMap::new());
+        assert_eq!(Lent::at(&ours, now), Lent::Not, "the person's own");
+        assert!(!kept_as_lent(&ours), "keeps no line");
+        let mut room = ours.clone();
+        room.worker = true;
+        room.held_for = HeldFor::Agents;
+        assert_eq!(Lent::at(&room, now), Lent::Not, "a room, as a carry counts it");
+        assert!(
+            kept_as_lent(&room),
+            "keeps one, since a provider's link lent it"
+        );
+        let mut worker = room;
+        worker.held_for = HeldFor::AsBooked;
+        assert!(kept_as_lent(&worker), "as a worker does");
     }
 
     #[test]
