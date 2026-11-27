@@ -43,6 +43,11 @@ use spend::{Meter, dollars, millionths, spend_watch_allows, usd};
 /// The most of an answer's body one [`Lent::Body`] carries.
 const PIECE: usize = 16 * 1024;
 
+/// What a relay answers when the one connection it was asked on was
+/// misdirected: pi's own relay says so to send pi straight to its proxy,
+/// which a borrower can't reach, so a lend asks it once more instead.
+const MISDIRECTED: u16 = 421;
+
 /// How often a lend streaming looks again at whether its machine was cut
 /// off, so a cut ends it within this.
 const CUTS_LOOKED_AT: Duration = Duration::from_secs(1);
@@ -210,6 +215,9 @@ struct Used {
     request_bytes: usize,
     response_bytes: usize,
     status: Option<u16>,
+    /// How many times it was asked whole of its relay: twice where the
+    /// first answered 421.
+    asked: u8,
     /// What its answer says it used, read as it streams, for a model's.
     meter: Option<Meter>,
     /// What it was charged, in millionths of a dollar, once settled.
@@ -657,6 +665,7 @@ fn say(machine: &str, used: &Used, took: Duration, outcome: &str) {
         "request_bytes": used.request_bytes,
         "response_bytes": used.response_bytes,
         "status": used.status,
+        "asked": used.asked,
         "charged_usd": used.charged.map(usd),
         "spent_usd_today": used.spent_today.map(usd),
         "duration_ms": u64::try_from(took.as_millis()).unwrap_or(u64::MAX),
@@ -761,7 +770,7 @@ async fn carried(
     let sent = tokio::select! {
         sent = tokio::time::timeout(
             SENT_WITHIN,
-            asked(stream, key, asking, budget, machine),
+            asked(stream, key.as_deref(), asking, budget, machine),
         ) => sent,
         ended = watched(lender, machine, sending) => return give_back(ended),
     };
@@ -778,8 +787,17 @@ async fn carried(
             )));
         }
     };
+    used.asked = 1;
+    // Asked again with the same key on a fresh connection, and with the
+    // same bound on taking the request whole. None where the relay can't
+    // be reached or asked again, so the first answer is handed on.
+    let again = async || {
+        let stream = connected(lender, budget).await.ok()?;
+        let sent = asked(stream, key.as_deref(), asking, budget, machine);
+        tokio::time::timeout(SENT_WITHIN, sent).await.ok()?.ok()
+    };
     let ended = tokio::select! {
-        ended = answered(reading, sending, used) => ended,
+        ended = answered(reading, again, sending, used) => ended,
         ended = watched(lender, machine, sending) => ended,
     };
     (ended, true)
@@ -802,27 +820,36 @@ async fn watched(lender: &Lender, machine: &str, sending: &mpsc::Sender<Lent>) -
 }
 
 /// Streams the relay's answer to `sending` as it comes: its head, its
-/// body's pieces, then that it is done.
+/// body's pieces, then that it is done. A head of 421 is asked `again`
+/// once, before anything of it is sent on, and the second answer is
+/// streamed whatever it is; where it can't be asked again, the first is.
 async fn answered(
-    mut reading: BufReader<UnixStream>,
+    reading: BufReader<UnixStream>,
+    again: impl AsyncFnOnce() -> Option<BufReader<UnixStream>>,
     sending: &mpsc::Sender<Lent>,
     used: &mut Used,
 ) -> Ended {
-    let (status, headers, framing) = match tokio::time::timeout(HEAD_WITHIN, head(&mut reading))
-        .await
-    {
-        Ok(Ok(head)) => head,
-        Ok(Err(why)) => return Ended::Refused(refused(502, format!("the model's answer {why}"))),
-        Err(_) => {
-            return Ended::Refused(refused(
-                504,
-                format!(
-                    "the model's answer didn't begin within {} minutes",
-                    HEAD_WITHIN.as_secs() / 60
-                ),
-            ));
-        }
+    let mut answer = match headed(reading).await {
+        Ok(answer) => answer,
+        Err(ended) => return ended,
     };
+    // Only before the head is sent on, so the borrower never hears two
+    // answers to one request.
+    if answer.status == MISDIRECTED
+        && let Some(reading) = again().await
+    {
+        used.asked += 1;
+        answer = match headed(reading).await {
+            Ok(answer) => answer,
+            Err(ended) => return ended,
+        };
+    }
+    let Headed {
+        status,
+        headers,
+        framing,
+        mut reading,
+    } = answer;
     used.status = Some(status);
     if let Some(meter) = used.meter.as_mut() {
         meter.headed(&headers);
@@ -831,6 +858,39 @@ async fn answered(
         return Ended::Gone;
     }
     streamed(&mut reading, framing, sending, used).await
+}
+
+/// An answer whose head was read: its status, headers and framing, and
+/// its body still to read.
+struct Headed {
+    status: u16,
+    headers: Vec<(String, String)>,
+    framing: Framing,
+    reading: BufReader<UnixStream>,
+}
+
+/// The relay's answer on `reading`, its head read within
+/// [`HEAD_WITHIN`]; else how the lend ends.
+async fn headed(mut reading: BufReader<UnixStream>) -> Result<Headed, Ended> {
+    match tokio::time::timeout(HEAD_WITHIN, head(&mut reading)).await {
+        Ok(Ok((status, headers, framing))) => Ok(Headed {
+            status,
+            headers,
+            framing,
+            reading,
+        }),
+        Ok(Err(why)) => Err(Ended::Refused(refused(
+            502,
+            format!("the model's answer {why}"),
+        ))),
+        Err(_) => Err(Ended::Refused(refused(
+            504,
+            format!(
+                "the model's answer didn't begin within {} minutes",
+                HEAD_WITHIN.as_secs() / 60
+            ),
+        ))),
+    }
 }
 
 /// A lend as it is carried on: its method, path, headers and body.
@@ -1071,6 +1131,11 @@ async fn reached(
         Some(command) => Some(key(command).await?),
         None => None,
     };
+    Ok((connected(lender, budget).await?, key))
+}
+
+/// `budget`'s upstream, reached on a connection of its own; else why not.
+async fn connected(lender: &Lender, budget: &Budget) -> Result<UnixStream, Refusal> {
     let upstream = if budget.upstream.is_absolute() {
         budget.upstream.clone()
     } else {
@@ -1085,13 +1150,12 @@ async fn reached(
             })?
             .join(&budget.upstream)
     };
-    let stream = UnixStream::connect(&upstream).await.map_err(|error| {
+    UnixStream::connect(&upstream).await.map_err(|error| {
         refused(
             503,
             format!("this machine's model relay isn't answering: {error}"),
         )
-    })?;
-    Ok((stream, key))
+    })
 }
 
 /// Asks `asking` of `budget`'s upstream over `stream`, with its `key`
@@ -1099,7 +1163,7 @@ async fn reached(
 /// answer, to be read.
 async fn asked(
     mut stream: UnixStream,
-    key: Option<String>,
+    key: Option<&str>,
     asking: &Asking,
     budget: &Budget,
     machine: &str,

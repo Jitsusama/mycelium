@@ -3332,6 +3332,11 @@ only what kind of fault and where, never the words found, or an
 upstream not answering is 503, and a key that
 can't be had is 502. An interim head the upstream sends, 1xx but 101,
 is passed over for the one after it, and a 204 or 304 has no body.
+An upstream that answers 421, its connection misdirected, is asked
+once more on a fresh connection before anything of its answer goes to
+the borrower, and the second answer is handed on, 421 or not; one
+that can't be reached or asked again hands on the first. It is still
+one lend, counted and charged once.
 `mycelium lend cut MACHINE`, or `--all`, cuts a machine off at once,
 kept in `lend/cuts.json`, changed under a lock on `lend/cuts.lock` so
 cuts made at once all hold: each lend it asks is refused, and each being
@@ -3345,7 +3350,8 @@ until `--all` writes them anew. Each lend that reaches a lender,
 refused or not, is written to the node's log as one line,
 `mycelium-lend:`, a space and JSON of its `time`, `lender`, `vm`,
 `service`, `budget`, `model`, `upstream` host, `request_bytes`,
-`response_bytes`, `status`, `duration_ms` and `outcome`, and never its
+`response_bytes`, `status`, `asked`, the times it was asked whole of
+its upstream, `duration_ms` and `outcome`, and never its
 body, headers or key. `upstream` is null where the lend was refused
 before it was sent there, so a line naming one is one that was. A
 model's line says `charged_usd` and `spent_usd_today` besides, once
