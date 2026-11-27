@@ -3757,8 +3757,9 @@ whose every cell is parked counts them `dormant`, so it draws after
 the living ones. A network is heard when the latest of its cells was,
 or its team where its cells say nothing. Its records change as the
 sessions do, so a machine come or gone shows with the next change to a
-session. Ten thousand cells, each holding two trees, make their
-networks within 30 MB, in time that grows with them.
+session. Ten thousand cells, each holding two trees, three in ten of
+them saying from 1 to 24 subjects, make their networks within 30 MB,
+in time that grows with them.
 
 The `cell` kind holds each cell of the realm, keyed by its name: a
 session's address, a machine's name, or a receptor's source and machine,
@@ -3771,8 +3772,9 @@ same records as the `network` kind, less its `kind`: its `type`
 text its want asks in, where the session says one: its lines and
 paragraphs kept, nothing else that steers a terminal, cut past 4096
 characters to end in a space and `[...]`), `repo`,
-the `subjects` its presence declares (the first 12 strings of at most
-120 characters a terminal draws as plain text), `usage`, the networks it
+the `subjects` its presence declares (the first 24 strings of at most
+120 characters a terminal draws as plain text, a repeat in any case
+passed over like any other entry), `usage`, the networks it
 `leads`, `machine`, `since`, `quest`, `started_by` (the cell its
 session's record says a book of starts names, else the orchestrator it
 names, each only as an address other than its own) with
@@ -3796,7 +3798,8 @@ sent at once. A watch is sent only the cells that changed, each with
 only the fields that moved. A node holds each record of every kind as
 the bytes it is sent as, and reads only the fields that moved, so ten
 thousand cells make their records within 30 MB while each holds two
-trees, in time that grows with them.
+trees and three in ten say from 1 to 24 subjects of about 30
+characters each, in time that grows with them.
 
 The `tie` kind holds who talked with whom in the last day, made from the
 messages the node holds: never what a message said, nor its id, only
@@ -3832,16 +3835,15 @@ lower case. A subject has a hub for every 10 cells declaring it, each
 naming at most 5 of them as its `fits`, shared out among its hubs, the
 cell heard least lately first: by its own `tie:<cell>` record, its
 messages in the last hour and a 24th of the day's, so a cell talking
-least has the most room. A cell hubs one
-subject, the rarest first, except where every cell declaring a subject
-already hubs another: then the one hubbing fewest hubs it too, so no
-subject is left with none. A record says its `subject`, its `hubs`,
-each `{"hub", "fits"}`, and the first of them again as `hub` and
-`fits`, for a reader of one hub. A hub is made by the node's own count
-and grants nothing: it is where a need is sent first, never a cell
-that may do more. The kind is told as the sessions change, so a busy
-hour of talk moves the hubs with the next change, not a message at a
-time.
+least has the most room. A cell hubs one subject, the rarest first,
+except where too few cells declaring a subject are free: then those
+hubbing fewest hub it too, so no subject has fewer hubs than its cells
+make. A record says its `subject`, its `hubs`, each `{"hub", "fits"}`,
+and the first of them again as `hub` and `fits`, for a reader of one
+hub. A hub is made by the node's own count and grants nothing: it is
+where a need is sent first, never a cell that may do more. The kind
+is told as the sessions change, so a busy hour of talk moves the hubs
+with the next change, not a message at a time.
 
 The `ended` kind holds each session of this machine's whose work
 stopped while its quest goes on, keyed `ended:<session>`, so whoever

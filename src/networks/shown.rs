@@ -67,7 +67,7 @@ fn doing(cell: &Cell) -> Option<&str> {
 /// says core.nix.
 fn shown_short(network: &Network) -> Option<&str> {
     let title = network.title.as_deref()?;
-    let again = says_again(title, &network.short) || super::slug(title) == network.short;
+    let again = says_again(title, &network.short) || super::made::slug(title) == network.short;
     (!again).then_some(network.short.as_str())
 }
 
