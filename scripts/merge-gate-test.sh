@@ -594,4 +594,56 @@ rode refuses "main moved while the gate judged ${raced:0:12}" \
   "a train main moved under while its gate judged doesn't land" land "${raced}"
 points refs/heads/main "${interloper}" "main keeps the change that landed first"
 
+# A train whose checks run holds main: one made meanwhile can't land before
+# it, and lands once made again on main as the first leaves it. Main gets
+# its true gate back first.
+git checkout -q -b calm "${interloper}"
+cp "${gate}" scripts/merge-gate.sh
+git add scripts/merge-gate.sh
+git commit -q -m "the gate again"
+base=$(git rev-parse HEAD)
+git push -q origin HEAD:main
+ahead=$(rider ahead)
+behind=$(rider behind)
+rode goes "riding ${ahead:0:12}" "a train is made while none holds main" make "${ahead}"
+leader=$(made)
+points refs/heads/train-lease "${leader}" "a train made takes main's lease"
+rode goes "train ${leader:0:12} holds main" \
+  "a train made while another's checks run says it lands after" make "${behind}"
+follower=$(made)
+points refs/heads/train-lease "${leader}" "the lease stays with the train that took it"
+pass "${leader}"
+pass "${follower}"
+rode refuses "train ${leader:0:12} holds main for" \
+  "a train can't land under one whose checks run" land "${follower}"
+points refs/heads/main "${base}" "main stays as the holder left it"
+rode goes "main is now ${leader:0:12}" "the train holding main lands" land "${leader}"
+points refs/heads/train-lease "" "a train landing lets main's lease go"
+rode goes "riding ${behind:0:12}" "the other made again on main" make "${behind}"
+follower=$(made)
+points refs/heads/train-lease "${follower}" "made again, it takes main's lease"
+rode refuses "doesn't hold main's lease" \
+  "a train that doesn't hold the lease can't let it go" free "${leader}"
+rode goes "holds main no more" "a train that won't land lets main go" free "${follower}"
+points refs/heads/train-lease "" "a lease let go is gone"
+
+# The gate reads the lease alone too: a train's that holds main and is
+# young refuses every other head, and one past its time, or one main has
+# moved past, refuses none.
+pass "${follower}"
+live=$(git commit-tree "${follower}^{tree}" -p "${leader}" -m live)
+git push -q origin "${live}:refs/heads/train-lease"
+expect refuses "${follower}" "train ${live:0:12} holds main for 90 more minutes" \
+  "a head is refused while a young train holds main"
+now=$(date +%s)
+old=$(GIT_COMMITTER_DATE="$((now - 5401)) +0000" \
+  git commit-tree "${follower}^{tree}" -p "${leader}" -m old)
+git push -q -f origin "${old}:refs/heads/train-lease"
+expect merges "${follower}" "" "a lease past its time holds nothing"
+git push -q -f origin "${raced}:refs/heads/train-lease"
+expect merges "${follower}" "" "a lease main moved past holds nothing"
+rode goes "already made as train/${follower:0:12}" \
+  "a train made again where a spent lease stands" make "${behind}"
+points refs/heads/train-lease "${follower}" "a spent lease is taken over"
+
 finish
