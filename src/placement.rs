@@ -1309,7 +1309,10 @@ pub fn taints(machine: &Machine) -> Vec<Taint> {
             "its queue starts no build beside a VM test for want of a processor",
         ));
     }
-    if let Some(lively) = machine.declared.as_ref().and_then(|said| said.kept_lively)
+    if let Some(lively) = machine
+        .declared
+        .as_ref()
+        .and_then(|said| said.kept_lively.as_ref())
         && let Some(room) = &machine.room
         && let Some(why) = past_lively(lively, room)
     {
@@ -1384,7 +1387,7 @@ struct Judged {
 
 /// Why a machine kept lively to `lively` is past its ceiling, as `room`
 /// says, if it is.
-fn past_lively(lively: Lively, room: &Room) -> Option<String> {
+fn past_lively(lively: &Lively, room: &Room) -> Option<String> {
     // Over the last minute where its node says it, so a burst of a few
     // seconds never crosses the ceiling; over ten from a node too old.
     let (cpu, over) = room
@@ -1554,7 +1557,11 @@ fn judge(
         .map(|taint| costs(machine, taint, weights))
         .sum();
     let saturated = rather_not.iter().any(|taint| is_saturated(&taint));
-    let kept = match machine.declared.as_ref().and_then(|said| said.kept_lively) {
+    let kept = match machine
+        .declared
+        .as_ref()
+        .and_then(|said| said.kept_lively.as_ref())
+    {
         Some(_) if work.tolerating(KEPT_LIVELY) => Kept::Not,
         Some(_) if rather_not.iter().any(|taint| taint.key == KEPT_LIVELY) => Kept::Past,
         Some(_) => Kept::Within,
@@ -2519,6 +2526,7 @@ pub(crate) mod tests {
             memory_available,
             memory_full: None,
             io_full: None,
+            io_full_from: Vec::new(),
         });
         machine
     }

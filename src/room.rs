@@ -35,7 +35,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 
@@ -264,6 +264,31 @@ pub fn io_full_minute(procs: &Path) -> Option<f64> {
         &fs::read_to_string(procs.join("pressure/io")).ok()?,
         "avg60=",
     )
+}
+
+/// The share of the last minute in which every task at once of the worst
+/// of `groups` waited on its disks, each a control group named by its
+/// path below `cgroups` (Linux's `/sys/fs/cgroup`, or a stand-in for it),
+/// as its `io.pressure` says it; none where none of them says one. A path
+/// that would climb out of `cgroups` is none of them.
+#[must_use]
+pub fn io_full_minute_of(cgroups: &Path, groups: &[String]) -> Option<f64> {
+    groups
+        .iter()
+        .map(Path::new)
+        .filter(|group| {
+            group.components().next().is_some()
+                && group
+                    .components()
+                    .all(|part| matches!(part, Component::Normal(_)))
+        })
+        .filter_map(|group| {
+            stalled_all_over(
+                &fs::read_to_string(cgroups.join(group).join("io.pressure")).ok()?,
+                "avg60=",
+            )
+        })
+        .reduce(f64::max)
 }
 
 /// This machine's room as its own kernel says it, read from `procs`
@@ -696,6 +721,57 @@ mod tests {
             felt(procs.path(), FELT_AT),
             None,
             "a kernel that says only some of it says none"
+        );
+    }
+
+    #[test]
+    fn disk_pressure_named_by_group_is_the_worst_of_the_groups_that_say_one() {
+        let cgroups = tempfile::tempdir().expect("a temporary folder");
+        for (group, full) in [("agents.slice", "2.20"), ("work/jobs.slice", "4.50")] {
+            let folder = cgroups.path().join(group);
+            fs::create_dir_all(&folder).expect("its group");
+            fs::write(
+                folder.join("io.pressure"),
+                format!(
+                    "some avg10=9.00 avg60=7.00 avg300=2.00 total=1\n\
+                     full avg10=3.00 avg60={full} avg300=1.00 total=1\n"
+                ),
+            )
+            .expect("written");
+        }
+        // A capped survey of the disks, stalled alone, in a group not named.
+        fs::create_dir_all(cgroups.path().join("guard.service")).expect("its group");
+        fs::write(
+            cgroups.path().join("guard.service").join("io.pressure"),
+            "full avg10=9.00 avg60=9.40 avg300=9.00 total=1\n",
+        )
+        .expect("written");
+        let of = |groups: &[&str]| {
+            let groups: Vec<String> = groups.iter().map(ToString::to_string).collect();
+            io_full_minute_of(cgroups.path(), &groups)
+        };
+        assert_eq!(
+            of(&["agents.slice", "work/jobs.slice"]),
+            Some(4.5),
+            "the worst of the groups named, never one not named"
+        );
+        assert_eq!(
+            of(&["agents.slice", "gone.slice"]),
+            Some(2.2),
+            "a group saying none is passed over"
+        );
+        assert_eq!(of(&["gone.slice"]), None, "and none saying one says none");
+        assert_eq!(of(&[]), None, "as no group named does");
+        fs::create_dir_all(cgroups.path().join("agents.slice").join("inner"))
+            .expect("a group within");
+        assert_eq!(
+            of(&[
+                "agents.slice/inner/../../guard.service",
+                "/guard.service",
+                ""
+            ]),
+            None,
+            "a path climbing out, rooted elsewhere or empty is none of them"
         );
     }
 }

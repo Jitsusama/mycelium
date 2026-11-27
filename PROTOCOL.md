@@ -1911,7 +1911,11 @@ it. Its `memory_full_minute` is the share of the last minute all work
 at once waited on memory, machine-wide, in percent (`full avg60` of
 `/proc/pressure/memory`), left out as `cpu_minute` is, and its
 `io_full_minute` the same of its disks (`full avg60` of
-`/proc/pressure/io`), left out alike. The room is
+`/proc/pressure/io`), left out alike; where its `kept_lively` names
+`io_full_from`, control groups as paths below `/sys/fs/cgroup`, it is
+the worst of their `io.pressure` instead, left out where none says
+one, since machine-wide a task held back by its own cap, as a capped
+survey of the disks, counts as waiting on them. The room is
 `null` where
 no harness keeps a queue, or where the queue's record is of another
 shape or unwritten for two minutes. A machine keeps no reserve of
@@ -2157,7 +2161,8 @@ at once, and still goes to the roomiest where every machine is
 saturated, never refused; an unheard room is never saturated, nor
 passed for it. A machine whose `declared` says `kept_lively`, as
 `{"cpu": 28, "memory_available": bytes, "memory_full": 3,
-"io_full": 1}` (the last three may be left out), is one the person
+"io_full": 1, "io_full_from": ["agents.slice"]}` (all but `cpu` may
+be left out), is one the person
 works at that the others take
 new work from first: within its ceiling (processor pressure
 machine-wide at or under `cpu`, as its `cpu_minute` says it, or over

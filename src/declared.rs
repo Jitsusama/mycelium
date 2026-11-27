@@ -126,7 +126,7 @@ pub struct Declared {
 /// The ceiling a machine kept lively ([`Declared::kept_lively`]) holds its
 /// load to: past any part, it counts as past its room, so work goes
 /// to any other machine heard lately before it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lively {
     /// The processor pressure it stays at or under, in percent of the
     /// last minute in which some work waited on a processor, machine-wide
@@ -145,10 +145,24 @@ pub struct Lively {
     pub memory_full: Option<u32>,
     /// The disk pressure it stays at or under, in percent of the last
     /// minute in which all work at once waited on its disks, machine-wide
-    /// (its room's `io_full_minute`); none where it holds to no such
-    /// ceiling. A room that says no such minute is never past it.
+    /// or in the groups of `io_full_from` (its room's `io_full_minute`);
+    /// none where it holds to no such ceiling. A room that says no such
+    /// minute is never past it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub io_full: Option<u32>,
+    /// The control groups, each a path below the kernel's root of them,
+    /// as `agents.slice`, whose disk pressure its node reads in place of
+    /// the machine's, the worst of them over the last minute; none where
+    /// it reads the machine's. Machine-wide, a task held back by a cap of
+    /// its own counts as waiting on the disks, so a machine whose capped
+    /// survey of its disks stalls alone reads past a ceiling its work
+    /// never feels. A list in another shape is none, spoiling only itself.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "groups_or_none"
+    )]
+    pub io_full_from: Vec<String>,
 }
 
 /// What work begun here needs, wherever placement sends it, where it
@@ -246,6 +260,15 @@ fn fence_or_none<'de, D: serde::Deserializer<'de>>(
 fn lively_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Option<Lively>, D::Error> {
     Ok(Option::<serde_json::Value>::deserialize(said)?
         .and_then(|lively| serde_json::from_value(lively).ok()))
+}
+
+/// The groups a ceiling's disk pressure is read from as declared, or none
+/// where they aren't a list of names, so the ceiling's other parts stand
+/// and its disk pressure is read machine-wide.
+fn groups_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Vec<String>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(said)?
+        .and_then(|groups| serde_json::from_value(groups).ok())
+        .unwrap_or_default())
 }
 
 /// The rules of what work needs as declared, each one not in the shape
@@ -1413,22 +1436,33 @@ mod tests {
             )
         };
         // As core.nix writes it, with and without the memory it keeps and
-        // the memory and disk pressure it holds to.
-        for (said, memory_available, memory_full, io_full) in [
+        // the memory and disk pressure it holds to, and where it reads the
+        // disks'.
+        let (none, from): (&[&str], &[&str]) = (&[], &["agents.slice", "jobs.slice"]);
+        for (said, memory_available, memory_full, io_full, io_full_from) in [
             (
                 r#"{"cpu": 28, "memory_available": 25769803776}"#,
                 Some(24 << 30),
                 None,
                 None,
+                none,
             ),
-            (r#"{"cpu": 28}"#, None, None, None),
+            (r#"{"cpu": 28}"#, None, None, None, none),
             (
                 r#"{"cpu": 28, "memory_available": 25769803776, "memory_full": 3}"#,
                 Some(24 << 30),
                 Some(3),
                 None,
+                none,
             ),
-            (r#"{"cpu": 28, "io_full": 1}"#, None, None, Some(1)),
+            (r#"{"cpu": 28, "io_full": 1}"#, None, None, Some(1), none),
+            (
+                r#"{"cpu": 28, "io_full": 1, "io_full_from": ["agents.slice", "jobs.slice"]}"#,
+                None,
+                None,
+                Some(1),
+                from,
+            ),
         ] {
             fs::write(&file, with(said)).expect("written");
             let declared = read(&file).expect("it reads");
@@ -1439,6 +1473,7 @@ mod tests {
                     memory_available,
                     memory_full,
                     io_full,
+                    io_full_from: io_full_from.iter().map(ToString::to_string).collect(),
                 }),
                 "{said} reads as declared"
             );
@@ -1469,6 +1504,32 @@ mod tests {
                 spoiled.reach,
                 ["internet"],
                 "{misshapen} leaves the rest of the declaration standing"
+            );
+        }
+    }
+
+    #[test]
+    fn groups_to_read_disk_pressure_from_in_another_shape_spoil_only_themselves() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let file = folder.path().join("declared.json");
+        for groups in [r#""agents.slice""#, "[1]", r#"{"agents": 1}"#, "null"] {
+            fs::write(
+                &file,
+                format!(
+                    r#"{{"reach": ["internet"], "outlives": [], "costs_money": false,
+                        "taints": [], "kept_lively": {{"cpu": 28, "io_full": 1,
+                        "io_full_from": {groups}}}}}"#
+                ),
+            )
+            .expect("written");
+            let lively = read(&file)
+                .expect("it reads")
+                .kept_lively
+                .expect("still kept lively");
+            assert_eq!(
+                (lively.cpu, lively.io_full, lively.io_full_from.len()),
+                (28, Some(1), 0),
+                "groups of {groups} read its disks machine-wide, the rest standing"
             );
         }
     }
