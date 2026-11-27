@@ -2148,7 +2148,8 @@ struct EasesAsked {
     /// A worker `--eases` may carry to, by its name, once for each: a
     /// worker's word that it takes carries is only its own, so one not
     /// named here takes none from this node. The person's own machines
-    /// need no naming; unnamed, no worker takes a carry from it.
+    /// need no naming, nor does the room `agent-rooms` names first at
+    /// each look; unnamed, no other worker takes a carry from it.
     #[arg(long, value_name = "MACHINE", requires = "eases")]
     eases_onto: Vec<String>,
     /// Ask the harness to park the sessions `--eases` chooses to put to

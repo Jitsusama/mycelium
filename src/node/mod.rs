@@ -6351,7 +6351,12 @@ impl<S: Store> Shared<S> {
                 continue;
             };
             let (line, back) = self
-                .look_to_ease(easing, &eases.onto, std::mem::take(&mut sampler), now)
+                .look_to_ease(
+                    easing,
+                    &eases.onto_now(self.book.first_agent_room()),
+                    std::mem::take(&mut sampler),
+                    now,
+                )
                 .await;
             sampler = back;
             if !easing.still_short()

@@ -63,8 +63,9 @@ pub struct Eases {
     /// chooses to sleep (`carry::sleep`), or none where it only says
     /// them.
     pub sleeps: Option<PathBuf>,
-    /// The workers it may carry to, by name: one that says it takes
-    /// carries but isn't named here takes none from this node.
+    /// The workers it may carry to, by name, beside the first room made
+    /// for agents ([`Eases::onto_now`]): one that says it takes carries
+    /// but is neither takes none from this node.
     pub onto: BTreeSet<String>,
 }
 
@@ -76,8 +77,7 @@ impl Eases {
     /// told again.
     #[must_use]
     pub fn onto_now(&self, first_room: Option<String>) -> BTreeSet<String> {
-        let _ = first_room;
-        self.onto.clone()
+        self.onto.iter().cloned().chain(first_room).collect()
     }
 }
 

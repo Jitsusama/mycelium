@@ -537,8 +537,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let book = Book::at(dir.path().join("made.jsonl"));
         assert_eq!(book.first_agent_room(), None, "no file names none");
-        fs::write(dir.path().join(AGENT_ROOMS), "# rooms\n\n  # none yet\n")
-            .expect("written");
+        fs::write(dir.path().join(AGENT_ROOMS), "# rooms\n\n  # none yet\n").expect("written");
         assert_eq!(
             book.first_agent_room(),
             None,

@@ -1303,8 +1303,9 @@ more after the lone one. While it is held over while another has
 room, in the latest reading too, and the readings five minutes after
 the first sleep of its spell over still say over, it would carry one
 session to a peer, or a worker whose `declared` says `takes_carries`
-and that the node names with `--eases-onto MACHINE`, once for each
-(a worker's word is only its own, so one unnamed takes none),
+and that the node names with `--eases-onto MACHINE`, once for each,
+or that its `agent-rooms` names first at that look (a worker's word
+is only its own, so one unnamed takes none),
 with room in the watch and in the latest reading, straight away where
 it put none to sleep; while none has room it
 carries nothing. Sessions that wait anew meanwhile sleep too without
