@@ -1329,6 +1329,108 @@ mod tests {
         );
     }
 
+    /// wren's make at `p2`, kept whole, and where its name and its place
+    /// end within it.
+    fn wrens_make(soon: jiff::Timestamp) -> (String, usize, usize) {
+        let wren = made_at("wren", "p2", soon);
+        let whole = serde_json::to_string(&json!({ "at": soon, "made": wren })).expect("a line");
+        let named = whole.find(r#","place""#).expect("its place follows its name");
+        let placed = whole
+            .find(r#","provider""#)
+            .expect("its provider follows its place");
+        (whole, named, placed)
+    }
+
+    #[test]
+    fn lines_cut_short_in_a_row_are_each_judged_alone() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let (whole, named, _) = wrens_make(soon);
+        let release = format!(r#"{{"at":"{soon}","realm":"home","released":{{"machine":"te"#);
+        for (at, cut) in [
+            ("make-first", format!("{}{release}", &whole[..named + 4])),
+            ("release-first", format!("{release}{}", &whole[..named + 4])),
+        ] {
+            let book = Book::at(dir.path().join(at)).of_realm("work");
+            cut_short(&book.path, &cut);
+            let doubt = book.ends().doubt;
+            assert!(
+                doubt.of("wren") && !doubt.of("tern"),
+                "a make cut short is in doubt though a release cut short runs \
+                 into it, {at}: {doubt:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_line_its_realm_said_before_it_was_cut_doubts_no_make_unless_it_was_one() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("made.jsonl");
+        let book = Book::at(path.clone()).of_realm("work");
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        cut_short(&path, &format!(r#"{{"at":"{soon}","realm":"work","rel"#));
+        assert_eq!(
+            book.ends().doubt,
+            Doubt::None,
+            "a line saying its realm before it says what it kept is a \
+             release, as a make says its realm last"
+        );
+        let home = serde_json::to_string(
+            &json!({ "at": soon, "made": made_at("wren", "p2", soon), "realm": "home" }),
+        )
+        .expect("a line");
+        cut_short(&path, &home[..home.len() - 1]);
+        assert_eq!(
+            book.ends().doubt,
+            Doubt::None,
+            "and another realm's make cut short after its realm is no make \
+             of this one's"
+        );
+    }
+
+    #[test]
+    fn a_blank_line_is_passed_over_doubting_nothing() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("made.jsonl");
+        let book = Book::at(path.clone()).of_realm("work");
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        book.made(&made_at("tern", "p1", soon))
+            .expect("a make is kept");
+        cut_short(&path, "");
+        cut_short(&path, " \t ");
+        let standing = book.standing().expect("the book reads");
+        assert_eq!(
+            (standing.unread, standing.doubt),
+            (0, Doubt::None),
+            "a blank line, as one left by taking out a line cut short, \
+             is no line of the book"
+        );
+    }
+
+    #[test]
+    fn a_release_lifts_a_make_cut_short_only_at_its_place() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("made.jsonl");
+        let book = Book::at(path.clone()).of_realm("work");
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let (whole, _, placed) = wrens_make(soon);
+        cut_short(&path, &whole[..placed + 4]);
+        book.released(&made_at("wren", "p9", soon), "its time was up")
+            .expect("a release is kept");
+        assert!(
+            book.ends().doubt.of("wren"),
+            "a release of its name at another place leaves the make cut short \
+             in doubt"
+        );
+        book.released(&made_at("wren", "p2", soon), "its time was up")
+            .expect("a release is kept");
+        assert_eq!(
+            book.ends().doubt,
+            Doubt::None,
+            "and one at its own place lifts it"
+        );
+    }
+
     #[test]
     fn a_book_it_couldnt_read_is_read_again_once_it_can() {
         use std::os::unix::fs::PermissionsExt as _;
