@@ -147,6 +147,39 @@ mod tests {
         );
     }
 
+    // An end built before pieces shrank sends them 1 MiB long, and this
+    // end takes each and asks next from where it ends, so the sender alone
+    // sets the size and ends of both builds share files.
+    #[test]
+    fn pieces_of_another_length_make_the_file_whole() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let pieces = Pieces::from(dir.path(), "kestrel");
+        let old = 1024 * 1024;
+        let bytes: Vec<u8> = (0..=u8::MAX).cycle().take(2 * old + 7).collect();
+        let len = u64::try_from(bytes.len()).expect("a length");
+        let mut asked = Vec::new();
+        let mut at = 0;
+        let whole = loop {
+            asked.push(at);
+            let start = usize::try_from(at).expect("an offset");
+            let body = &bytes[start..(start + old).min(bytes.len())];
+            match pieces
+                .stage(QUEST, KEY, "abc", at, len, body)
+                .expect("staged")
+            {
+                Staged::More(next) => at = next,
+                Staged::Whole(whole) => break whole,
+                Staged::Astray => panic!("a longer piece went astray at {at}"),
+            }
+        };
+        assert_eq!(
+            asked,
+            [0, 1 << 20, 2 << 20],
+            "each asked from where the last ended"
+        );
+        assert!(whole == bytes, "the file is whole as it was sent");
+    }
+
     #[test]
     fn a_piece_out_of_turn_is_passed_over() {
         let dir = tempfile::tempdir().expect("a temporary folder");

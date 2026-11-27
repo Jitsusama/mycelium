@@ -623,9 +623,9 @@ hearing the other end is said at the next look:
   sent the file whole.
 - `{"Piece": {"quest", "file", "state", "at", "len", "body", "mode"}}`:
   for a file over 64 KiB, the 64 KiB of it at `at`, of `len` in all
-  (1 MiB from ends older than 27 November). The receiving end takes a
-  piece of any length and asks next from where it ends, so the sender
-  alone sets the size. It stages it under
+  (1 MiB from an end built before pieces shrank). The receiving end
+  takes a piece of any length and asks next from where it ends, so the
+  sender alone sets the size. It stages it under
   `~/.local/state/mycelium/pieces/<machine>/` and asks for the next, so
   the link's messages pass between pieces. Once whole, it is taken as a
   `File`; a piece that doesn't follow what is staged is passed over, and
