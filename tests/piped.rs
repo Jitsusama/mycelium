@@ -12,7 +12,7 @@ use process::{made, mycelium};
 
 mod process;
 
-/// The zone the node's times are drawn in: a POSIX rule, which needs no
+/// The zone the command draws its times in: a POSIX rule, which needs no
 /// zone database, as the build's sandbox has none to look `UTC` up in,
 /// and half an hour off UTC, so a stamp drawn in UTC regardless fails.
 const ZONE: &str = "<+0530>-5:30";
