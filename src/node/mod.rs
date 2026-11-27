@@ -4342,8 +4342,13 @@ impl<S: Store> Shared<S> {
     }
 
     /// The carries this node ordered that are shown at `since`
-    /// (`kept::shown`), newest first.
+    /// (`kept::shown`), newest first; none where they can't be read.
     fn carries_here(&self, since: jiff::Timestamp) -> Vec<kept::Kept> {
+        self.carries_here_read(since).unwrap_or_default()
+    }
+
+    /// As [`Shared::carries_here`], or why they can't be read.
+    fn carries_here_read(&self, since: jiff::Timestamp) -> io::Result<Vec<kept::Kept>> {
         let settled = match self.settles.as_ref().map(|settler| settler.settled()) {
             Some(Ok(settled)) => settled,
             Some(Err(error)) => {
@@ -4355,7 +4360,8 @@ impl<S: Store> Shared<S> {
             }
             None => HashMap::new(),
         };
-        self.carries_looked_at()
+        Ok(self
+            .carries_looked_at_read()?
             .into_iter()
             .map(|mut carry| {
                 if let (Some(said), Some(line)) =
@@ -4366,15 +4372,21 @@ impl<S: Store> Shared<S> {
                 carry
             })
             .filter(|carry| kept::shown(carry, since))
-            .collect()
+            .collect())
     }
 
     /// The carries this node ordered as far back as settling looks
-    /// (`settle::LOOKED_FOR`), newest first.
+    /// (`settle::LOOKED_FOR`), newest first; none where they can't be
+    /// read.
     fn carries_looked_at(&self) -> Vec<kept::Kept> {
+        self.carries_looked_at_read().unwrap_or_default()
+    }
+
+    /// As [`Shared::carries_looked_at`], or why they can't be read.
+    fn carries_looked_at_read(&self) -> io::Result<Vec<kept::Kept>> {
         let now = jiff::Timestamp::now();
         let since = now.checked_sub(settle::LOOKED_FOR).unwrap_or(now);
-        kept::read(&self.carries, since).unwrap_or_default()
+        kept::read(&self.carries, since)
     }
 
     /// Settles each carry ordered from here that is due (`settle::due`),
@@ -4636,13 +4648,31 @@ impl<S: Store> Shared<S> {
     /// yet, each judged as the person sees it, for easing to wait on. One
     /// ordered longer ago than [`kept::STUCK_AFTER`] stands stuck, so it
     /// isn't read.
-    fn easing_on_way(&self, now: jiff::Timestamp) -> Vec<ease::Moved> {
+    ///
+    /// # Errors
+    ///
+    /// Where the carries can't be read, saying why, as the node also says
+    /// once on its standard error, since which are on their way can't
+    /// be told then.
+    fn easing_on_way(&self, now: jiff::Timestamp) -> Result<Vec<ease::Moved>, String> {
         let sightings = self.sightings();
-        let carries = self.carries_here(now - kept::STUCK_AFTER);
-        easing::on_way(&carries, &self.machine, |carry| {
+        let carries = self
+            .carries_here_read(now - kept::STUCK_AFTER)
+            .map_err(|error| {
+                let why = format!(
+                    "the carries kept here can't be read ({error}), so which of {}'s carries \
+                     are on their way can't be told",
+                    self.machine
+                );
+                if self.unreadable.first(&why) {
+                    eprintln!("{why}");
+                }
+                why
+            })?;
+        Ok(easing::on_way(&carries, &self.machine, |carry| {
             let seen = sightings.seen(carry, self.handed(carry));
             kept::judged(carry, &seen, now)
-        })
+        }))
     }
 
     /// The sessions here that ended while their quest goes on, as
@@ -6816,6 +6846,7 @@ impl<S: Store> Shared<S> {
             .unwrap_or_else(|| Err("this node serves no quests' record".to_owned()))
             .map(|quests| quests.into_values().collect());
         let machine = self.machine.clone();
+        let node = self.clone();
         let read = tokio::task::spawn_blocking(move || {
             let easing::Records {
                 orchestrators,
@@ -6835,14 +6866,17 @@ impl<S: Store> Shared<S> {
             let holds = procs
                 .map(|procs| sampler.take(&procs, &pids, now))
                 .unwrap_or_default();
+            // Here too, off the node's thread, as it reads the carries and
+            // their handovers.
+            let on_way = node.easing_on_way(now);
             let looked = (holdings, queued, sizes, orchestrators);
-            (looked, holds, kept_eases, sampler)
+            (looked, holds, kept_eases, on_way, sampler)
         })
         .await;
-        let Ok(((holdings, queued, sizes, orchestrators), holds, kept_eases, sampler)) = read
-        else {
+        let Ok((looked, holds, kept_eases, on_way, sampler)) = read else {
             return (None, easing::Sampler::default());
         };
+        let (holdings, queued, sizes, orchestrators) = looked;
         let looked = easing::Looked {
             sessions: &sessions,
             fences: &fences,
@@ -6858,7 +6892,7 @@ impl<S: Store> Shared<S> {
         let here = ease::Here::of(&self.machine, &machines, &loads, onto);
         let reading = crate::balance::read(&machines, &sessions, now);
         easing.doubt(orchestrators.err());
-        easing.on_way(self.easing_on_way(now), now);
+        easing.on_way(on_way, now);
         let line = easing.look(&here, reading, cells, &holds, kept_eases, now);
         (line, sampler)
     }
