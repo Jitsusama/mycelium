@@ -897,8 +897,6 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
         json!({"key": "quest:brailled", "for": "Tide\u{2800}\u{200D}\u{2800}", "folder": "/r"}),
         json!({"key": "quest:hinged", "for": format!("{}\u{200D}é", "é".repeat(119)),
                "folder": "/g"}),
-        json!({"key": "quest:khmer", "for": format!("{}\u{17D2}\u{1780}", "\u{1780}".repeat(119)),
-               "folder": "/k"}),
         json!({"key": "quest:untitled", "for": "", "folder": "/u"}),
         json!({"key": "quest:unsaid", "folder": "/u"}),
         json!({"key": "quest:nulled", "for": null, "folder": "/n"}),
@@ -916,7 +914,6 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
             titled("quest:hidden", "Tide plan"),
             titled("quest:hinged", &"é".repeat(119)),
             titled("quest:joined", "👩\u{200D}💻 Harbour"),
-            titled("quest:khmer", &"\u{1780}".repeat(119)),
             titled("quest:lined", "Lined up"),
             untitled("quest:nulled"),
             titled("quest:persian", "می\u{200C}خواهم"),
@@ -930,12 +927,18 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
         "a title past 120 characters is cut to them, however many bytes each is, counting \
          what is drawn; a control character or separator in it is a space and a mark \
          turning its direction is gone, as is what draws nothing or a noncharacter, a braille \
-         blank at either end too, and a cut ends in no space, lone joiner or lone Khmer \
-         coeng; the joiners an \
+         blank at either end too, and a cut ends in no space or lone joiner; the joiners an \
          emoji or a \
          script spells with stay; and a share saying \
          nothing or null it is for is kept, \
          untitled"
+    );
+    // Apart, as a cell reads no more than sixteen of what it shares.
+    let khmer = format!("{}\u{17D2}\u{1780}", "\u{1780}".repeat(119));
+    assert_eq!(
+        shared_by_two(&[json!({"key": "quest:khmer", "for": khmer, "folder": "/k"})]),
+        [titled("quest:khmer", &"\u{1780}".repeat(119))],
+        "a cut ends in no lone Khmer coeng"
     );
 }
 

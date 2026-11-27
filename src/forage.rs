@@ -3732,7 +3732,7 @@ mod tests {
         // Alphabetic, so a chain of them keeps every joiner; the swarm's
         // measure starts each afresh too, so the chain still counts a
         // cell or more for every letter in it.
-        let blood = vec!["\u{1F170}\u{FE0F}"; 8].join(joiner);
+        let blood = ["\u{1F170}\u{FE0F}"; 8].join(joiner);
         assert_eq!(
             one_line(&blood),
             blood,
