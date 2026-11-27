@@ -1459,6 +1459,44 @@ mod tests {
     }
 
     #[test]
+    fn the_answer_waits_afresh_whatever_the_close_spent() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Instant;
+
+        use super::{ANSWERED_WITHIN, Hands, Places, Through};
+        let dir = tempfile::tempdir().expect("places");
+        let places = Places {
+            quests: dir.path().join("quests"),
+            scratch: dir.path().join("scratch"),
+            home: dir.path().join("home"),
+            state: dir.path().join("state"),
+        };
+        let stopped = Arc::new(AtomicBool::new(false));
+        // Hands whose close waited out all their patience.
+        let mut hands = Through::new(
+            dir.path().join("work.sock"),
+            places,
+            "QEST-20261115-HARBOR",
+            Duration::ZERO,
+        )
+        .stopping(Arc::clone(&stopped));
+        assert!(!hands.wait(), "the close has no look left");
+        let before = Instant::now();
+        hands.wait_afresh();
+        let after = Instant::now();
+        assert!(
+            hands.until >= before + ANSWERED_WITHIN && hands.until <= after + ANSWERED_WITHIN,
+            "the answer waits its own span from when it begins"
+        );
+        stopped.store(true, Ordering::Relaxed);
+        assert!(
+            !hands.wait(),
+            "and no longer once whoever carries has stopped"
+        );
+    }
+
+    #[test]
     fn a_quests_handover_is_its_machines_folder_in_the_scratch() {
         assert_eq!(
             handover(
