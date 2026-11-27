@@ -25557,11 +25557,7 @@ esac
         let added = shared
             .rooms_asked_by(RoomsAct::Add, Some(" tern ".to_owned()), "asker1")
             .await;
-        assert_eq!(
-            rooms(added),
-            ["tern"],
-            "its asker's is named one, trimmed"
-        );
+        assert_eq!(rooms(added), ["tern"], "its asker's is named one, trimmed");
         assert_eq!(
             shared.book.agent_rooms(),
             std::collections::BTreeSet::from(["tern".to_owned()]),

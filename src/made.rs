@@ -991,10 +991,7 @@ mod tests {
             "# rooms\r\nwren\ntern\n",
             "a last line with no end is given one, and the rest stand"
         );
-        assert!(
-            book.unname_room("wren").expect("taken out"),
-            "is taken out"
-        );
+        assert!(book.unname_room("wren").expect("taken out"), "is taken out");
         assert_eq!(
             fs::read_to_string(&rooms).expect("read"),
             "# rooms\r\ntern\n",
@@ -1008,8 +1005,7 @@ mod tests {
         let book = Book::at(dir.path().join("made.jsonl"));
         let elsewhere = dir.path().join("elsewhere");
         fs::write(&elsewhere, "wren\n").expect("written");
-        std::os::unix::fs::symlink(&elsewhere, dir.path().join(AGENT_ROOMS))
-            .expect("linked");
+        std::os::unix::fs::symlink(&elsewhere, dir.path().join(AGENT_ROOMS)).expect("linked");
         let refused = book.name_room("tern");
         assert!(
             refused

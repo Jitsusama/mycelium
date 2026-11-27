@@ -402,8 +402,7 @@ enum Action {
         #[arg(value_enum, default_value = "list")]
         act: StartsAsked,
     },
-    /// Lists the machines made for agents to share, or names one a room
-    /// or takes one out.
+    /// Lists the rooms agents share, or names or takes out one.
     ///
     /// The node names only a machine its own book holds as made for an
     /// agent: never the person's own, nor one another node made.
