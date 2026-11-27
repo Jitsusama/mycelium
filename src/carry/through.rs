@@ -132,9 +132,13 @@ impl Through {
     }
 
     /// Machine `to` as [`Through::linked`] knows it, refused where it is
-    /// out of reach: whether it is a worker is its link's word, which a
-    /// node opened again hasn't heard until it is in reach again, as an
-    /// eased carry's ground holds ([`ground::firm`]).
+    /// out of reach and no link has spoken of it since the node began:
+    /// whether it is a worker is its link's word, which a node opened
+    /// again hasn't heard until it is in reach again, as an eased carry's
+    /// ground holds ([`ground::firm`]). One whose link dropped after it
+    /// spoke this run is known as it was, so the carry goes on, and its
+    /// start waits for the node to dial it again. A node too old to say
+    /// what it heard refuses every machine out of reach, as before.
     fn reached(&self, to: &str) -> Result<Option<crate::facts::Machine>, String> {
         let linked = self.linked(to)?;
         if out_of_reach(linked.as_ref()) {
@@ -146,9 +150,14 @@ impl Through {
     }
 }
 
-/// Whether `linked`, as [`Through::linked`] gives it, is out of reach.
+/// Whether `linked`, as [`Through::linked`] gives it, is out of reach with
+/// no link having spoken of it since its node began, so what it is can't
+/// be told; one whose link dropped after it spoke this run is known as it
+/// was.
 fn out_of_reach(linked: Option<&crate::facts::Machine>) -> bool {
-    linked.is_some_and(|one| one.state == crate::facts::Readiness::Unreachable)
+    linked.is_some_and(|one| {
+        one.state == crate::facts::Readiness::Unreachable && !one.heard_this_run
+    })
 }
 
 impl Hands for Through {
@@ -1294,6 +1303,68 @@ mod tests {
         assert!(
             !places.given("tern", quest),
             "but given nothing, so a worker's link there is served none of it"
+        );
+    }
+
+    /// Followup 544(1): a machine whose link dropped after it spoke this
+    /// run is known as it was, worker or not, so a carry to it waits for
+    /// the node to dial it again rather than being refused.
+    #[test]
+    fn a_machine_out_of_reach_a_link_spoke_of_this_run_is_carried_as_known() {
+        use super::{Hands, Lent, Places, Through};
+        use crate::declared::Declared;
+        use crate::facts;
+        let dir = tempfile::tempdir().expect("places");
+        let places = Places {
+            quests: dir.path().join("quests"),
+            scratch: dir.path().join("scratch"),
+            home: dir.path().join("home"),
+            state: dir.path().join("state"),
+        };
+        let quest = "QEST-20261115-HARBOR";
+        fs::create_dir_all(places.record(quest)).expect("its record");
+        let notes = places.scratch.join(quest).join("handover").join("skiff");
+        fs::create_dir_all(&notes).expect("a handover");
+        fs::write(notes.join("s-busy01.done.json"), "{}").expect("a done file");
+        let dropped = |name: &str, worker: bool| facts::Machine {
+            state: facts::Readiness::Unreachable,
+            heard_this_run: true,
+            worker,
+            declared: worker.then(|| Declared {
+                takes_carries: true,
+                ..Declared::default()
+            }),
+            ..facts::measure(name, &facts::Sources::nowhere())
+        };
+        let machines = vec![
+            facts::measure("skiff", &facts::Sources::nowhere()),
+            dropped("osprey", false),
+            dropped("tern", true),
+        ];
+        let mut hands = Through::new(
+            dir.path().join("work.sock"),
+            places.clone(),
+            quest,
+            Duration::from_secs(1),
+        )
+        .asking(Box::new(move |request| match request {
+            Request::Machines => Ok(Response::Machines(machines.clone())),
+            other => Err(format!("asked {other:?}")),
+        }));
+        assert_eq!(
+            (hands.lent("osprey"), hands.lent("tern")),
+            (Ok(Lent::Not), Ok(Lent::TakesCarries)),
+            "each is what its link said before it dropped"
+        );
+        hands.share(quest, "tern").expect("given");
+        assert!(
+            places.given("tern", quest),
+            "a worker is given the quest as a worker, though out of reach"
+        );
+        hands.share(quest, "osprey").expect("shared");
+        assert!(
+            !places.given("osprey", quest),
+            "and one of the person's own is shared as theirs"
         );
     }
 

@@ -880,12 +880,15 @@ in order and says each step:
    that isn't a bundle, patch, log or done file. One that is refuses
    the carry, naming it. What a bundle or a log holds isn't read. The
    node logs each carried session started on a worker, naming it, its
-   quest and the worker. A machine gone out of reach since the find, or
-   whose node restarted and hasn't heard it since, is refused, saying
-   its sessions wait in the handover here. One gone from the node's
-   machines since the find is shared as one of the person's own,
-   unscreened, but given nothing; a worker's link serves only the
-   quests given to it, so a worker there is served none of it.
+   quest and the worker. A machine out of reach that no link has spoken
+   of since its node began (`heard_this_run`), as after a restart, is
+   refused, saying its sessions wait in the handover here; one whose
+   link dropped after it spoke this run is shared as its link said, and
+   its start waits for the link's redial, as any start does. A node too
+   old to say `heard_this_run` refuses every machine out of reach. One
+   gone from the node's machines since the find is shared as one of the
+   person's own, unscreened, but given nothing; a worker's link serves
+   only the quests given to it, so a worker there is served none of it.
 4. `start`: each carried session starts again on the machine, held:
    those told to carry first, then the quest's own, then those the find
    couldn't ask of, so a refusal the ask couldn't foresee meets no
@@ -1893,6 +1896,12 @@ promised) is weighed against the larger of `holds` and the live
 sessions known there, rather than their sum, since a held session that
 says it is one is in both. It is absent from a node too old to say,
 which counts only the sessions known.
+
+Its `heard_this_run` is `true`, in a node's answer to `"Machines"`
+alone, where a link was let in with the machine, or stood linked with
+it, since that node began, a link it keeps or one the machine dialled;
+it is absent otherwise, and from a node too old to say, and nothing
+the machine or its record says sets it.
 
 Its `fences_held` is `true` where its node starts an agent's held
 session through the launcher the session's fence declares there, as a

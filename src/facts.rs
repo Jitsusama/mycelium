@@ -45,6 +45,11 @@ impl HeldFor {
 
 /// This machine, as measured when asked.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each says on the wire what a node or link knows of a machine, apart, so an \
+              older one leaves it out and it reads as not said"
+)]
 pub struct Machine {
     /// Its name, up to its first dot.
     pub name: String,
@@ -145,6 +150,17 @@ pub struct Machine {
     /// unset.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub worker: bool,
+    /// Whether a link has spoken of it since the node answering started,
+    /// one that node keeps or one another machine dialled: let in with it,
+    /// or standing linked with it, this run ([`crate::store::last_linked`]).
+    /// Only that node's answer to `"Machines"` says it, set both ways,
+    /// never taken from what the machine says nor from its record; unset
+    /// from a node too old to say, which reads as never spoken of, and
+    /// measuring leaves it unset. A machine a link spoke of this run is
+    /// one whose worker mark the node holds, so a carry to it out of reach
+    /// waits for its link to come back rather than being refused.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub heard_this_run: bool,
     /// Whom the node deciding where work goes holds it for. Set by that
     /// node alone as it places, never taken from what the machine says;
     /// measuring leaves it [`HeldFor::AsBooked`].
@@ -464,6 +480,8 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         health: None,
         kit: None,
         worker: false,
+        // Only a node's answer for its links says it.
+        heard_this_run: false,
         held_for: HeldFor::AsBooked,
         fences_held: FENCES_HELD,
         holds: None,

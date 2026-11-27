@@ -2450,6 +2450,10 @@ fn runs_in(
 /// What the node's loop and every client share.
 struct Shared<S> {
     store: S,
+    /// When this run of the node began, in milliseconds since the epoch:
+    /// a link let in or standing since then spoke of its machine this run
+    /// ([`Shared::as_heard`]).
+    began: i64,
     machine: String,
     realm: String,
     /// The realm's folder of held sessions on this machine.
@@ -2707,6 +2711,7 @@ impl<S: Clone> Clone for Shared<S> {
     fn clone(&self) -> Self {
         Self {
             store: self.store.clone(),
+            began: self.began,
             machine: self.machine.clone(),
             realm: self.realm.clone(),
             held: self.held.clone(),
@@ -4186,6 +4191,7 @@ impl<S: Store> Shared<S> {
             .map(|places| keep_forages(places, &forages, &said, &inner, &hello.machine, &starts));
         let (held, keeping_receptors) = keep_receptors(receptors.clone(), &hello.realm, &said);
         let shared = Self {
+            began: jiff::Timestamp::now().as_millisecond(),
             processes: processes.into(),
             // Beside the carries it judges, so it needs no place of its own.
             fences: Arc::new(fences::Seen::at(carries.with_file_name("fences.json"))),
@@ -5493,6 +5499,20 @@ impl<S: Store> Shared<S> {
             .collect()
     }
 
+    /// `machines`, each other one said to be heard this run where a link
+    /// was let in with it, or last stood linked with it, since this node
+    /// began ([`store::last_linked`]): the links this node keeps and those
+    /// another machine dialled, which run apart from it and mark no worker
+    /// it can read, both keep those marks in the store. Set both ways, so
+    /// nothing a machine says of itself, or a record says of it, counts.
+    fn as_heard(&self, mut machines: Vec<facts::Machine>) -> Vec<facts::Machine> {
+        for one in machines.iter_mut().filter(|one| one.name != self.machine) {
+            one.heard_this_run =
+                store::last_linked(&self.store, &one.name).is_some_and(|at| at >= self.began);
+        }
+        machines
+    }
+
     /// `machines`, each this node booked for an agent's make marked a
     /// worker, as its link marks it ([`Shared::book_for`]), so one isn't
     /// listed as the person's own while its link is down, as it is from
@@ -5851,7 +5871,7 @@ impl<S: Store> Shared<S> {
             // A carry's hands read the realm through this, so it answers
             // each machine as a carry reads it.
             Request::Machines => Ok(Response::Machines(
-                self.with_makes_marked(self.as_carried(self.machines())),
+                self.with_makes_marked(self.as_carried(self.as_heard(self.machines()))),
             )),
             Request::Builders => Ok(Response::Builders(self.builders.builders())),
             Request::StartedBy(held) => {
@@ -27102,6 +27122,60 @@ esac
             shared.as_a_room_takes(By::Person, &naming, Admits::Asker(made::PERSON.to_owned())),
             (By::Agent(Kind::Fence), Admits::Rooms),
             "and runs there as an agent's, never through the person's own login"
+        );
+    }
+
+    // Followup 544(1): the node says which machines a link spoke of this
+    // run, a link it keeps or one another machine dialled, whose marks in
+    // the store outlast the node, so only those since it began count.
+    #[tokio::test]
+    async fn the_node_says_which_machines_a_link_spoke_of_since_it_began() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        for name in ["osprey", "kestrel", "tern"] {
+            let one = placement::tests::machine(name, "linux", 32, &["basin"]);
+            shared.store.put_machine(&one).expect("kept");
+            shared
+                .store
+                .mark_admitted(name, 0)
+                .expect("let in long ago");
+        }
+        let now = jiff::Timestamp::now().as_millisecond();
+        // osprey let in by a link this node keeps; kestrel by one another
+        // machine dialled before this node began, standing since.
+        shared.store.mark_admitted("osprey", now).expect("let in");
+        shared.store.mark_linked("kestrel", now).expect("standing");
+        let Ok(Response::Machines(machines)) = shared.answer(Request::Machines) else {
+            panic!("the node says its machines");
+        };
+        let heard: Vec<(&str, bool)> = machines
+            .iter()
+            .map(|one| (one.name.as_str(), one.heard_this_run))
+            .collect();
+        assert_eq!(
+            heard,
+            [
+                ("skiff", false),
+                ("kestrel", true),
+                ("osprey", true),
+                ("tern", false),
+            ],
+            "only a link let in or standing since the node began spoke of its machine"
+        );
+        let mut forged = placement::tests::machine("tern", "linux", 32, &["basin"]);
+        forged.heard_this_run = true;
+        shared
+            .store
+            .put_machine(&forged)
+            .expect("a session writes it");
+        let Ok(Response::Machines(machines)) = shared.answer(Request::Machines) else {
+            panic!("the node says its machines");
+        };
+        assert!(
+            machines
+                .iter()
+                .any(|one| one.name == "tern" && !one.heard_this_run),
+            "a record saying it was heard says nothing"
         );
     }
 
