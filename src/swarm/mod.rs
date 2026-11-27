@@ -342,7 +342,10 @@ fn single_spaced(lead: &str) -> String {
 /// escape, which [`Look::paint`] writes and no peer's text keeps once
 /// [`unmarked`], takes none. So it measures only text cleaned or painted
 /// here: in a peer's raw text, an escape never closed would count all
-/// that follows it as no cells.
+/// that follows it as no cells. A character of East Asian Ambiguous
+/// width, such as the tables' own U+2026 and U+00B7, counts one cell, as a
+/// terminal set for Western text draws it; one set to draw them wide,
+/// as some CJK settings do, draws a line wider than it counts.
 pub(crate) fn drawn_width(text: &str) -> usize {
     let mut count = 0;
     let mut rest = text;
@@ -361,8 +364,8 @@ pub(crate) fn drawn_width(text: &str) -> usize {
 
 /// The cells `text` takes, measured a cluster at a time, each starting at
 /// a character that takes a cell unless an emoji rule joins it to what's
-/// before: a skin tone, a flag's second letter, an emoji after a joiner
-/// that follows one. Unicode's width rules also narrow a few scripts'
+/// before: a skin tone, a flag's second letter, anything but a letter
+/// after a joiner. Unicode's width rules also narrow a few scripts'
 /// ligatures, Arabic's lam-alef, Hebrew's alef-lamed, a Khmer subscript
 /// and Tifinagh's, Lisu's, Buginese's, Old Turkic's and Kirat Rai's, to
 /// fewer cells than their letters. Terminals draw each of those letters in a
@@ -370,33 +373,28 @@ pub(crate) fn drawn_width(text: &str) -> usize {
 /// narrowing letter starts a cluster of its own here and counts.
 fn clusters(text: &str) -> usize {
     let (mut count, mut from) = (0, 0);
-    let (mut drawn, mut before): (Option<char>, Option<char>) = (None, None);
+    let mut before = None;
     for (at, each) in text.char_indices() {
-        if at > 0 && starts_a_cluster(drawn, before, each) {
+        if at > 0 && starts_a_cluster(before, each) {
             count += text[from..at].width();
             from = at;
-        }
-        if !draws_nothing(each) {
-            drawn = Some(each);
         }
         before = Some(each);
     }
     count + text[from..].width()
 }
 
-/// Whether `each` starts a cluster of its own, after `before`, where
-/// `drawn` is the last character before it that takes a cell: it takes a
+/// Whether `each` starts a cluster of its own, after `before`: it takes a
 /// cell, and no emoji rule joins it.
-fn starts_a_cluster(drawn: Option<char>, before: Option<char>, each: char) -> bool {
+fn starts_a_cluster(before: Option<char>, each: char) -> bool {
     let flag = |each: char| matches!(each, '\u{1F1E6}'..='\u{1F1FF}');
     let joins = match before {
         // A carriage return and its line feed are one.
         Some('\r') => true,
-        // Only emoji join through a joiner; a letter's ligature doesn't,
-        // on either side of it, whatever the cluster began with.
-        Some('\u{200D}') => {
-            drawn.is_some_and(|drawn| !drawn.is_alphabetic()) && !each.is_alphabetic()
-        }
+        // Only emoji join through a joiner, so a letter after one starts
+        // afresh and a ligature counts each of its letters. Unicode's
+        // widths count an emoji after a letter's joiner in full anyway.
+        Some('\u{200D}') => !each.is_alphabetic(),
         _ => matches!(each, '\u{1F3FB}'..='\u{1F3FF}') || (flag(each) && before.is_some_and(flag)),
     };
     !joins && !draws_nothing(each)
@@ -413,9 +411,9 @@ fn starts_a_cluster(drawn: Option<char>, before: Option<char>, each: char) -> bo
 pub(crate) fn within(text: &str, room: usize) -> &str {
     // A selector widens the heart before it and a joiner makes two emoji
     // one, so a start can draw wider or narrower than its characters
-    // summed. Unicode's width rules join a character to what's before it
-    // only in the cases `starts_afresh` names, so the cells up to any
-    // other are settled and only the run since is measured again: a cut
+    // summed. [`drawn_width`] counts a cluster at a time, each begun where
+    // `starts_a_cluster` says, so the cells up to any such start are
+    // settled and only the run since is measured again: a cut
     // costs what it walks, even into a pipe, where the room is the whole
     // text, which may be a peer's message of 256 KiB. A character narrows
     // the start it ends by at most a cell, by those rules: a text
@@ -428,7 +426,7 @@ pub(crate) fn within(text: &str, room: usize) -> &str {
     let mut before: Option<char> = None;
     for step in steps(text).take(most_steps(room)) {
         if let Some(each) = step.chars().next().filter(|_| !step.starts_with("\u{1b}[")) {
-            if starts_afresh(before, each) || (since >= LONGEST_RUN && splits(before, each)) {
+            if starts_a_cluster(before, each) || (since >= LONGEST_RUN && splits(before, each)) {
                 settled += drawn_width(&text[from..at]);
                 from = at;
                 since = 0;
@@ -465,23 +463,6 @@ fn steps(text: &str) -> impl Iterator<Item = &str> {
         rest = left;
         (step > 0).then_some(taken)
     })
-}
-
-/// Whether no width rule of Unicode's joins `each` to what's before it:
-/// it takes a cell of its own, isn't a modifier, a regional indicator or a
-/// letter of a script whose ligatures narrow, and follows no joiner.
-fn starts_afresh(before: Option<char>, each: char) -> bool {
-    let follows_a_joiner = matches!(before, Some('\u{200D}' | '\u{2D7F}' | '\u{17D2}' | '\r'));
-    let joins_what_is_before = matches!(
-        each,
-        // Emoji modifiers and regional indicators.
-        '\u{1F3FB}'..='\u{1F3FF}' | '\u{1F1E6}'..='\u{1F1FF}'
-        // Arabic, where an alef joins the lam before it.
-        | '\u{0600}'..='\u{08FF}' | '\u{FB50}'..='\u{FDFF}' | '\u{FE70}'..='\u{FEFF}'
-        // Lisu's tone letters, Kirat Rai's vowels and Tifinagh's joiner.
-        | '\u{A4F8}'..='\u{A4FF}' | '\u{16D40}'..='\u{16D7F}' | '\u{2D7F}'
-    );
-    !follows_a_joiner && !joins_what_is_before && !draws_nothing(each)
 }
 
 /// Whether `each` takes no cell of its own, as a selector, a joiner or a

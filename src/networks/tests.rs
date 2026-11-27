@@ -1926,6 +1926,32 @@ fn every_cell_lists_worst_first_and_one_says_its_networks() {
 }
 
 #[test]
+fn a_wide_cell_name_keeps_every_title_in_line() {
+    let [teams, mut sessions, machines] = records();
+    let asking = sessions
+        .iter_mut()
+        .find(|session| session["address"] == "ASKS01")
+        .expect("the asking session");
+    // Four characters, wider in cells than the others' six and narrower
+    // counted by character, so either way of counting shows.
+    asking["address"] = json!("港湾港湾");
+    let mycelium = Mycelium::of("work", &teams, &sessions, &machines);
+    let shown = cells(&mycelium, &look(), false, &[]);
+    // Measured by Unicode's widths directly, not by the code under test,
+    // as nothing here is coloured.
+    let at = |title: &str| {
+        shown.lines().find_map(|line| {
+            line.find(title)
+                .map(|at| <str as unicode_width::UnicodeWidthStr>::width(&line[..at]))
+        })
+    };
+    assert!(
+        at("Kelp's question").is_some() && at("Kelp's question") == at("Harbour Ships"),
+        "a wide cell name moved its title:\n{shown}"
+    );
+}
+
+#[test]
 fn a_wide_machine_name_keeps_what_follows_in_line() {
     let [teams, sessions, mut machines] = records();
     machines[1]["name"] = json!("港湾港");
@@ -2012,6 +2038,26 @@ fn drawn_whole_a_cell_s_marks_and_breaks_move_no_column() {
         ),
         clean,
         "a mark or a break in a cell's title or doing moved a column or split a block"
+    );
+}
+
+#[test]
+fn drawn_whole_a_cell_s_title_keeps_every_mark_it_was_written_with() {
+    // Into a pipe a reader that greps or saves the text has all of it,
+    // so a title is drawn as written, though a cut would take a pile of
+    // marks this long at any width.
+    let title = format!("Kelp{}", "\u{301}".repeat(100));
+    let [teams, mut sessions, machines] = records();
+    let asking = sessions
+        .iter_mut()
+        .find(|session| session["address"] == "ASKS01")
+        .expect("the asking session");
+    asking["presence"]["questInfo"]["title"] = json!(&title);
+    let mycelium = Mycelium::of("work", &teams, &sessions, &machines);
+    let shown = cells(&mycelium, &whole(), false, &[]);
+    assert!(
+        shown.contains(&title),
+        "a cell's title lost marks drawn whole:\n{shown}"
     );
 }
 

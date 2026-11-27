@@ -7,7 +7,7 @@
 use serde_json::{Value, json};
 
 use super::{
-    Look, Swarm, WHOLE, aligned, drawn_width, fit, most_steps, overview, padded, team, typed,
+    LONGEST_RUN, Look, Swarm, WHOLE, aligned, drawn_width, fit, overview, padded, team, typed,
     unmarked, within, wrapped,
 };
 
@@ -474,6 +474,49 @@ fn drawn_whole_the_counts_line_up_after_the_widest_name_and_nothing_trails() {
 }
 
 #[test]
+fn drawn_whole_a_member_s_name_keeps_every_mark_it_was_written_with() {
+    // Into a pipe a reader that greps or saves the text has all of it,
+    // so a name is drawn as written, though a cut would take a pile of
+    // marks this long at any width: a hundred steps on a name of five
+    // cells, where a cut keeps eight to each cell and one more.
+    let name = format!("Coral{}", "\u{301}".repeat(100));
+    let mut swarm = swarm();
+    let coral = swarm
+        .sessions
+        .iter_mut()
+        .find(|session| session["id"] == "s-coral")
+        .expect("Reef's one");
+    coral["title"] = json!(&name);
+    let shown = team(&swarm, "reef", &whole()).expect("Reef drawn");
+    assert!(
+        shown.contains(&name),
+        "a member's name lost marks drawn whole:\n{shown}"
+    );
+}
+
+#[test]
+fn a_wide_short_name_keeps_every_title_in_line() {
+    let mut swarm = swarm();
+    // Four characters, wider in cells than the other's four and as wide
+    // counted by character, so counting characters shows.
+    swarm.teams[0]["swarm"] = json!("港湾港湾");
+    swarm.teams[1]["swarm"] = json!("tide");
+    let shown = overview(&swarm, &look());
+    // Measured by Unicode's widths directly, not by the code under test,
+    // as nothing here is coloured.
+    let at = |title: &str| {
+        shown.lines().find_map(|line| {
+            line.find(title)
+                .map(|at| <str as unicode_width::UnicodeWidthStr>::width(&line[..at]))
+        })
+    };
+    assert!(
+        at("Reef").is_some() && at("Reef") == at("Harbour"),
+        "a wide short name moved its title:\n{shown}"
+    );
+}
+
+#[test]
 fn a_short_name_that_is_another_s_address_is_never_drawn_or_offered() {
     // Typed, it would reach the session BUSY, not Reef.
     let mut swarm = swarm();
@@ -696,7 +739,7 @@ fn drawn_whole_a_long_name_is_never_cut_and_runs_on_alone() {
         lines
             .iter()
             .filter(|line| !line.starts_with("reef"))
-            .all(|line| line.chars().count() <= 80),
+            .all(|line| drawn_width(line) <= 80),
         "one long name pushed the other rows past 80 columns:\n{shown}"
     );
 }
@@ -915,6 +958,34 @@ fn width_is_counted_in_the_cells_a_terminal_draws() {
             2,
             "a couple joined through a heart takes two",
         ),
+        (
+            "👩\u{1F3FD}\u{200D}💻",
+            2,
+            "a toned emoji joined on takes two",
+        ),
+        (
+            "🏴\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}",
+            2,
+            "a flag spelled in tags takes two",
+        ),
+        (
+            "👩\u{200D}\u{3001}",
+            4,
+            "a wide mark joined to an emoji takes its own two",
+        ),
+        (
+            "\u{263A}\u{200D}\u{1F469}",
+            3,
+            "a one-cell pictograph joined to an emoji takes its own cell beside the emoji's two",
+        ),
+        // Asked for as text, a wide emoji counts one cell, as Unicode's
+        // widths and a terminal that honours the selector draw it; one
+        // drawing each code point alone draws it two.
+        (
+            "\u{231A}\u{FE0E}",
+            1,
+            "a wide emoji asked for as text takes one",
+        ),
     ] {
         assert_eq!(drawn_width(text), wide, "{what}: {text:?}");
     }
@@ -937,6 +1008,11 @@ fn a_letter_a_ligature_joins_still_takes_its_own_cell() {
             2,
             "a Khmer letter and its subscript",
         ),
+        (
+            "\u{1781}\u{17D2}\u{1782}\u{17D2}\u{1783}",
+            3,
+            "a Khmer letter and a chain of two subscripts",
+        ),
         ("\u{A4F9}\u{A4FC}", 2, "Lisu's tone letters"),
         ("\u{10C32}\u{200D}\u{10C03}", 2, "Old Turkic's ligature"),
         ("\u{1A15}\u{1A17}\u{200D}\u{1A10}", 2, "Buginese's ligature"),
@@ -952,6 +1028,10 @@ fn a_letter_a_ligature_joins_still_takes_its_own_cell() {
             2,
             "or after a joiner alone",
         ),
+        // An emoji after a letter's joiner counts in full, as Unicode's
+        // widths count it.
+        ("\u{5D0}\u{200D}👩", 3, "an emoji after a letter's joiner"),
+        ("a\u{200D}👩", 3, "or after a Latin letter's"),
     ] {
         assert_eq!(drawn_width(text), wide, "{what}: {text:?}");
     }
@@ -1282,11 +1362,14 @@ fn a_cut_keeps_the_longest_start_that_fits_as_measured_whole() {
         "🇨🇦🇺🇸 1\u{FE0F}\u{20E3}x",
         "لا ab لآ",
         "ꓹꓼ a ⵏ\u{2D7F}ⴾ b",
+        "\u{1780}\u{17D2}\u{1780} \u{1781}\u{17D2}\u{1782}\u{17D2}\u{1783}",
         "港\u{200D}湾 e\u{301}\u{302}x",
         "a\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}b",
-        // A selector past a run of steps with no fresh start, where a cut
-        // that settled between it and its heart would count a cell less.
-        &format!("{}\u{200D}❤\u{FE0F}x", "ب".repeat(30)),
+        // A selector just past the longest run of steps with no fresh
+        // start, where a cut that settled between it and its heart would
+        // count a cell less. Arabic letters hold the run, as accents can't:
+        // a pile of them is cut at its steps to a cell first.
+        &format!("{}\u{200D}❤\u{FE0F}x", "ب".repeat(LONGEST_RUN - 2)),
     ] {
         for room in 0..36 {
             let (cut, whole) = (within(text, room), longest(text, room));
@@ -1322,7 +1405,9 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
     // at each start, cutting it takes minutes and wrapping it longer.
     // Into a pipe the room is the whole text, so neither its room nor a
     // cap on steps bounds it there.
-    let budget = Duration::from_secs(5);
+    // The budget is far under that and far over a fair cut's cost, even
+    // unoptimised on a loaded machine.
+    let budget = Duration::from_secs(30);
     // Each cut runs on a thread of its own, so one that costs what its
     // text does fails at the budget rather than holding the run for
     // hours; the test's process ends what it leaves running.
@@ -1374,24 +1459,30 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
             within(&"👩\u{200D}💻".repeat(20_000), 80).chars().count() == 40 * 3
         }),
     ];
-    let slow: Vec<String> = cases
-        .iter()
-        .filter_map(|(what, cut)| match within_budget(*cut) {
-            Ok(true) => None,
-            Ok(false) => Some(format!("{what}: cut wrong")),
+    let mut slow = Vec::new();
+    for (what, cut) in &cases {
+        match within_budget(*cut) {
+            Ok(true) => {}
+            Ok(false) => slow.push(format!("{what}: cut wrong")),
+            // Its thread spins on, so a cut timed beside it would be
+            // timed against it too: the rest aren't timed.
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                Some(format!("{what}: still cutting after {budget:?}"))
+                slow.push(format!(
+                    "{what}: still cutting after {budget:?}, so the rest weren't timed"
+                ));
+                break;
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => Some(format!("{what}: panicked")),
-        })
-        .collect();
+            Err(mpsc::RecvTimeoutError::Disconnected) => slow.push(format!("{what}: panicked")),
+        }
+    }
     assert!(
         slow.is_empty(),
         "cuts that cost what their text does: {slow:#?}"
     );
     // A name buried in marks or joiners that draw nothing measures one
     // cell, so only the cap on steps keeps it from putting them all on
-    // the line.
+    // the line: eight steps to a cell, for a room of nine and one more,
+    // and the ellipsis. Written out, so a looser cap fails here.
     for buried in [
         format!("a{}", "\u{301}".repeat(10_000)),
         format!("a{}", "\u{200D}".repeat(10_000)),
@@ -1399,7 +1490,7 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
         let kept = fit(&buried, 10);
         let count = kept.chars().count();
         assert!(
-            kept.starts_with('a') && count <= most_steps(10 - 1) + 1,
+            kept.starts_with('a') && count <= 81,
             "a pile passed a cut whole, or its name went: {count} characters kept"
         );
     }
@@ -1441,12 +1532,11 @@ fn a_pile_of_marks_on_a_later_word_is_cut_as_one_on_the_first_is() {
     // is, so a pile joined whole to the line before it would bury what
     // is beside it, as a pile on the text's first word can't.
     let wrap = wrapped(&format!("x Reef{} b", "\u{301}".repeat(10_000)), "", "", 80);
+    // Eight steps to a cell, for a line of 80 and one more, written out
+    // so a looser cap fails here.
     let marks = wrap.matches('\u{301}').count();
     assert!(
-        marks < most_steps(80)
-            && wrap.starts_with('x')
-            && wrap.contains("Reef")
-            && wrap.ends_with("b\n"),
+        marks < 648 && wrap.starts_with('x') && wrap.contains("Reef") && wrap.ends_with("b\n"),
         "a pile after a later word passed whole, or a word went: {marks} marks on {:?}",
         wrap.lines()
             .map(|line| line.chars().count())
@@ -1462,7 +1552,7 @@ fn a_pile_of_marks_on_a_later_word_is_cut_as_one_on_the_first_is() {
     );
     let most = split.lines().map(|line| line.chars().count()).max();
     assert!(
-        split.matches("Reef").count() == 16 && most.is_some_and(|most| most <= most_steps(80)),
+        split.matches("Reef").count() == 16 && most.is_some_and(|most| most <= 648),
         "piles on short words added up on a line past the cap, or a word went: {most:?}"
     );
 }

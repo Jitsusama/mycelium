@@ -1,6 +1,9 @@
 //! A reading of the realm's balance as a person reads it: a line saying
 //! the realm, a row for each machine, and a sentence for each thing wrong
 //! saying what it means and what follows.
+//!
+//! Long because its tests sit beside it, drawing the table at each width
+//! it keeps to, until they move to a file of their own.
 
 use std::fmt::Write as _;
 
@@ -302,6 +305,16 @@ fn wrapped(drawn: &str, word: &str, rest: &str, width: usize) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn wide_words_wrap_by_the_cells_they_take() {
+        // Each word takes four cells, so three after `held:` fill twenty,
+        // where counted by character five would.
+        assert_eq!(
+            wrapped("held", "held", &["港湾"; 6].join(" "), 20),
+            "held: 港湾 港湾 港湾\n      港湾 港湾 港湾\n"
+        );
+    }
+
     fn machine(name: &str, load: f64, busy: usize, per_core: f64) -> Load {
         Load {
             machine: name.to_owned(),
@@ -473,7 +486,7 @@ mod tests {
             .nth(2)
             .expect("sentences after the table");
         for line in sentences.lines() {
-            assert!(line.chars().count() <= 60, "{line:?} in:\n{shown}");
+            assert!(drawn_width(line) <= 60, "{line:?} in:\n{shown}");
         }
         assert!(
             sentences.lines().nth(1).is_some_and(
@@ -511,7 +524,7 @@ mod tests {
         let shown = said(&two(), "work", 80, false);
         let long: Vec<&str> = shown
             .lines()
-            .filter(|line| line.chars().count() > 80)
+            .filter(|line| drawn_width(line) > 80)
             .collect();
         assert!(long.is_empty(), "lines past 80 columns: {long:?}\n{shown}");
         let lines: Vec<&str> = shown.lines().collect();
@@ -654,7 +667,7 @@ mod tests {
         let shown = said(&two(), "work", 40, false);
         let long: Vec<&str> = shown
             .lines()
-            .filter(|line| line.chars().count() > 40)
+            .filter(|line| drawn_width(line) > 40)
             .collect();
         assert!(long.is_empty(), "lines past 40 columns: {long:?}\n{shown}");
         let lines: Vec<&str> = shown.lines().collect();

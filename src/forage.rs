@@ -434,9 +434,10 @@ pub fn addresses(said: &Value) -> Vec<String> {
 /// The joins `said` lists, as a presence's `serves` or `relies` does,
 /// passing over each entry that names no cell by address, says no need
 /// but blanks, or dates it at no ISO time, and keeping at most
-/// [`LISTED_MOST`]. Each need is kept as [`one_line`] says it, trimmed,
-/// and each time as the node reads it, so two presences dating a join
-/// alike say it alike.
+/// [`LISTED_MOST`]. Each need is kept as [`one_line`] says it, trimmed
+/// and cut, then cleaned again, as a share's `for` is, so a cut leaves
+/// no joiner joining nothing and no space at its end; and each time as
+/// the node reads it, so two presences dating a join alike say it alike.
 #[must_use]
 pub fn joins(said: &Value) -> Vec<Join> {
     said.as_array()
@@ -444,12 +445,17 @@ pub fn joins(said: &Value) -> Vec<Join> {
         .flatten()
         .filter_map(|join| {
             let cell = join["cell"].as_str().filter(|cell| is_address(cell))?;
-            let need = one_line(join["need"].as_str()?);
+            let cut: String = one_line(join["need"].as_str()?)
+                .trim()
+                .chars()
+                .take(LONGEST_PURPOSE)
+                .collect();
+            let need = one_line(&cut);
             let need = Some(need.trim()).filter(|need| !need.is_empty())?;
             let since = join["since"].as_str()?.parse::<jiff::Timestamp>().ok()?;
             Some(Join {
                 cell: cell.to_owned(),
-                need: need.chars().take(LONGEST_PURPOSE).collect(),
+                need: need.to_owned(),
                 since: since.to_string(),
             })
         })
@@ -1379,7 +1385,10 @@ pub fn chosen(records: Vec<Value>, named: Option<&str>) -> Vec<Value> {
 /// can. Each is judged by what is left once direction marks and controls
 /// are gone, in one pass, so no mark beside it can vouch for it. A run of
 /// emoji keeps at most [`MOST_JOINED`] joiners, so a name chained from
-/// dozens can't count as the two cells one emoji takes.
+/// dozens can't count as the two cells one emoji takes; a joiner before a
+/// letter, as in Devanagari's half forms or Sinhala's yansaya, joins no
+/// emoji, since the swarm's measure gives that letter a cell of its own,
+/// so it is never counted.
 pub(crate) fn one_line(text: &str) -> String {
     let plain: Vec<char> = text
         .chars()
@@ -1400,22 +1409,25 @@ pub(crate) fn one_line(text: &str) -> String {
     // though a spacing mark can where unicode-width gives it a cell (not
     // one extending a grapheme), nor can any regional indicator, paired
     // as a flag or not, a flag's second half following its first rather
-    // than a joiner. A non-joiner is never counted, as it joins no emoji.
+    // than a joiner. A non-joiner is never counted, nor a joiner before a
+    // letter, as neither joins an emoji.
     let mut joined = 0;
     for (at, &each) in plain.iter().enumerate() {
         let before = kept.last().copied();
+        let after = plain.get(at + 1).copied();
+        let counted = each == '\u{200D}' && !after.is_some_and(char::is_alphabetic);
         let keep = match each {
             '\u{200C}' | '\u{200D}' => {
                 before.is_some_and(|before| spells(before) || selects(before))
-                    && plain.get(at + 1).is_some_and(|after| spells(*after))
-                    && (each == '\u{200C}' || joined < MOST_JOINED)
+                    && after.is_some_and(spells)
+                    && (!counted || joined < MOST_JOINED)
             }
             each if selects(each) => before.is_some_and(spells),
             each => !unseen(each),
         };
         if keep {
             kept.push(each);
-            if each == '\u{200D}' {
+            if counted {
                 joined += 1;
             } else if before != Some('\u{200D}')
                 && !selects(each)
@@ -1434,11 +1446,12 @@ pub(crate) fn one_line(text: &str) -> String {
 /// four, or a kiss between two with their skin tones. A terminal draws
 /// only a sequence it knows as one glyph, yet Unicode's widths count a
 /// joined run of any length as two cells. This bounds that, not closes
-/// it: four emoji joined as no sequence is still count two cells and draw
+/// it: four emoji joined as no sequence still count two cells and draw
 /// eight, so a chain of them draws at most four times what it counts.
-/// A chain of Khmer subscripts (coeng, U+17D2) isn't capped: Unicode's
-/// widths count it as one cell, which a terminal drawing per code point
-/// draws wider; capping it as emoji chains are is still to do.
+/// A chain of Khmer subscripts (coeng, U+17D2) needs no cap: Unicode's
+/// widths count it as one cell, but the swarm's measure counts each
+/// subscript letter a cell of its own, as a terminal drawing per code
+/// point does.
 const MOST_JOINED: usize = 3;
 
 /// Whether `each` is an emoji modifier, a skin tone, which is drawn as
@@ -2446,6 +2459,24 @@ mod tests {
     }
 
     #[test]
+    fn a_need_cut_beside_a_joiner_or_a_space_ends_on_neither() {
+        let letters = "\u{915}".repeat(LONGEST_PURPOSE - 1);
+        let joins = joins(&json!([
+            {"cell": "OSPREY", "need": format!("{letters}\u{200D}\u{915}"), "since": "2026-11-16T09:00:00Z"},
+            {"cell": "TERNSS", "need": format!("{} y", "x".repeat(LONGEST_PURPOSE - 1)), "since": "2026-11-16T09:00:00Z"},
+        ]));
+        assert_eq!(
+            joins[0].need, letters,
+            "a joiner the cut parts from its letter joins nothing, so it goes"
+        );
+        assert_eq!(
+            joins[1].need,
+            "x".repeat(LONGEST_PURPOSE - 1),
+            "a space the cut leaves at the end goes"
+        );
+    }
+
+    #[test]
     fn an_unchanged_document_is_not_read_again() {
         let store = Store::new("unchanged");
         store.write("QEST-20261116-KESTRL/README.md", README);
@@ -2720,7 +2751,9 @@ mod tests {
             "KESTRL  on kestrel  QEST-1\n  Kestrel learns to hover over one\n  field.\n  plan  build  2 of 4 ticked     Hover…\n"
         );
         assert!(
-            drawn.lines().all(|line| line.chars().count() <= 40),
+            drawn
+                .lines()
+                .all(|line| crate::swarm::drawn_width(line) <= 40),
             "no line passes the terminal's width"
         );
     }
@@ -2942,7 +2975,9 @@ mod tests {
         let drawn = draw(std::slice::from_ref(&cell), Some("KESTRL"), 12);
         assert!(
             drawn.contains("\n  abcd abcd\n  \u{2026}\n")
-                && drawn.lines().all(|line| line.chars().count() <= 12),
+                && drawn
+                    .lines()
+                    .all(|line| crate::swarm::drawn_width(line) <= 12),
             "the mark didn't take a line of its own: {drawn}"
         );
     }
@@ -3652,6 +3687,29 @@ mod tests {
             one_line(&joined(7)),
             format!("{}{}", joined(4), joined(3)),
             "a joiner past three in a run was kept"
+        );
+    }
+
+    #[test]
+    fn a_joiner_before_a_letter_joins_no_emoji_so_is_never_counted() {
+        // Four of Devanagari's half forms, each a consonant, a virama and
+        // a joiner, before a last consonant, and a chain of four of
+        // Sinhala's yansaya, each a virama and a joiner before ya.
+        let half_forms = format!("{}\u{915}", "\u{915}\u{94D}\u{200D}".repeat(4));
+        let yansaya = "\u{D9A}\u{DCA}\u{200D}\u{DBA}\u{DCA}\u{200D}\u{DBA}\u{DCA}\u{200D}\u{DBA}\u{DCA}\u{200D}\u{DBA}";
+        for spelt in [half_forms.as_str(), yansaya] {
+            assert_eq!(
+                one_line(spelt),
+                spelt,
+                "a joiner before a letter was capped"
+            );
+        }
+        let (woman, joiner, letter) = ("\u{1F469}", "\u{200D}", "\u{E9}");
+        let said = format!("{}{joiner}{letter}{joiner}{woman}", [woman; 4].join(joiner));
+        assert_eq!(
+            one_line(&said),
+            format!("{}{joiner}{letter}{woman}", [woman; 4].join(joiner)),
+            "the joiner before a letter went, or the letter began the emoji's count afresh"
         );
     }
 
