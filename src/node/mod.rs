@@ -71,6 +71,7 @@ mod viewed;
 pub use cell::{KIND as CELL_KIND, records as cell_records};
 mod crossing;
 mod ended;
+mod enters;
 mod feeding;
 mod fences;
 mod formed;
@@ -887,15 +888,17 @@ fn past_quoted(quoted: &str) -> Option<&str> {
 /// `folder`, was raised before anything began: placed elsewhere or not
 /// taken now ([`Shared::here`]), or unable to begin it, lacking a
 /// launcher for its fence, a starter, a home, its folder or leave to
-/// begin at home ([`start::begins_strictly`]), or a reopening of a
-/// session that never ended there ([`Shared::reopened_here`]), so has no
-/// log there. Each is matched whole from its start, so words a refusal
-/// only quotes never match.
+/// begin at home ([`start::begins_strictly`]) or in a folder its
+/// launcher's account can't enter ([`Shared::enterable`]), or a
+/// reopening of a session that never ended there
+/// ([`Shared::reopened_here`]), so has no log there. Each is matched
+/// whole from its start, so words a refusal only quotes never match.
 fn began_nothing_here(why: &str, machine: &str, folder: Option<&Path>) -> bool {
     let opens = [
         RELAYED_ELSEWHERE.to_owned(),
         format!("{machine}{DECLINED_NOW}"),
         format!("{machine}{LAUNCHER_REFUSED}"),
+        format!("{machine}{}", enters::CANT_BEGIN_IN),
     ];
     let whole = [
         format!("{machine}{STARTS_NO_SESSIONS}"),
@@ -1394,7 +1397,7 @@ where
     // is missing, costs only the workers' sessions, said as it fails: the
     // node runs on for its own, rather than leaving the machine with no
     // node at all.
-    let (serving, workers) = match serve_workers(given.worker.take()) {
+    let (serving, workers) = match serve_workers(given.worker.clone()) {
         Ok(served) => served.unzip(),
         Err(said) => {
             eprintln!("{said}");
@@ -2486,6 +2489,10 @@ struct Shared<S> {
     lender: Option<Arc<crate::lend::lender::Lender>>,
     /// The gates this machine answers its workers, if it answers any.
     gates: Option<Arc<crate::gate::Gates>>,
+    /// The account its fences' launchers run what it starts as, where it
+    /// is another than the node's own, as a worker machine's is
+    /// (`worker`); none otherwise, and then no folder is judged for it.
+    launches_as: Option<u32>,
     /// The ids of the signals this node said as its receptors this run,
     /// the only messages from a receptor's name it takes (`signals`).
     spoken: Arc<Mutex<HashSet<String>>>,
@@ -2655,6 +2662,7 @@ impl<S: Clone> Clone for Shared<S> {
             lends_from: self.lends_from.clone(),
             lender: self.lender.clone(),
             gates: self.gates.clone(),
+            launches_as: self.launches_as,
             spoken: Arc::clone(&self.spoken),
             refused: Arc::clone(&self.refused),
             receptors_at: self.receptors_at.clone(),
@@ -4042,8 +4050,8 @@ impl<S: Store> Shared<S> {
             settles,
             lends_from,
             lend,
-            // Bound and served by `run` alone.
-            worker: _,
+            // Bound and served by `run` alone; only its account is kept.
+            worker,
             gates,
         } = given;
         let lender = lend.map(|file| {
@@ -4124,6 +4132,9 @@ impl<S: Store> Shared<S> {
             lends_from: lends_from.map(Into::into),
             lender,
             gates,
+            launches_as: worker
+                .map(|worker| worker.uid)
+                .filter(|uid| *uid != rustix::process::geteuid().as_raw()),
             spoken: Arc::default(),
             refused: Arc::default(),
             receptors_at: receptors,
@@ -9965,7 +9976,11 @@ impl<S: Store> Shared<S> {
             && !declared
                 .as_ref()
                 .is_some_and(|declared| declared.pi_fences_itself);
+        // Whether it runs within the launcher this machine declares, which
+        // may run it as another account than the node's.
+        let mut launched = false;
         let within = held_within(fences, fence, (&asked.command, &agent), |kind| {
+            launched = true;
             crate::declared::launcher(&self.declared, kind, &self.runs.declarers)
                 .map_err(|why| format!("{machine}{LAUNCHER_REFUSED}{kind}: {why}"))
         })?;
@@ -9981,6 +9996,9 @@ impl<S: Store> Shared<S> {
             &home,
             &machine,
         )?;
+        if launched {
+            self.enterable(&machine, &folder)?;
+        }
         let realm = self.realm.clone();
         let begins = folder.clone();
         let command = asked.command;
@@ -10005,13 +10023,19 @@ impl<S: Store> Shared<S> {
     /// run an agent asked from another machine stands in a work tree here
     /// only where that tree's quests are shared with it, as this node finds
     /// the folder, never as the ask says, and it enters the very folder
-    /// found.
+    /// found. An agent's run, which goes through its fence's launcher, is
+    /// refused a folder that launcher's account can't enter
+    /// ([`Self::enterable`]).
     async fn ground(
         &self,
         folder: PathBuf,
         by: By,
         far: Option<&str>,
     ) -> Result<(run::Folder, Option<spares::Ground>), String> {
+        if let By::Agent(_) = by {
+            self.enterable(&self.machine, &folder)
+                .inspect_err(|why| refused(why))?;
+        }
         let (By::Agent(_), Some(far)) = (by, far) else {
             return Ok((run::Folder::At(folder), None));
         };
@@ -10025,6 +10049,23 @@ impl<S: Store> Shared<S> {
         .inspect_err(|why| refused(why))?;
         let (folder, ground) = footing.entered();
         Ok((folder, Some(ground)))
+    }
+
+    /// Refuses what would begin in `folder` on `machine`, this one, through
+    /// a fence's launcher that runs it as an account other than the
+    /// node's (`launches_as`), where that account can't enter the folder
+    /// or one on its way there, naming the first that stops it, since
+    /// begun there it could only fail. Where the launcher runs it as the
+    /// node's own account, or that account's groups are unknown, any
+    /// folder passes, as before.
+    fn enterable(&self, machine: &str, folder: &Path) -> Result<(), String> {
+        let Some(account) = self.launches_as.and_then(enters::Account::of) else {
+            return Ok(());
+        };
+        match account.first_barred(folder) {
+            Some(barred) => Err(account.refusal(machine, folder, &barred)),
+            None => Ok(()),
+        }
     }
 
     /// Why the run `asked`, asking as `by`, goes nowhere, every machine
@@ -27699,6 +27740,66 @@ esac
         );
     }
 
+    // On a worker machine a fence's launcher runs a start as the worker's
+    // account, and pi-fence there couldn't begin in a folder that account
+    // can't enter, failing each minute with "spawn bash EACCES": the node
+    // refuses it first, saying why, and so as having begun nothing.
+    #[tokio::test]
+    async fn a_start_in_a_folder_its_launchers_account_cant_enter_is_refused_first() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let mut link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        runs_commands(&mut link, dir.path());
+        // The node's own process relays, as a linked node's does.
+        link.client = i32::try_from(std::process::id()).ok();
+        link.fences_held = true;
+        // Its own account, which no test can change, stands in for the
+        // worker's: a folder it can't search stops it as another would.
+        link.launches_as = Some(rustix::process::geteuid().as_raw());
+        let closed = dir.path().join("closed");
+        fs::create_dir(&closed).expect("made");
+        fs::set_permissions(&closed, fs::Permissions::from_mode(0o600)).expect("closed");
+        let asked = |folder: &Path| Start {
+            work: Work {
+                fence: Some(DeclaredFence {
+                    kind: FenceKind::Strict,
+                    from: FenceFrom::Default,
+                }),
+                ..work(vec![Need::Machine("skiff".to_owned())])
+            },
+            folder: Some(folder.to_owned()),
+            strict: false,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let Err(why) = link.relayed("tern", asked(&closed)).await else {
+            panic!("a start where its launcher's account can't enter is refused");
+        };
+        let resolved = closed.canonicalize().expect("it resolves");
+        assert!(
+            why.starts_with(&format!(
+                "skiff{}{}, since its launcher runs it as account ",
+                enters::CANT_BEGIN_IN,
+                closed.display()
+            )) && why.contains(&format!("can't enter {};", resolved.display()))
+                && why.ends_with("ask for `--folder /` or a folder that account owns"),
+            "naming the folder, the account and what stops it: {why}"
+        );
+        assert!(
+            began_nothing_here(&why, "skiff", Some(&closed)),
+            "and as having begun nothing: {why}"
+        );
+        link.relayed("tern", asked(dir.path()))
+            .await
+            .expect("a folder its account enters starts as ever");
+        link.launches_as = None;
+        link.relayed("tern", asked(&closed))
+            .await
+            .expect("and where the launcher runs it as the node's account, nothing is judged");
+    }
+
     #[test]
     fn a_start_sent_on_declares_at_least_the_fence_it_was_placed_in() {
         use crate::declared::Kind;
@@ -29092,6 +29193,17 @@ esac
                 None,
                 true,
                 "wren's node would place it elsewhere",
+            ),
+            (
+                said(format!(
+                    "wren{}{}, since its launcher runs it as account 1001, which can't enter \
+                     /home/kestrel; ask for `--folder /` or a folder that account owns",
+                    enters::CANT_BEGIN_IN,
+                    folder.display()
+                )),
+                None,
+                true,
+                "wren's launcher can't enter its folder",
             ),
             (
                 said("its program failed".to_owned()),

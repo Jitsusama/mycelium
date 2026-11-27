@@ -2348,8 +2348,23 @@ begins in its home as ever. `strict` is false where it
 isn't said and isn't written when false, so a node, or a link's end,
 from before it reads the start as ever, dropping `strict`, and it
 begins in that machine's home; a sprout's command then ends itself
-there ten seconds on, saying that machine has no such folder. The
-answer is the `machine`, the `held`
+there ten seconds on, saying that machine has no such folder.
+Where that machine's node is given a worker account other than its
+own (`--worker-uid`, The Worker Socket), the launcher of a start's
+fence runs it as that account, so one within that launcher is refused
+too, before anything starts, where that account can't enter its
+folder: each folder from `/` down to it must let the account search
+it, by its owner's bits where the account owns it, by its group's
+where its group is the account's primary group or one naming it in
+`/etc/group`, and else by everyone's. The refusal names the folder,
+the account and the first folder that stops it, as `` tern can't begin
+this in /home/kestrel/src, since its launcher runs it as account 1001
+(worker), which can't enter /home/kestrel; ask for `--folder /` or a
+folder that account owns ``. An account its machine's records don't
+hold is never judged so, since its groups are unknown, and a node
+given no worker account, or its own, judges no folder. An agent's
+`"Run"` there is held to the same.
+The answer is the `machine`, the `held`
 id, the `folder` it began in, and `attach`, the words that join it from
 a terminal on the asking machine, to be run as given. A start that
 isn't placed, or doesn't start, is an error saying why, such as
