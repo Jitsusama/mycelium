@@ -1371,7 +1371,9 @@ pub fn chosen(records: Vec<Value>, named: Option<&str>) -> Vec<Value> {
 /// read alike or carry what nobody sees. Kept there, one can still part
 /// two names past ASCII that read alike, as a letter from another script
 /// can. Each is judged by what is left once direction marks and controls
-/// are gone, in one pass, so no mark beside it can vouch for it.
+/// are gone, in one pass, so no mark beside it can vouch for it. A run of
+/// emoji keeps at most [`MOST_JOINED`] joiners, so a name chained from
+/// dozens can't count as the two cells one emoji takes.
 pub(crate) fn one_line(text: &str) -> String {
     let plain: Vec<char> = text
         .chars()
@@ -1385,21 +1387,58 @@ pub(crate) fn one_line(text: &str) -> String {
         })
         .collect();
     let mut kept: Vec<char> = Vec::with_capacity(plain.len());
+    // The zero-width joiners kept in the run at hand, counted from the
+    // text's start, which a character that follows none, takes a cell of
+    // its own by unicode-width and neither selects nor modifies ends, so
+    // a nonspacing mark between emoji can't start the count afresh,
+    // though a spacing mark can where unicode-width gives it a cell (not
+    // one extending a grapheme), nor can any regional indicator, paired
+    // as a flag or not, a flag's second half following its first rather
+    // than a joiner. A non-joiner is never counted, as it joins no emoji.
+    let mut joined = 0;
     for (at, &each) in plain.iter().enumerate() {
         let before = kept.last().copied();
         let keep = match each {
             '\u{200C}' | '\u{200D}' => {
                 before.is_some_and(|before| spells(before) || selects(before))
                     && plain.get(at + 1).is_some_and(|after| spells(*after))
+                    && (each == '\u{200C}' || joined < MOST_JOINED)
             }
             each if selects(each) => before.is_some_and(spells),
             each => !unseen(each),
         };
         if keep {
             kept.push(each);
+            if each == '\u{200D}' {
+                joined += 1;
+            } else if before != Some('\u{200D}')
+                && !selects(each)
+                && !modifies(each)
+                && !matches!(each, '\u{1F1E6}'..='\u{1F1FF}')
+                && unicode_width::UnicodeWidthChar::width(each).is_some_and(|cells| cells > 0)
+            {
+                joined = 0;
+            }
         }
     }
     kept.into_iter().collect()
+}
+
+/// The most joiners in one of Unicode's emoji sequences, as in a family of
+/// four, or a kiss between two with their skin tones. A terminal draws
+/// only a sequence it knows as one glyph, yet Unicode's widths count a
+/// joined run of any length as two cells. This bounds that, not closes
+/// it: four emoji joined as no sequence is still count two cells and draw
+/// eight, so a chain of them draws at most four times what it counts.
+/// A chain of Khmer subscripts (coeng, U+17D2) isn't capped: Unicode's
+/// widths count it as one cell, which a terminal drawing per code point
+/// draws wider; capping it as emoji chains are is still to do.
+const MOST_JOINED: usize = 3;
+
+/// Whether `each` is an emoji modifier, a skin tone, which is drawn as
+/// part of the emoji before it.
+const fn modifies(each: char) -> bool {
+    matches!(each, '\u{1F3FB}'..='\u{1F3FF}')
 }
 
 /// Whether `each` is one of Unicode's marks that turn the direction text
@@ -1496,7 +1535,7 @@ fn read_cut(purpose: &str) -> Option<&str> {
 /// drawn `whole`; a purpose cut there, or read already cut at its length,
 /// ends in one ellipsis after a whole word.
 fn purpose_drawn(said: &str, width: usize, whole: bool) -> String {
-    use crate::swarm::wrapped;
+    use crate::swarm::{drawn_width, within, wrapped};
     // Judged as its node counted it, before the marks one_line drops.
     let length = read_cut(said).map(|kept| kept.chars().count());
     let cleaned = one_line(said);
@@ -1523,7 +1562,7 @@ fn purpose_drawn(said: &str, width: usize, whole: bool) -> String {
         return drawn;
     }
     let mut kept: Vec<String> = drawn.lines().take(most).map(str::to_owned).collect();
-    let holds_the_mark = |line: &str| line.chars().count() + 2 <= width;
+    let holds_the_mark = |line: &str| drawn_width(line) + 2 <= width;
     // Drawn whole, every word read stays, so a mark with no room left on
     // the last line takes one of its own.
     if whole && kept.last().is_some_and(|last| !holds_the_mark(last)) {
@@ -1533,7 +1572,7 @@ fn purpose_drawn(said: &str, width: usize, whole: bool) -> String {
             if let Some(at) = last.trim_end().rfind(' ').filter(|at| *at > 2) {
                 last.truncate(at);
             } else {
-                *last = last.chars().take(width.saturating_sub(2)).collect();
+                *last = within(last, width.saturating_sub(2)).to_owned();
                 break;
             }
         }
@@ -1564,7 +1603,7 @@ fn closed(document: &Value) -> bool {
 /// its row would pass `width`. Unless drawn `whole`, the closed ones are
 /// counted in a line of their own, saying how `cell`'s are listed.
 fn documents_drawn(documents: &[Value], cell: &str, whole: bool, width: usize) -> String {
-    use crate::swarm::{fit, wrapped};
+    use crate::swarm::{drawn_width, fit, padded, wrapped};
     if documents.is_empty() {
         return wrapped("No research, plans or reports yet.", "  ", "  ", width);
     }
@@ -1574,16 +1613,17 @@ fn documents_drawn(documents: &[Value], cell: &str, whole: bool, width: usize) -
         .filter(|each| whole || !closed(each))
         .collect();
     // Padded to the longest, up to a stage's length, so one long kind or
-    // stage, uncut into a pipe, makes its own row long and no other.
-    let padded = |field: &str| {
+    // stage, uncut into a pipe, makes its own row long and no other. A
+    // peer writes both, so each is counted in the cells it draws.
+    let widest = |field: &str| {
         shown
             .iter()
-            .map(|each| text(&each[field]).len())
+            .map(|each| drawn_width(&text(&each[field])))
             .max()
             .unwrap_or(0)
             .min(PADDED_MOST)
     };
-    let (kinds, stages) = (padded("kind"), padded("stage"));
+    let (kinds, stages) = (widest("kind"), widest("stage"));
     let mut drawn = String::new();
     for document in &shown {
         let (ticked, open) = (
@@ -1596,9 +1636,9 @@ fn documents_drawn(documents: &[Value], cell: &str, whole: bool, width: usize) -
             format!("{ticked} of {} ticked", ticked + open)
         };
         let row = format!(
-            "  {:kinds$}  {:stages$}  {steps:<16}  {}",
-            text(&document["kind"]),
-            text(&document["stage"]),
+            "  {}  {}  {steps:<16}  {}",
+            padded(&text(&document["kind"]), kinds),
+            padded(&text(&document["stage"]), stages),
             text(&document["title"]),
         );
         // Writing to a String never fails.
@@ -2944,6 +2984,37 @@ mod tests {
     }
 
     #[test]
+    fn a_wide_kind_or_stage_keeps_the_titles_in_line() {
+        let mut cell = forage("KESTRL", "kestrel", "QEST-1");
+        cell["documents"] = json!([
+            {"kind": "調査", "title": "Hover", "stage": "計画", "ticked": 2, "open": 2},
+            {"kind": "plan", "title": "Wind", "stage": "build", "ticked": 1, "open": 1},
+        ]);
+        // Both wide fields share a row, so a miscount in one can't be
+        // made up by the other's in the next row.
+        let drawn = draw(&[cell], None, 80);
+        // Measured by Unicode's widths directly, not by the code under
+        // test, as nothing here is coloured.
+        let cells = <str as unicode_width::UnicodeWidthStr>::width;
+        let at = |title: &str| {
+            drawn
+                .lines()
+                .find_map(|line| line.find(title).map(|at| cells(&line[..at])))
+        };
+        assert!(
+            at("Hover").is_some() && at("Hover") == at("Wind"),
+            "a wide kind or stage moved its title out of line:\n{drawn}"
+        );
+        // Two, the kinds' 4 cells, two, the stages' 5, two, the steps'
+        // 16 and two: counted in bytes, the kinds and stages take 6 each.
+        assert_eq!(
+            at("Hover"),
+            Some(33),
+            "the kind and stage columns were not as wide as they draw:\n{drawn}"
+        );
+    }
+
+    #[test]
     fn into_a_pipe_nothing_is_cut_or_counted() {
         let purpose = "Kestrel hovers over the field ".repeat(10);
         let mut cell = forage("KESTRL", "kestrel", "QEST-1");
@@ -3555,6 +3626,27 @@ mod tests {
         ] {
             assert_eq!(one_line(spelt), spelt, "a joiner past ASCII was dropped");
         }
+    }
+
+    #[test]
+    fn a_run_of_joined_emoji_keeps_no_more_joiners_than_unicode_s_longest() {
+        let woman = "\u{1F469}";
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
+        let kiss =
+            "\u{1F469}\u{1F3FB}\u{200D}\u{2764}\u{FE0F}\u{200D}\u{1F48B}\u{200D}\u{1F468}\u{1F3FC}";
+        for whole in [family, kiss, &format!("{family}{family}")] {
+            assert_eq!(
+                one_line(whole),
+                whole,
+                "a sequence Unicode names lost a joiner"
+            );
+        }
+        let joined = |count: usize| vec![woman; count].join("\u{200D}");
+        assert_eq!(
+            one_line(&joined(7)),
+            format!("{}{}", joined(4), joined(3)),
+            "a joiner past three in a run was kept"
+        );
     }
 
     #[test]
