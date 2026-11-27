@@ -649,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn a_quest_forgotten_while_a_folder_and_its_record_are_stale_gives_both_back() {
+    fn a_quest_forgotten_while_a_folder_and_its_record_are_stale_gives_all_back_at_once() {
         use std::sync::atomic::Ordering;
 
         use crate::watching::counting::Counting;
@@ -689,9 +689,15 @@ mod tests {
             .watched_paths()
             .expect("its paths listed");
         assert_eq!(
-            held.len(),
-            3,
-            "stale or not, the watcher holds both folders and the record: {held:?}"
+            held.into_iter()
+                .map(|(path, _)| path)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                scratch.join(QUEST).join("bench"),
+                scratch.join(QUEST).join("notes"),
+                records.join(QUEST),
+            ]),
+            "stale or not, the watcher holds both folders and the record"
         );
 
         let before = starts.load(Ordering::SeqCst);
