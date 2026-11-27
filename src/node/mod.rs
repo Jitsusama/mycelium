@@ -1247,12 +1247,26 @@ impl<S: Store> Shared<S> {
     /// The machine this node made that `work` needs, where it needs one,
     /// so a start placed by it lands there alone and counts toward that
     /// machine's number rather than this node's ([`starts::Kept::toward`]).
+    /// Never this machine, though a provider named one it made so, since a
+    /// start landing here is this node's to count.
     fn made_it_needs(&self, work: &Work) -> Option<String> {
         work.needs.iter().find_map(|need| match need {
-            Need::Machine(machine) if self.was_made(machine) => Some(machine.clone()),
+            Need::Machine(machine) if *machine != self.machine && self.was_made(machine) => {
+                Some(machine.clone())
+            }
             _ => None,
         })
     }
+}
+
+/// `work` as it is asked of `machine`, made for it: a fresh machine, so
+/// its start there needs no fresh one, which would make another, and
+/// lands on that machine alone.
+fn pinned_to_made(work: &Work, machine: &str) -> Work {
+    let mut there = work.clone();
+    there.needs.retain(|need| *need != Need::Fresh);
+    there.needs.push(Need::Machine(machine.to_owned()));
+    there
 }
 
 /// The kinds the node holds itself in the daemon interface, which no
@@ -9468,10 +9482,7 @@ impl<S: Store> Shared<S> {
                     LINKED_WITHIN.as_secs()
                 )
             })?;
-        let mut there = asked.work.clone();
-        // Made for it, so a fresh machine; once made, no machine is one.
-        there.needs.retain(|need| *need != Need::Fresh);
-        there.needs.push(Need::Machine(made.machine.clone()));
+        let there = pinned_to_made(&asked.work, &made.machine);
         // Pinned to the machine made for it, which is booked for its asker.
         match self.place(
             &there,
@@ -29235,6 +29246,8 @@ esac
         let agent = By::Agent(crate::declared::Kind::Fence);
         for (by, work, may) in [
             (By::Person, work(vec![Need::Cloud]), true),
+            (By::Person, work(vec![Need::Fresh]), true),
+            (agent, work(vec![Need::Fresh]), false),
             (
                 By::Person,
                 work(vec![Need::Machine("kestrel".into())]),
@@ -29252,6 +29265,16 @@ esac
                 work.needs
             );
         }
+    }
+
+    #[test]
+    fn a_start_on_the_machine_made_for_it_needs_no_fresh_one() {
+        let asked = work(vec![Need::Fresh, Need::System("linux".into())]);
+        assert_eq!(
+            pinned_to_made(&asked, "harbour").needs,
+            vec![Need::System("linux".into()), Need::Machine("harbour".into())],
+            "made fresh for it, it lands there alone and makes no other"
+        );
     }
 
     #[tokio::test]

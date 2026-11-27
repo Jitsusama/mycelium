@@ -865,9 +865,15 @@ impl Store for Folders {
                         // new one: told as one, every link would send the
                         // hour's moved messages again, as on 27 November,
                         // when each of a room's hourly moves sent about
-                        // 1,100 to the node that already held them.
+                        // 1,100 to the node that already held them. Only
+                        // one gone is, so a message a failing read can't
+                        // judge is still told.
                         if path.parent() == Some(messages.as_path()) {
-                            fs::symlink_metadata(path).ok()?;
+                            if fs::symlink_metadata(path)
+                                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+                            {
+                                return None;
+                            }
                             Some(Change::Message(path.file_stem()?.to_str()?.to_owned()))
                         } else if path.parent() == Some(presence.as_path())
                             || path.parent() == Some(leases.as_path())
@@ -2727,7 +2733,7 @@ mod tests {
         while next_message().await != ready {}
 
         // The mesh moves a message six hours old as this does.
-        let day = store.messages().join("2026-10-19");
+        let day = store.messages().join("2026-10-22");
         fs::create_dir(&day).expect("its day's folder");
         let name = format!("{old}.json");
         let top = store.messages().join(&name);

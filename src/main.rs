@@ -3813,7 +3813,7 @@ mod tests {
     };
 
     #[test]
-    fn the_cloud_is_a_need_with_no_value() {
+    fn the_cloud_and_fresh_are_needs_with_no_value() {
         use mycelium::placement::Need;
         assert_eq!(need("cloud"), Ok(Need::Cloud));
         assert_eq!(need("fresh"), Ok(Need::Fresh));

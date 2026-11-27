@@ -2607,16 +2607,21 @@ instead. In any hour a cell starts at most 8
 and every agent together at most 32, and one past either is refused,
 saying which. A claim proves nothing, so the 8 are a cell's fair
 share, and the 32, with the ended sessions below, the bound no agent
-gets round. A start placed needing a machine the node made, as its
-book of machines made stands, counts toward that machine's own 32
-instead of the node's, since it runs nothing here and the made
-machine's places bound how many it holds at once; it still counts
-toward its cell's 8. A start counts whether it started or failed,
-since a failed one may still have spent, and so does one still starting, so starts asked at
-once can't pass the limit; a refused one doesn't, nor one relayed to
-the node and refused there before anything began: placed elsewhere,
-not taken now, or not to be begun for want of a launcher, a starter,
-a home, its folder or leave to begin at home. The person's own
+gets round here. A start placed needing by name a machine the node
+made, as its book of machines made stands, and never this one, counts
+toward that machine's own 32 instead of the node's, since it runs
+nothing here and the made machine's places bound how many it holds at
+once; it still counts toward its cell's 8. So agents together start
+at most 32 an hour on each machine the node made, beside the node's
+own 32, and the more machines are made the more they may start; one
+placement puts on a made machine without its name being asked counts
+toward the node's. A start counts whether it started or failed, since
+a failed one may still have spent, and so does one still starting, so
+starts asked at once can't pass the limit; a refused one doesn't,
+nor one relayed to the node and refused there before anything began:
+placed elsewhere, not taken now, or not to be begun for want of a
+launcher, a starter, a home, its folder or leave to begin at home.
+The person's own
 starts are never counted or refused. An agent's first start in the
 hour that brings back a session the node knows has ended, on the
 machine it ran on, counts toward neither, up to 128 through the node
