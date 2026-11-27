@@ -196,6 +196,7 @@ pub mod counting {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
     use std::sync::atomic::Ordering;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -324,8 +325,22 @@ mod tests {
         let new = [
             (dir.path().to_owned(), RecursiveMode::NonRecursive),
             (dir.path().join("not-yet"), RecursiveMode::NonRecursive),
-            (inside, RecursiveMode::NonRecursive),
+            (inside.clone(), RecursiveMode::NonRecursive),
         ];
         assert_eq!(watch_all(&mut watch, &[], &new), [true, false, true]);
+        // Its own list, as it may hold a path by another name.
+        let real = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+        let mut held: Vec<PathBuf> = watch
+            .watched_paths()
+            .expect("its paths listed")
+            .iter()
+            .map(|(path, _)| real(path))
+            .collect();
+        held.sort();
+        assert_eq!(
+            held,
+            [real(dir.path()), real(&inside)],
+            "the path after the one not there is watched too"
+        );
     }
 }
