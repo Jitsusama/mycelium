@@ -978,6 +978,14 @@ fn width_is_counted_in_the_cells_a_terminal_draws() {
             3,
             "a one-cell pictograph joined to an emoji takes its own cell beside the emoji's two",
         ),
+        // Joined after a letter, a skin tone starts no cluster, being no
+        // letter, so it is measured with the letter, and Unicode's widths
+        // give it its two beside the letter's one, as a terminal draws.
+        (
+            "a\u{200D}\u{1F3FD}",
+            3,
+            "a skin tone joined to a letter takes its own two",
+        ),
         // Asked for as text, a wide emoji counts one cell, as Unicode's
         // widths and a terminal that honours the selector draw it; one
         // drawing each code point alone draws it two.
