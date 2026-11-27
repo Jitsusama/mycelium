@@ -373,9 +373,12 @@ fn asked_whole(asked: &str) -> Option<String> {
 /// string of at most [`SUBJECT_MOST`] characters with nothing a terminal
 /// acts on and nothing that draws as nothing; any other entry is passed
 /// over alone, so a cell's subjects never draw as more than plain words,
-/// nor two that draw alike hub apart. A subject said again, in any case,
-/// is passed over too, since its hub is the first's: the cap counts the
-/// subjects a cell holds, not the times it says them.
+/// nor hide a character that would hub them apart. A repeat, one whose
+/// [`subject_key`] matches an earlier one's, is passed over too, since
+/// its hub is the first's: the cap counts the subjects a cell holds, not
+/// the times it says them. Nothing composes a subject's characters
+/// first, so an accent written as its own mark is a subject apart from
+/// the same letter written whole, though both draw alike.
 #[must_use]
 pub fn subjects(declared: &Value) -> Vec<String> {
     declared
@@ -396,11 +399,19 @@ pub fn subjects(declared: &Value) -> Vec<String> {
         })
         .filter({
             let mut said = std::collections::HashSet::new();
-            move |subject| said.insert(subject.to_lowercase())
+            move |subject| said.insert(subject_key(subject))
         })
         .take(MOST_SUBJECTS)
         .map(str::to_owned)
         .collect()
+}
+
+/// The key a subject is held by: its full lower case, so two cells saying
+/// it in different cases hold one subject. The cap passes over a repeat
+/// by it and the hubs key a subject by it, so the two can't fold apart.
+#[must_use]
+pub fn subject_key(subject: &str) -> String {
+    subject.to_lowercase()
 }
 
 /// Whether `each` draws as nothing: a soft hyphen, a zero-width space or

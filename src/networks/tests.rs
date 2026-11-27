@@ -2086,9 +2086,9 @@ fn a_cell_declares_plain_subjects_alone_each_bad_one_passed_over() {
         "the first 24 good subjects are kept, in the order declared"
     );
     assert!(subjects(&json!("one")).is_empty(), "subjects are a list");
-    // The hub keys a subject by its full lower case, so a repeat past
-    // ASCII's letters must fold the same way, or it takes a place of the
-    // cap while sharing the first one's hub.
+    // The hub keys a subject by `subject_key`, so a repeat past ASCII's
+    // letters must fold the same way, or it takes a place of the cap
+    // while sharing the first one's hub; the hub's own case pins its half.
     assert_eq!(
         subjects(&json!(["école", "ÉCOLE", "Straße", "STRASSE"])),
         vec![
@@ -2097,5 +2097,12 @@ fn a_cell_declares_plain_subjects_alone_each_bad_one_passed_over() {
             "STRASSE".to_owned()
         ],
         "a repeat is one whose lower case matches, as the hub reads it"
+    );
+    // Nothing composes characters first: an accent written as its own
+    // mark is a subject apart, though it draws as the letter written whole.
+    assert_eq!(
+        subjects(&json!(["\u{e9}cole", "e\u{301}cole"])),
+        vec!["\u{e9}cole".to_owned(), "e\u{301}cole".to_owned()],
+        "a repeat is matched by its characters, not by how it draws"
     );
 }
