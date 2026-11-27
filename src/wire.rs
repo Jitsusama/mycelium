@@ -700,8 +700,7 @@ mod tests {
     fn a_relay_no_key_proved_says_nothing_of_it_so_an_older_node_reads_it() {
         let start = |proven| Request::Relayed {
             from: "tern".to_owned(),
-            start: serde_json::from_str(r#"{"work":{},"command":["pi"]}"#)
-                .expect("a start"),
+            start: serde_json::from_str(r#"{"work":{},"command":["pi"]}"#).expect("a start"),
             proven,
         };
         let unproven = serde_json::to_value(start(false)).expect("a relay writes");

@@ -5624,8 +5624,8 @@ mod tests {
     /// kestrel's start as skiff's node is handed it, pinned there, its
     /// carry's mark kept as `carries` says.
     fn a_carry(carries: bool) -> Start {
-        let mut start: Start = serde_json::from_value(json!({"work": {}, "command": ["pi"]}))
-            .expect("a start");
+        let mut start: Start =
+            serde_json::from_value(json!({"work": {}, "command": ["pi"]})).expect("a start");
         start
             .work
             .needs

@@ -27849,29 +27849,7 @@ esac
     #[tokio::test]
     async fn a_room_opening_nothing_starts_a_proven_relay_in_the_fence_it_declares() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let unattended = Processes::Folder("/nowhere/proc".into()).unattended();
-        let mut link = holding_skiff(dir.path(), Memory::default(), None, unattended);
-        runs_commands(&mut link, dir.path());
-        declares_agent_fence(&link.declared, |_| {});
-        link.fences_held = true;
-        link.starts_apart = true;
-        // A `mycelium link` SSH started, never the node's own process.
-        link.client = Some(1);
-        let fenced = Start {
-            work: Work {
-                fence: Some(DeclaredFence {
-                    kind: FenceKind::Fence,
-                    from: FenceFrom::Spawn,
-                }),
-                ..work(vec![Need::Machine("skiff".to_owned())])
-            },
-            folder: Some(dir.path().to_owned()),
-            strict: false,
-            command: vec!["pi".to_owned()],
-            may_cost: false,
-            carries: false,
-            once: None,
-        };
+        let (mut link, fenced) = a_room_opening_nothing(dir.path());
         let given = dir.path().join("given");
         assert_eq!(
             fenced_as(&link, &given, true, fenced.clone()).await,
@@ -27896,11 +27874,19 @@ esac
         // declares all the same.
         link.fences_held = false;
         assert_eq!(
-            fenced_as(&link, &given, true, fenced.clone()).await,
+            fenced_as(&link, &given, true, fenced).await,
             Some("PI_SANDBOX=fence"),
             "a room whose pi fences itself takes the agent fence declared too"
         );
-        link.fences_held = true;
+    }
+
+    // Each other room the ruling names starts that relay strict. Apart
+    // from the test above, since a cell starts at most 8 an hour.
+    #[tokio::test]
+    async fn a_room_that_may_open_something_starts_a_proven_relay_strict() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (mut link, fenced) = a_room_opening_nothing(dir.path());
+        let given = dir.path().join("given");
         link.starts_apart = false;
         assert_eq!(
             fenced_as(&link, &given, true, fenced.clone()).await,
@@ -27944,6 +27930,37 @@ esac
             Some("FENCED=strict"),
             "and a machine a person works on, strict"
         );
+    }
+
+    /// A room in `dir` whose sessions run apart from its node and whose
+    /// agent fence opens nothing, its starts fenced through the launcher,
+    /// asked over a link a `mycelium link` SSH started; and a start for it
+    /// declaring the agent fence.
+    fn a_room_opening_nothing(dir: &Path) -> (Shared<Memory>, Start) {
+        let unattended = Processes::Folder("/nowhere/proc".into()).unattended();
+        let mut link = holding_skiff(dir, Memory::default(), None, unattended);
+        runs_commands(&mut link, dir);
+        declares_agent_fence(&link.declared, |_| {});
+        link.fences_held = true;
+        link.starts_apart = true;
+        // Never the node's own process.
+        link.client = Some(1);
+        let fenced = Start {
+            work: Work {
+                fence: Some(DeclaredFence {
+                    kind: FenceKind::Fence,
+                    from: FenceFrom::Spawn,
+                }),
+                ..work(vec![Need::Machine("skiff".to_owned())])
+            },
+            folder: Some(dir.to_owned()),
+            strict: false,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        (link, fenced)
     }
 
     /// The fence `link` starts `start` in, relayed from tern over a link
