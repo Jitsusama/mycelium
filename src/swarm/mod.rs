@@ -226,6 +226,16 @@ pub(crate) fn unmarked(text: &str) -> String {
         .to_owned()
 }
 
+/// `text` cleaned as [`unmarked`] cleans it and ended as a cut is, so,
+/// cut short or not, it ends in no space, and in no joiner or Khmer coeng
+/// left joining nothing.
+pub(crate) fn unmarked_and_ended(text: &str) -> String {
+    crate::forage::cut_ended(&unmarked(text), |each| {
+        each.is_whitespace() || each == BRAILLE_BLANK
+    })
+    .to_owned()
+}
+
 /// `text` with no mark left in it, for a page that lines nothing up.
 pub(crate) fn without_marks(text: &str) -> String {
     text.replace(MARKS, "")
@@ -393,7 +403,11 @@ fn starts_a_cluster(before: Option<char>, each: char) -> bool {
         Some('\r') => true,
         // Only emoji join through a joiner, so a letter after one starts
         // afresh and a ligature counts each of its letters. Unicode's
-        // widths count an emoji after a letter's joiner in full anyway.
+        // widths count an emoji after a letter's joiner in full anyway,
+        // but for the few letters that are emoji too, the information
+        // sign, the circled M and the blood types: given the emoji
+        // selector, one starts an emoji's sequence, two cells whole, as
+        // any pictograph does.
         Some('\u{200D}') => !each.is_alphabetic(),
         _ => matches!(each, '\u{1F3FB}'..='\u{1F3FF}') || (flag(each) && before.is_some_and(flag)),
     };

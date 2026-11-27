@@ -933,6 +933,23 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
          nothing or null it is for is kept, \
          untitled"
     );
+    // Apart, as a cell reads no more than sixteen of what it shares.
+    let khmer = format!("{}\u{17D2}\u{1780}", "\u{1780}".repeat(119));
+    let shorter = "\u{1780}".repeat(118);
+    assert_eq!(
+        shared_by_two(&[
+            json!({"key": "quest:khmer", "for": khmer, "folder": "/k"}),
+            json!({"key": "quest:khmerlone", "for": "\u{1780}\u{17D2}", "folder": "/k"}),
+            json!({"key": "quest:khmerzwnj", "for": format!("{shorter}\u{200C}\u{17D2}\u{1780}"),
+                   "folder": "/k"}),
+        ]),
+        [
+            titled("quest:khmer", &"\u{1780}".repeat(119)),
+            titled("quest:khmerlone", "\u{1780}"),
+            titled("quest:khmerzwnj", &shorter),
+        ],
+        "a title ends in no lone Khmer coeng, cut or not, nor in the non-joiner one kept"
+    );
 }
 
 #[test]
