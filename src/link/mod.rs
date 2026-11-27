@@ -381,7 +381,6 @@ pub async fn run(
         realm: membership.hello().realm,
         proven: membership.proves(),
         worker,
-        made_here: releases,
         shows: membership.hello().shows && other.shows && !releases && !other.releases && !worker,
         handover: Handover::new(other.releases, skipped_shares),
         // Two ends that both take facts each say their machine every
@@ -397,7 +396,7 @@ pub async fn run(
         health: health_of(starting.as_ref()),
         declared: declared_of(starting.as_ref()),
         heard_declared: declared_heard::DeclaredHeard::default(),
-        lender: lender_of(starting.as_ref()),
+        lender: lends_to(starting.as_ref(), worker || releases),
         housed: if matches!(
             starting
                 .as_ref()
@@ -988,8 +987,23 @@ fn health_of(starting: Option<&Starting>) -> OwnHealth {
 
 /// What this machine lends the other end, as `starting` says; none where
 /// the link carries no starts, so every lend it asks is refused.
-fn lender_of(starting: Option<&Starting>) -> Option<Arc<Lender>> {
-    starting.and_then(|starting| starting.lender.clone())
+fn lends_to(starting: Option<&Starting>, borrows: bool) -> Lending {
+    match starting.and_then(|starting| starting.lender.clone()) {
+        _ if !borrows => Lending::NotToIt,
+        Some(lender) => Lending::By(lender),
+        None => Lending::Nothing,
+    }
+}
+
+/// What this end lends the other machine: through its lender, where the
+/// other end is a worker of this machine or one its way in releases, a
+/// machine its node made, such as one made for the person; nothing,
+/// where this machine lends nothing; or nothing to it, where it is
+/// neither.
+enum Lending {
+    By(Arc<Lender>),
+    Nothing,
+    NotToIt,
 }
 
 /// The gates this machine answers its workers, if its node names any.
@@ -1237,12 +1251,6 @@ struct End<S> {
     /// Whether the other end is a worker, which asks nothing of this
     /// machine and speaks only for its own sessions ([`Connection::worker`]).
     worker: bool,
-    /// Whether this end's way in releases the other's machine
-    /// ([`Connection::releases`]): one a provider's program reaches, which
-    /// this machine's node made or a provider lent it, so one this machine
-    /// pays for. It is lent to as a worker is, though the node made it for
-    /// the person and it is no worker.
-    made_here: bool,
     /// Whether the two ends tell each other of the carries their nodes
     /// ordered: both said they do, neither releases the other, and the
     /// other isn't a worker, since quest ids and reasons aren't work.
@@ -1272,8 +1280,11 @@ struct End<S> {
     housed: Housed,
     /// This machine's node's socket, which starts asked of it go to.
     node: Option<PathBuf>,
-    /// What answers the lends a worker asks of this machine, if it lends.
-    lender: Option<Arc<Lender>>,
+    /// What answers the lends the other end asks of this machine: a
+    /// worker, or a machine this end's way in releases
+    /// ([`Connection::releases`]), which a provider's program reaches and
+    /// this machine pays for, though its node made it for the person.
+    lender: Lending,
     /// The gates this machine answers for the workers it names, which
     /// are the one start a worker may ask of it ([`crate::gate`]).
     gates: Option<Arc<Gates>>,
@@ -1944,15 +1955,13 @@ impl<S: Store> End<S> {
     /// The lender knows the machine by this link's other end, and holds it
     /// to the same budgets as a worker.
     fn lend_here(&mut self, ask: u64, lend: Lend) {
-        let lender = if self.worker || self.made_here {
-            self.lender
-                .clone()
-                .ok_or_else(|| format!("{} lends nothing", self.here))
-        } else {
-            Err(format!(
+        let lender = match &self.lender {
+            Lending::By(lender) => Ok(lender.clone()),
+            Lending::Nothing => Err(format!("{} lends nothing", self.here)),
+            Lending::NotToIt => Err(format!(
                 "{} lends only to its workers and the machines it made, and {} is neither",
                 self.here, self.other
-            ))
+            )),
         };
         let lender = match lender {
             Ok(lender) => lender,
@@ -6487,8 +6496,8 @@ mod tests {
                 Memory::default(),
                 &realm("skiff"),
                 Connection {
-                    worker,
                     releases,
+                    worker,
                     ..connection(reading, writing)
                 },
                 None,
