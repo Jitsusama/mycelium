@@ -2926,14 +2926,14 @@ impl Looked {
     /// its own record says its program is parked
     /// ([`steer::its_holder_among`]), as this look read it. Every folder a
     /// judgement asks of is one the look read, since the presences it
-    /// judges name them; one it missed is a fault, failing a test, and is
-    /// read afresh elsewhere, as a running holder is never taken as gone.
+    /// judges name them; one it missed is a fault ([`missed`]), and is
+    /// read afresh, as a running holder is never taken as gone.
     fn holder(&self, folder: &Path, id: &str) -> Option<bool> {
-        let read = self.folders.get(folder);
-        debug_assert!(read.is_some(), "the look missed {}", folder.display());
-        match read {
-            Some(holders) => steer::its_holder_among(id, holders),
-            None => steer::its_holder_among(id, &hold::held(folder)),
+        if let Some(holders) = self.folders.get(folder) {
+            steer::its_holder_among(id, holders)
+        } else {
+            missed(folder);
+            steer::its_holder_among(id, &hold::held(folder))
         }
     }
 
@@ -2942,8 +2942,32 @@ impl Looked {
     /// park has none, and is never asked.
     fn held(&self, held: &Path) -> &[hold::Held] {
         let read = self.folders.get(held);
-        debug_assert!(read.is_some(), "the look missed {}", held.display());
+        if read.is_none() {
+            missed(held);
+        }
         read.map_or(&[], Vec::as_slice)
+    }
+}
+
+/// A holders' `folder` a judgement asked its look of and the look never
+/// read, which the sessions it judges rule out: it fails the node's
+/// tests, in the gate's release build too, rather than a debug build's
+/// alone.
+#[cfg(test)]
+fn missed(folder: &Path) {
+    panic!("the look missed {}", folder.display());
+}
+
+/// A holders' `folder` the look never read, said on stderr once, so the
+/// fault surfaces in the shipped node rather than reading afresh unseen.
+#[cfg(not(test))]
+fn missed(folder: &Path) {
+    static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!(
+            "a park judgement's look missed {}, so it was read afresh; this is a fault",
+            folder.display()
+        );
     }
 }
 
@@ -7491,7 +7515,10 @@ impl<S: Store> Shared<S> {
     /// names its wake, and only after the inbox is written, so the wake is
     /// judged from a look no older than the words it wakes the session to
     /// read, and found exactly where a start would be refused for it
-    /// ([`Self::parked_here`]).
+    /// ([`Self::parked_here`]). This look is its own, never the one
+    /// [`Self::steer`] routed by, so the two may differ: a holder gone
+    /// between them refuses a wake as not parked, and leaves words told
+    /// for the session's next wake.
     fn steer_here(&self, steer: &Steer, sessions: &[Session]) -> Result<(), String> {
         let looked = std::cell::OnceCell::new();
         let address = &steer.address;
@@ -22471,8 +22498,35 @@ esac
             ),
             "a park its presence names beside, whose holder runs, holds the reopening back"
         );
-        // Followup 492: a steer finds the same park from its own look,
-        // taken after the inbox is written, and wakes it there.
+        // Followup 498: a word the parked session's id begins, which pi
+        // may open it by, is judged as that session from its own look.
+        // A bare resume of it is a reopening, held to a session that
+        // ended here, so only a start saying more is judged by what the
+        // word begins.
+        assert_eq!(
+            ask(
+                socket.clone(),
+                reopening(&["pi", "--session", "s-bes"], false)
+            )
+            .await,
+            Err("no session s-bes ended on skiff, so nothing is reopened here".to_owned()),
+            "a bare resume of a word a park beside begins names no session ended here"
+        );
+        assert_eq!(
+            ask(
+                socket.clone(),
+                reopening(&["pi", "--session", "s-bes", "--thinking", "high"], false)
+            )
+            .await,
+            Err(
+                "s-bes is parked on skiff, and its holder wakes it, so it isn't reopened"
+                    .to_owned()
+            ),
+            "a word a park beside begins is held back by the holder its presence names"
+        );
+        // Followup 492: a steer finds the same park from its own look and
+        // wakes it there. It only wakes, so it writes no inbox, and when
+        // that look is taken against the inbox is left untested here.
         let mut client = Speaking::greeted(&socket).await;
         client
             .ask(json!({"id": 1, "ask": "steer", "address": "BESIDE",
@@ -22491,11 +22545,14 @@ esac
     // between the two reads is seen parked, and the markers are judged by
     // the very holders the rest of the judgement reads. The folder beside
     // answers its holder only the first time it is read, so a second read
-    // for the markers would judge them apart from the presence.
+    // for the markers would judge them apart from the presence. The folder
+    // tern's wake names, which no marker does, is read only for the wakes,
+    // before the markers' own folders.
     #[test]
     fn a_look_reads_the_markers_first_and_each_folder_once() {
         let home = Path::new("/run/skiff");
         let (held, beside) = (home.join("work.held"), home.join("home.held"));
+        let tern = home.join("tern.held");
         let reads = std::cell::RefCell::new(Vec::<PathBuf>::new());
         let parks_now = std::cell::Cell::new(false);
         let parks = || {
@@ -22517,7 +22574,7 @@ esac
                     command: vec!["pi".to_owned()],
                     folder: home.to_path_buf(),
                     holder: 1,
-                    pid: u32::from(!parked),
+                    pid: 1,
                     parked,
                     since: String::new(),
                     windows: Vec::new(),
@@ -22526,11 +22583,14 @@ esac
                 .collect()
         };
         let (named, other) = (beside.join("e0r7.wake"), held.join("e0r8.wake"));
-        let looked = look(&held, &[named.as_path(), other.as_path()], parks, read);
+        let afar = tern.join("e0r9.wake");
+        let wakes = [other.as_path(), afar.as_path(), named.as_path()];
+        let looked = look(&held, &wakes, parks, read);
         assert_eq!(
             reads.into_inner(),
-            vec![PathBuf::from("markers"), held.clone(), beside.clone()],
-            "the markers are read first, then each folder once however many name it"
+            vec![PathBuf::from("markers"), held.clone(), tern, beside.clone()],
+            "the markers are read first, then each folder the wakes name once, \
+             however many name it, before the markers' own"
         );
         assert_eq!(
             looked.marked.first().map(|marked| marked.holder),
@@ -22546,6 +22606,14 @@ esac
             looked.held(&held).is_empty(),
             "this node's own folder holds none"
         );
+    }
+
+    // Followup 497: a judgement asking its look of a folder the look
+    // never read fails the node's tests, the gate's release build's too.
+    #[test]
+    #[should_panic(expected = "the look missed /run/skiff/home.held")]
+    fn a_look_asked_of_a_folder_it_never_read_fails_the_tests() {
+        let _ = Looked::default().holder(Path::new("/run/skiff/home.held"), "e0r7");
     }
 
     // Our council's round 3 on the marks: an agent's start of a session
