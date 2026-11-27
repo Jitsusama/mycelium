@@ -197,10 +197,9 @@ impl Need {
             // Met here, by the machine's declaration or its make, while a
             // made machine's node may be too old to read it. The need for
             // itself that the machine's node adds names it as the worker
-            // it is.
-            Self::Cloud => false,
-            // Met only by an offer, so never by the machine chosen.
-            Self::Fresh => false,
+            // it is. A fresh one is met only by an offer, so never by the
+            // machine chosen.
+            Self::Cloud | Self::Fresh => false,
         }
     }
 }
