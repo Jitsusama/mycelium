@@ -10674,14 +10674,15 @@ fn nowhere_now(misses: &[Miss]) -> String {
     )
 }
 
-/// Who asked `asked` where its `by` isn't them: `asker` where this node
-/// `recast` it, as another machine's node said where it came from there,
-/// and never as whoever asks here says, since only a node says it.
-fn asked_by(recast: bool, asker: By, asked: &Run) -> Option<By> {
+/// Who asked `run` where its `by` isn't them: `judged`, who this node
+/// judged asked it, where it `recast` it, as another machine's node said
+/// where it came from there, and never as whoever asks here says, since
+/// only a node says it.
+fn asked_by(recast: bool, judged: By, run: &Run) -> Option<By> {
     if recast {
-        Some(asker)
-    } else if asked.from.is_some() {
-        asked.asked_by
+        Some(judged)
+    } else if run.from.is_some() {
+        run.asked_by
     } else {
         None
     }
@@ -25644,6 +25645,7 @@ esac
     // runs it reading no profile; whoever asks here can't say it.
     #[test]
     fn only_a_node_says_the_person_asked_a_recast_run() {
+        use crate::declared::Kind;
         let fenced = By::Agent(Kind::Fence);
         let said = |from: Option<&str>| Run {
             from: from.map(str::to_owned),
