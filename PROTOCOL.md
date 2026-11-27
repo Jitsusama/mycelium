@@ -116,11 +116,14 @@ goes over a session of this machine's or of a third machine's.
 One link at a time carries a machine's sessions into a store: it claims
 that machine first, by a lock in `~/.local/state/mycelium/claims/`. A
 second link to the same machine asks the first to let it go, by writing
-the time in that machine's `.newer` file there; the first, looking each
-second, ends, and the second is refused only when it isn't let go within
-ten seconds. A newer link from a machine means the older one's other end
-is gone, though it may not have heard so, as when that machine's node
-restarted while its end of the link waited on a write. The link
+in that machine's `.newer` file there the time, or a millisecond past
+the last written where that is as late, so no two asks share one. The
+first, looking each second, ends at an ask later than the last it read
+before it claimed, not by its clock, so an ask in the claim's own
+millisecond counts too; the second is refused only when it isn't let go
+within ten seconds. A newer link from a machine means the older one's
+other end is gone, though it may not have heard so, as when that
+machine's node restarted while its end of the link waited on a write. The link
 lets go of what it carried when the session ends. When the link drops,
 it keeps what it carried but marks each `unreachableSince` the drop, in
 milliseconds since the epoch, since a dropped link says nothing of
