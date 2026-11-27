@@ -1412,14 +1412,28 @@ fn past_lively(lively: Lively, room: &Room) -> Option<String> {
 /// The person's own cloud machines, as they are at `now`, are theirs here
 /// too, so what they reach names no worker.
 fn lasting_reach(machines: &[Machine], now: jiff::Timestamp) -> BTreeSet<&str> {
+    reach_of(machines, |one| declares_no_worker(one) || is_the_persons_cloud(one, now))
+}
+
+/// The networks the machines that declare themselves none of the workers
+/// reach, always or by a probe, as a machine's own node judges what work
+/// asked on it names ([`asked_on`]).
+fn declared_lasting_reach(machines: &[Machine]) -> BTreeSet<&str> {
+    reach_of(machines, declares_no_worker)
+}
+
+fn declares_no_worker(one: &Machine) -> bool {
+    one.declared
+        .as_ref()
+        .is_some_and(|declared| !declared.is_worker())
+}
+
+/// The networks the machines `lasting` says last reach, always or by a
+/// probe.
+fn reach_of(machines: &[Machine], lasting: impl Fn(&Machine) -> bool) -> BTreeSet<&str> {
     machines
         .iter()
-        .filter(|one| {
-            one.declared
-                .as_ref()
-                .is_some_and(|declared| !declared.is_worker())
-                || is_the_persons_cloud(one, now)
-        })
+        .filter(|one| lasting(one))
         .filter_map(|one| one.declared.as_ref())
         .flat_map(|declared| {
             let always = declared.reach.iter().map(String::as_str);
@@ -1454,35 +1468,31 @@ fn worker_refuses() -> Because {
     })
 }
 
-/// `work` asked on `here`, as it is to be placed at `now`: where `here` is
-/// a worker and the work names no worker of `machines`, it stays on
-/// `here`, so an agent on a machine lent for its work runs that work
-/// where it was lent, never on the person's own machines, which it was
-/// never given. `here` is judged by what it declares alone: its own node
-/// never hears a link mark it a worker, so a machine lent for agents
-/// that says it stays reads as one of the person's own cloud machines,
-/// and only pinning every paid machine's work keeps a lent one's there;
-/// work asked on one of the person's own stays there too, which is the
-/// first place it would go. Work naming a paid machine by name goes
-/// there, the person's own cloud machines among them, as it did before
-/// they took sessions, so a start on one of theirs may name a sibling.
-/// A network the person's own cloud machines reach, or needing a cloud
-/// machine, names no worker, so such work asked on a lent machine stays
-/// there rather than going to the person's own.
+/// `work` asked on `here`, as it is to be placed: where `here` is a
+/// worker and the work names no worker of `machines`, it stays on `here`,
+/// so an agent on a machine lent for its work runs that work where it
+/// was lent, never on the person's own machines, which it was never
+/// given. Each machine is judged by what it declares alone, as before the
+/// person's own cloud machines took sessions: `here`'s own node never
+/// hears a link mark it a worker, so a machine lent for agents that says
+/// it stays reads as one of the person's own cloud machines, and only
+/// pinning every paid machine's work keeps a lent one's there. Work asked
+/// on one of the person's own stays there too, which is the first place
+/// it would go, unless it names another paid machine: by name, by a
+/// network only paid machines reach, or by needing a cloud machine
+/// ([`names_worker`]), so a start on one of theirs may go to a sibling,
+/// and one past its room is asked of the cloud beyond it.
 #[must_use]
-pub fn asked_on(work: &Work, here: &Machine, machines: &[Machine], now: jiff::Timestamp) -> Work {
+pub fn asked_on(work: &Work, here: &Machine, machines: &[Machine]) -> Work {
     let mut work = work.clone();
     let is_worker = |one: &Machine| one.declared.as_ref().is_some_and(Declared::is_worker);
-    let pins_here = is_worker(here);
-    let lasting = lasting_reach(machines, now);
-    let names_one = work.needs.iter().any(|need| match need {
-        Need::Reach(network) => !lasting.contains(network.as_str()),
-        Need::Machine(name) => machines
-            .iter()
-            .any(|one| is_worker(one) && one.name == *name),
-        _ => false,
-    });
-    if pins_here && !names_one {
+    let names_one = names_worker(&work, &declared_lasting_reach(machines))
+        || work.needs.iter().any(|need| {
+            machines
+                .iter()
+                .any(|one| is_worker(one) && *need == Need::Machine(one.name.clone()))
+        });
+    if is_worker(here) && !names_one {
         work.needs.push(Need::Machine(here.name.clone()));
     }
     work
@@ -3619,7 +3629,7 @@ pub(crate) mod tests {
             lent,
         ];
         for need in [Vec::new(), vec![Need::Reach("internet".to_owned())]] {
-            let work = asked_on(&needing(need.clone()), &cloud, &realm, now());
+            let work = asked_on(&needing(need.clone()), &cloud, &realm);
             assert_eq!(
                 placed(&place(&work, &realm)),
                 Some("cloud"),
@@ -3630,7 +3640,6 @@ pub(crate) mod tests {
             &needing(vec![Need::Reach("lent-net".to_owned())]),
             &cloud,
             &realm,
-            now(),
         );
         assert_eq!(
             placed(&place(&elsewhere, &realm)),
@@ -3639,7 +3648,7 @@ pub(crate) mod tests {
         );
         let at_home = needing(Vec::new());
         assert_eq!(
-            asked_on(&at_home, &realm[1], &realm, now()),
+            asked_on(&at_home, &realm[1], &realm),
             at_home,
             "work asked on the person's own machine is placed as asked"
         );
@@ -3650,31 +3659,42 @@ pub(crate) mod tests {
         let mut kept_room = theirs.clone();
         kept_room.name = "harbour".to_owned();
         assert!(
-            asked_on(&at_home, &kept_room, &realm, now())
+            asked_on(&at_home, &kept_room, &realm)
                 .needs
                 .contains(&Need::Machine("harbour".to_owned())),
             "a paid machine that says it stays, as a lent room may, keeps the work asked on it"
         );
-        // What the person's own cloud machine reaches, and its being a
-        // cloud machine, name no worker, so neither takes lent work there.
+        // A network only the person's own cloud machine reaches, or
+        // needing a cloud machine, names a paid machine as its declaration
+        // says, so such work asked on a sibling, or on one past its room,
+        // goes where it is met, as before they took sessions.
         let declared = theirs.declared.as_mut().expect("declared");
         declared.reach.push("their-net".to_owned());
         let mut with_theirs = realm.to_vec();
         with_theirs.push(theirs);
+        with_theirs.push(kept_room.clone());
         for need in [vec![Need::Cloud], vec![Need::Reach("their-net".to_owned())]] {
-            let work = asked_on(&needing(need.clone()), &with_theirs[2], &with_theirs, now());
-            assert!(
-                work.needs.contains(&Need::Machine("lent".to_owned())),
-                "work needing {need:?} asked on a lent worker stays there, off the person's own"
+            let work = needing(need.clone());
+            assert_eq!(
+                asked_on(&work, &kept_room, &with_theirs),
+                work,
+                "work needing {need:?} asked on a paid machine isn't kept there"
             );
         }
+        assert_eq!(
+            placed(&place(
+                &needing(vec![Need::Reach("their-net".to_owned())]),
+                &with_theirs
+            )),
+            Some("wren"),
+            "and goes to the sibling that reaches its network"
+        );
         // Work naming one of the person's own cloud machines goes there,
         // so a start on a sibling may name it, as before they took
         // sessions.
         let named = needing(vec![Need::Machine("wren".to_owned())]);
-        with_theirs.push(kept_room.clone());
         assert_eq!(
-            asked_on(&named, &kept_room, &with_theirs, now()),
+            asked_on(&named, &kept_room, &with_theirs),
             named,
             "work asked on one of the person's cloud machines may name a sibling"
         );
