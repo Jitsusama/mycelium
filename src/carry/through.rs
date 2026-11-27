@@ -250,22 +250,30 @@ impl Hands for Through {
                 self.shares.offer(quest, &scratch)
             }
             Lent::TakesNone => return Err(ground::takes_none(to)),
-            Lent::Not | Lent::TakesCarries => {
+            lent @ (Lent::Not | Lent::TakesCarries) => {
+                let what = if lent == Lent::Not {
+                    "a room lent for agents"
+                } else {
+                    "a worker"
+                };
                 // The whole handover, every machine's, since a worker's
-                // link serves all of it.
+                // link serves all of it. Found only once the sessions have
+                // carried into it, so the refusal says where they wait.
                 let handover = self.shares.scratch.join(quest).join("handover");
                 let found = secrets::first_in(&handover).map_err(|error| {
                     format!("{quest}'s handover can't be told free of secrets: {error}")
                 })?;
                 if let Some(secret) = found {
                     return Err(format!(
-                        "{} names a secret, so {quest} isn't given to {to}, a worker",
+                        "{} names a secret, so {quest} isn't given to {to}, {what}; its \
+                         sessions wait in the handover here, so take the secret out and carry \
+                         again, or carry to a machine of the person's own",
                         secret.display()
                     ));
                 }
                 let given = self.shares.offer_to(to, quest, &scratch);
                 if given.is_ok() {
-                    eprintln!("mycelium: {quest} given to {to}, a worker, for a carry");
+                    eprintln!("mycelium: {quest} given to {to}, {what}, for a carry");
                 }
                 given
             }

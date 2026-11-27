@@ -119,7 +119,7 @@ pub(crate) const STAYS_FOR: jiff::SignedDuration = jiff::SignedDuration::from_ho
 /// realm, reach and fences as any of theirs.
 fn in_the_cloud(machine: &Machine, said: &Declared, now: jiff::Timestamp) -> bool {
     !machine.worker
-        && !reaches_aquifer(said)
+        && !reaches_aquifer(machine, said)
         && said
             .leaves_at
             .is_none_or(|leaves| now.checked_add(STAYS_FOR).is_ok_and(|month| leaves > month))
@@ -135,13 +135,28 @@ fn in_the_cloud(machine: &Machine, said: &Declared, now: jiff::Timestamp) -> boo
 /// a carry ordered there goes though the room leaves sooner than a month,
 /// as its maker chose; an ease or a placement still weighs its leaving.
 fn a_room(machine: &Machine, said: &Declared) -> bool {
-    machine.held_for == HeldFor::Agents && !reaches_aquifer(said)
+    machine.held_for == HeldFor::Agents && !reaches_aquifer(machine, said)
 }
 
-/// Whether a machine reaches Aquifer, whose cells are lent for its own
-/// work alone and keep the worker's rules, since Aquifer's security stands.
-fn reaches_aquifer(said: &Declared) -> bool {
-    said.reach.iter().any(|network| network == "aquifer")
+/// Whether `machine`, as it `said` itself, reaches Aquifer, whose cells
+/// are lent for its own work alone and keep the worker's rules, since
+/// Aquifer's security stands: always, by a probe, or as its node last
+/// reached it. Each is the machine's own word where a provider's link
+/// lent it, so a room that hides its reach passes, which only a mark the
+/// node holds itself would close.
+fn reaches_aquifer(machine: &Machine, said: &Declared) -> bool {
+    const AQUIFER: &str = "aquifer";
+    said.reach.iter().any(|network| network == AQUIFER)
+        || said.probes.contains_key(AQUIFER)
+        || machine.reached.get(AQUIFER) == Some(&true)
+}
+
+/// Whether a carry to `machine` is kept in the log of the person's own
+/// node: one a provider's link lent, a room included, though a carry
+/// counts a room as the person's own, or one a carry counts a worker.
+#[must_use]
+pub fn kept_as_lent(machine: &Machine) -> bool {
+    machine.worker || Lent::of(machine) != Lent::Not
 }
 
 /// Why nothing is carried to `to`, a worker that takes no carries, with
@@ -156,18 +171,15 @@ pub fn takes_none(to: &str) -> String {
     )
 }
 
-/// Whether a carry to `machine` is kept in the log of the person's own
-/// node.
-#[must_use]
-pub fn kept_as_lent(machine: &Machine) -> bool {
-    Lent::of(machine) != Lent::Not
-}
-
 /// Whether `there`, where it is a worker, takes a carry of a session
 /// running in `kind`: only one that declares it takes carries does, and
 /// never of a strict session from a node, since a worker's strict fence
 /// is its own word, which no node holds it to. One of the person's own
-/// machines takes any, as far as this says.
+/// machines takes any, as far as this says, and so does a room its node
+/// names ([`a_room`]), strict sessions too, though its fence is as much
+/// its own word: the person ruled on 26 November that the cloud machines
+/// made for sessions take them with no opt-in, and strict starts already
+/// land there by name, so a carry there is no looser than a start.
 ///
 /// # Errors
 ///
@@ -1022,7 +1034,11 @@ mod tests {
         let mut room = ours.clone();
         room.worker = true;
         room.held_for = HeldFor::Agents;
-        assert_eq!(Lent::at(&room, now), Lent::Not, "a room, as a carry counts it");
+        assert_eq!(
+            Lent::at(&room, now),
+            Lent::Not,
+            "a room, as a carry counts it"
+        );
         assert!(
             kept_as_lent(&room),
             "keeps one, since a provider's link lent it"
