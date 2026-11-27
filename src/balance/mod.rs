@@ -17,6 +17,9 @@
 //! the other idle), and facts too old to place by. Over time, a [`Watch`]
 //! holds a flag once it is seen in most of the last readings and lets it
 //! go only once it is seen in few, so a flag neither flickers nor lingers.
+//!
+//! Long because a machine's load, the flags read from every load and the
+//! watch over them are one reading, and their tests share its fixtures.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
