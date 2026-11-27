@@ -955,9 +955,11 @@ mod tests {
         );
     }
 
-    /// Appends `torn` to the book at `path`, as a crash leaves a line.
+    /// Appends `torn` to the book at `path`, made where there is none, as
+    /// a crash leaves a line.
     fn cut_short(path: &Path, torn: &str) {
         OpenOptions::new()
+            .create(true)
             .append(true)
             .open(path)
             .expect("the book opens")
