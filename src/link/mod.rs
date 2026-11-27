@@ -438,11 +438,12 @@ pub async fn run(
 
     let (mut keeping, mut looking) = paces();
     let mut queued = VecDeque::new();
+    let mut ground = None;
     let (store, other_machine) = (end.store.clone(), end.other.clone());
     let carrying = async {
         loop {
             let step = tokio::select! {
-                frame = pull(&mut queued, &mut frames) => match frame {
+                frame = pull(&mut queued, &mut ground, &mut frames) => match frame {
                     Some(Ok(frame)) => end.take(frame, &mut writing).await,
                     Some(Err(error)) => Err(error),
                     None => break Ok(Ending::Left),
@@ -509,6 +510,7 @@ const FRAMES_LOOKED_THROUGH: usize = 1024;
 /// and what is taken is kept in `queued` until it is pulled.
 async fn pull(
     queued: &mut VecDeque<io::Result<Frame>>,
+    ground: &mut Option<Ground>,
     frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>,
 ) -> Option<io::Result<Frame>> {
     if queued.is_empty() {
@@ -520,7 +522,23 @@ async fn pull(
     {
         queued.push_back(frame);
     }
-    next_waiting(queued)
+    next_waiting(queued, ground)
+}
+
+/// What a machine's facts say that decides which shares are heard: what
+/// it declares, and whether it said it declares nothing
+/// ([`End::keep_machine`]). The rest of its facts, said every minute,
+/// change no share.
+type Ground = (Option<crate::declared::Declared>, bool);
+
+/// The ground `machine` stands on, as [`Ground`] says.
+fn ground_of(machine: &Machine) -> Ground {
+    (machine.declared.clone(), machine.declares_nothing)
+}
+
+/// Whether `machine` stands on `ground`.
+fn stands_on(machine: &Machine, ground: &Ground) -> bool {
+    machine.declared == ground.0 && machine.declares_nothing == ground.1
 }
 
 /// The next of the frames `queued`, in the order they came, but for two
@@ -539,18 +557,31 @@ async fn pull(
 /// said whole every time, so a link whose node fell behind, as one did
 /// by 49 minutes on 2026-11-21, catches up on what its machine is now
 /// rather than on what it was. Facts said after a share or a handover
-/// wait for it, since what a machine declares decides which shares are
-/// heard, and the handover lets the machine go once the shares before
-/// it are.
-fn next_waiting(queued: &mut VecDeque<io::Result<Frame>>) -> Option<io::Result<Frame>> {
+/// wait for it where they change its [`Ground`], since what a machine
+/// declares decides which shares are heard, and the handover lets the
+/// machine go once the shares before it are. Facts on the `ground`
+/// already taken, with none said before them on another, change no
+/// share, so they pass the shares as [`facts_on_their_ground`] says:
+/// on 2026-11-27 a machine taking every quest's scratch had its facts
+/// heard tens of minutes late behind shares they couldn't change.
+fn next_waiting(
+    queued: &mut VecDeque<io::Result<Frame>>,
+    ground: &mut Option<Ground>,
+) -> Option<io::Result<Frame>> {
     let unshared = queued
         .iter()
         .position(|frame| !matches!(frame, Ok(Frame::Share(_) | Frame::Machine(_))));
-    let at = match unshared {
-        Some(at) if queued[at].as_ref().is_ok_and(jumps_shares) => at,
-        _ => 0,
-    };
-    let next = queued.remove(at)?;
+    if let Some(at) = unshared
+        && queued[at].as_ref().is_ok_and(jumps_shares)
+    {
+        return queued.remove(at);
+    }
+    if let Some(ground) = ground.as_ref()
+        && let Some(facts) = facts_on_their_ground(queued, ground)
+    {
+        return Some(Ok(facts));
+    }
+    let next = queued.pop_front()?;
     if !matches!(next, Ok(Frame::Machine(_))) {
         return Some(next);
     }
@@ -565,6 +596,9 @@ fn next_waiting(queued: &mut VecDeque<io::Result<Frame>>) -> Option<io::Result<F
         Some(newest) => queued.remove(newest).unwrap_or(next),
         None => next,
     };
+    if let Ok(Frame::Machine(machine)) = &next {
+        *ground = Some(ground_of(machine));
+    }
     // The older facts before what is waited on go, and those after it
     // wait. Where the newest was taken, what is waited on moved up a
     // place, and it is no facts, so the bound needs no moving.
@@ -575,6 +609,41 @@ fn next_waiting(queued: &mut VecDeque<io::Result<Frame>>) -> Option<io::Result<F
         kept
     });
     Some(next)
+}
+
+/// The newest facts in the run of shares and facts at the front of
+/// `queued` that stand on `ground`, the one already taken, with the
+/// older facts in that run left out, as facts said whole are. The run
+/// ends at the first frame that is neither, so facts never pass
+/// facts on another ground, which would hear the shares between on
+/// ground not yet said, nor a handover, nor a frame kept in its place.
+/// None where the run holds no facts.
+fn facts_on_their_ground(
+    queued: &mut VecDeque<io::Result<Frame>>,
+    ground: &Ground,
+) -> Option<Frame> {
+    let on_it = |frame: &io::Result<Frame>| match frame {
+        Ok(Frame::Share(_)) => true,
+        Ok(Frame::Machine(machine)) => stands_on(machine, ground),
+        _ => false,
+    };
+    let run = queued
+        .iter()
+        .position(|frame| !on_it(frame))
+        .unwrap_or(queued.len());
+    let newest = queued
+        .range(..run)
+        .rposition(|frame| matches!(frame, Ok(Frame::Machine(_))))?;
+    let facts = queued.remove(newest)?.ok()?;
+    // Only facts on that ground are left before the run's end, which
+    // moved up a place with the newest taken.
+    let mut at = 0;
+    queued.retain(|frame| {
+        let kept = at >= run - 1 || !matches!(frame, Ok(Frame::Machine(_)));
+        at += 1;
+        kept
+    });
+    Some(facts)
 }
 
 /// Whether `frame` may go ahead of the shares and facts it came behind:
@@ -3089,6 +3158,20 @@ mod tests {
     use crate::store::memory::Memory;
     use crate::wire::By;
 
+    /// [`super::pull`] before any facts are taken, so the frames' order
+    /// is all that decides, as the tests of order read it.
+    async fn pull(
+        queued: &mut VecDeque<io::Result<Frame>>,
+        frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>,
+    ) -> Option<io::Result<Frame>> {
+        super::pull(queued, &mut None, frames).await
+    }
+
+    /// [`super::next_waiting`] before any facts are taken, as [`pull`].
+    fn next_waiting(queued: &mut VecDeque<io::Result<Frame>>) -> Option<io::Result<Frame>> {
+        super::next_waiting(queued, &mut None)
+    }
+
     #[test]
     fn a_run_from_another_machine_that_doesnt_say_who_asks_runs_strictly_fenced() {
         let said: Run = serde_json::from_value(json!({
@@ -3423,40 +3506,117 @@ mod tests {
         }
     }
 
+    /// Facts of tern with `cores`, on the ground of declaring nothing or
+    /// of saying nothing of what it declares. Tern is measured once, so
+    /// the facts a test expects are those it queued, measured at the
+    /// same moment with the same disk free.
+    fn facts_of_tern(cores: u32, declares_nothing: bool) -> Frame {
+        static TERN: std::sync::LazyLock<Machine> =
+            std::sync::LazyLock::new(|| facts::measure("tern", &facts::Sources::nowhere()));
+        let mut machine = TERN.clone();
+        machine.cpu.cores = Some(cores);
+        machine.declares_nothing = declares_nothing;
+        Frame::Machine(Box::new(machine))
+    }
+
+    /// Every frame `queued` holds, in the order a link takes them.
+    fn all_waiting(mut queued: VecDeque<io::Result<Frame>>) -> Vec<Frame> {
+        let mut ground = None;
+        let mut heard = Vec::new();
+        while let Some(next) = super::next_waiting(&mut queued, &mut ground) {
+            heard.push(next.expect("read"));
+        }
+        heard
+    }
+
     #[test]
     fn facts_wait_for_a_handover_or_share_said_before_them() {
-        let tern = facts::measure("tern", &facts::Sources::nowhere());
-        let facts = |cores: u32| {
-            let mut machine = tern.clone();
-            machine.cpu.cores = Some(cores);
-            Frame::Machine(Box::new(machine))
-        };
+        let facts = |cores| facts_of_tern(cores, false);
+        let moved = |cores| facts_of_tern(cores, true);
         let share = Frame::Share(Say::Want {
             quest: "QEST-20261126-SKIFF1".to_owned(),
             file: "one".to_owned(),
             at: None,
         });
-        let mut queued: VecDeque<io::Result<Frame>> = [
-            facts(1),
-            facts(2),
-            Frame::HandedOver,
-            facts(3),
-            share.clone(),
-            facts(4),
-            facts(5),
-        ]
-        .into_iter()
-        .map(Ok)
-        .collect();
-        let mut heard = Vec::new();
-        while let Some(next) = next_waiting(&mut queued) {
-            heard.push(next.expect("read"));
-        }
+        let heard = all_waiting(
+            [
+                facts(1),
+                facts(2),
+                Frame::HandedOver,
+                moved(3),
+                share.clone(),
+                facts(4),
+                facts(5),
+            ]
+            .into_iter()
+            .map(Ok)
+            .collect(),
+        );
         assert_eq!(
             heard,
-            [facts(2), Frame::HandedOver, facts(3), share, facts(5)],
+            [facts(2), Frame::HandedOver, moved(3), share, facts(5)],
             "the newest before the handover, then it; facts after it are never taken ahead \
-             of a share said before them, nor left out for facts said after it"
+             of a share said before them on other ground, nor left out for facts said after it"
+        );
+    }
+
+    // On 2026-11-27 a machine taking every quest's scratch had its facts
+    // heard tens of minutes late, behind shares they couldn't change.
+    #[test]
+    fn facts_on_the_ground_taken_pass_the_shares_before_them() {
+        let facts = |cores| facts_of_tern(cores, false);
+        let moved = |cores| facts_of_tern(cores, true);
+        let share = Frame::Share(Say::Want {
+            quest: "QEST-20261126-SKIFF1".to_owned(),
+            file: "one".to_owned(),
+            at: None,
+        });
+        let start: Start = serde_json::from_value(json!({"work": {}, "command": ["true"]}))
+            .expect("a start");
+        let start = Frame::Start { ask: 1, start };
+        let heard = all_waiting(
+            [
+                facts(1),
+                share.clone(),
+                facts(2),
+                share.clone(),
+                facts(3),
+                start.clone(),
+                facts(4),
+            ]
+            .into_iter()
+            .map(Ok)
+            .collect(),
+        );
+        assert_eq!(
+            heard,
+            [
+                facts(1),
+                facts(3),
+                share.clone(),
+                share.clone(),
+                start,
+                facts(4),
+            ],
+            "the newest facts on the ground taken pass the shares, the older left out, \
+             but not a start kept in its place"
+        );
+        let heard = all_waiting(
+            [
+                facts(1),
+                share.clone(),
+                moved(2),
+                share.clone(),
+                facts(3),
+            ]
+            .into_iter()
+            .map(Ok)
+            .collect(),
+        );
+        assert_eq!(
+            heard,
+            [facts(1), share.clone(), moved(2), share, facts(3)],
+            "facts on the ground taken never pass facts on other ground said before them"
         );
     }
 
