@@ -1412,7 +1412,9 @@ fn past_lively(lively: Lively, room: &Room) -> Option<String> {
 /// The person's own cloud machines, as they are at `now`, are theirs here
 /// too, so what they reach names no worker.
 fn lasting_reach(machines: &[Machine], now: jiff::Timestamp) -> BTreeSet<&str> {
-    reach_of(machines, |one| declares_no_worker(one) || is_the_persons_cloud(one, now))
+    reach_of(machines, |one| {
+        declares_no_worker(one) || is_the_persons_cloud(one, now)
+    })
 }
 
 /// The networks the machines that declare themselves none of the workers
