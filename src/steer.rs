@@ -291,13 +291,6 @@ pub fn wake_among(
     holder(folder, id).is_some().then_some(named)
 }
 
-/// Whether `wake` is a holder's wake file beside `held` whose holder
-/// still runs, so that a file written there wakes a session.
-#[must_use]
-pub fn read_by_a_holder(wake: &Path, held: &Path) -> bool {
-    its_holder(wake, held).is_some()
-}
-
 /// Where `wake` is a holder's wake file beside `held` whose holder still
 /// runs, whether its own record says its program is parked, so that a
 /// file written there starts the program again at once, both read from
@@ -937,7 +930,6 @@ mod tests {
         });
         fs::write(work.join("5e551011.json"), running.to_string()).expect("written");
         assert_eq!(its("5e551011.wake"), Some(false), "running its program");
-        assert!(read_by_a_holder(&work.join("5e551011.wake"), held));
         drop(answers);
     }
 

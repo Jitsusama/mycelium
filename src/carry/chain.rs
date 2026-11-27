@@ -197,11 +197,14 @@ impl Orchestrations {
     /// started afresh, which continues no session, may claim its quests
     /// again. `continues` is asked only where some claim lapses, so the
     /// logs are read only then, and once. Where it gives nothing, as the
-    /// logs folder can't be read, or where it can't tell what a log
-    /// followed back continues, as two logs name one session, each
-    /// lapsing claim is kept as it is until a later lapse can tell where
-    /// it goes, rather than lost or handed to a planted log's session; a
-    /// log that can't be opened still reads as continuing none.
+    /// logs folder can't be read, each lapsing claim is kept as it is
+    /// until a later lapse can tell where it goes, rather than lost or
+    /// handed to a planted log's session. Where it can't tell what a log
+    /// followed back continues, as two logs named for one session name
+    /// different sessions, each is followed, and only a lapsing claim
+    /// one of them may lead to is kept so; the rest pass or lapse as
+    /// they would. A log that can't be opened still reads as continuing
+    /// none.
     ///
     /// Answers what became of each claim that lapsed, so a record that
     /// keeps the change can say so: [`Lapsed::Handed`] to the session
@@ -223,40 +226,15 @@ impl Orchestrations {
             self.sessions.extend(lapsing);
             return Vec::new();
         };
-        // Every standing session that continues a lapsing claim counts,
-        // one that claimed for itself too: that it continues the claimer
-        // still makes which goes on unclear to tell.
-        let mut heirs: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-        let mut unclear = false;
-        'standing: for session in standing.keys() {
-            let mut at = session.clone();
-            for _ in 0..CONTINUED_MOST {
-                let before = match continues(&at) {
-                    Ok(Some(before)) => before,
-                    Ok(None) => break,
-                    Err(_) => {
-                        unclear = true;
-                        break 'standing;
-                    }
-                };
-                if let Some((claimer, _)) = lapsing.get_key_value(&before) {
-                    heirs.entry(claimer).or_default().push(session);
-                    break;
-                }
-                // A standing session's claim, or its having none, is its
-                // own: what it continues isn't handed past it.
-                if standing.contains_key(&before) {
-                    break;
-                }
-                at = before;
-            }
-        }
-        if unclear {
-            self.sessions.extend(lapsing);
-            return Vec::new();
-        }
+        let (heirs, doubted) = heirs(&lapsing, standing, &continues);
         let mut lapsed = Vec::new();
         for (claimer, claim) in &lapsing {
+            // Kept by the claimer it was, which no longer stands, so no
+            // standing session's own claim is overwritten.
+            if doubted.contains(claimer.as_str()) {
+                self.sessions.insert(claimer.clone(), claim.clone());
+                continue;
+            }
             let forgotten = |why: String| Lapsed::Forgotten {
                 claimer: claimer.clone(),
                 heads: claim.heads.clone(),
@@ -363,6 +341,50 @@ impl Orchestrations {
     }
 }
 
+/// Each standing session continuing a lapsing claim, by the claimer, as
+/// [`Orchestrations::lapse`] follows each back through `continues`, and
+/// each claimer a log that can't be told may lead to. Every standing
+/// session that continues a claim counts, one that claimed for itself
+/// too: that it continues the claimer still makes which goes on unclear
+/// to tell.
+fn heirs<'a>(
+    lapsing: &'a BTreeMap<String, Claim>,
+    standing: &'a BTreeMap<String, Option<String>>,
+    continues: &impl Fn(&str) -> Continued,
+) -> (BTreeMap<&'a str, Vec<&'a str>>, BTreeSet<&'a str>) {
+    let mut heirs: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut doubted = BTreeSet::new();
+    for session in standing.keys() {
+        // Each log reached, and whether one that can't be told led there:
+        // one path, until a log's continuation can't be told.
+        let mut reached = BTreeSet::from([(session.clone(), false)]);
+        for _ in 0..CONTINUED_MOST {
+            let mut next = BTreeSet::new();
+            for (at, doubtful) in reached {
+                let (before, doubtful): (Vec<String>, bool) = match continues(&at) {
+                    Ok(before) => (before.into_iter().collect(), doubtful),
+                    Err(may) => (may, true),
+                };
+                for before in before {
+                    // A standing session's claim, or its having none, is
+                    // its own: what it continues isn't handed past it.
+                    if let Some((claimer, _)) = lapsing.get_key_value(&before) {
+                        if doubtful {
+                            doubted.insert(claimer.as_str());
+                        } else {
+                            heirs.entry(claimer).or_default().push(session);
+                        }
+                    } else if !standing.contains_key(&before) {
+                        next.insert((before, doubtful));
+                    }
+                }
+            }
+            reached = next;
+        }
+    }
+    (heirs, doubted)
+}
+
 /// How many logs back a lapsing claim is followed to the session that
 /// goes on: a session rolls over into a new log only now and then, so a
 /// chain longer than this is taken as no continuation.
@@ -375,10 +397,10 @@ pub const CONTINUED_MOST: usize = 8;
 /// read.
 #[derive(Debug, Default)]
 pub struct Logs {
-    /// Each log found, by the session its name says it keeps; none for
-    /// a session two logs are named for, as a log planted under another
-    /// folder can't be told from its own.
-    found: BTreeMap<String, Option<PathBuf>>,
+    /// Each log found, by the session its name says it keeps: all of
+    /// them, where several are named for one session, as a log planted
+    /// under another folder can't be told from its own.
+    found: BTreeMap<String, Vec<PathBuf>>,
     /// Each folder in it that couldn't be read, and why, passed over.
     unread: Vec<String>,
 }
@@ -432,8 +454,8 @@ impl Logs {
                     scanned
                         .found
                         .entry(session.to_owned())
-                        .and_modify(|log| *log = None)
-                        .or_insert(Some(path));
+                        .or_default()
+                        .push(path);
                 }
             }
         }
@@ -447,39 +469,43 @@ impl Logs {
     }
 
     /// The session the log of `session` continues, as its own first line
-    /// names it. None where it has no log here or two, where that line
-    /// names another session, or where it continues none.
+    /// names it. None where it has no log here, or two that disagree,
+    /// where that line names another session, or where it continues none.
     #[must_use]
     pub fn continues(&self, session: &str) -> Option<String> {
         self.follows(session).ok().flatten()
     }
 
     /// What the log of `session` continues, as [`Self::continues`] tells
-    /// it, or why that can't be told: two logs are named for it.
+    /// it. Where several logs are named for it, each is read, and what
+    /// they all say is what it continues: a copy of its own log leaves
+    /// nothing to tell apart.
     ///
     /// # Errors
     ///
-    /// Where two logs are named for `session`, so which is its own, and
-    /// what it continues, can't be told.
+    /// Where the logs named for `session` disagree, so which is its own,
+    /// and what it continues, can't be told: each session one of them
+    /// names.
     pub fn follows(&self, session: &str) -> Continued {
         let Some(found) = self.found.get(session) else {
             return Ok(None);
         };
-        let Some(log) = found else {
-            return Err(format!(
-                "two logs are named for {}, so which is its own can't be told",
-                shown(session)
-            ));
-        };
-        Ok(Self::header_continues(log, session))
+        let named: BTreeSet<Option<String>> = found
+            .iter()
+            .map(|log| Self::header_continues(log, session))
+            .collect();
+        if named.len() > 1 {
+            return Err(named.into_iter().flatten().collect());
+        }
+        Ok(named.into_iter().next().flatten())
     }
 
-    /// The sessions two logs are named for, so what each continues can't
-    /// be told.
+    /// The sessions whose several logs disagree on what they continue,
+    /// so what each continues can't be told.
     pub fn doubled(&self) -> impl Iterator<Item = &str> {
         self.found
             .iter()
-            .filter(|(_, log)| log.is_none())
+            .filter(|(session, logs)| logs.len() > 1 && self.follows(session).is_err())
             .map(|(session, _)| session.as_str())
     }
 
@@ -503,9 +529,9 @@ impl Logs {
     }
 }
 
-/// What a session's log continues: the session, none, or why that can't
-/// be told.
-pub type Continued = Result<Option<String>, String>;
+/// What a session's log continues: the session or none, or, where its
+/// logs disagree, each session one of them names.
+pub type Continued = Result<Option<String>, Vec<String>>;
 
 /// What became of a claim whose session no longer stands, as
 /// [`Orchestrations::lapse`] tells it. Said in the node's log, so each
@@ -1141,20 +1167,61 @@ mod tests {
     }
 
     #[test]
-    fn every_lapsing_claim_is_kept_where_a_log_followed_back_cant_be_told() {
+    fn every_lapsing_claim_is_kept_where_a_log_followed_back_may_continue_it() {
         let mut record = nested();
         let before = record.clone();
         let standing = standing(&[("s-steward-2", Some("WCJQSG")), ("s-other", None)]);
         let said = record.lapse(&standing, || {
             Some(|session: &str| match session {
                 "s-steward-2" => Ok(Some("s-steward".to_owned())),
-                _ => Err("two logs are named for it".to_owned()),
+                "s-other" => Err(quests(&["s-steward", "s-weigh"])),
+                _ => Ok(None),
             })
         });
         assert_eq!(
             (record, said),
             (before, Vec::new()),
             "one log that can't be told may continue either, so neither is handed on or lost"
+        );
+    }
+
+    #[test]
+    fn a_log_that_cant_be_told_holds_back_only_the_claims_it_may_continue() {
+        let mut record = nested();
+        let weigh = record.sessions.get("s-weigh").cloned();
+        let standing = standing(&[
+            ("s-steward-2", Some("WCJQSG")),
+            ("s-other", None),
+            ("s-stray", None),
+        ]);
+        let said = record.lapse(&standing, || {
+            Some(|session: &str| match session {
+                "s-steward-2" => Ok(Some("s-steward".to_owned())),
+                // Its logs disagree, one through a log that claimed
+                // nothing and no longer stands.
+                "s-other" => Err(quests(&["s-elder", "s-gone"])),
+                "s-gone" => Ok(Some("s-weigh".to_owned())),
+                "s-stray" => Err(quests(&["s-elsewhere", "s-older"])),
+                _ => Ok(None),
+            })
+        });
+        assert_eq!(
+            said,
+            [Lapsed::Handed {
+                claimer: "s-steward".to_owned(),
+                heir: "s-steward-2".to_owned(),
+                heads: "QEST-20261007-WCJQSG".to_owned(),
+            }],
+            "a claim no doubtful log may lead to passes on, though others can't be told"
+        );
+        assert_eq!(
+            record.sessions.keys().collect::<Vec<_>>(),
+            ["s-steward-2", "s-weigh"],
+        );
+        assert_eq!(
+            record.sessions.get("s-weigh").cloned(),
+            weigh,
+            "and one a doubtful log may lead to is kept as it was, neither handed nor lost"
         );
     }
 
@@ -1385,8 +1452,8 @@ mod tests {
         );
         assert_eq!(
             found.follows("s-weigh"),
-            Err("two logs are named for s-weigh, so which is its own can't be told".to_owned()),
-            "and it says so, for a lapse to keep what it might continue"
+            Err(vec!["s-elder".to_owned(), "s-steward".to_owned()]),
+            "and it says what each may continue, for a lapse to keep those claims"
         );
         assert_eq!(found.doubled().collect::<Vec<_>>(), ["s-weigh"]);
         assert_eq!(
@@ -1394,6 +1461,37 @@ mod tests {
             Ok(None),
             "one with no log continues none"
         );
+    }
+
+    #[test]
+    fn a_session_whose_logs_agree_continues_what_they_name() {
+        let logs = tempfile::tempdir().expect("a temporary folder");
+        let (own, copied) = (
+            logs.path().join("--home-joel-src-mycelium--"),
+            logs.path().join("--home-joel--"),
+        );
+        for folder in [&own, &copied] {
+            fs::create_dir_all(folder).expect("made");
+        }
+        for folder in [&own, &copied] {
+            fs::write(
+                folder.join("2026-11-23T11-31-00-000Z_s-weigh.jsonl"),
+                "{\"id\":\"s-weigh\",\"parentSession\":\"s-elder\"}\n",
+            )
+            .expect("written");
+            fs::write(
+                folder.join("2026-11-23T11-00-00-000Z_s-steward.jsonl"),
+                "{\"id\":\"s-steward\"}\n",
+            )
+            .expect("written");
+        }
+        let found = Logs::scan(logs.path()).expect("scanned");
+        assert_eq!(
+            (found.follows("s-weigh"), found.follows("s-steward")),
+            (Ok(Some("s-elder".to_owned())), Ok(None)),
+            "a copy that says what the log says leaves nothing to tell apart"
+        );
+        assert_eq!(found.doubled().count(), 0, "so neither is doubted");
     }
 
     #[test]

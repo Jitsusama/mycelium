@@ -413,10 +413,12 @@ same code, each line a JSON value:
     save what it holds and what is killed past them two more to go.
 19. `{"Lend": {"ask", "lend"}}`: answer a model call through the other
     end's lender, as a `"Lend"` request says it (Borrowing a Lend).
-    The other end takes it only where this end is its worker, known by
-    the link alone, and its node was started with `--lend`; otherwise
-    it refuses 403, saying why. Its lender names the borrowing machine
-    by the link's other end, never by what the lend says. It answers
+    The other end takes it only where this end is its worker, or a
+    machine its node made, such as one made for the person, which its
+    way in releases, each known by the link alone, and its node was
+    started with `--lend`; otherwise it refuses 403, saying why. Its
+    lender names the borrowing machine by the link's other end, never
+    by what the lend says. It answers
     `{"Lent": {"ask", "lent"}}` a line for each `Lent`, the last its
     `"Done"` or `"Refused"`, at most four ahead of `{"Taken": {"ask"}}`,
     which the asking end sends as its asker takes each, as for a run.
@@ -714,7 +716,9 @@ in order and says each step:
    work, those running and those parked this boot. A machine not in reach,
    or this one, is refused. So is one to a worker (The Link) whose
    `declared` doesn't say `takes_carries`, as `tern is a worker that
-   doesn't declare it takes carries, so nothing is carried there`.
+   doesn't declare it takes carries, so nothing is carried there (a
+   worker is lent by a provider's link, reaches aquifer, or leaves
+   within 30 days)`.
    So is a carry whose sessions' starts the
    machine wouldn't take: the node is asked `"Takes"` once, with each
    session's arrival and the quest's own, and its refusal is said, as
@@ -980,6 +984,12 @@ session says of itself:
   such a machine. A worker is firm ground only where its `declared`
   says `takes_carries`, and never for a strict session, since a
   worker's strict fence is its own word, which no node holds it to.
+  A carry doesn't count a machine in the cloud as a worker, paid for
+  or not, where no provider's link lent it, it reaches no `aquifer`,
+  and it stays more than 30 days: it is one of the person's own, and
+  takes any carry, strict sessions too, under its own fences as the
+  Mac does. A machine this node made leaves when its make ends, as
+  the node's book says, whatever it declares.
 - The fence it names is never looser than its process shows. The
   node reads the proved owner's process: `PI_SANDBOX` in the
   environment it began with (`strict` or `fence`), and, for a pi that
@@ -1329,8 +1339,8 @@ or a password prompt waits inside its turn, so it stays as one in a
 turn. What a session is part
 way through is told only once its presence says `"leases":
 {"background": true}`, its harness keeping a lease for each background
-run. After a carry it would carry none for half an hour, and it would
-carry at most six in a day. A session moved by anyone stays put for a
+run. After a carry it would carry none for five minutes, and it would
+carry at most 48 in a day. A session moved by anyone stays put for a
 day, by the carries kept here, and nothing goes to a machine a session
 came from within the hour, nor to a Mac whose node doesn't say
 `fences_held` but a session shown unfenced (see The Socket). A strict
@@ -1384,7 +1394,7 @@ saying the node chose it by its own machine's reading, and that
 why: one refused for ground no firmer, a machine not the realm's,
 or a session no longer here is neither kept nor told, and one whose
 inbox refused it stays kept. A refused carry still counts as one
-made, toward the half hour and the six a day. It still puts no
+made, toward the five minutes and the 48 a day. It still puts no
 session to sleep, so the sleep it would have made only delays a
 carry by the minutes it waits to see whether sleeping eased it.
 An orchestrator's order after the node's carry still stands, as
@@ -1493,7 +1503,7 @@ kept whenever that why comes, changes or clears, though nothing else
 changed, until the day's file is full. A node with no quests' record
 served therefore never eases.
 
-The six a day are counted twice, and the larger counts. One count is
+The 48 a day are counted twice, and the larger counts. One count is
 what the node remembers: what it did since it began, and from when it
 began, each carry its own lines in `eases` say it made, or would have,
 within the day, and each carry the record of carries keeps `by`
@@ -1515,7 +1525,7 @@ from here within the day, read at each look. That
 record is the person's file to edit, so one cut short lifts no limit,
 even across a restart while the node's own lines stand; one that can't
 be read stops every carry, saying why. A carry kept by
-`node@<machine>`, or said in its own lines, also starts the half hour
+`node@<machine>`, or said in its own lines, also starts the five minutes
 after a carry and pins its session, across a restart. A line dated
 ahead counts until a day past its time, which can only hold carries
 back.
@@ -1769,7 +1779,13 @@ how full that disk is as the machine's disk guard bands it (`healthy`,
 `filling`, `nearly-full` or `critically-full`, from the guard's
 `status.json` while its heartbeat is under two minutes old, and absent
 otherwise; the guard's earlier `pressure`, `urgent` and `critical` are
-read as those three, and a band a node doesn't know is read as absent),
+read as those three, and a band a node doesn't know is read as absent;
+a disk the guard calls critically full is `nearly-full` where the
+guard says all three of its `free` bytes above its `nix_floor` and
+`exhausted` false, since the guard may band it so by forecast hours
+before it fills, and `critically-full` otherwise, a guard saying less,
+or a figure in another shape, being taken at its word; no other band
+is changed),
 `accelerators` (each a `kind`, `gpu` or
 `npu`, and its `driver`), and `power`: `on_battery`, true only with a
 battery of its own and nothing plugged in, and `charge`, its own
@@ -1960,7 +1976,11 @@ since its asker says its work whole.
 Where true, `takes_carries` says a worker takes carried sessions, as
 one made to take load off the person's machines does: a carry to a
 worker that doesn't say so is refused (Carrying a Quest), and one of
-the person's own machines takes carries either way.
+the person's own machines takes carries either way. A carry counts a
+machine in the cloud as one of the person's own, though it declares
+`costs_money`, where no provider's link lent it, it reaches no
+`aquifer`, and its `leaves_at`, or its make's end, is more than 30 days
+out (Carrying a Quest).
 Where given, `fence` says the fences an agent session runs in there, by
 kind (`none`, `fence` or `strict`), each with the doors it opens:
 `{"strict": {"builders": [...], "forges": [...], "secrets": [...]}}`,
@@ -2484,16 +2504,31 @@ a granted session's and one from no one known included, whoever it is
 booked for, since its booking says who pays for it and may let it go,
 not who may use it; the person's own go there only where it is booked
 for the person or for no asker, never into a worker home an agent's
-make wrote. A run the person asks naming one machine alone, a room an
-agent's make booked, runs there as an agent's, in the agent fence, so
-the person's safe word reaches every room though no session asks it,
-and the person's own login still never runs in that worker home.
-Work that names none of the workers may go to it though it
-costs money, ranked by its room as any machine is, so before a machine
-kept lively while it has room, and after one within its ceiling once
-it is over a limit. The node marks each one `"held_for": "agents"` as it
-places, from its own file, and every other as booked, never from what
-the machine says, and a link keeps nothing a machine says of it. A
+make wrote. Any run the person asks naming one machine alone, a room
+not booked here for the person or for no asker (an agent's make booked
+it, or this node never booked it but its link reached it as a worker,
+since each node keeps its own bookings), runs there as an agent's, in
+the agent fence. So the
+person's safe word reaches every room though no session asks it, and
+the person's own login still never runs in a worker home an agent
+wrote. Such a run is placed as an agent's run is: the asking machine
+must declare the agent fence and the room must say it runs commands in
+it, or the run is refused, its refusal saying the person asked it and
+it was sent as an agent's. The asking node's runs journal keeps
+`asked_by` beside its `by`; the room's own journal, and a refusal the
+room itself sends back, read as an agent's, since a run crossing the
+link carries no asker. One machine named twice is still one, and this
+node's own machine stays the person's whatever the file names. Since
+any session may write the file, naming a machine there only ever fences
+the person's runs to it, never loosens them, and never fences them to
+a machine that is no worker and no agent's make booked, as the
+person's own machines aren't. Work that names none of
+the workers may go to it though it costs money, ranked by its room as
+any machine is, so before a machine kept lively while it has room, and
+after one within its ceiling once it is over a limit. The node marks
+each one `"held_for": "agents"` as it places, from its own file, and
+every other as booked, never from what the machine says, and a link
+keeps nothing a machine says of it. A
 session the person granted is booked as the person but isn't one: its
 starts go to a machine booked for the person or for no asker, and not
 named in the file, only where they name it, never to one an agent's
@@ -3092,9 +3127,10 @@ up stops it: its process group is sent the terminate signal, then the
 kill signal if any of it still runs 10 seconds on. Each machine a run
 crosses keeps it in `runs.jsonl` in mycelium's folder, and logs each
 line: `{"run", "at", "by", "sessions", "from", "on", "folder",
-"command", "spared", "untold"}` as it starts, `"spared"` only where
-the node spared it a shared quest's tree and `"untold"`, why, only
-where an agent's run here was told no session, then
+"command", "spared", "untold", "asked_by"}` as it starts, `"spared"`
+only where the node spared it a shared quest's tree, `"untold"`, why,
+only where an agent's run here was told no session, and `"asked_by"`
+only where the person's run was sent to a room as an agent's, then
 `{"run", "at", "ended"}`, the last `Ran`
 or `{"Stopped": why}` where its asker let go.
 `mycelium run` prints what it writes as it comes and exits with its
@@ -3662,14 +3698,31 @@ as `quest:<id>`, so its short name is never a group's, as no group's
 name holds a colon; it is read in lower case, so keys differing only
 in case are one folder. `for` and `folder` are drawn on one line: each
 control character and line or paragraph separator in them is read as
-a space and each mark turning text's direction is dropped. `for` also
-drops each character that draws nothing and each of Unicode's 66
-noncharacters, keeping one selector only after a character drawn as
-part of a word past ASCII (none a space, a braille blank or a
-noncharacter), and a joiner only between two, the first perhaps
-followed by its selector, and then is trimmed of spaces
-and braille blanks (U+2800), and cut to its first 120 characters, then
-cleaned again, so it ends in no space and no joiner left joining
+a space and each mark turning text's direction is dropped. From what
+is left, `for` also drops each of Unicode's 66 noncharacters first,
+then each character that draws nothing (U+00AD, U+034F, U+115F,
+U+1160, U+17B4, U+17B5, U+180B to U+180F, U+200B to U+200D, U+2060
+to U+2065, U+206A to U+206F, U+3164, U+FE00 to U+FE0F, U+FEFF,
+U+FFA0, U+FFF0 to U+FFFB, U+1BCA0 to U+1BCA3, U+1D173 to U+1D17A and
+U+E0000 to U+E0FFF), keeping one selector (U+FE00 to U+FE0F or
+U+E0100 to U+E01EF, so no Mongolian one) only where the last
+character kept is itself past ASCII and drawn as part of a word (none
+a space, here any character Unicode gives White_Space, such as U+00A0
+or U+3000, nor a braille blank), so what this pass drops between them
+parts nothing, and a joiner (U+200C or U+200D) only between two such,
+the first perhaps followed by its selector and the second the very
+next character left, so one dropped in this pass after a joiner parts
+it, though a direction mark or noncharacter, gone before, doesn't; and at most
+three zero-width joiners (U+200D) from the start or from one
+character, other than a skin tone or any regional indicator (U+1F1E6
+to U+1F1FF, paired as a flag or not), given a cell by unicode-width 0.2.3's
+per-character width (most spacing marks are, though none extending a
+grapheme, such as U+09BE; no nonspacing mark, conjoining jamo vowel or
+final, or selector is) and following no zero-width joiner kept, to the
+next, the rest dropped, a non-joiner (U+200C) never counted, each
+judged against what is kept so far; and then is trimmed of such
+spaces and braille blanks (U+2800), and cut to its first 120 characters,
+then cleaned again, so it ends in no space and no joiner left joining
 nothing; `folder` is 1 to 1024 bytes. A
 `for` said as null or as anything but text is unsaid, and one unsaid,
 empty or cleaned to nothing is left out of the cell record. A cell's

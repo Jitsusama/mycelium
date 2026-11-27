@@ -6,7 +6,10 @@
 
 use serde_json::{Value, json};
 
-use super::{Look, Swarm, WHOLE, aligned, overview, team, typed, unmarked};
+use super::{
+    Look, Swarm, WHOLE, aligned, drawn_width, fit, most_steps, overview, padded, team, typed,
+    unmarked, within, wrapped,
+};
 
 /// A look 72 columns wide, without colour, at 17:00 on Thursday
 /// 12 November 2026, in UTC.
@@ -654,6 +657,20 @@ fn two_short_names_that_clean_alike_go_to_neither_and_swarm_names_say_them_clean
 }
 
 #[test]
+fn drawn_whole_a_title_heavy_with_marks_is_never_cut() {
+    // More marks on its cells than a cut keeps, which a terminal's row
+    // would cut, yet a pipe keeps all of it.
+    let mut swarm = swarm();
+    let heavy = format!("Reef{}", "\u{301}".repeat(40));
+    swarm.teams[0]["title"] = json!(heavy);
+    let shown = overview(&swarm, &whole());
+    assert!(
+        shown.contains(&heavy),
+        "a title was cut into a pipe:\n{shown}"
+    );
+}
+
+#[test]
 fn drawn_whole_a_long_name_is_never_cut_and_runs_on_alone() {
     let mut swarm = swarm();
     let long = "A reef whose name runs far past every column it was given";
@@ -878,6 +895,609 @@ fn a_colour_s_escape_takes_no_column_where_marks_line_up() {
         aligned("\u{1b}[1mab\u{1b}[0m\u{fdd0}  1\nabcd\u{fdd0}  2"),
         "\u{1b}[1mab\u{1b}[0m    1\nabcd  2",
         "a painted lead was padded by its characters rather than the columns it takes"
+    );
+}
+
+#[test]
+fn width_is_counted_in_the_cells_a_terminal_draws() {
+    for (text, wide, what) in [
+        ("tide", 4, "a letter takes one"),
+        ("港湾", 4, "a Han character takes two"),
+        ("e\u{301}", 1, "a combining accent takes none"),
+        ("👩\u{200D}💻", 2, "an emoji joined from two takes two"),
+        ("❤\u{FE0F}", 2, "a heart made an emoji takes two"),
+        ("\u{1b}[1m港\u{1b}[0m", 2, "a colour's escape takes none"),
+        ("👍\u{1F3FD}", 2, "a skin tone joins its hand"),
+        ("\u{1F1E8}\u{1F1E6}", 2, "a flag's two letters take two"),
+        ("1\u{FE0F}\u{20E3}", 2, "a keycap takes two"),
+        (
+            "👩\u{200D}❤\u{FE0F}\u{200D}👨",
+            2,
+            "a couple joined through a heart takes two",
+        ),
+    ] {
+        assert_eq!(drawn_width(text), wide, "{what}: {text:?}");
+    }
+}
+
+#[test]
+fn a_letter_a_ligature_joins_still_takes_its_own_cell() {
+    // Unicode's width rules count each of these ligatures narrower than
+    // its letters, but a terminal draws each letter in a cell of its own.
+    for (text, wide, what) in [
+        ("\u{644}\u{627}", 2, "Arabic's lam-alef"),
+        (
+            "\u{644}\u{64E}\u{627}",
+            2,
+            "lam-alef with a vowel mark between",
+        ),
+        ("\u{5D0}\u{200D}\u{5DC}", 2, "Hebrew's alef-lamed"),
+        (
+            "\u{1780}\u{17D2}\u{1780}",
+            2,
+            "a Khmer letter and its subscript",
+        ),
+        ("\u{A4F9}\u{A4FC}", 2, "Lisu's tone letters"),
+        ("\u{10C32}\u{200D}\u{10C03}", 2, "Old Turkic's ligature"),
+        ("\u{1A15}\u{1A17}\u{200D}\u{1A10}", 2, "Buginese's ligature"),
+        ("\u{2D4F}\u{200D}\u{2D3E}", 2, "Tifinagh's ligature"),
+        (
+            "👩\u{200D}\u{5D0}\u{200D}\u{5DC}",
+            4,
+            "a ligature joined on after an emoji",
+        ),
+        ("•\u{200D}\u{5D0}\u{200D}\u{5DC}", 3, "or after a sign"),
+        (
+            "\u{200D}\u{5D0}\u{200D}\u{5DC}",
+            2,
+            "or after a joiner alone",
+        ),
+    ] {
+        assert_eq!(drawn_width(text), wide, "{what}: {text:?}");
+    }
+    // So a cut to the room keeps no more than the room, and a pad fills it.
+    let lam_alefs = "\u{644}\u{627}".repeat(10);
+    assert_eq!(
+        drawn_width(&fit(&lam_alefs, 10)),
+        10,
+        "{:?}",
+        fit(&lam_alefs, 10)
+    );
+    assert_eq!(drawn_width(&padded("\u{644}\u{627}", 4)), 4);
+    assert_eq!(
+        within("\u{1780}\u{17D2}\u{1780}", 1),
+        "\u{1780}",
+        "a coeng left at the cut goes with its letter"
+    );
+}
+
+#[test]
+fn a_cut_or_pad_keeps_to_cells_and_never_splits_a_wide_character() {
+    assert_eq!(
+        fit("港湾港", 4),
+        "港…",
+        "a wide character that would pass the edge goes"
+    );
+    assert_eq!(fit("港湾", 4), "港湾", "what fits is kept whole");
+    assert_eq!(padded("港", 4), "港  ", "padding counts the cells taken");
+    assert_eq!(
+        within("❤\u{FE0F}x", 1),
+        "❤",
+        "a selector that widens a heart past the edge is left out"
+    );
+    // A joiner makes two emoji one, narrower than its characters, so a
+    // cut that counted them one at a time split it.
+    let mut split = Vec::new();
+    for (cut, kept, what) in [
+        (
+            within("👩\u{200D}💻", 2),
+            "👩\u{200D}💻",
+            "an emoji joined from two fits whole",
+        ),
+        (
+            within("👍\u{1F3FD}ab", 3),
+            "👍\u{1F3FD}a",
+            "a skin tone keeps its hand",
+        ),
+        (
+            within("\u{1b}[1mabc", 2),
+            "\u{1b}[1mab",
+            "an escape is never left half written",
+        ),
+        (
+            within("\u{1b}[38;2;255;255;255mab", 1),
+            "\u{1b}[38;2;255;255;255ma",
+            "an escape longer than a cut's steps is one step",
+        ),
+        (
+            within("ab👩\u{200D}💻", 2),
+            "ab",
+            "a joined emoji past the edge is left whole",
+        ),
+        (
+            within("👩\u{200D}x", 2),
+            "👩",
+            "a joiner left at the cut goes",
+        ),
+        (
+            within("港\u{200D}湾", 3),
+            "港",
+            "a joiner between two Han characters goes at the cut",
+        ),
+        (
+            within("⌚\u{FE0E}x", 1),
+            "⌚\u{FE0E}",
+            "a start past the edge comes back within it once a text selector follows",
+        ),
+    ] {
+        if cut != kept {
+            split.push(format!("{what}: {cut:?}"));
+        }
+    }
+    for (drawn, whole, what) in [
+        (
+            fit("👩\u{200D}💻 ab", 4),
+            "👩\u{200D}💻…",
+            "a cut keeps a joined emoji",
+        ),
+        (
+            wrapped("👩\u{200D}💻", "", "", 3),
+            "👩\u{200D}💻\n",
+            "a wrap keeps a joined emoji on its line",
+        ),
+        (
+            wrapped("👩\u{200D}💻", "", "", 1),
+            "👩\u{200D}💻\n",
+            "a line too narrow for it still takes it whole",
+        ),
+    ] {
+        if drawn != whole {
+            split.push(format!("{what}: {drawn:?}"));
+        }
+    }
+    assert!(
+        split.is_empty(),
+        "a joined emoji or an escape was split: {split:?}"
+    );
+    assert_eq!(
+        wrapped("港湾港 湾", "", "", 5),
+        "港湾\n港 湾\n",
+        "a word past a line is broken by cells, and words join by them"
+    );
+    assert_eq!(
+        wrapped("港湾", "", "", 1),
+        "港\n湾\n",
+        "a line too narrow for a wide character still takes one"
+    );
+    assert_eq!(
+        wrapped("abcd❤\u{FE0F} ef", "", "", 5),
+        "abcd\n❤\u{FE0F} ef\n",
+        "a heart that its selector widens past a line goes to the next with it"
+    );
+}
+
+#[test]
+fn a_peer_s_name_chained_from_emoji_counts_a_cell_pair_for_each_four() {
+    // Unicode's widths count a joined run of any length as two cells, so
+    // cleaned, a run keeps three joiners at most, as a family of four
+    // does, and a cut takes the rest at the cells they count.
+    let cells = <str as unicode_width::UnicodeWidthStr>::width;
+    let chained = vec!["\u{1F469}"; 84].join("\u{200D}");
+    let cleaned = unmarked(&chained);
+    assert_eq!(cells(cleaned.as_str()), 2 * 84 / 4, "{cleaned:?}");
+    assert!(
+        fit(&cleaned, 20).ends_with('…'),
+        "a name chained from emoji passed a cut whole"
+    );
+    // Four emoji joined as no sequence still count two cells and draw
+    // eight, a bound the cap keeps rather than closes. A nonspacing mark
+    // between them draws nothing, and a skin tone carries on the emoji
+    // before it, so neither starts the count afresh, nor does a regional
+    // indicator, paired as a flag or alone: a run holds four emoji at most, and each four cost two
+    // cells, as Unicode's widths count them. Each emoji carries its mark,
+    // so one that restarted the count would keep every joiner. The count
+    // runs from the text's start, so a chain of flags, which nothing in
+    // it restarts, keeps three joiners in all; a toned emoji after a
+    // dropped joiner follows no joiner kept, so it starts a new run.
+    let marked = "\u{1F469}\u{301}\u{200D}".repeat(20);
+    let toned = "\u{1F469}\u{1F3FB}\u{200D}".repeat(20);
+    let flagged = "\u{1F1E8}\u{1F1E6}\u{200D}".repeat(20);
+    let kept = |text: &str| unmarked(text).matches('\u{200D}').count();
+    assert_eq!(
+        kept(&marked),
+        15,
+        "a mark between emoji is joined past, three joiners a run"
+    );
+    assert_eq!(kept(&toned), 15, "a toned emoji is a run's start");
+    assert_eq!(
+        kept(&flagged),
+        3,
+        "a flag's half started a run, or the count didn't run from the start"
+    );
+    assert_eq!(
+        kept(
+            "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{1F1E6}\u{200D}\u{1F469}"
+        ),
+        3,
+        "a lone regional indicator started a run"
+    );
+    // A spacing mark takes a cell of its own, so it starts a run afresh,
+    // as PROTOCOL says: the joiner after it is the run's first.
+    assert_eq!(
+        kept(
+            "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{93E}\u{200D}\u{1F469}"
+        ),
+        4,
+        "a spacing mark is a run's start"
+    );
+    // But one that extends a grapheme, as U+09BE does, unicode-width
+    // gives no cell, so the run goes on past it, as PROTOCOL says.
+    assert_eq!(
+        kept(
+            "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{9BE}\u{200D}\u{1F469}"
+        ),
+        3,
+        "a mark extending a grapheme started a run"
+    );
+    // Nor does a conjoining jamo vowel, given no cell either.
+    assert_eq!(
+        kept(
+            "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{1161}\u{200D}\u{1F469}"
+        ),
+        3,
+        "a conjoining jamo vowel started a run"
+    );
+    // A non-joiner is never counted, so one after a run at the cap stays.
+    let parted = "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{200C}\u{1F469}";
+    assert_eq!(
+        unmarked(parted),
+        parted,
+        "a non-joiner was capped as a joiner"
+    );
+    for (chain, emoji) in [
+        (marked.as_str(), 20),
+        (toned.as_str(), 20),
+        (flagged.as_str(), 20),
+    ] {
+        let cleaned = unmarked(chain);
+        // Counted directly too, since whether Unicode's widths carry a run
+        // through a mark is theirs to say: each four emoji keep three.
+        let joiners = cleaned.matches('\u{200D}').count();
+        assert!(
+            joiners <= 3 * emoji / 4 && cells(cleaned.as_str()) >= 2 * emoji / 4,
+            "a mark, a skin tone or a flag let a run keep more than three joiners \
+             ({joiners}): {cleaned:?}"
+        );
+    }
+}
+
+#[test]
+fn a_noncharacter_in_a_chain_parts_no_run_of_joiners() {
+    // A noncharacter goes before the joiners are judged, as PROTOCOL
+    // cleans a `for`, so one between emoji, which unicode-width gives a
+    // cell, can't start a run afresh and then leave it joined past the
+    // cap once it's gone, nor part a joiner from the letter before it.
+    let four = "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F469}";
+    let flags = "\u{1F1E8}\u{1F1E6}\u{200D}".repeat(3) + "\u{1F1E8}\u{1F1E6}";
+    let kept = |text: &str| unmarked(text).matches('\u{200D}').count();
+    for (parted, after) in [
+        ("\u{FDD0}", "\u{1F3FB}\u{200D}"),
+        ("\u{FDD0}", "\u{301}\u{200D}"),
+        ("\u{FFFE}", "\u{1F3FB}\u{200D}"),
+    ] {
+        // Whole, not counted: one that started a run afresh keeps as many
+        // joiners, but where the run should have been parted.
+        let chain = format!("{four}{parted}{after}").repeat(10);
+        assert_eq!(
+            unmarked(&chain),
+            unmarked(&chain.replace(parted, "")),
+            "a noncharacter parted a run of joiners: {chain:?}"
+        );
+    }
+    assert_eq!(
+        kept(&format!("{flags}\u{FDD0}\u{200D}{flags}")),
+        3,
+        "a noncharacter started a chain of flags afresh"
+    );
+    assert_eq!(
+        unmarked("\u{6E2F}\u{FDD0}\u{200D}\u{6E7E}"),
+        "\u{6E2F}\u{200D}\u{6E7E}",
+        "a noncharacter parted a joiner from the letter before it"
+    );
+}
+
+#[test]
+fn a_for_is_cleaned_by_what_protocol_lists() {
+    // What draws nothing goes in the same pass as the joiners are
+    // judged, as PROTOCOL says: before a joiner it is looked past, as
+    // what is kept, and after one it parts it, as the very next
+    // character left. A direction mark, gone before, as a noncharacter
+    // is, parts nothing. A space past ASCII is a space, as PROTOCOL says
+    // of White_Space, so a joiner after one goes, and one at an end is
+    // trimmed. What draws nothing and what selects are PROTOCOL's own
+    // lists: a Mongolian selector and an annotation control draw nothing,
+    // both ends of the ideographic selectors select, and a non-joiner, as
+    // a joiner, stands only between two. A selector follows the last
+    // character kept, so what this pass drops before it parts nothing.
+    // The cap on joiners in a run has its cases in the chain test above.
+    for (said, cleaned) in [
+        ("\u{1820}\u{180B}", "\u{1820}"),
+        ("\u{1820}\u{FE00}", "\u{1820}\u{FE00}"),
+        ("\u{845B}\u{E0100}", "\u{845B}\u{E0100}"),
+        ("\u{845B}\u{E01EF}", "\u{845B}\u{E01EF}"),
+        ("\u{845B}\u{E01F0}", "\u{845B}"),
+        ("\u{6E2F}\u{200B}\u{FE0F}", "\u{6E2F}\u{FE0F}"),
+        ("\u{6E2F}\u{200D}\u{FE0F}", "\u{6E2F}\u{FE0F}"),
+        ("\u{6E2F}\u{FFF9}\u{6E7E}", "\u{6E2F}\u{6E7E}"),
+        ("\u{6E2F}\u{200C}\u{6E7E}", "\u{6E2F}\u{200C}\u{6E7E}"),
+        ("\u{6E2F}\u{200C}a", "\u{6E2F}a"),
+        (
+            "\u{6E2F}\u{3000}\u{200D}\u{6E7E}",
+            "\u{6E2F}\u{3000}\u{6E7E}",
+        ),
+        ("\u{6E2F}\u{200D}\u{A0}\u{6E7E}", "\u{6E2F}\u{A0}\u{6E7E}"),
+        ("\u{3000}\u{6E2F}\u{A0}", "\u{6E2F}"),
+        (
+            "\u{6E2F}\u{200D}\u{200E}\u{6E7E}",
+            "\u{6E2F}\u{200D}\u{6E7E}",
+        ),
+        (
+            "\u{6E2F}\u{200D}\u{202E}\u{6E7E}",
+            "\u{6E2F}\u{200D}\u{6E7E}",
+        ),
+        (
+            "\u{6E2F}\u{200B}\u{200D}\u{6E7E}",
+            "\u{6E2F}\u{200D}\u{6E7E}",
+        ),
+        ("\u{6E2F}\u{200D}\u{200B}\u{6E7E}", "\u{6E2F}\u{6E7E}"),
+        ("\u{6E2F}\u{200D}\u{AD}\u{6E7E}", "\u{6E2F}\u{6E7E}"),
+        (
+            "\u{6E2F}\u{200D}\u{FDD0}\u{6E7E}",
+            "\u{6E2F}\u{200D}\u{6E7E}",
+        ),
+    ] {
+        assert_eq!(unmarked(said), cleaned, "{said:?} cleaned unlike PROTOCOL");
+    }
+}
+
+#[test]
+fn a_cut_keeps_the_longest_start_that_fits_as_measured_whole() {
+    // Measured whole by the cell count, a start at a time, as the cut
+    // measured before it settled what it had walked.
+    fn longest(text: &str, room: usize) -> &str {
+        let mut kept = "";
+        for (at, each) in text.char_indices() {
+            let start = &text[..at + each.len_utf8()];
+            if drawn_width(start) <= room {
+                kept = start;
+            }
+        }
+        kept.trim_end_matches(['\u{200D}', '\u{17D2}'])
+    }
+    let mut wrong = Vec::new();
+    for text in [
+        "❤\u{FE0F}x❤\u{FE0E}y",
+        "⌚\u{FE0E}ab⌚c",
+        "👩\u{200D}💻👩\u{200D}💻a👍\u{1F3FD}b",
+        "🇨🇦🇺🇸 1\u{FE0F}\u{20E3}x",
+        "لا ab لآ",
+        "ꓹꓼ a ⵏ\u{2D7F}ⴾ b",
+        "港\u{200D}湾 e\u{301}\u{302}x",
+        "a\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}b",
+        // A selector past a run of steps with no fresh start, where a cut
+        // that settled between it and its heart would count a cell less.
+        &format!("{}\u{200D}❤\u{FE0F}x", "ب".repeat(30)),
+    ] {
+        for room in 0..36 {
+            let (cut, whole) = (within(text, room), longest(text, room));
+            if cut != whole {
+                wrong.push(format!("{text:?} to {room}: {cut:?}, not {whole:?}"));
+            }
+        }
+    }
+    // Past a run of steps with no fresh start the cut settles anyway,
+    // which may count more than is drawn but never less.
+    let joined = "👩\u{200D}".repeat(40);
+    for room in 0..16 {
+        let cut = within(&joined, room);
+        if drawn_width(cut) > room {
+            wrong.push(format!("a long joined run to {room} passed it"));
+        }
+        if room >= 2 && cut.is_empty() {
+            wrong.push(format!("a long joined run to {room} kept nothing"));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "cuts that weren't the longest start: {wrong:#?}"
+    );
+}
+
+#[test]
+fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut() {
+    use std::{sync::mpsc, thread, time::Duration};
+    /// A cut by what it is, and whether it came out right.
+    type Cut = (&'static str, fn() -> bool);
+    // A peer's message may be 256 KiB on one line; measured to its end
+    // at each start, cutting it takes minutes and wrapping it longer.
+    // Into a pipe the room is the whole text, so neither its room nor a
+    // cap on steps bounds it there.
+    let budget = Duration::from_secs(5);
+    // Each cut runs on a thread of its own, so one that costs what its
+    // text does fails at the budget rather than holding the run for
+    // hours; the test's process ends what it leaves running.
+    let within_budget = |cut: fn() -> bool| {
+        let (sent, heard) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = sent.send(cut());
+        });
+        heard.recv_timeout(budget)
+    };
+    let cases: [Cut; 8] = [
+        ("Han cut to 80", || {
+            drawn_width(&fit(&"港".repeat(60_000), 80)) <= 80
+        }),
+        ("one word wrapped to 80", || {
+            wrapped(&"a".repeat(20_000), "", "", 80).lines().count() == 250
+        }),
+        ("Han cut to its own width", || {
+            let han = "港".repeat(60_000);
+            within(&han, drawn_width(&han)) == han
+        }),
+        ("one word fitted whole, measured once", || {
+            let word = "a".repeat(256 * 1024);
+            fit(&word, WHOLE) == word
+        }),
+        ("one word wrapped whole", || {
+            wrapped(&"a".repeat(256 * 1024), "  ", "    ", WHOLE)
+                .lines()
+                .count()
+                == 1
+        }),
+        // Marks start nothing afresh, so only settling past a long run
+        // keeps a cut through them from measuring them all again.
+        ("a pile of marks wrapped whole", || {
+            wrapped(&format!("a{}", "\u{301}".repeat(256 * 1024)), "", "", WHOLE)
+                .lines()
+                .count()
+                == 1
+        }),
+        ("many words wrapped whole", || {
+            wrapped(&"ab ".repeat(80_000), "", "", WHOLE)
+                .lines()
+                .count()
+                == 1
+        }),
+        // Each emoji starts afresh, so a cut settles at each and counts
+        // exactly: forty of them take eighty cells.
+        ("joined emoji cut to 80", || {
+            within(&"👩\u{200D}💻".repeat(20_000), 80).chars().count() == 40 * 3
+        }),
+    ];
+    let slow: Vec<String> = cases
+        .iter()
+        .filter_map(|(what, cut)| match within_budget(*cut) {
+            Ok(true) => None,
+            Ok(false) => Some(format!("{what}: cut wrong")),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                Some(format!("{what}: still cutting after {budget:?}"))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Some(format!("{what}: panicked")),
+        })
+        .collect();
+    assert!(
+        slow.is_empty(),
+        "cuts that cost what their text does: {slow:#?}"
+    );
+    // A name buried in marks or joiners that draw nothing measures one
+    // cell, so only the cap on steps keeps it from putting them all on
+    // the line.
+    for buried in [
+        format!("a{}", "\u{301}".repeat(10_000)),
+        format!("a{}", "\u{200D}".repeat(10_000)),
+    ] {
+        let kept = fit(&buried, 10);
+        let count = kept.chars().count();
+        assert!(
+            kept.starts_with('a') && count <= most_steps(10 - 1) + 1,
+            "a pile passed a cut whole, or its name went: {count} characters kept"
+        );
+    }
+    // Wrapped, the rest of a pile goes too, rather than taking lines of
+    // nothing that push the words after it out of what is shown.
+    // Whichever of its word's letters the pile follows, so the word isn't
+    // split at the pile's base.
+    for word in ["a", "ab", "Reef"] {
+        let wrap = wrapped(&format!("{word}{} b", "\u{301}".repeat(10_000)), "", "", 80);
+        // Cut to the line's cap, it leaves no room for another step, so
+        // the word after it goes down, and no line holds a mark but the
+        // first.
+        assert!(
+            wrap.starts_with(word)
+                && wrap.ends_with("\nb\n")
+                && wrap.lines().skip(1).all(|line| !line.contains('\u{301}')),
+            "a pile after {word} spread over lines: {} of them",
+            wrap.lines().count()
+        );
+    }
+    // A selector that doesn't fit still moves with its emoji to the next.
+    assert_eq!(
+        wrapped("abc\u{2764}\u{FE0F}", "", "", 4),
+        "abc\n\u{2764}\u{FE0F}\n",
+        "a selector was parted from its emoji, or dropped"
+    );
+    // A conjunct written with a joiner (a virama, then the joiner) is
+    // no pile running on, so it moves down whole, its joiner kept.
+    assert_eq!(
+        wrapped("abc\u{915}\u{94D}\u{200D}\u{937}", "", "", 4),
+        "abc\n\u{915}\u{94D}\u{200D}\u{937}\n",
+        "a conjunct was split at its joiner, or its joiner dropped"
+    );
+}
+
+#[test]
+fn a_pile_of_marks_on_a_later_word_is_cut_as_one_on_the_first_is() {
+    // A peer's question may wrap into a few lines and be shown as it
+    // is, so a pile joined whole to the line before it would bury what
+    // is beside it, as a pile on the text's first word can't.
+    let wrap = wrapped(&format!("x Reef{} b", "\u{301}".repeat(10_000)), "", "", 80);
+    let marks = wrap.matches('\u{301}').count();
+    assert!(
+        marks < most_steps(80)
+            && wrap.starts_with('x')
+            && wrap.contains("Reef")
+            && wrap.ends_with("b\n"),
+        "a pile after a later word passed whole, or a word went: {marks} marks on {:?}",
+        wrap.lines()
+            .map(|line| line.chars().count())
+            .collect::<Vec<_>>()
+    );
+    // Nor do piles split over short words, each under the cap, add up
+    // on one line past it.
+    let split = wrapped(
+        &format!("Reef{} ", "\u{301}".repeat(640)).repeat(16),
+        "",
+        "",
+        80,
+    );
+    let most = split.lines().map(|line| line.chars().count()).max();
+    assert!(
+        split.matches("Reef").count() == 16 && most.is_some_and(|most| most <= most_steps(80)),
+        "piles on short words added up on a line past the cap, or a word went: {most:?}"
+    );
+}
+
+#[test]
+fn a_wide_team_keeps_its_counts_in_line_cut_or_not() {
+    // Measured by Unicode's widths directly, not by the code under test,
+    // as nothing here is coloured.
+    let cells = <str as unicode_width::UnicodeWidthStr>::width;
+    let row = |title: &str| {
+        let mut swarm = swarm();
+        swarm.teams[0]["title"] = json!(title);
+        let shown = overview(&swarm, &look());
+        let first = title.chars().next().unwrap_or('R');
+        shown
+            .lines()
+            .find(|line| line.starts_with(first) && line.trim_end().ends_with(" 1"))
+            .map(cells)
+    };
+    let plain = row("Reef");
+    for title in ["港湾港湾", &"港".repeat(40)] {
+        assert!(
+            plain.is_some() && row(title) == plain,
+            "a wide title moved its counts: {title:?} drew {:?} cells, Reef {plain:?}",
+            row(title)
+        );
+    }
+}
+
+#[test]
+fn a_wide_title_lines_its_counts_up_by_cells() {
+    assert_eq!(
+        aligned("港湾\u{fdd0}  1\nab\u{fdd0}  2"),
+        "港湾  1\nab    2",
+        "a wide lead was padded by its characters rather than its cells"
     );
 }
 
