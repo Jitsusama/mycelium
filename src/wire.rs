@@ -101,6 +101,20 @@ pub enum Request {
         /// Its held id, as `holds` lists it.
         held: String,
     },
+    /// End the session held here as `held` for good, as the node of the
+    /// linked machine `from` asks for `cell`, whose start it is by that
+    /// node's book: only where this node's own book let that start go
+    /// ahead as an agent's relayed from `from`, and landed here. Only
+    /// this node's own process, or one judged the person's, as a link's
+    /// end is, asks it.
+    EndStart {
+        /// Its held id, as `holds` lists it.
+        held: String,
+        /// The machine whose node asks it.
+        from: String,
+        /// The cell whose start it is, as that node proved it asks.
+        cell: String,
+    },
     /// The latest messages to the groups `groups` hears, oldest first.
     Messages {
         /// Which groups.
@@ -145,6 +159,17 @@ pub enum Request {
     Starts {
         /// What to do.
         act: StartsAct,
+    },
+    /// The machines named rooms for agents to share, after naming
+    /// `machine` one or taking it out, as `act` asks: the node writes
+    /// `agent-rooms` so, and names only a machine its own book holds as
+    /// made for an agent, though placement trusts a line put by hand.
+    Rooms {
+        /// What to do.
+        act: RoomsAct,
+        /// The machine named or taken out, which a list needs none of.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machine: Option<String>,
     },
     /// What the session asking, as the kernel and pi's records prove it,
     /// orchestrates by the node's record, changing nothing. Its own
@@ -346,6 +371,18 @@ pub enum StartsAct {
     /// Let agents start again, within their limits.
     Resume,
     /// Only say how they stand.
+    List,
+}
+
+/// What is asked of the rooms made for agents to share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomsAct {
+    /// Name a machine a room.
+    Add,
+    /// Take a machine out of the rooms.
+    Remove,
+    /// Only say which machines are rooms.
     List,
 }
 
@@ -551,6 +588,11 @@ pub enum Response {
         stopped: bool,
         /// The newest starts.
         newest: Vec<serde_json::Value>,
+    },
+    /// The machines named rooms for agents to share, after the act asked.
+    Rooms {
+        /// Each, by name, in order.
+        rooms: Vec<String>,
     },
     /// Events follow, one per line.
     Watching,

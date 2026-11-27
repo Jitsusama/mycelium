@@ -194,17 +194,27 @@ mod tests {
     }
 
     #[test]
-    fn a_subject_the_cap_keeps_apart_is_a_hub_apart_and_a_repeat_is_not() {
-        let said = networks::subjects(&json!(["école", "ÉCOLE", "Straße", "STRASSE"]));
-        let made = records(&[Holder {
-            address: "KESTRL".to_owned(),
-            subjects: said,
-            heard: 0.0,
-        }]);
+    fn cells_saying_a_subject_in_any_case_share_its_hub_as_the_cap_folds_it() {
+        // Each cell's subjects pass the cap alone, as the node's do, so
+        // only the hub's own fold can join what two cells say.
+        let cell = |address: &str, said: serde_json::Value, heard: f64| Holder {
+            address: address.to_owned(),
+            subjects: networks::subjects(&said),
+            heard,
+        };
+        let made = records(&[
+            cell("KESTRL", json!(["école", "Straße"]), 0.0),
+            cell("OSPREY", json!(["ÉCOLE", "STRASSE"]), 1.0),
+        ]);
         assert_eq!(
             made.keys().cloned().collect::<Vec<_>>(),
             ["hub:strasse", "hub:straße", "hub:école"],
-            "each subject the cap keeps is one hub, and a repeat it passed over none"
+            "an accented subject in two cases is one hub, and two the cap keeps apart are two"
+        );
+        assert_eq!(
+            made["hub:école"]["fits"],
+            json!(["KESTRL", "OSPREY"]),
+            "both cells fit the one they said in different cases"
         );
     }
 

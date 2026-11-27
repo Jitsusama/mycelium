@@ -22,6 +22,7 @@ fn machine(name: &str, load: f64, busy: usize, per_core: f64) -> Load {
         load: Some(load),
         over: false,
         past: Vec::new(),
+        lively: None,
         room: false,
         busy,
         idle: 3,

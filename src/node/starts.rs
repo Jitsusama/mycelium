@@ -196,6 +196,11 @@ pub struct Kept {
     /// before there was this, so those count toward the node's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toward: Option<String>,
+    /// The machine whose node relayed it here, where it was taken as an
+    /// agent's start relayed from there: the one machine that may end
+    /// it for the cell its own book names as starting it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relayed_from: Option<String>,
 }
 
 /// Whether no ask joined a start, so its line says nothing of it.
@@ -454,6 +459,10 @@ fn bounded(mut asked: Kept) -> Kept {
     asked.program = asked
         .program
         .map(|program| program.chars().take(PROGRAM_MOST).collect());
+    // A machine's name as the link's other end said it, so bounded too.
+    asked.relayed_from = asked
+        .relayed_from
+        .map(|from| from.chars().take(PROGRAM_MOST).collect());
     asked
 }
 
@@ -891,6 +900,22 @@ impl Starts {
         Starters(starters)
     }
 
+    /// The machine that relayed the newest start the book keeps as `held`
+    /// landed on `here`, where that start was an agent's it let go ahead
+    /// as relayed from there: none for the person's, one refused, one
+    /// that landed elsewhere, or one asked here.
+    #[must_use]
+    pub fn relayed_from(&self, held: &str, here: &str) -> Option<String> {
+        self.lock()
+            .kept
+            .iter()
+            .rev()
+            .find(|one| one.held.as_deref() == Some(held))
+            .filter(|one| one.machine.as_deref() == Some(here))
+            .filter(|one| matches!(one.by, By::Agent(_)) && one.refused.is_none())
+            .and_then(|one| one.relayed_from.clone())
+    }
+
     /// The machine the newest start the book keeps as `held` landed on,
     /// if it keeps one: the book is kept on disk, so a node started
     /// again still knows where it started each hold, as far back as
@@ -1171,6 +1196,7 @@ mod tests {
             again: false,
             declared: None,
             toward: None,
+            relayed_from: None,
         }
     }
 
@@ -2120,6 +2146,39 @@ mod tests {
             assert_eq!(read.landed_on("h-1").as_deref(), Some("tern"), "the newest");
             assert_eq!(read.landed_on("h-2").as_deref(), Some("kestrel"));
             assert_eq!(read.landed_on("h-3"), None, "no start landed as it");
+        }
+    }
+
+    // A starter's end from afar is taken only for an agent's start the
+    // book let go ahead as relayed from the asking machine, and landed
+    // here, the newest under its id winning, after a start again too.
+    #[test]
+    fn the_book_names_the_machine_that_relayed_an_agents_start_here() {
+        let (dir, starts) = book();
+        let relayed = |by, from: &str| Kept {
+            relayed_from: Some(from.to_owned()),
+            ..asked(by, Some("OSPREY"), NOW)
+        };
+        let fenced = By::Agent(Kind::Fence);
+        started(&starts, relayed(fenced, "wren"), "h-1");
+        started(&starts, relayed(By::Person, "wren"), "h-2");
+        started(&starts, agent("OSPREY", NOW), "h-3");
+        started(&starts, relayed(fenced, "wren"), "h-4");
+        started(&starts, agent("OSPREY", NOW), "h-4");
+        let admitted = starts.admit(relayed(fenced, "wren")).expect("it may start");
+        starts.keep(admitted, Err("it didn't start".to_owned()), 0);
+        let again = Starts::at(dir.path().join("starts.jsonl"));
+        for read in [&starts, &again] {
+            assert_eq!(read.relayed_from("h-1", "kestrel").as_deref(), Some("wren"));
+            assert_eq!(
+                read.relayed_from("h-1", "tern"),
+                None,
+                "it landed elsewhere"
+            );
+            assert_eq!(read.relayed_from("h-2", "kestrel"), None, "the person's");
+            assert_eq!(read.relayed_from("h-3", "kestrel"), None, "asked here");
+            assert_eq!(read.relayed_from("h-4", "kestrel"), None, "the newest");
+            assert_eq!(read.relayed_from("h-5", "kestrel"), None, "none landed");
         }
     }
 
