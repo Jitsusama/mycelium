@@ -1104,7 +1104,7 @@ mod tests {
     }
 
     /// A presence of a session elsewhere saying `events`.
-    fn saying_events(events: Value) -> Presence {
+    fn saying_events(events: &Value) -> Presence {
         Presence {
             session: "01a1".to_owned(),
             body: json!({
@@ -1135,7 +1135,7 @@ mod tests {
             "where": "QEST-20261115-IAHL3O", "title": "not a kind there is"}),
         );
         said.insert(2, json!({"kind": "push", "where": "x", "title": "no time"}));
-        let read = session(&saying_events(json!(said)), "kestrel").expect("a presence reads");
+        let read = session(&saying_events(&json!(said)), "kestrel").expect("a presence reads");
         assert_eq!(
             read.events
                 .iter()
@@ -1162,7 +1162,7 @@ mod tests {
             "a session's record says them as its presence did: {serialized}"
         );
         assert!(
-            session(&saying_events(json!("not a list")), "kestrel")
+            session(&saying_events(&json!("not a list")), "kestrel")
                 .is_some_and(|session| session.events.is_empty()),
             "events it can't read never cost the session itself"
         );
@@ -1186,7 +1186,7 @@ mod tests {
                 event
             })
             .collect();
-        let read = session(&saying_events(json!(said)), "kestrel").expect("a presence reads");
+        let read = session(&saying_events(&json!(said)), "kestrel").expect("a presence reads");
         let read: Vec<&str> = read
             .events
             .iter()
