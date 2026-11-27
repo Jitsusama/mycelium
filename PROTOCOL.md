@@ -401,10 +401,12 @@ same code, each line a JSON value:
     save what it holds and what is killed past them two more to go.
 19. `{"Lend": {"ask", "lend"}}`: answer a model call through the other
     end's lender, as a `"Lend"` request says it (Borrowing a Lend).
-    The other end takes it only where this end is its worker, known by
-    the link alone, and its node was started with `--lend`; otherwise
-    it refuses 403, saying why. Its lender names the borrowing machine
-    by the link's other end, never by what the lend says. It answers
+    The other end takes it only where this end is its worker, or a
+    machine its node made, such as one made for the person, which its
+    way in releases, each known by the link alone, and its node was
+    started with `--lend`; otherwise it refuses 403, saying why. Its
+    lender names the borrowing machine by the link's other end, never
+    by what the lend says. It answers
     `{"Lent": {"ask", "lent"}}` a line for each `Lent`, the last its
     `"Done"` or `"Refused"`, at most four ahead of `{"Taken": {"ask"}}`,
     which the asking end sends as its asker takes each, as for a run.
