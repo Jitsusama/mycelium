@@ -414,7 +414,9 @@ pub const CONTINUED_MOST: usize = 8;
 pub struct Logs {
     /// Each log found, by the session its name says it keeps: all of
     /// them, where several are named for one session, as a log planted
-    /// under another folder can't be told from its own.
+    /// under another folder can't be told from its own. Each session's
+    /// are in their paths' order, not the order the folders read, so
+    /// what [`Self::disagreeing`] says of them is the same every scan.
     found: BTreeMap<String, Vec<PathBuf>>,
     /// Each folder in it that couldn't be read, and why, passed over.
     unread: Vec<String>,
@@ -477,6 +479,9 @@ impl Logs {
                         .push(path);
                 }
             }
+        }
+        for found in scanned.found.values_mut() {
+            found.sort();
         }
         Ok(scanned)
     }
