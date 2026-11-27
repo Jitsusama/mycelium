@@ -2644,8 +2644,11 @@ the run would go is where it runs: the asking machine must declare the
 agent fence and the room must say it runs commands in it, or the run is
 refused, its refusal saying the person asked it and it was sent as an
 agent's, and, where no booking on this node names the room, that none
-does: a node holds a booking again after a restart only once its make
-redials. A refusal the room itself sends back reads as an agent's. The
+does, and why none will come: a node books its own makes again as it
+starts, before it dials them, so the room was made by another node, or
+by this one in a line of its book that can't be read, names no realm
+or names a provider it no longer asks. A refusal the room itself sends
+back reads as an agent's. The
 run says `"asked_by": "Person"`, which only a node says: one an asker
 puts there without naming a machine it comes from is cleared. The room
 runs it through `/bin/sh -c`, never the login

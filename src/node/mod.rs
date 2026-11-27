@@ -11353,8 +11353,12 @@ enum Recast {
     /// no asker, which the worker mark reads as an agent's too.
     AnAgentsBooking,
     /// No booking here names the room, which this node's link reached
-    /// as a worker: one another node made, or one this node's booking
-    /// of is lost, or not back yet after a restart.
+    /// as a worker: one another node made, or one this node made whose
+    /// line in its book can't be read, names no realm or names a
+    /// provider it no longer asks. None of these is ever booked here
+    /// again: a make of this node's own that its book still reads, and
+    /// whose provider it still asks, is booked again as the node starts,
+    /// before its link is dialled.
     NoBooking,
 }
 
@@ -11371,8 +11375,10 @@ fn taken_as(recast: Option<Recast>, by: By, admits: Admits) -> (By, Admits) {
 /// Why a run is refused, `why`, saying where it was `recast` that the
 /// person asked it and it was sent to a room as an agent's, so the person
 /// isn't left reading an agent's refusal of a run they never asked as one.
-/// Where no booking here names the room, it says so, since one the person
-/// made is held here again after a restart only once its make redials.
+/// Where no booking here names the room, it says so, and why none will
+/// come: this node books its own makes again as it starts, before it
+/// dials them, so a room with none here is another node's, or one this
+/// node's book can no longer give back.
 fn sent_as(recast: Option<Recast>, why: String) -> String {
     let sent = "the person's run naming a room made for agents is sent there as an agent's, \
                 in the agent fence,";
@@ -11380,8 +11386,9 @@ fn sent_as(recast: Option<Recast>, why: String) -> String {
         Some(Recast::AnAgentsBooking) => format!("{sent} and {why}"),
         Some(Recast::NoBooking) => format!(
             "{sent} since no booking on this node says the room is the person's (each node \
-             keeps its own, and holds one again after a restart only once its make redials), \
-             and {why}"
+             keeps its own, and books its own makes again as it starts, so this room was \
+             made by another node, or by this one in a line of its book that can't be read, \
+             names no realm or names a provider it no longer asks), and {why}"
         ),
         None => why,
     }
@@ -27293,13 +27300,17 @@ esac
              the agent fence, and nowhere: reef is gone",
             "a recast run's refusal says whose it was"
         );
-        // Followup 503: a booking lost or not yet back is named.
+        // Followups 503 and 553: a booking none here holds is named, with
+        // why none will come, since a make of this node's own is booked
+        // again before its link is dialled.
         assert_eq!(
             sent_as(Some(Recast::NoBooking), "nowhere: tern is gone".to_owned()),
             "the person's run naming a room made for agents is sent there as an agent's, in \
              the agent fence, since no booking on this node says the room is the person's \
-             (each node keeps its own, and holds one again after a restart only once its make \
-             redials), and nowhere: tern is gone",
+             (each node keeps its own, and books its own makes again as it starts, so this \
+             room was made by another node, or by this one in a line of its book that can't \
+             be read, names no realm or names a provider it no longer asks), and nowhere: \
+             tern is gone",
             "and where no booking here names the room, it says so"
         );
         assert_eq!(
