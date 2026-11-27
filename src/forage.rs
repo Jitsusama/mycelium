@@ -436,7 +436,8 @@ pub fn addresses(said: &Value) -> Vec<String> {
 /// but blanks, or dates it at no ISO time, and keeping at most
 /// [`LISTED_MOST`]. Each need is kept as [`one_line`] says it, trimmed
 /// and cut, then cleaned again, as a share's `for` is, so a cut leaves
-/// no joiner joining nothing and no space at its end; and each time as
+/// no joiner joining nothing and, by [`cut_ended`], no space or lone
+/// Khmer coeng at its end; and each time as
 /// the node reads it, so two presences dating a join alike say it alike.
 #[must_use]
 pub fn joins(said: &Value) -> Vec<Join> {
@@ -451,7 +452,8 @@ pub fn joins(said: &Value) -> Vec<Join> {
                 .take(LONGEST_PURPOSE)
                 .collect();
             let need = one_line(&cut);
-            let need = Some(need.trim()).filter(|need| !need.is_empty())?;
+            let need = Some(cut_ended(need.trim(), char::is_whitespace))
+                .filter(|need| !need.is_empty())?;
             let since = join["since"].as_str()?.parse::<jiff::Timestamp>().ok()?;
             Some(Join {
                 cell: cell.to_owned(),
@@ -461,6 +463,15 @@ pub fn joins(said: &Value) -> Vec<Join> {
         })
         .take(LISTED_MOST)
         .collect()
+}
+
+/// `cut` without what a cut can leave at its end holding nothing: what
+/// its text counts `blank`, a joiner, or a Khmer coeng (U+17D2) with no
+/// letter after it to subscript, as the swarm's `within` leaves none
+/// either. All are trimmed together, as any could be left last once
+/// another after it goes.
+pub(crate) fn cut_ended(cut: &str, blank: fn(char) -> bool) -> &str {
+    cut.trim_end_matches(|each: char| blank(each) || matches!(each, '\u{200D}' | '\u{17D2}'))
 }
 
 /// The most characters a cell's address holds.
@@ -1382,7 +1393,10 @@ pub fn chosen(records: Vec<Value>, named: Option<&str>) -> Vec<Value> {
 /// dozens can't count as the two cells one emoji takes; a joiner before a
 /// letter, as in Devanagari's half forms or Sinhala's yansaya, joins no
 /// emoji, since the swarm's measure gives that letter a cell of its own,
-/// so it is never counted.
+/// so it is never counted. A letter is what [`char::is_alphabetic`]
+/// says, by the tables the Rust toolchain carries, which take in a few
+/// emoji such as the blood types; a chain of those keeps its joiners,
+/// and the measure counts each of them a cell all the same.
 pub(crate) fn one_line(text: &str) -> String {
     let plain: Vec<char> = text
         .chars()
@@ -2453,11 +2467,13 @@ mod tests {
     }
 
     #[test]
-    fn a_need_cut_beside_a_joiner_or_a_space_ends_on_neither() {
+    fn a_need_cut_beside_a_joiner_a_space_or_a_coeng_ends_on_none() {
         let letters = "\u{915}".repeat(LONGEST_PURPOSE - 1);
+        let khmer = "\u{1780}".repeat(LONGEST_PURPOSE - 1);
         let joins = joins(&json!([
             {"cell": "OSPREY", "need": format!("{letters}\u{200D}\u{915}"), "since": "2026-11-16T09:00:00Z"},
             {"cell": "TERNSS", "need": format!("{} y", "x".repeat(LONGEST_PURPOSE - 1)), "since": "2026-11-16T09:00:00Z"},
+            {"cell": "HERONS", "need": format!("{khmer}\u{17D2}\u{1780}"), "since": "2026-11-16T09:00:00Z"},
         ]));
         assert_eq!(
             joins[0].need, letters,
@@ -2467,6 +2483,10 @@ mod tests {
             joins[1].need,
             "x".repeat(LONGEST_PURPOSE - 1),
             "a space the cut leaves at the end goes"
+        );
+        assert_eq!(
+            joins[2].need, khmer,
+            "a Khmer coeng the cut parts from the letter it subscripts goes"
         );
     }
 
@@ -3704,6 +3724,20 @@ mod tests {
             one_line(&said),
             format!("{}{joiner}{letter}{woman}", [woman; 4].join(joiner)),
             "the joiner before a letter went, or the letter began the emoji's count afresh"
+        );
+        // Unicode gives a few emoji letters, such as the blood types,
+        // Alphabetic, so a chain of them keeps every joiner; the swarm's
+        // measure starts each afresh too, so the chain still counts a
+        // cell or more for every letter in it.
+        let blood = vec!["\u{1F170}\u{FE0F}"; 8].join(joiner);
+        assert_eq!(
+            one_line(&blood),
+            blood,
+            "a joiner before a blood type was capped"
+        );
+        assert!(
+            crate::swarm::drawn_width(&blood) >= 8,
+            "a chain of blood types counted fewer cells than its letters"
         );
     }
 

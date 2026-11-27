@@ -95,8 +95,8 @@ fn shares_of(presence: &Value) -> Vec<Share> {
         if let Some((cut, _)) = share.about.char_indices().nth(SHARE_FOR_MOST) {
             share.about.truncate(cut);
             // Cleaned again, so a cut falling after a space ends in none,
-            // and one falling after a joiner leaves none joining nothing.
-            share.about = swarm::unmarked(&share.about);
+            // and one after a joiner or coeng leaves none joining nothing.
+            share.about = swarm::unmarked_after_a_cut(&share.about);
         }
         // Cleaning and a cut keep what was read, so a long `for` held in
         // every cell would still cost its whole length without this.

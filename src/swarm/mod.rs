@@ -226,6 +226,16 @@ pub(crate) fn unmarked(text: &str) -> String {
         .to_owned()
 }
 
+/// `text` cut short and cleaned again as [`unmarked`] cleans it, so it
+/// ends in no space, and in no joiner or Khmer coeng the cut parted from
+/// what it joins.
+pub(crate) fn unmarked_after_a_cut(text: &str) -> String {
+    crate::forage::cut_ended(&unmarked(text), |each| {
+        each.is_whitespace() || each == BRAILLE_BLANK
+    })
+    .to_owned()
+}
+
 /// `text` with no mark left in it, for a page that lines nothing up.
 pub(crate) fn without_marks(text: &str) -> String {
     text.replace(MARKS, "")
