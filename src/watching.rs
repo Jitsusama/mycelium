@@ -39,6 +39,19 @@ pub fn watcher<F: EventHandler>(handler: F) -> notify::Result<RecommendedWatcher
     RecommendedWatcher::new(handler, Config::default().with_event_kinds(CHANGES))
 }
 
+/// What became of a path a change asked a watcher to watch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answer {
+    /// It is watched.
+    Watched,
+    /// The watcher holds it, but it isn't watched, as the stream didn't
+    /// start.
+    Held,
+    /// The watcher refused it, so it holds the path only if it did
+    /// before.
+    Refused,
+}
+
 /// Gives back each path in `gone` and watches each in `new`, as one
 /// change to `watcher`, answering for each of `new` whether it is watched.
 /// A path given back that wasn't watched is no matter. A change stops at
@@ -51,7 +64,22 @@ pub fn watch_all(
     gone: &[PathBuf],
     new: &[(PathBuf, RecursiveMode)],
 ) -> Vec<bool> {
-    let mut answers = vec![true; new.len()];
+    answer_all(watcher, gone, new)
+        .into_iter()
+        .map(|answer| answer == Answer::Watched)
+        .collect()
+}
+
+/// As [`watch_all`], but answering for each of `new` whether it is
+/// watched, held unwatched or refused, for a caller that gives back only
+/// what the watcher holds: a batch stops at a path given back that it
+/// doesn't hold, as it does at one that fails to watch.
+pub fn answer_all(
+    watcher: &mut dyn Watcher,
+    gone: &[PathBuf],
+    new: &[(PathBuf, RecursiveMode)],
+) -> Vec<Answer> {
+    let mut answers = vec![Answer::Watched; new.len()];
     let mut change: Vec<PathOp> = gone
         .iter()
         .map(|path| PathOp::unwatch(path.clone()))
@@ -66,14 +94,24 @@ pub fn watch_all(
         };
         match failed.origin {
             Some(PathOp::Watch(path, _)) => {
-                for (took, (at, _)) in answers.iter_mut().zip(new) {
-                    *took &= *at != path;
+                for (answer, (at, _)) in answers.iter_mut().zip(new) {
+                    if *at == path {
+                        *answer = Answer::Refused;
+                    }
                 }
             }
             // A path not watched has nothing to give back.
             Some(PathOp::Unwatch(_)) => {}
-            // Every path was applied, but the stream didn't start.
-            None => return vec![false; new.len()],
+            // Every path was applied, but the stream didn't start, so the
+            // watcher holds those it didn't refuse.
+            None => {
+                for answer in &mut answers {
+                    if *answer == Answer::Watched {
+                        *answer = Answer::Held;
+                    }
+                }
+                return answers;
+            }
         }
         change = failed.remaining;
     }
@@ -96,7 +134,8 @@ pub fn watch_all(
 /// This counts a start for any path watched anew or another way and any
 /// path given back, held inside a recursive root or not, in a batch or
 /// alone, so it counts a start at least as often as macOS does. It lists
-/// what it holds, as notify's own watchers do.
+/// what it holds, as notify's own watchers do, and may be made to refuse a
+/// path, as a system out of watches would.
 #[cfg(test)]
 pub mod counting {
     use std::collections::BTreeMap;
@@ -114,6 +153,8 @@ pub mod counting {
         starts: Arc<AtomicUsize>,
         /// Each path watched, by the file it was when watched and how.
         watched: BTreeMap<PathBuf, ((u64, u64), RecursiveMode)>,
+        /// A path it refuses to watch, if any.
+        refused: Option<PathBuf>,
     }
 
     impl Counting {
@@ -124,13 +165,25 @@ pub mod counting {
             let watcher = Self {
                 starts: Arc::clone(&starts),
                 watched: BTreeMap::new(),
+                refused: None,
             };
+            (watcher, starts)
+        }
+
+        /// A counting watcher that refuses to watch `path`, and its count.
+        #[must_use]
+        pub fn refusing(path: PathBuf) -> (Self, Arc<AtomicUsize>) {
+            let (mut watcher, starts) = Self::made();
+            watcher.refused = Some(path);
             (watcher, starts)
         }
 
         /// Applies `op`, answering whether it altered what's watched.
         fn apply(&mut self, op: &PathOp) -> notify::Result<bool> {
             match op {
+                PathOp::Watch(path, _) if self.refused.as_ref() == Some(path) => {
+                    Err(notify::Error::generic("the watch was refused").add_path(path.clone()))
+                }
                 PathOp::Watch(path, config) => {
                     let file = path
                         .metadata()
@@ -330,6 +383,29 @@ mod tests {
             starts.load(Ordering::SeqCst),
             2,
             "the path after it was held, so watching it again alters nothing"
+        );
+    }
+
+    #[test]
+    fn a_path_refused_is_answered_refused_and_left_unheld() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        for folder in [&a, &b] {
+            fs::create_dir(folder).expect("made");
+        }
+        let (mut watcher, _) = Counting::refusing(b.clone());
+        let new = [
+            (a.clone(), RecursiveMode::NonRecursive),
+            (b, RecursiveMode::NonRecursive),
+        ];
+        assert_eq!(
+            answer_all(&mut watcher, &[], &new),
+            [Answer::Watched, Answer::Refused]
+        );
+        assert_eq!(
+            watcher.watched_paths().expect("its paths listed"),
+            [(a, RecursiveMode::NonRecursive)],
+            "the watcher holds only the path it took"
         );
     }
 
