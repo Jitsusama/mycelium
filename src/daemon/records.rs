@@ -234,10 +234,48 @@ type Builds = HashMap<String, (u64, Arc<Build>)>;
 /// unchanged by its address alone, and every watch holds one copy of it
 /// rather than its own (14 November: 93 watches each held a copy of
 /// every record, and compared every field of each on every change).
-#[derive(Default)]
-pub struct Built(Mutex<Builds>);
+pub struct Built {
+    /// Each kind's latest build.
+    builds: Mutex<Builds>,
+    /// When these were made, from which their watches' [`beat`] counts.
+    ///
+    /// [`beat`]: Built::beat
+    from: tokio::time::Instant,
+}
+
+impl Default for Built {
+    fn default() -> Self {
+        Self {
+            builds: Mutex::default(),
+            from: tokio::time::Instant::now(),
+        }
+    }
+}
 
 impl Built {
+    /// The first beat at or after `after`, beats falling every
+    /// [`BETWEEN_SENDS`] from when these were made. Watches woken by
+    /// changes a moment apart each waited that long from its own waking,
+    /// so while changes kept coming each could read another count and
+    /// build the kind again; on 26 November building records took a
+    /// quarter of a node's CPU. Waiting for a beat, they read together,
+    /// and the first's build serves the rest.
+    ///
+    /// [`BETWEEN_SENDS`]: super::BETWEEN_SENDS
+    #[must_use]
+    pub fn beat(&self, after: tokio::time::Instant) -> tokio::time::Instant {
+        let Some(since) = after.checked_duration_since(self.from) else {
+            return after;
+        };
+        let every = super::BETWEEN_SENDS.as_nanos();
+        let beats = since.as_nanos().div_ceil(every);
+        let Ok(at) = u64::try_from(beats * every) else {
+            return after;
+        };
+        let at = std::time::Duration::from_nanos(at);
+        self.from.checked_add(at).unwrap_or(after)
+    }
+
     /// `kind`'s records as `holds` holds them once its `told` has counted
     /// to `told`, built only by the first to ask at that count. A daemon
     /// changes what it holds before it counts, so records built at a count
@@ -245,7 +283,7 @@ impl Built {
     pub fn records(&self, holds: &impl Holds, kind: &str, told: u64) -> Option<Arc<Build>> {
         // Held while building, so watches woken by one change wait for the
         // first's build rather than each making their own.
-        let mut builds = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut builds = self.builds.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some((at, build)) = builds.get(kind)
             && *at == told
         {

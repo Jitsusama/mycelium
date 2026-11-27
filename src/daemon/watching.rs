@@ -6,6 +6,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
+use tokio::time::Instant;
 
 use super::records::{Build, Change, Record, Shared, shared};
 use super::{BETWEEN_SENDS, Holds};
@@ -69,18 +70,22 @@ pub(super) async fn keep_watching<H: Holds>(
     if answering.send(first).await.is_err() {
         return;
     }
+    let mut last_read = Instant::now();
     loop {
         tokio::select! {
             heard = told.changed() => {
                 if heard.is_err() {
                     return;
                 }
-                tokio::time::sleep(BETWEEN_SENDS).await;
+                let at = due(holds.as_ref(), last_read);
+                tokio::time::sleep_until(at).await;
+                last_read = at;
             }
             asked = when.changed() => {
                 if asked.is_err() {
                     return;
                 }
+                last_read = Instant::now();
             }
         }
         let now = held(&holds, *told.borrow_and_update());
@@ -103,6 +108,26 @@ pub(super) async fn keep_watching<H: Holds>(
             return;
         }
     }
+}
+
+/// When a watch woken now by a change, having last read at `last_read`,
+/// reads what changed: [`BETWEEN_SENDS`] after it woke, or, where its
+/// records are built for every watch, the first [`beat`] at least half
+/// that after it woke and that long after it last read, so the watches
+/// woken by changes a moment apart read together and share one build.
+/// The floor counts from the read, which for a watch woken by a change
+/// is a beat, never from when its send ended: counted from there, a
+/// send taking any time at all would pass the next beat over, and a
+/// watch kept busy would read on every other.
+///
+/// [`beat`]: super::Built::beat
+fn due(holds: &impl Holds, last_read: Instant) -> Instant {
+    let now = Instant::now();
+    let Some(built) = holds.built() else {
+        return now + BETWEEN_SENDS;
+    };
+    let after = (now + BETWEEN_SENDS / 2).max(last_read + BETWEEN_SENDS);
+    built.beat(after)
 }
 
 /// A watch's first answer, `records` whole, its fields in the order a
@@ -239,10 +264,132 @@ fn sends(when: Option<&[String]>, sent: &Shared, changed: Vec<Arc<Change>>) -> V
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
 
     use serde_json::json;
 
     use super::*;
+
+    /// A daemon holding one session whose step is the count its `told`
+    /// says, which counts how often its records are built.
+    struct Beating {
+        built: crate::daemon::Built,
+        builds: AtomicU32,
+        told: watch::Sender<u64>,
+    }
+
+    impl Holds for Beating {
+        fn kinds(&self) -> BTreeMap<String, Vec<&'static str>> {
+            BTreeMap::from([("session".to_owned(), vec!["step"])])
+        }
+
+        fn records(&self, kind: &str) -> Option<BTreeMap<String, Record>> {
+            (kind == "session").then(|| {
+                self.builds.fetch_add(1, Ordering::Relaxed);
+                let fields = json!({"step": *self.told.borrow()});
+                let record = crate::daemon::record("session", "a", 1, fields);
+                BTreeMap::from([("session:a".to_owned(), Record::from(record))])
+            })
+        }
+
+        fn told(&self, _: &str) -> Option<watch::Receiver<u64>> {
+            Some(self.told.subscribe())
+        }
+
+        fn health(&self) -> serde_json::Map<String, Value> {
+            serde_json::Map::new()
+        }
+
+        fn built(&self) -> Option<&crate::daemon::Built> {
+            Some(&self.built)
+        }
+    }
+
+    /// A watch of the sessions `holds` holds, and what reads its answers,
+    /// one each `pause` milliseconds, counting them in `answered`.
+    fn watching(
+        holds: &Arc<Beating>,
+        when: &watch::Receiver<Option<Vec<String>>>,
+        pause: u64,
+        answered: &Arc<AtomicU32>,
+    ) -> [tokio::task::JoinHandle<()>; 2] {
+        let (answering, mut answers) = mpsc::channel(1);
+        let what = ("session".to_owned(), None, Vec::new(), None);
+        let told = holds.told.subscribe();
+        let id = json!(pause);
+        let watch = keep_watching(Arc::clone(holds), id, what, told, when.clone(), answering);
+        let answered = Arc::clone(answered);
+        let reading = async move {
+            while answers.recv().await.is_some() {
+                answered.fetch_add(1, Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_millis(pause)).await;
+            }
+        };
+        [tokio::spawn(watch), tokio::spawn(reading)]
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_watch_that_read_on_a_beat_reads_on_the_next_though_its_send_took_a_while() {
+        let holds = Beating {
+            built: crate::daemon::Built::default(),
+            builds: AtomicU32::new(0),
+            told: watch::channel(0).0,
+        };
+        tokio::time::advance(BETWEEN_SENDS).await;
+        let read = Instant::now();
+        assert_eq!(holds.built.beat(read), read, "it read on a beat");
+        tokio::time::advance(Duration::from_millis(5)).await;
+        assert_eq!(
+            due(&holds, read),
+            read + BETWEEN_SENDS,
+            "woken as its send ends, it reads on the next beat"
+        );
+        tokio::time::advance(BETWEEN_SENDS / 2).await;
+        assert_eq!(
+            due(&holds, read),
+            read + BETWEEN_SENDS * 2,
+            "woken too near the next, it waits half a beat at least, so the one after"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn watches_sending_at_their_own_pace_read_on_one_beat_and_share_its_build() {
+        let holds = Arc::new(Beating {
+            built: crate::daemon::Built::default(),
+            builds: AtomicU32::new(0),
+            told: watch::channel(0).0,
+        });
+        let (_asking, when) = watch::channel(None);
+        let prompt = Arc::new(AtomicU32::new(0));
+        let late = Arc::new(AtomicU32::new(0));
+        let mut tasks = Vec::from(watching(&holds, &when, 0, &prompt));
+        tasks.extend(watching(&holds, &when, 300, &late));
+        // Changes land 10 ms past every 50, never on a beat, so none falls
+        // between two watches reading on one.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        for _ in 0..60 {
+            holds.told.send_modify(|count| *count += 1);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let beats = 3010 / 250;
+        assert!(
+            prompt.load(Ordering::Relaxed) >= 10,
+            "a watch read at once sends on most beats"
+        );
+        assert!(
+            late.load(Ordering::Relaxed) >= 5,
+            "a watch read every 300 ms sends too"
+        );
+        assert!(
+            holds.builds.load(Ordering::Relaxed) <= 1 + beats,
+            "the first answers share one build and each beat another, \
+             though one watch sends late"
+        );
+        for task in tasks {
+            task.abort();
+        }
+    }
 
     /// Each of `records` as the change a watch sends of it new.
     fn changes(records: Vec<Value>) -> Vec<Arc<Change>> {
