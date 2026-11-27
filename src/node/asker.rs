@@ -3671,16 +3671,22 @@ mod tests {
         {
             std::thread::yield_now();
         }
-        let mut left = LOOKED_THROUGH;
-        let children = Tree::of(procs).children_of(me, &mut left);
-        let _ = sleeping.kill();
-        let _ = sleeping.wait();
-        assert!(
+        // A look through this process's threads can miss one while the
+        // other tests' threads end around it, as a gate's build showed, so
+        // the child is looked for until it is seen or the wait is spent.
+        let told = |children: &[(i32, String)]| {
             children
                 .iter()
-                .any(|(pid, named)| *pid == child && named == "sleep"),
-            "{child} among {children:?}"
-        );
+                .any(|(pid, named)| *pid == child && named == "sleep")
+        };
+        let mut children = Vec::new();
+        while !told(&children) && Instant::now() < by {
+            let mut left = LOOKED_THROUGH;
+            children = Tree::of(procs).children_of(me, &mut left);
+        }
+        let _ = sleeping.kill();
+        let _ = sleeping.wait();
+        assert!(told(&children), "{child} among {children:?}");
     }
 
     #[test]
