@@ -3830,8 +3830,12 @@ fn keep_receptors(
 /// it while its machine's room doesn't yet show it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Counts {
-    /// None: an ask of where, or a run, which ends when its asker stops.
+    /// None: an ask of where, which may lead to a start.
     Never,
+    /// None, and it takes no session's room: a run, which ends when its
+    /// asker stops and starts no session, so a machine holding the most
+    /// sessions it holds still takes it.
+    Run,
     /// Every one: a start this node makes.
     Always,
     /// Only one placed on this machine: an asker that starts the work
@@ -3848,7 +3852,7 @@ impl Counts {
             return None;
         };
         match self {
-            Self::Never => None,
+            Self::Never | Self::Run => None,
             Self::Always => Some(machine),
             Self::Here => (machine == here).then_some(machine.as_str()),
         }
@@ -5430,13 +5434,17 @@ impl<S: Store> Shared<S> {
             } else {
                 std::collections::BTreeSet::new()
             };
-            refused.extend(placement::full_keeping(
-                &machines,
-                &holding(&sessions),
-                &loads,
-                &inner.promised,
-                &keeping,
-            ));
+            // The most sessions a machine holds guards its workers' homes,
+            // which a run takes none of; its load still weighs it.
+            if counts != Counts::Run {
+                refused.extend(placement::full_keeping(
+                    &machines,
+                    &holding(&sessions),
+                    &loads,
+                    &inner.promised,
+                    &keeping,
+                ));
+            }
             let decision = placement::decide_refusing(work, &machines, &loads, &refused);
             let counted = counts
                 .counted(&decision.placement, &self.machine)
@@ -9808,7 +9816,7 @@ impl<S: Store> Shared<S> {
         // start the machine's room has yet to show. An agent's is placed
         // only on ground as firm as here, where it stands in the fence its
         // launcher sets.
-        let machine = match self.place(&asked.work, Counts::Never, fence, Screen::Run, &admits) {
+        let machine = match self.place(&asked.work, Counts::Run, fence, Screen::Run, &admits) {
             Placement::Placed { machine, .. } => machine,
             Placement::Pending { misses } => return Err(sent_as(recast, nowhere_now(&misses))),
             Placement::Refused { misses } => {
@@ -25468,6 +25476,39 @@ esac
             ),
             (None, Some("osprey")),
             "so is one made at no asker's word"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_reaches_a_machine_holding_the_most_sessions_it_holds() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[("wren", made::PERSON)]);
+        let person = Admits::Asker(made::PERSON.to_owned());
+        let placed = |counts: Counts| match shared.place(
+            &work(vec![Need::Machine("wren".to_owned())]),
+            counts,
+            None,
+            Screen::Ground,
+            &person,
+        ) {
+            Placement::Placed { machine, .. } => Some(machine),
+            _ => None,
+        };
+        assert_eq!(
+            (placed(Counts::Never).as_deref(), placed(Counts::Run).as_deref()),
+            (Some("wren"), Some("wren")),
+            "with room for a session, it takes both"
+        );
+        shared.lock().promised.insert("wren".to_owned(), 0);
+        assert_eq!(
+            (placed(Counts::Never), placed(Counts::Always)),
+            (None, None),
+            "full, it takes no start, nor an ask of where one would go"
+        );
+        assert_eq!(
+            placed(Counts::Run).as_deref(),
+            Some("wren"),
+            "but a run, which starts no session, still reaches it"
         );
     }
 

@@ -2202,7 +2202,9 @@ only a machine out of reach would do and the work may wait, or
 long ago), `{"full": most}` (it holds the `sessions_at_most` its own
 `declared` gives, or, where that gives none, the one the offer it was
 made of promised, judged under the same lock as the starts it counts so
-a burst can't overfill it) or, for an offer, `{"lives_only": duration}`.
+a burst can't overfill it; never a run's, since a run starts no session
+and takes no worker home, so a full machine still takes one as its
+load allows) or, for an offer, `{"lives_only": duration}`.
 Placement only
 chooses: a machine says whether work starts there when asked, by its
 own queue and taints, so nothing fits work against its room, which only
