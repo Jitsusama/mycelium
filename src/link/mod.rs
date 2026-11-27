@@ -4064,6 +4064,7 @@ mod tests {
                 saturated,
                 cpu_minute: None,
                 memory_full_minute: None,
+                io_full_minute: None,
             };
             let said = crate::within::Said {
                 at: now,

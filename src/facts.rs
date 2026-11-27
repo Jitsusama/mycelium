@@ -402,6 +402,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         .map(|room| Room {
             cpu_minute: room::cpu_minute(&sources.procs),
             memory_full_minute: room::memory_full_minute(&sources.procs),
+            io_full_minute: room::io_full_minute(&sources.procs),
             ..room
         });
     // A machine within another has its host's power and room while its

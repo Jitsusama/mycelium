@@ -1909,7 +1909,9 @@ in percent, as its own kernel says it (`some avg60` of
 where the kernel says none, as a Mac's, or by a node too old to read
 it. Its `memory_full_minute` is the share of the last minute all work
 at once waited on memory, machine-wide, in percent (`full avg60` of
-`/proc/pressure/memory`), left out as `cpu_minute` is. The room is
+`/proc/pressure/memory`), left out as `cpu_minute` is, and its
+`io_full_minute` the same of its disks (`full avg60` of
+`/proc/pressure/io`), left out alike. The room is
 `null` where
 no harness keeps a queue, or where the queue's record is of another
 shape or unwritten for two minutes. A machine keeps no reserve of
@@ -2154,13 +2156,16 @@ or memory headroom. Over, it carries a `memory-pressure` or
 at once, and still goes to the roomiest where every machine is
 saturated, never refused; an unheard room is never saturated, nor
 passed for it. A machine whose `declared` says `kept_lively`, as
-`{"cpu": 28, "memory_available": bytes, "memory_full": 3}` (the last
-two may be left out), is one the person works at that the others take
+`{"cpu": 28, "memory_available": bytes, "memory_full": 3,
+"io_full": 1}` (the last three may be left out), is one the person
+works at that the others take
 new work from first: within its ceiling (processor pressure
 machine-wide at or under `cpu`, as its `cpu_minute` says it, or over
 ten seconds where its room says none; memory pressure at or under
 `memory_full`, as its `memory_full_minute` says it, where it says one;
-and as much memory available as it keeps) and its queue's
+disk pressure at or under `io_full`, as its `io_full_minute` says it,
+where it says one; and as much memory available as it keeps) and its
+queue's
 limits, it ranks after every other heard machine with room and before
 those over a limit, since a machine over is swamped while one within
 its ceiling is light by the ceiling's own measure; within its ceiling

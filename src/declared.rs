@@ -124,7 +124,7 @@ pub struct Declared {
 }
 
 /// The ceiling a machine kept lively ([`Declared::kept_lively`]) holds its
-/// load to: past either part, it counts as past its room, so work goes
+/// load to: past any part, it counts as past its room, so work goes
 /// to any other machine heard lately before it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lively {
@@ -143,6 +143,12 @@ pub struct Lively {
     /// ceiling. A room that says no such minute is never past it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_full: Option<u32>,
+    /// The disk pressure it stays at or under, in percent of the last
+    /// minute in which all work at once waited on its disks, machine-wide
+    /// (its room's `io_full_minute`); none where it holds to no such
+    /// ceiling. A room that says no such minute is never past it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_full: Option<u32>,
 }
 
 /// What work begun here needs, wherever placement sends it, where it
@@ -1407,19 +1413,22 @@ mod tests {
             )
         };
         // As core.nix writes it, with and without the memory it keeps and
-        // the memory pressure it holds to.
-        for (said, memory_available, memory_full) in [
+        // the memory and disk pressure it holds to.
+        for (said, memory_available, memory_full, io_full) in [
             (
                 r#"{"cpu": 28, "memory_available": 25769803776}"#,
                 Some(24 << 30),
                 None,
+                None,
             ),
-            (r#"{"cpu": 28}"#, None, None),
+            (r#"{"cpu": 28}"#, None, None, None),
             (
                 r#"{"cpu": 28, "memory_available": 25769803776, "memory_full": 3}"#,
                 Some(24 << 30),
                 Some(3),
+                None,
             ),
+            (r#"{"cpu": 28, "io_full": 1}"#, None, None, Some(1)),
         ] {
             fs::write(&file, with(said)).expect("written");
             let declared = read(&file).expect("it reads");
@@ -1429,6 +1438,7 @@ mod tests {
                     cpu: 28,
                     memory_available,
                     memory_full,
+                    io_full,
                 }),
                 "{said} reads as declared"
             );
@@ -1447,6 +1457,7 @@ mod tests {
             r#"{"cpu": 28, "memory_available": "16G"}"#,
             r#"{"memory_available": 1024}"#,
             r#"{"cpu": 28, "memory_full": 3.5}"#,
+            r#"{"cpu": 28, "io_full": 1.4}"#,
         ] {
             fs::write(&file, with(misshapen)).expect("written");
             let spoiled = read(&file).expect("a misshapen ceiling spoils only itself");
