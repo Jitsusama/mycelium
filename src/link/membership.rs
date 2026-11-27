@@ -76,6 +76,12 @@ pub struct Hello {
     /// neither, and would end a link that asked.
     #[serde(default)]
     pub ends: bool,
+    /// Whether it carries the end a starting cell asks of its own start,
+    /// asking its node, which ends it only where it booked that start as
+    /// an agent's relayed from the asking end's machine; an end older
+    /// than this can't read who asks, and would end a link that asked.
+    #[serde(default)]
+    pub ends_starts: bool,
     /// Whether its node judges a reopening relayed to it, taking pi's
     /// bare resume of a session only where that session ended there; an
     /// end older than this takes one as any start, so none is asked of it.
@@ -135,6 +141,7 @@ impl Membership for Realm {
             carries: true,
             shows: true,
             ends: true,
+            ends_starts: true,
             reopens: true,
             lends: true,
             parks: true,

@@ -140,6 +140,12 @@ enum Asked {
         /// The message.
         message: Value,
     },
+    /// An end of the hold `held`, on the connection that holds its
+    /// presence, when the session asking runs in it.
+    End {
+        /// The hold to end, which the session runs in.
+        held: String,
+    },
     /// The messages within its reach, on a connection of its own.
     Watch {
         /// The session, present through this process, whose reach it is.
@@ -165,6 +171,9 @@ enum Said {
     Sent(Value),
     /// Its watch has begun.
     Watching,
+    /// The hold it runs in is ending, as it asked: its program is told
+    /// to end next.
+    Ending,
 }
 
 /// The node's answer to one ask.
@@ -304,6 +313,7 @@ pub(super) async fn serve<S: Store>(
                 shared: &shared,
                 holdings: &holdings,
                 id: holdings.open(pid),
+                pid,
             };
             present.keep(presence, lines, writing).await;
         }
@@ -333,7 +343,7 @@ pub(super) async fn serve<S: Store>(
             });
             watch.keep(&shared, &holdings, recent, lines, writing).await;
         }
-        Ok(Asked::Send { .. }) => {
+        Ok(Asked::Send { .. } | Asked::End { .. }) => {
             let refused: Reply = Err("a connection opens with a presence or a watch".to_owned());
             let _ = write(&mut writing, &refused).await;
         }
@@ -349,6 +359,8 @@ struct Present<'a, S: Store> {
     shared: &'a Shared<S>,
     holdings: &'a Holdings,
     id: u64,
+    /// The process the kernel names at the connection's other end.
+    pid: i32,
 }
 
 impl<S: Store> Present<'_, S> {
@@ -365,15 +377,30 @@ impl<S: Store> Present<'_, S> {
         let held = first.is_ok();
         if write(&mut writing, &first).await.is_ok() && held {
             while let Ok(Some(line)) = lines.next_line().await {
+                let mut ending = None;
                 let reply = match serde_json::from_str::<Asked>(&line) {
                     Ok(Asked::Presence { presence }) => self.be(presence),
                     Ok(Asked::Send { message }) => self.send(&message),
+                    Ok(Asked::End { held }) => {
+                        let owned = self.own_hold(&held);
+                        if owned.is_ok() {
+                            ending = Some(held);
+                        }
+                        owned.map(|()| Said::Ending)
+                    }
                     Ok(Asked::Watch { .. }) => {
                         Err("a watch is asked on a connection of its own".to_owned())
                     }
                     Err(error) => Err(format!("not an ask of the worker socket: {error}")),
                 };
-                if write(&mut writing, &reply).await.is_err() {
+                // The end is answered before it begins, since the session
+                // asking is told to end with its program, and may hear
+                // nothing after.
+                let answered = write(&mut writing, &reply).await.is_ok();
+                if let Some(held) = ending {
+                    self.end(held).await;
+                }
+                if !answered {
                     break;
                 }
             }
@@ -442,6 +469,36 @@ impl<S: Store> Present<'_, S> {
             );
         }
         Ok(Said::Present)
+    }
+
+    /// Refuses an end of `held` unless this connection holds a presence
+    /// and its process runs in that hold's program here, so a worker's
+    /// session ends only the hold it runs in, never another's: what its
+    /// presence says proves nothing, since the session writes it.
+    fn own_hold(&self, held: &str) -> Result<(), String> {
+        let holding = self
+            .holdings
+            .of(self.id)
+            .ok_or_else(|| "no presence is held on this connection".to_owned())?;
+        let holds = crate::hold::held(&self.shared.held);
+        super::runs_in(&holds, held, self.pid, &self.shared.processes)
+            .map_err(|why| format!("{} can't end {held}: {why}", holding.session))
+    }
+
+    /// Ends the hold `held` for the session running in it, as the
+    /// person's own end does, saying how on the node's log.
+    async fn end(&self, held: String) {
+        let folder = self.shared.held.clone();
+        let id = held.clone();
+        let grace = crate::hold::end::GRACE;
+        let ends = move || crate::hold::end::end(&folder, &id, grace);
+        match tokio::task::spawn_blocking(ends).await {
+            Ok(Ok(ending)) => {
+                eprintln!("ended {held}, held here, for the worker's session in it: {ending:?}");
+            }
+            Ok(Err(error)) => eprintln!("{held} didn't end as its own session asked: {error}"),
+            Err(error) => eprintln!("the end of {held} stopped: {error}"),
+        }
     }
 
     /// Keeps `message`, sent by the session this connection holds, as the
