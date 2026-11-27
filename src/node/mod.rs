@@ -25838,11 +25838,6 @@ esac
             "reef\nwren\ntern\nskiff\n",
         )
         .expect("named");
-        // Followup 534: kept as a worker and named a room, this node's own
-        // machine is held the person's by its guard alone.
-        let mut skiff = placement::tests::machine("skiff", "linux", 32, &["basin"]);
-        skiff.worker = true;
-        shared.store.put_machine(&skiff).expect("kept");
         for (by, work, why) in [
             (
                 By::Person,
@@ -25883,6 +25878,28 @@ esac
             placed(&reef, &Admits::Rooms),
             None,
             "and the rooms-only admits never take it, though it is named"
+        );
+    }
+
+    // Followup 534: kept as a worker and named a room, this node's own
+    // machine is held the person's by its guard alone.
+    #[tokio::test]
+    async fn the_persons_run_naming_this_machine_kept_as_a_worker_stays_the_persons() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        fs::write(dir.path().join(made::AGENT_ROOMS), "skiff\n").expect("named");
+        let mut skiff = placement::tests::machine("skiff", "linux", 32, &["basin"]);
+        skiff.worker = true;
+        shared.store.put_machine(&skiff).expect("kept");
+        let person = || Admits::Asker(made::PERSON.to_owned());
+        assert_eq!(
+            shared.as_a_room_takes(
+                By::Person,
+                &work(vec![Need::Machine("skiff".to_owned())]),
+                person()
+            ),
+            (By::Person, person()),
+            "this node's own machine, which no booking here names, is held to who asks"
         );
     }
 
