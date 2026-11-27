@@ -386,13 +386,26 @@ pub fn measure_in(name: &str, realm: &str, sources: &Sources) -> Machine {
 /// The share of the last minute in which its disks held all its work at
 /// once, read from the groups its ceiling names where it names any, since
 /// machine-wide a task held back by a cap of its own counts, and from the
-/// machine's otherwise.
+/// machine's otherwise. Where none of the groups it names says a minute
+/// and the machine says one, the machine's is read, said on the node's
+/// log, so a misspelt group holds the machine to the stricter minute
+/// rather than turning its disk ceiling off.
 fn io_full_minute(declared: Option<&Declared>, sources: &Sources) -> Option<f64> {
+    let machine = room::io_full_minute(&sources.procs);
     match declared.and_then(|declared| declared.kept_lively.as_ref()) {
         Some(lively) if !lively.io_full_from.is_empty() => {
-            room::io_full_minute_of(&sources.cgroups, &lively.io_full_from)
+            room::io_full_minute_of(&sources.cgroups, &lively.io_full_from).or_else(|| {
+                if machine.is_some() {
+                    eprintln!(
+                        "none of {:?}, the groups a ceiling reads its disks from, \
+                         says a minute, so its disks are read machine-wide",
+                        lively.io_full_from
+                    );
+                }
+                machine
+            })
         }
-        _ => room::io_full_minute(&sources.procs),
+        _ => machine,
     }
 }
 
@@ -1482,8 +1495,14 @@ mod tests {
         );
         assert_eq!(
             io_with(r#"{"cpu": 28, "io_full": 1, "io_full_from": ["gone.slice"]}"#),
+            Some(8.5),
+            "a group saying none is read as the machine, never as no minute"
+        );
+        std::fs::remove_file(sources.procs.join("pressure").join("io")).expect("removed");
+        assert_eq!(
+            io_with(r#"{"cpu": 28, "io_full": 1, "io_full_from": ["gone.slice"]}"#),
             None,
-            "a group saying none says no minute, never the machine's"
+            "and no minute where the machine says none either"
         );
     }
 
