@@ -632,6 +632,35 @@ mod tests {
     }
 
     #[test]
+    fn a_wide_name_keeps_its_columns_in_line_and_every_line_within_the_room() {
+        // Four characters, wider in cells than kestrel's seven and
+        // narrower counted by character, so counting characters shows.
+        let mut wide = osprey();
+        wide.name = "港湾港湾".to_owned();
+        // Measured by Unicode's widths directly, not by the code under
+        // test, as nothing here is coloured.
+        let cells = <str as unicode_width::UnicodeWidthStr>::width;
+        let drawn = table(&[kestrel(), wide.clone()], &[], &look(120));
+        let at = |name: &str| {
+            drawn
+                .lines()
+                .find(|line| line.starts_with(name))
+                .and_then(|line| line.find("ready").map(|at| cells(&line[..at])))
+        };
+        assert!(
+            at("kestrel").is_some() && at("kestrel") == at("港湾港湾"),
+            "a wide machine name moved its columns:\n{drawn}"
+        );
+        let narrow = [
+            table(&[kestrel(), wide.clone()], &[skiff()], &look(20)),
+            one(&wide, &look(20)),
+        ]
+        .concat();
+        let long: Vec<&str> = narrow.lines().filter(|line| cells(line) > 20).collect();
+        assert!(long.is_empty(), "lines past 20 cells: {long:?}");
+    }
+
+    #[test]
     fn a_name_wider_than_the_terminal_is_cut_to_it() {
         let mut wide = kestrel();
         wide.name = "a-machine-named-past-any-narrow-terminal".to_owned();
