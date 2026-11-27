@@ -860,7 +860,14 @@ impl Store for Folders {
                         if !is_record(path) {
                             return None;
                         }
+                        // A message gone from the top, as the mesh moves
+                        // one six hours old into its day's folder, is no
+                        // new one: told as one, every link would send the
+                        // hour's moved messages again, as on 27 November,
+                        // when each of a room's hourly moves sent about
+                        // 1,100 to the node that already held them.
                         if path.parent() == Some(messages.as_path()) {
+                            fs::symlink_metadata(path).ok()?;
                             Some(Change::Message(path.file_stem()?.to_str()?.to_owned()))
                         } else if path.parent() == Some(presence.as_path())
                             || path.parent() == Some(leases.as_path())
@@ -2686,5 +2693,57 @@ mod tests {
             first = next_message().await;
         }
         assert_eq!(first, new, "only the message written was told");
+    }
+
+    #[tokio::test]
+    async fn a_message_moved_into_its_day_is_no_change() {
+        let (_dir, store) = store();
+        let old = "1792655652402-5GV2AH-4236-9d2030dd";
+        let ready = "1793046600000-MYCTST-1-0a1b2c3d";
+        let new = "1793046604647-0FX11G-875563-952d5879";
+        store
+            .put_message(old, &json!({"id": old}))
+            .expect("the message is kept");
+        let mut changes = store.changes().expect("the store tells its changes");
+        let mut next_message = async || {
+            tokio::time::timeout(PATIENCE, async {
+                loop {
+                    match changes.changes.recv().await {
+                        Some(Change::Message(told)) => return told,
+                        Some(_) => {}
+                        None => panic!("the store stopped telling"),
+                    }
+                }
+            })
+            .await
+            .expect("a message was told")
+        };
+
+        // As in reading_a_message_is_no_change, a marker puts the old
+        // message's own write behind us first.
+        store
+            .put_message(ready, &json!({"id": ready}))
+            .expect("the message is kept");
+        while next_message().await != ready {}
+
+        // The mesh moves a message six hours old as this does.
+        let day = store.messages().join("2026-10-19");
+        fs::create_dir(&day).expect("its day's folder");
+        let name = format!("{old}.json");
+        let top = store.messages().join(&name);
+        fs::rename(top, day.join(&name)).expect("moved into its day");
+        store
+            .put_message(new, &json!({"id": new}))
+            .expect("the message is kept");
+
+        let mut first = next_message().await;
+        while first == ready {
+            first = next_message().await;
+        }
+        assert_eq!(first, new, "the moved message wasn't told again");
+        assert!(
+            store.message(old).is_some(),
+            "the moved message is still read from its day"
+        );
     }
 }
