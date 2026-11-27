@@ -319,6 +319,26 @@ impl Folders {
         self.ended.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Marks `machine` a worker or not, telling nobody, and says whether
+    /// the mark moved.
+    fn mark(&self, machine: &str, worker: bool) -> bool {
+        let mut workers = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
+        if worker {
+            workers.insert(machine.to_owned())
+        } else {
+            workers.remove(machine)
+        }
+    }
+
+    /// Tells every reader `machine` should be read again.
+    fn tell_machine(&self, machine: &str) {
+        let change = Change::Machine(machine.to_owned());
+        self.told
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|told| told.send(change.clone()).is_ok());
+    }
+
     /// Tells every reader the sessions should be judged again.
     fn tell_presence(&self) {
         self.told
@@ -780,34 +800,35 @@ impl Store for Folders {
         // The mark moves first, so a watch the record's write wakes reads
         // the machine as its link now says it, and a record that can't be
         // written still leaves the mark the room gate reads as said.
-        self.mark_worker(&machine.name, machine.worker);
-        let mut body = serde_json::to_value(machine).map_err(io::Error::other)?;
-        // Whether it is a worker is never read back from the record, which
-        // a session may write, so the record doesn't say it; one an older
-        // node wrote saying it still reads, its word passed over.
-        if let Some(record) = body.as_object_mut() {
-            record.remove("worker");
+        let moved = self.mark(&machine.name, machine.worker);
+        let written = serde_json::to_value(machine)
+            .map_err(io::Error::other)
+            .and_then(|mut body| {
+                // Whether it is a worker is never read back from the record,
+                // which a session may write, so the record doesn't say it;
+                // one an older node wrote saying it still reads, its word
+                // passed over.
+                if let Some(record) = body.as_object_mut() {
+                    record.remove("worker");
+                }
+                write_whole(&self.claims, &file, &body)
+            });
+        // The mark's move is told once the write is done, not as it moves:
+        // a watch woken between the two would read the new mark beside the
+        // old record, or beside none for a machine new here. Told though
+        // the write failed, since the mark moved all the same.
+        if moved {
+            self.tell_machine(&machine.name);
         }
-        write_whole(&self.claims, &file, &body)
+        written
     }
 
     fn mark_worker(&self, machine: &str, worker: bool) {
-        let mut workers = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
-        let moved = if worker {
-            workers.insert(machine.to_owned())
-        } else {
-            workers.remove(machine)
-        };
-        drop(workers);
         // The mark is in memory alone, so no file's watch tells it, and a
         // worker admitted whose far end says nothing of itself changes only
         // here: a watch of the machines would never hear of it.
-        if moved {
-            let change = Change::Machine(machine.to_owned());
-            self.told
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .retain(|told| told.send(change.clone()).is_ok());
+        if self.mark(machine, worker) {
+            self.tell_machine(machine);
         }
     }
 
@@ -2719,34 +2740,47 @@ mod tests {
 
     // Followup 544(6): a worker its admission alone made was told to no
     // watch, which the file's watch can't see, being in memory alone.
+    // Followup 551(a): made and unmade each, and a repeat of each.
     #[tokio::test]
     async fn a_worker_mark_that_moves_is_told_and_one_that_doesnt_isnt() {
+        // Waits for `tern`'s change, passing over any other the watch tells.
+        async fn told(changes: &mut Changes, tern: &Change) -> bool {
+            let waited = tokio::time::timeout(PATIENCE, async {
+                loop {
+                    match changes.changes.recv().await {
+                        Some(change) if change == *tern => return,
+                        Some(_) => {}
+                        None => panic!("the store stopped telling"),
+                    }
+                }
+            });
+            waited.await.is_ok()
+        }
+        // The mark is told as it moves, so one a repeat told would be
+        // waiting already.
+        fn waiting(changes: &mut Changes) -> Vec<Change> {
+            let mut after = Vec::new();
+            while let Ok(change) = changes.changes.try_recv() {
+                after.push(change);
+            }
+            after
+        }
         let (_dir, store) = store();
         let mut changes = store.changes().expect("the store tells its changes");
-        store.mark_worker("tern", true);
-        store.mark_worker("tern", true);
         let tern = Change::Machine("tern".to_owned());
-        let told = tokio::time::timeout(PATIENCE, async {
-            loop {
-                match changes.changes.recv().await {
-                    Some(change) if change == tern => return,
-                    Some(_) => {}
-                    None => panic!("the store stopped telling"),
-                }
-            }
-        })
-        .await;
-        assert!(told.is_ok(), "the mark was told within {PATIENCE:?}");
-        // The mark is told as it moves, so a second is waiting already if
-        // it was told at all.
-        let mut after = Vec::new();
-        while let Ok(change) = changes.changes.try_recv() {
-            after.push(change);
+        for (worker, moved) in [(true, "made"), (false, "unmade")] {
+            store.mark_worker("tern", worker);
+            assert!(
+                told(&mut changes, &tern).await,
+                "the mark {moved} was told within {PATIENCE:?}"
+            );
+            store.mark_worker("tern", worker);
+            let after = waiting(&mut changes);
+            assert!(
+                !after.contains(&tern),
+                "a mark {moved} again moves nothing and tells nothing: {after:?}"
+            );
         }
-        assert!(
-            !after.contains(&tern),
-            "a mark that moves nothing tells nothing: {after:?}"
-        );
     }
 
     #[tokio::test]

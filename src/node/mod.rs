@@ -30683,9 +30683,13 @@ esac
         // its link returns.
         let kestrel = placement::tests::machine("kestrel", "linux", 32, &[]);
         shared.store.put_machine(&kestrel).expect("kept");
+        // Asked as the node is asked, so a booking that marks it a worker
+        // is read through the answer's own wiring.
         let listed = || {
-            shared
-                .with_makes_marked(shared.others())
+            let Ok(Response::Machines(machines)) = shared.answer(Request::Machines) else {
+                panic!("the node says its machines");
+            };
+            machines
                 .into_iter()
                 .find(|one| one.name == "kestrel")
                 .map(|one| one.worker)
@@ -30710,6 +30714,17 @@ esac
                 "and is listed as one before its link says so: {worker}"
             );
         }
+        // Followup 551(b): a booking for the person adds no mark, and takes
+        // none away, so the mark its link set stands.
+        let mut made = made_by("/nowhere/lend", "kestrel", later);
+        made.asker = Some(made::PERSON.to_owned());
+        shared.book_for(&made);
+        shared.store.mark_worker("kestrel", true);
+        assert_eq!(
+            listed(),
+            Some(true),
+            "a worker its link marked stays one, though booked for the person"
+        );
     }
 
     #[test]

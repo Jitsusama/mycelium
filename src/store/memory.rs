@@ -156,6 +156,16 @@ impl Held {
             .retain(|sender| sender.send(change.clone()).is_ok());
     }
 
+    /// Marks `machine` a worker or not, telling nobody, and says whether
+    /// the mark moved.
+    fn mark(&mut self, machine: &str, worker: bool) -> bool {
+        if worker {
+            self.workers.insert(machine.to_owned())
+        } else {
+            self.workers.remove(machine)
+        }
+    }
+
     fn holds_for(&self, session: &str, machine: &str) -> bool {
         self.holdings
             .get(session)
@@ -551,10 +561,11 @@ impl Store for Memory {
     }
 
     fn put_machine(&self, machine: &Machine) -> io::Result<()> {
-        // The mark moves first, as the folders store moves it before its
-        // record's write, so a watch woken by the put reads it as said.
-        self.mark_worker(&machine.name, machine.worker);
         let mut held = self.held();
+        // As the folders store does, the put tells its change once, the
+        // mark and the record both moved, so no watch it wakes reads the
+        // one without the other.
+        held.mark(&machine.name, machine.worker);
         held.machines.insert(machine.name.clone(), machine.clone());
         held.tell(&Change::Machine(machine.name.clone()));
         Ok(())
@@ -562,14 +573,9 @@ impl Store for Memory {
 
     fn mark_worker(&self, machine: &str, worker: bool) {
         let mut held = self.held();
-        let moved = if worker {
-            held.workers.insert(machine.to_owned())
-        } else {
-            held.workers.remove(machine)
-        };
         // As the folders store does: a worker admitted whose far end says
         // nothing of itself changes only here, so a mark that moves is told.
-        if moved {
+        if held.mark(machine, worker) {
             held.tell(&Change::Machine(machine.to_owned()));
         }
     }

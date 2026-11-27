@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// How long a test waits on a change it needs before failing. Each wait
+/// ends the moment the change is told, so this only bounds a lost one.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Changes waiting behind the next are taken with it, each once and
 /// in the order first seen, and the next waits for what comes after.
 #[tokio::test]
@@ -187,11 +191,47 @@ async fn a_worker_mark_that_moves_is_told() {
     store.mark_worker("tern", false);
     store.mark_worker("tern", false);
     let tern = Change::Machine("tern".to_owned());
-    assert_eq!(changes.changes.recv().await, Some(tern.clone()), "made");
-    assert_eq!(changes.changes.recv().await, Some(tern), "unmade");
+    for moved in ["made", "unmade"] {
+        let told = tokio::time::timeout(PATIENCE, changes.changes.recv()).await;
+        assert_eq!(
+            told.ok().flatten(),
+            Some(tern.clone()),
+            "the mark {moved} was told within {PATIENCE:?}"
+        );
+    }
     assert!(
         changes.changes.try_recv().is_err(),
         "a mark that moves nothing tells nothing"
+    );
+}
+
+/// A put that moves the mark tells its change once, the record kept by
+/// then, so no watch it wakes reads the new mark beside no record.
+#[tokio::test]
+async fn a_put_that_moves_the_mark_is_told_once_its_record_is_kept() {
+    let store = memory::Memory::default();
+    let mut changes = store.changes().expect("the fake tells its changes");
+    let mut tern = crate::placement::tests::machine("tern", "linux", 32, &[]);
+    tern.worker = true;
+    store.put_machine(&tern).expect("its link keeps it");
+    let told = tokio::time::timeout(PATIENCE, changes.changes.recv()).await;
+    assert_eq!(
+        told.ok().flatten(),
+        Some(Change::Machine("tern".to_owned())),
+        "the put was told within {PATIENCE:?}"
+    );
+    assert_eq!(
+        store
+            .machines()
+            .iter()
+            .find(|one| one.name == "tern")
+            .map(|one| one.worker),
+        Some(true),
+        "the watch it woke reads the record and the mark both"
+    );
+    assert!(
+        changes.changes.try_recv().is_err(),
+        "the mark's move is told with the record, not before it"
     );
 }
 
