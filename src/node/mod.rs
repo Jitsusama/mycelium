@@ -25495,7 +25495,10 @@ esac
             _ => None,
         };
         assert_eq!(
-            (placed(Counts::Never).as_deref(), placed(Counts::Run).as_deref()),
+            (
+                placed(Counts::Never).as_deref(),
+                placed(Counts::Run).as_deref()
+            ),
             (Some("wren"), Some("wren")),
             "with room for a session, it takes both"
         );
