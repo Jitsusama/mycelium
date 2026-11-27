@@ -1664,7 +1664,7 @@ mod tests {
             if !self.started.is_empty() {
                 self.looks += 1;
             }
-            if self.ends && self.looks > self.ends_after {
+            if self.ends && !self.started.is_empty() && self.looks > self.ends_after {
                 for one in &mut sessions {
                     one.state = State::Ended;
                 }
