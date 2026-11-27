@@ -5270,7 +5270,7 @@ impl<S: Store> Shared<S> {
     /// passed is gone, as one past its own leaving is. Where the book
     /// may have lost a machine's make ([`made::Doubt`]), that machine is
     /// carried to only if it costs nothing or an end is known for it,
-    /// since one whose make was lost can't be told apart from one kept
+    /// its make's or the one it says itself, since one whose make was lost can't be told apart from one kept
     /// for good. The book is read again
     /// only once it changes ([`made::Book::ends`]). This
     /// machine is always kept, first where it was, since every reader
@@ -5287,7 +5287,9 @@ impl<S: Store> Shared<S> {
             .map(|one| leaving_as_made(one, &ends))
             .filter(|one| {
                 let said = one.declared.as_ref();
-                let end_known = !doubt.of(&one.name) || ends.contains_key(&one.name);
+                let end_known = !doubt.of(&one.name)
+                    || ends.contains_key(&one.name)
+                    || said.is_some_and(|said| said.leaves_at.is_some());
                 one.name == self.machine
                     || (end_known || !said.is_some_and(|said| said.costs_money))
                         && !said.is_some_and(|said| said.has_left(now))

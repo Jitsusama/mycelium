@@ -230,11 +230,12 @@ pub enum Doubt {
     #[default]
     None,
     /// Only these machines': what is left of a line still names the
-    /// machine it made, and no line kept after it made or released that
-    /// machine again.
+    /// machine it made, and no line kept after it made that machine again
+    /// or released it where it was made.
     Of {
-        /// The machines in doubt.
-        machines: BTreeSet<String>,
+        /// The machines in doubt, each with the places its makes cut short
+        /// still name, `None` where what is left ends before its place.
+        machines: BTreeMap<String, BTreeSet<Option<String>>>,
         /// Why, as the journal says it.
         why: String,
     },
@@ -249,7 +250,7 @@ impl Doubt {
     pub fn of(&self, machine: &str) -> bool {
         match self {
             Self::None => false,
-            Self::Of { machines, .. } => machines.contains(machine),
+            Self::Of { machines, .. } => machines.contains_key(machine),
             Self::Any(_) => true,
         }
     }
@@ -260,6 +261,18 @@ impl Doubt {
         match self {
             Self::None => None,
             Self::Of { why, .. } | Self::Any(why) => Some(why),
+        }
+    }
+
+    /// What ends the doubt, as the journal says it beside why.
+    fn way_out(&self) -> &'static str {
+        match self {
+            Self::None => "nothing doubts it",
+            Self::Of { .. } => {
+                "a whole make of each again, or its release where it was made, ends the \
+                 doubt, as does mending the line cut short"
+            }
+            Self::Any(_) => "mending the line cut short, or the file till it reads, ends the doubt",
         }
     }
 
@@ -275,37 +288,59 @@ impl Doubt {
                     "line {line} can't be read, nor which machine it may have made"
                 ));
             }
-            Torn::Machine(machine) => {
-                if let Self::Of { machines, .. } = self {
-                    machines.insert(machine);
-                } else {
+            Torn::Machine { machine, place } => {
+                if !matches!(self, Self::Of { .. }) {
                     *self = Self::Of {
-                        machines: BTreeSet::from([machine]),
+                        machines: BTreeMap::new(),
                         why: String::new(),
                     };
+                }
+                if let Self::Of { machines, .. } = self {
+                    machines.entry(machine).or_default().insert(place);
                 }
                 self.say_of();
             }
         }
     }
 
-    /// Lets go the doubt of `machine`, made or released whole since.
-    fn cleared(&mut self, machine: &str) {
+    /// Lets go the doubt of `machine`, made whole since, as its newest
+    /// make then ends it whatever the make cut short was.
+    fn made(&mut self, machine: &str) {
         if let Self::Of { machines, .. } = self
-            && machines.remove(machine)
+            && machines.remove(machine).is_some()
         {
-            if machines.is_empty() {
-                *self = Self::None;
-            } else {
-                self.say_of();
+            self.lifted();
+        }
+    }
+
+    /// Lets go the doubt of `machine`'s makes cut short at `place`, or
+    /// at a place they no longer say, released whole since; one cut
+    /// short at another place still stands.
+    fn released(&mut self, machine: &str, place: &str) {
+        if let Self::Of { machines, .. } = self
+            && let Some(places) = machines.get_mut(machine)
+        {
+            places.retain(|cut| cut.as_deref().is_some_and(|cut| cut != place));
+            if places.is_empty() {
+                machines.remove(machine);
             }
+            self.lifted();
+        }
+    }
+
+    /// Says why again once a doubt is let go, or that none is left.
+    fn lifted(&mut self) {
+        if matches!(self, Self::Of { machines, .. } if machines.is_empty()) {
+            *self = Self::None;
+        } else {
+            self.say_of();
         }
     }
 
     /// Says why again, once the machines in doubt change.
     fn say_of(&mut self) {
         if let Self::Of { machines, why } = self {
-            let names: Vec<&str> = machines.iter().map(String::as_str).collect();
+            let names: Vec<&str> = machines.keys().map(String::as_str).collect();
             *why = format!("a line cut short may hide a make of {}", names.join(", "));
         }
     }
@@ -316,8 +351,12 @@ impl Doubt {
 enum Torn {
     /// No make of this realm's: it was a release, or another realm's.
     Nothing,
-    /// A make of this machine, whose name is still whole.
-    Machine(String),
+    /// A make of this machine, whose name is still whole, and of this
+    /// place where it is whole too.
+    Machine {
+        machine: String,
+        place: Option<String>,
+    },
     /// A make of any machine, since nothing left says which.
     Any,
 }
@@ -358,6 +397,7 @@ impl Book {
     pub fn of_realm(self, realm: &str) -> Self {
         Self {
             realm: Some(realm.to_owned()),
+            ends_read: Arc::default(),
             ..self
         }
     }
@@ -533,21 +573,26 @@ impl Book {
         };
         let mut standing = Standing::default();
         for (at, line) in String::from_utf8_lossy(&bytes).lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
             let (kept, left) = kept(line);
             if let Some(left) = left {
                 standing.unread += 1;
-                standing
-                    .doubt
-                    .torn(at + 1, torn(left, self.realm.as_deref()));
+                for piece in pieces(left) {
+                    standing
+                        .doubt
+                        .torn(at + 1, torn(piece, self.realm.as_deref()));
+                }
             }
             let Some(kept) = kept else {
                 continue;
             };
             if kept.realm == self.realm {
-                let named = kept.made.as_ref().map(|made| &made.machine);
-                let released = kept.released.as_ref().map(|released| &released.machine);
-                if let Some(machine) = named.or(released) {
-                    standing.doubt.cleared(machine);
+                if let Some(made) = &kept.made {
+                    standing.doubt.made(&made.machine);
+                } else if let Some(released) = &kept.released {
+                    standing.doubt.released(&released.machine, &released.place);
                 }
             }
             let kept_by = if kept.realm.is_none() {
@@ -611,8 +656,9 @@ impl Book {
             match ends.doubt.why() {
                 Some(why) => eprintln!(
                     "{} can't say when every machine made ends, as {why}, so no paid machine \
-                     in doubt is carried to till its end is known",
-                    self.path.display()
+                     in doubt is carried to till its end is known; {}",
+                    self.path.display(),
+                    ends.doubt.way_out(),
                 ),
                 None => eprintln!(
                     "{} says when every machine made ends again",
@@ -665,23 +711,48 @@ fn kept(line: &str) -> (Option<Kept>, Option<&str>) {
     }
 }
 
-/// What `left`, all that is left of a line cut short, may have hidden
-/// from a book kept by `realm`. A line is kept with its keys in order,
-/// so a release says so before its machine, and a make says its
-/// machine before its place and its realm last; nothing a make holds
-/// before its machine has a key of that name, and a name said within
-/// another's text has its quotes escaped, so the first whole name after
-/// the make's start is its own. What is left before either says which
-/// may be any machine's make.
+/// `left`, all that is left of a line cut short, as the lines it may
+/// hold, each starting where one does: two cut short in a row run
+/// together, and each is judged alone.
+fn pieces(left: &str) -> impl Iterator<Item = &str> {
+    let mut starts: Vec<usize> = left.match_indices(r#"{"at""#).map(|(at, _)| at).collect();
+    if starts.first() != Some(&0) {
+        starts.insert(0, 0);
+    }
+    let ends: Vec<usize> = starts.iter().skip(1).copied().chain([left.len()]).collect();
+    starts
+        .into_iter()
+        .zip(ends)
+        .map(move |(start, end)| &left[start..end])
+        .filter(|piece| !piece.trim().is_empty())
+}
+
+/// What `left`, all that is left of one line cut short, may have hidden
+/// from a book kept by `realm`. A line is kept with its keys in order:
+/// a release says its realm, then that it is one, while a make says it
+/// is one, then its machine, its place and its realm last. So a line
+/// saying its realm but no make is a release, and one saying another
+/// realm is that realm's. Nothing a make holds before its machine has a
+/// key of that name or of its place's, and a name said within another's
+/// text has its quotes escaped, so the first whole name after the
+/// make's start is its own. What is left before either says which may
+/// be any machine's make.
 fn torn(left: &str, realm: Option<&str>) -> Torn {
+    let made = left.find(r#""made":{"#);
     if left.contains(r#""released":"#)
+        || (made.is_none() && left.contains(r#""realm":"#))
         || said(left, "realm").is_some_and(|said| Some(said.as_str()) != realm)
     {
         return Torn::Nothing;
     }
-    left.find(r#""made":{"#)
-        .and_then(|made| said(&left[made..], "machine"))
-        .map_or(Torn::Any, Torn::Machine)
+    made.and_then(|made| {
+        let made = &left[made..];
+        Some(Torn::Machine {
+            machine: said(made, "machine")?,
+            place: said(made, "place"),
+        })
+    })
+    .unwrap_or(Torn::Any)
 }
 
 /// The text `left` first says whole for `key`, if it says one.
@@ -1334,7 +1405,9 @@ mod tests {
     fn wrens_make(soon: jiff::Timestamp) -> (String, usize, usize) {
         let wren = made_at("wren", "p2", soon);
         let whole = serde_json::to_string(&json!({ "at": soon, "made": wren })).expect("a line");
-        let named = whole.find(r#","place""#).expect("its place follows its name");
+        let named = whole
+            .find(r#","place""#)
+            .expect("its place follows its name");
         let placed = whole
             .find(r#","provider""#)
             .expect("its provider follows its place");
