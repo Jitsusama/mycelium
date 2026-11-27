@@ -405,9 +405,9 @@ enum Action {
     /// Lists the machines made for agents to share, or names one a room
     /// or takes one out.
     ///
-    /// Only the node writes the rooms' list, and it names only a machine
-    /// its own book holds as made for an agent: never the person's own,
-    /// nor one another node made.
+    /// The node names only a machine its own book holds as made for an
+    /// agent: never the person's own, nor one another node made.
+    /// Placement trusts a line put in the rooms' list by hand too.
     #[command(after_help = "Example:\n  mycelium rooms add tern")]
     Rooms {
         /// What to do.

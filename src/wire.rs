@@ -147,9 +147,9 @@ pub enum Request {
         act: StartsAct,
     },
     /// The machines named rooms for agents to share, after naming
-    /// `machine` one or taking it out, as `act` asks: the node alone
-    /// writes `agent-rooms`, and names only a machine its own book holds
-    /// as made for an agent.
+    /// `machine` one or taking it out, as `act` asks: the node writes
+    /// `agent-rooms` so, and names only a machine its own book holds as
+    /// made for an agent, though placement trusts a line put by hand.
     Rooms {
         /// What to do.
         act: RoomsAct,
