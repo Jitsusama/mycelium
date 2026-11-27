@@ -9788,8 +9788,11 @@ impl<S: Store> Shared<S> {
     /// still reaches the room, as the person's safe word asks of every
     /// room, though no pi session asks it; yet the person's own login,
     /// never fenced, never runs in the worker home that agent wrote. So
-    /// does a room this node never booked, since bookings are each node's
-    /// own and only one booked for the person here is known to be theirs.
+    /// does a room this node never booked that its link reached as a
+    /// worker, since bookings are each node's own and only one booked for
+    /// the person here is known to be theirs. One that is no worker, as
+    /// the person's own machines aren't, stays theirs: any session may
+    /// write the rooms' file, but none can make a machine a worker by it.
     /// One machine named twice is still one. This node's own machine,
     /// which it never books, stays the person's whatever the file says.
     /// Any other run is held to who asks it.
@@ -9804,12 +9807,18 @@ impl<S: Store> Shared<S> {
         if *room == self.machine || named.any(|other| other != room) {
             return (by, admits);
         }
-        let the_persons = self.lock().booked.get(room).is_some_and(|(_, booked)| {
+        let booked = self.lock().booked.get(room).map(|(_, booked)| {
             booked
                 .as_deref()
-                .is_none_or(|booked| booked == made::PERSON)
+                .is_some_and(|booked| booked != made::PERSON)
         });
-        if by == By::Person && !the_persons && self.book.agent_rooms().contains(room) {
+        let an_agents = booked.unwrap_or_else(|| {
+            self.store
+                .machines()
+                .iter()
+                .any(|one| one.name == *room && one.worker)
+        });
+        if by == By::Person && an_agents && self.book.agent_rooms().contains(room) {
             (By::Agent(crate::declared::Kind::Fence), Admits::Rooms)
         } else {
             (by, admits)
@@ -25337,7 +25346,19 @@ esac
         use crate::declared::Kind;
         let dir = tempfile::tempdir().expect("a temporary folder");
         let shared = made_for(dir.path(), &[("wren", made::PERSON), ("reef", "P9R1KI")]);
-        fs::write(dir.path().join(made::AGENT_ROOMS), "reef\nwren\ntern\n").expect("named");
+        fs::write(
+            dir.path().join(made::AGENT_ROOMS),
+            "reef\nwren\ntern\nosprey\n",
+        )
+        .expect("named");
+        // Neither is booked here: tern a worker this node's link reached,
+        // osprey the person's own machine, which any session may list.
+        let mut tern = placement::tests::machine("tern", "linux", 32, &["basin"]);
+        tern.worker = true;
+        let osprey = placement::tests::machine("osprey", "linux", 32, &["basin"]);
+        for one in [&tern, &osprey] {
+            shared.store.put_machine(one).expect("kept");
+        }
         let person = || Admits::Asker(made::PERSON.to_owned());
         let naming = |names: &[&str]| {
             work(
@@ -25365,9 +25386,15 @@ esac
         );
         for admits in [person(), Admits::All] {
             assert_eq!(
-                shared.as_a_room_takes(By::Person, &naming(&["tern"]), admits),
+                shared.as_a_room_takes(By::Person, &naming(&["tern"]), admits.clone()),
                 (By::Agent(Kind::Fence), Admits::Rooms),
-                "so does one this node never booked, as no booking here says it is the person's"
+                "so does a worker this node never booked, as no booking here says it is the \
+                 person's"
+            );
+            assert_eq!(
+                shared.as_a_room_takes(By::Person, &naming(&["osprey"]), admits.clone()),
+                (By::Person, admits),
+                "but a machine that is no worker stays the person's, though a session listed it"
             );
         }
         assert_eq!(
