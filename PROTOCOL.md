@@ -2492,16 +2492,31 @@ a granted session's and one from no one known included, whoever it is
 booked for, since its booking says who pays for it and may let it go,
 not who may use it; the person's own go there only where it is booked
 for the person or for no asker, never into a worker home an agent's
-make wrote. A run the person asks naming one machine alone, a room an
-agent's make booked, runs there as an agent's, in the agent fence, so
-the person's safe word reaches every room though no session asks it,
-and the person's own login still never runs in that worker home.
-Work that names none of the workers may go to it though it
-costs money, ranked by its room as any machine is, so before a machine
-kept lively while it has room, and after one within its ceiling once
-it is over a limit. The node marks each one `"held_for": "agents"` as it
-places, from its own file, and every other as booked, never from what
-the machine says, and a link keeps nothing a machine says of it. A
+make wrote. Any run the person asks naming one machine alone, a room
+not booked here for the person or for no asker (an agent's make booked
+it, or this node never booked it but its link reached it as a worker,
+since each node keeps its own bookings), runs there as an agent's, in
+the agent fence. So the
+person's safe word reaches every room though no session asks it, and
+the person's own login still never runs in a worker home an agent
+wrote. Such a run is placed as an agent's run is: the asking machine
+must declare the agent fence and the room must say it runs commands in
+it, or the run is refused, its refusal saying the person asked it and
+it was sent as an agent's. The asking node's runs journal keeps
+`asked_by` beside its `by`; the room's own journal, and a refusal the
+room itself sends back, read as an agent's, since a run crossing the
+link carries no asker. One machine named twice is still one, and this
+node's own machine stays the person's whatever the file names. Since
+any session may write the file, naming a machine there only ever fences
+the person's runs to it, never loosens them, and never fences them to
+a machine that is no worker and no agent's make booked, as the
+person's own machines aren't. Work that names none of
+the workers may go to it though it costs money, ranked by its room as
+any machine is, so before a machine kept lively while it has room, and
+after one within its ceiling once it is over a limit. The node marks
+each one `"held_for": "agents"` as it places, from its own file, and
+every other as booked, never from what the machine says, and a link
+keeps nothing a machine says of it. A
 session the person granted is booked as the person but isn't one: its
 starts go to a machine booked for the person or for no asker, and not
 named in the file, only where they name it, never to one an agent's
@@ -3096,9 +3111,10 @@ up stops it: its process group is sent the terminate signal, then the
 kill signal if any of it still runs 10 seconds on. Each machine a run
 crosses keeps it in `runs.jsonl` in mycelium's folder, and logs each
 line: `{"run", "at", "by", "sessions", "from", "on", "folder",
-"command", "spared", "untold"}` as it starts, `"spared"` only where
-the node spared it a shared quest's tree and `"untold"`, why, only
-where an agent's run here was told no session, then
+"command", "spared", "untold", "asked_by"}` as it starts, `"spared"`
+only where the node spared it a shared quest's tree, `"untold"`, why,
+only where an agent's run here was told no session, and `"asked_by"`
+only where the person's run was sent to a room as an agent's, then
 `{"run", "at", "ended"}`, the last `Ran`
 or `{"Stopped": why}` where its asker let go.
 `mycelium run` prints what it writes as it comes and exits with its

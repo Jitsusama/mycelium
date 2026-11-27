@@ -3180,8 +3180,11 @@ enum Admits {
     /// those booked for the person or for nobody told, and only where its
     /// work names them.
     Granted,
-    /// Only rooms made for agents to share, for the person's run sent to
-    /// one as an agent's ([`Shared::as_a_room_takes`]).
+    /// Of the machines booked here, only rooms made for agents to share,
+    /// for the person's run sent to one as an agent's
+    /// ([`Shared::as_a_room_takes`]). A machine not booked here at all is
+    /// taken as every admits take it, so what holds that run to its room
+    /// is the one machine it names.
     Rooms,
 }
 
@@ -9766,7 +9769,9 @@ impl<S: Store> Shared<S> {
             By::Agent(kind) => By::Agent(kind.max(crate::declared::Kind::Fence)),
             By::Person => By::Person,
         };
+        let who_asked = by;
         let (by, admits) = self.as_a_room_takes(by, &asked.work, self.admits().await);
+        let recast = by != who_asked;
         asked.by = Some(by);
         let fence = match by {
             By::Agent(kind) => Some(kind),
@@ -9778,8 +9783,10 @@ impl<S: Store> Shared<S> {
         // launcher sets.
         let machine = match self.place(&asked.work, Counts::Never, fence, Screen::Run, &admits) {
             Placement::Placed { machine, .. } => machine,
-            Placement::Pending { misses } => return Err(nowhere_now(&misses)),
-            Placement::Refused { misses } => return Err(self.run_refused(&asked, by, &misses)),
+            Placement::Pending { misses } => return Err(sent_as(recast, nowhere_now(&misses))),
+            Placement::Refused { misses } => {
+                return Err(sent_as(recast, self.run_refused(&asked, by, &misses)));
+            }
         };
         let from = asked.from.clone().unwrap_or_else(|| self.machine.clone());
         let id = format!(
@@ -9797,6 +9804,11 @@ impl<S: Store> Shared<S> {
             "folder": asked.folder,
             "command": asked.command,
         });
+        // Who asked is kept beside how it ran, so the journal tells the
+        // person's run sent to a room from an agent's own.
+        if recast {
+            started["asked_by"] = serde_json::json!(who_asked);
+        }
         let said = if machine == self.machine {
             let home =
                 std::env::home_dir().ok_or_else(|| format!("{machine} has no home to run in"))?;
@@ -9841,21 +9853,38 @@ impl<S: Store> Shared<S> {
     /// there as an agent's, in the agent fence, and on rooms alone. So it
     /// still reaches the room, as the person's safe word asks of every
     /// room, though no pi session asks it; yet the person's own login,
-    /// never fenced, never runs in the worker home that agent wrote. Any
-    /// other run is held to who asks it.
+    /// never fenced, never runs in the worker home that agent wrote. So
+    /// does a room this node never booked that its link reached as a
+    /// worker, since bookings are each node's own and only one booked for
+    /// the person here is known to be theirs. One that is no worker, as
+    /// the person's own machines aren't, stays theirs: any session may
+    /// write the rooms' file, but none can make a machine a worker by it.
+    /// One machine named twice is still one. This node's own machine,
+    /// which it never books, stays the person's whatever the file says.
+    /// Any other run is held to who asks it.
     fn as_a_room_takes(&self, by: By, work: &Work, admits: Admits) -> (By, Admits) {
         let mut named = work.needs.iter().filter_map(|need| match need {
             Need::Machine(name) => Some(name),
             _ => None,
         });
-        let (Some(room), None) = (named.next(), named.next()) else {
+        let Some(room) = named.next() else {
             return (by, admits);
         };
-        let rooms = self.book.agent_rooms();
-        if by == By::Person
-            && rooms.contains(room)
-            && !self.admitted_among(room, &admits, &rooms, true)
-        {
+        if *room == self.machine || named.any(|other| other != room) {
+            return (by, admits);
+        }
+        let booked = self.lock().booked.get(room).map(|(_, booked)| {
+            booked
+                .as_deref()
+                .is_some_and(|booked| booked != made::PERSON)
+        });
+        let an_agents = booked.unwrap_or_else(|| {
+            self.store
+                .machines()
+                .iter()
+                .any(|one| one.name == *room && one.worker)
+        });
+        if by == By::Person && an_agents && self.book.agent_rooms().contains(room) {
             (By::Agent(crate::declared::Kind::Fence), Admits::Rooms)
         } else {
             (by, admits)
@@ -10593,6 +10622,20 @@ fn nowhere_now(misses: &[Miss]) -> String {
         "nowhere now, though a machine out of reach would do: {}",
         placement::said(misses)
     )
+}
+
+/// Why a run is refused, `why`, saying where it was `recast` that the
+/// person asked it and it was sent to a room as an agent's, so the person
+/// isn't left reading an agent's refusal of a run they never asked as one.
+fn sent_as(recast: bool, why: String) -> String {
+    if recast {
+        format!(
+            "the person's run naming a room made for agents is sent there as an agent's, in \
+             the agent fence, and {why}"
+        )
+    } else {
+        why
+    }
 }
 
 /// Why an agent's `work`, asked in `fence`, starts nowhere, where the
@@ -19105,6 +19148,25 @@ esac
                 .is_err_and(|why| why.starts_with("nowhere")),
             "a machine the realm doesn't have takes nothing: {nowhere:?}"
         );
+        // kestrel is booked nowhere here, so only a worker this node's link
+        // reached is a room.
+        let mut kestrel = placement::tests::machine("kestrel", "linux", 32, &[]);
+        kestrel.worker = true;
+        store.put_machine(&kestrel).expect("kept");
+        fs::write(socket.with_file_name(made::AGENT_ROOMS), "kestrel\nskiff\n").expect("named");
+        let recast = run_through(socket.clone(), run_of("kestrel", "true")).await;
+        assert!(
+            recast.as_ref().is_err_and(|why| why
+                .starts_with("the person's run naming a room made for agents is sent there")),
+            "the person's run sent to a room as an agent's and refused says the person asked it: \
+             {recast:?}"
+        );
+        let own = run_through(socket.clone(), run_of("skiff", "exit 3")).await;
+        assert_eq!(
+            own.map(|came| came.ended),
+            Ok(Some(Ran::Exited(3))),
+            "this node's own machine runs the person's as theirs, though the rooms name it"
+        );
         let nothing = run_through(
             socket,
             Run {
@@ -25048,7 +25110,8 @@ esac
             Admits::Rooms.takes(Some("P9R1KI"), true, true)
                 && !Admits::Rooms.takes(Some(made::PERSON), false, true)
                 && !Admits::Rooms.takes(None, false, true),
-            "the person's run sent to a room as an agent's takes rooms alone"
+            "of the machines booked here, the person's run sent to a room as an agent's takes \
+             rooms alone, none booked for the person or for no asker told"
         );
     }
 
@@ -25345,7 +25408,11 @@ esac
         use crate::declared::Kind;
         let dir = tempfile::tempdir().expect("a temporary folder");
         let shared = made_for(dir.path(), &[("wren", made::PERSON), ("reef", "P9R1KI")]);
-        fs::write(dir.path().join(made::AGENT_ROOMS), "reef\nwren\n").expect("named");
+        fs::write(dir.path().join(made::AGENT_ROOMS), "reef\nwren\ntern\n").expect("named");
+        // tern is booked nowhere here, a worker this node's link reached.
+        let mut tern = placement::tests::machine("tern", "linux", 32, &["basin"]);
+        tern.worker = true;
+        shared.store.put_machine(&tern).expect("kept");
         let person = || Admits::Asker(made::PERSON.to_owned());
         let naming = |names: &[&str]| {
             work(
@@ -25379,11 +25446,34 @@ esac
             (None, Some("reef")),
             "so it reaches the room the person's own login never runs in"
         );
+        assert_eq!(
+            shared.as_a_room_takes(By::Person, &naming(&["tern", "tern"]), person()),
+            (By::Agent(Kind::Fence), Admits::Rooms),
+            "and one room named twice is one room, so naming it again keeps no login unfenced"
+        );
+        let mut unasked = made_by("/usr/bin/lend", "tern", a_day_out());
+        unasked.asker = None;
+        shared.book_for(&unasked);
+        fs::write(
+            dir.path().join(made::AGENT_ROOMS),
+            "reef\nwren\ntern\nskiff\n",
+        )
+        .expect("named");
         for (by, work, why) in [
             (
                 By::Person,
                 naming(&["wren"]),
                 "a room the person's make booked",
+            ),
+            (
+                By::Person,
+                naming(&["tern"]),
+                "a room made at no asker's word",
+            ),
+            (
+                By::Person,
+                naming(&["skiff"]),
+                "this node's own machine, which no booking here names",
             ),
             (By::Person, naming(&["reef", "wren"]), "two machines named"),
             (By::Person, work(Vec::new()), "none named"),
@@ -25409,6 +25499,51 @@ esac
             placed(&reef, &Admits::Rooms),
             None,
             "and the rooms-only admits never take it, though it is named"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_persons_run_naming_a_machine_booked_nowhere_is_fenced_on_a_worker_alone() {
+        use crate::declared::Kind;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        fs::write(dir.path().join(made::AGENT_ROOMS), "tern\nosprey\n").expect("named");
+        // Neither is booked here: tern a worker this node's link reached,
+        // osprey the person's own machine, which any session may list.
+        let mut tern = placement::tests::machine("tern", "linux", 32, &["basin"]);
+        tern.worker = true;
+        let osprey = placement::tests::machine("osprey", "linux", 32, &["basin"]);
+        for one in [&tern, &osprey] {
+            shared.store.put_machine(one).expect("kept");
+        }
+        let naming = |name: &str| work(vec![Need::Machine(name.to_owned())]);
+        for admits in [Admits::Asker(made::PERSON.to_owned()), Admits::All] {
+            assert_eq!(
+                shared.as_a_room_takes(By::Person, &naming("tern"), admits.clone()),
+                (By::Agent(Kind::Fence), Admits::Rooms),
+                "a worker this node never booked runs the person's run as an agent's, as no \
+                 booking here says it is the person's"
+            );
+            assert_eq!(
+                shared.as_a_room_takes(By::Person, &naming("osprey"), admits.clone()),
+                (By::Person, admits),
+                "but a machine that is no worker stays the person's, though a session listed it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_recast_run_refused_says_the_person_asked_it() {
+        assert_eq!(
+            sent_as(true, "nowhere: reef is gone".to_owned()),
+            "the person's run naming a room made for agents is sent there as an agent's, in \
+             the agent fence, and nowhere: reef is gone",
+            "a recast run's refusal says whose it was"
+        );
+        assert_eq!(
+            sent_as(false, "nowhere: reef is gone".to_owned()),
+            "nowhere: reef is gone",
+            "any other run's is as it was"
         );
     }
 
