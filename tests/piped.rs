@@ -42,7 +42,7 @@ fn printed(home: &Path, args: &[&str]) -> String {
 }
 
 /// When kestrel was last measured, as the node at `home` says in JSON,
-/// stamped as a pipe draws it; none until it has been measured.
+/// stamped as a pipe draws it; none if the JSON doesn't say it.
 fn measured(home: &Path) -> Option<String> {
     let json = printed(home, &["machines", "-o", "json"]);
     let said: serde_json::Value = serde_json::from_str(json.lines().next()?).ok()?;
@@ -88,14 +88,20 @@ fn into_a_pipe_a_machine_says_when_it_was_measured_with_its_day_and_zone() {
         PATIENCE,
     );
     // The node measures its own machine each time it is asked, so the
-    // first page already says when, and nothing is waited for.
+    // first page already says when, and nothing is waited for. Each ask
+    // measures again, so the page's minute is the one read before it or
+    // the one read after, whichever side of a minute it fell.
     let before = measured(home);
     let page = printed(home, &["machines", "kestrel", "-o", "text"]);
     let after = measured(home);
     drop(node);
 
-    assert!(before.is_some(), "kestrel was never measured:\n{page}");
+    assert!(
+        before.is_some(),
+        "the JSON didn't say when kestrel was measured:\n{page}"
+    );
     let said = line(&page, "measured").map(str::to_owned);
+    assert!(said.is_some(), "the page didn't say when:\n{page}");
     assert!(
         said == before || said == after,
         "into a pipe, the time kestrel was measured wasn't stamped as {before:?} or \
