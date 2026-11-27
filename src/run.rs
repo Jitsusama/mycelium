@@ -156,11 +156,23 @@ pub const PIECE: usize = 64 * 1024;
 /// step from the command to whoever asked for it.
 pub const BACKLOG: usize = 4;
 
+/// Which shell a run's command goes through.
+#[derive(Clone, Copy, Debug)]
+pub enum Shell<'a> {
+    /// The person's login shell, reading their profile.
+    Login,
+    /// A shell reading no profile, with no folder of `home`, the home the
+    /// run is in, on its path ([`crate::hold::start::plain_run`]).
+    Plain {
+        /// The home the node runs the command in.
+        home: &'a Path,
+    },
+}
+
 /// The words that run `command` here in `realm`: through `launcher`, a
-/// fence's words or none for a person, then the person's login shell,
-/// or with no `profile` a shell reading none
-/// ([`crate::hold::start::plain_run`]), with the realm's `kit` first on
-/// its path where there is one, then the command. What an ask says comes only after both, and a
+/// fence's words or none for a person, then the `shell`, with the realm's
+/// `kit` first on its path where there is one, then the command. What an
+/// ask says comes only after both, and a
 /// launcher's words end with `--` ([`crate::declared::launcher`] takes
 /// no other), so none of it is read as the launcher's own options where
 /// the launcher reads `--` as their end, as pi-fence does: no ask spares
@@ -171,13 +183,12 @@ pub fn words(
     realm: &str,
     kit: Option<&Path>,
     command: Vec<String>,
-    profile: bool,
+    shell: Shell<'_>,
 ) -> Vec<String> {
     let mut words = launcher;
-    words.extend(if profile {
-        crate::hold::start::login_run(realm, kit)
-    } else {
-        crate::hold::start::plain_run(realm, kit)
+    words.extend(match shell {
+        Shell::Login => crate::hold::start::login_run(realm, kit),
+        Shell::Plain { home } => crate::hold::start::plain_run(realm, kit, home),
     });
     words.extend(command);
     words
@@ -449,7 +460,7 @@ mod tests {
         ]
         .map(str::to_owned)
         .to_vec();
-        let words = words(launcher.clone(), "work", None, asked.clone(), true);
+        let words = words(launcher.clone(), "work", None, asked.clone(), Shell::Login);
         let options = words
             .iter()
             .position(|word| word == "--")
@@ -468,10 +479,17 @@ mod tests {
             crate::hold::start::login_run("work", None),
             "the login shell stands between them"
         );
-        let plain = super::words(launcher.clone(), "work", None, asked.clone(), false);
+        let home = Path::new("/home/kestrel");
+        let plain = super::words(
+            launcher.clone(),
+            "work",
+            None,
+            asked.clone(),
+            Shell::Plain { home },
+        );
         assert_eq!(
             plain[launcher.len()..plain.len() - asked.len()],
-            crate::hold::start::plain_run("work", None),
+            crate::hold::start::plain_run("work", None, home),
             "or, with no profile, a shell reading none"
         );
     }

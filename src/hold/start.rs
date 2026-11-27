@@ -382,8 +382,12 @@ const IN_ITS_REALM: &str = r#"export MYCELIUM_REALM="$1"; if [ -n "$2" ]; then P
 /// named relatively, which the run's folder in that home would hold: a
 /// service's path may name the home's own tools (`~/.local/bin`, a
 /// profile's `bin`), which whoever wrote the home could make shadow a
-/// command. With no home, or `/` for one, only the relative go.
-const OUT_OF_ITS_HOME: &str = r#"home=; real=; case ${HOME-} in /?*) home=${HOME%/}; real=$(cd -P "$home" 2>/dev/null && pwd -P) || real=;; esac; kept=; set -f; IFS=:; for dir in ${PATH-}; do case $dir in /*) led=$(cd -P "$dir" 2>/dev/null && pwd -P) || led=$dir; for at in "$home" "$real"; do case $at in '') ;; *) case $dir/ in "$at"/*) dir=;; esac; case $led/ in "$at"/*) dir=;; esac;; esac; done; [ -z "$dir" ] || kept=${kept:+$kept:}$dir;; esac; done; unset IFS; set +f; PATH=$kept; export PATH; "#;
+/// command. The home is the one its first word names, the node's own,
+/// and the `HOME` it is given as well, so a launcher that takes `HOME`
+/// away or points it elsewhere leaves none of either on the path. It
+/// shifts that word off. With no home, or `/` for one, only the relative
+/// go.
+const OUT_OF_ITS_HOME: &str = r#"homes=; for at in "$1" "${HOME-}"; do case $at in /?*) at=${at%/}; homes=$homes$at:; led=$(cd -P "$at" 2>/dev/null && pwd -P) && homes=$homes$led:;; esac; done; shift; kept=; set -f; IFS=:; for dir in ${PATH-}; do case $dir in /*) led=$(cd -P "$dir" 2>/dev/null && pwd -P) || led=$dir; for at in $homes; do case $dir/ in "$at"/*) dir=;; esac; case $led/ in "$at"/*) dir=;; esac; done; [ -z "$dir" ] || kept=${kept:+$kept:}$dir;; esac; done; unset IFS; set +f; PATH=$kept; export PATH; "#;
 
 /// The words that run a program held in `realm` through the person's
 /// login shell, as a terminal would run it, so it has their environment
@@ -442,13 +446,17 @@ fn in_its_realm(
 /// home another may have written: the person's run sent to a room an
 /// agent's make booked, whose profile that agent could make shadow the
 /// command or fake its end. It has the environment its launcher gives
-/// it, but with no folder of that home on its path ([`OUT_OF_ITS_HOME`]),
-/// and the kit's tools first. A command found only in the home isn't
-/// found, rather than found as the home's writer left it.
+/// it, but with no folder of `home`, the home it runs in, nor of the
+/// `HOME` it is given, on its path ([`OUT_OF_ITS_HOME`]), and the kit's
+/// tools first. A command found only in the home isn't found, rather
+/// than found as the home's writer left it.
 #[must_use]
-pub fn plain_run(realm: &str, kit: Option<&Path>) -> Vec<String> {
+pub fn plain_run(realm: &str, kit: Option<&Path>, home: &Path) -> Vec<String> {
     let script = format!("{OUT_OF_ITS_HOME}{IN_ITS_REALM}");
-    in_its_realm("/bin/sh".to_owned(), "-c", script, realm, kit).to_vec()
+    let mut words = in_its_realm("/bin/sh".to_owned(), "-c", script, realm, kit).to_vec();
+    // After the shell's own name, as the script's first word.
+    words.insert(4, home.display().to_string());
+    words
 }
 
 /// The words that run a command in `realm` through the person's login
@@ -761,7 +769,11 @@ mod tests {
     // realm with the kit's tools first, as a login run is.
     #[test]
     fn a_plain_run_reads_no_profile_and_keeps_its_realm_and_kit() {
-        let words = plain_run("harbour", Some(Path::new("/nix/store/kit")));
+        let words = plain_run(
+            "harbour",
+            Some(Path::new("/nix/store/kit")),
+            Path::new("/home/kestrel"),
+        );
         assert_eq!(
             words[..2],
             ["/bin/sh".to_owned(), "-c".to_owned()],
@@ -818,17 +830,48 @@ mod tests {
         ]
         .join(":");
         let print = r#"printf %s "$PATH""#;
-        let plain = plain_run("harbour", Some(Path::new("/nix/store/kit")));
+        let kept = format!("/nix/store/kit/bin:/usr/bin:{around}:{home}x/bin:/bin");
+        let plain = plain_run(
+            "harbour",
+            Some(Path::new("/nix/store/kit")),
+            Path::new(&format!("{home}/")),
+        );
         assert_eq!(
             run_through(
                 &plain,
                 print,
                 &[("HOME", &format!("{home}/")), ("PATH", &path)]
             ),
-            format!("/nix/store/kit/bin:/usr/bin:{around}:{home}x/bin:/bin"),
+            kept,
             "the home's folders go, by name or by where they lead, and relative ones"
         );
-        let plain = plain_run("harbour", None);
+        // A launcher may point HOME elsewhere; the home the run is in
+        // still goes, by name or by where it leads.
+        let elsewhere = at.join("elsewhere").display().to_string();
+        for given in [&home, &real] {
+            let plain = plain_run(
+                "harbour",
+                Some(Path::new("/nix/store/kit")),
+                Path::new(given),
+            );
+            assert_eq!(
+                run_through(&plain, print, &[("HOME", &elsewhere), ("PATH", &path)]),
+                kept,
+                "the home it runs in, {given}, goes whatever HOME says"
+            );
+        }
+        // And the HOME it is given goes too, though the node's is another.
+        let plain = plain_run(
+            "harbour",
+            Some(Path::new("/nix/store/kit")),
+            Path::new(&elsewhere),
+        );
+        assert_eq!(
+            run_through(&plain, print, &[("HOME", &home), ("PATH", &path)]),
+            kept,
+            "the home HOME names goes as well"
+        );
+        let plain = plain_run("harbour", None, Path::new("/"));
         assert_eq!(
             run_through(&plain, print, &[("HOME", "/"), ("PATH", "/usr/bin:.:/bin")]),
             "/usr/bin:/bin",

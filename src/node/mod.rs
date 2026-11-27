@@ -9846,9 +9846,15 @@ impl<S: Store> Shared<S> {
             let (folder, ground) = self.ground(folder, by, asked.from.as_deref()).await?;
             let launcher = self.launcher(by, ground.as_ref(), &from, &mut started)?;
             // The person's run sent here as an agent's reads no profile
-            // of this home, which the agent may have written.
-            let profile = asked.asked_by != Some(By::Person);
-            let words = run::words(launcher, &self.realm, self.kit(), asked.command, profile);
+            // of this home, which the agent may have written, and finds no
+            // tool in it, by the home it runs in, whatever `HOME` its
+            // launcher gives it.
+            let shell = if asked.asked_by == Some(By::Person) {
+                run::Shell::Plain { home: &home }
+            } else {
+                run::Shell::Login
+            };
+            let words = run::words(launcher, &self.realm, self.kit(), asked.command, shell);
             // An agent's fence grants the work trees its session holds, so
             // the run is told the session the kernel and pi's records prove
             // asks, never one its words name; none where none is proved,
