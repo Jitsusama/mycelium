@@ -25,6 +25,7 @@
 //! is made, refused, handed on, continued and forked against the one
 //! record they prove, and read best beside it.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
@@ -203,13 +204,15 @@ impl Orchestrations {
     /// followed back continues, as two logs named for one session name
     /// different sessions, each is followed, and only a lapsing claim
     /// one of them may lead to is kept so; the rest pass or lapse as
-    /// they would. A log that can't be opened still reads as continuing
-    /// none.
+    /// they would. A log that can't be opened or read as a header still
+    /// reads as continuing none, so a copy that can't be read agrees
+    /// with one naming none and disagrees with one naming a session.
     ///
     /// Answers what became of each claim that lapsed, so a record that
     /// keeps the change can say so: [`Lapsed::Handed`] to the session
-    /// that took it, or [`Lapsed::Forgotten`]. A claim kept as the logs
-    /// can't be read is in neither.
+    /// that took it, [`Lapsed::Held`] where a log that can't be told
+    /// may continue it, or [`Lapsed::Forgotten`]. A claim kept as the
+    /// logs folder can't be read is in none of them.
     pub fn lapse<Continues: Fn(&str) -> Continued>(
         &mut self,
         standing: &BTreeMap<String, Option<String>>,
@@ -233,6 +236,10 @@ impl Orchestrations {
             // standing session's own claim is overwritten.
             if doubted.contains(claimer.as_str()) {
                 self.sessions.insert(claimer.clone(), claim.clone());
+                lapsed.push(Lapsed::Held {
+                    claimer: claimer.clone(),
+                    heads: claim.heads.clone(),
+                });
                 continue;
             }
             let forgotten = |why: String| Lapsed::Forgotten {
@@ -366,8 +373,6 @@ fn heirs<'a>(
                     Err(may) => (may, true),
                 };
                 for before in before {
-                    // A standing session's claim, or its having none, is
-                    // its own: what it continues isn't handed past it.
                     if let Some((claimer, _)) = lapsing.get_key_value(&before) {
                         if doubtful {
                             doubted.insert(claimer.as_str());
@@ -375,6 +380,10 @@ fn heirs<'a>(
                             heirs.entry(claimer).or_default().push(session);
                         }
                     } else if !standing.contains_key(&before) {
+                        // A standing session's claim, or its having none,
+                        // is its own: what it continues isn't handed past
+                        // it, so the walk goes on only past one that
+                        // doesn't stand.
                         next.insert((before, doubtful));
                     }
                 }
@@ -393,8 +402,8 @@ pub const CONTINUED_MOST: usize = 8;
 /// The sessions' logs under a logs folder, each in a folder of its working
 /// folder's, `<logs>/<folder>/<time>_<session>.jsonl`, found by the
 /// session each keeps in one scan of the folders, opening none: a log is
-/// opened only as what it continues is asked, and only its first line is
-/// read.
+/// opened only as what it continues is asked, only its first line is
+/// read, and each session's logs are read once a scan.
 #[derive(Debug, Default)]
 pub struct Logs {
     /// Each log found, by the session its name says it keeps: all of
@@ -403,6 +412,10 @@ pub struct Logs {
     found: BTreeMap<String, Vec<PathBuf>>,
     /// Each folder in it that couldn't be read, and why, passed over.
     unread: Vec<String>,
+    /// What each session asked of [`Self::follows`] continues, as its
+    /// logs said the first time, so a lapse walking past it again reads
+    /// none of them twice.
+    told: RefCell<BTreeMap<String, Continued>>,
 }
 
 impl Logs {
@@ -487,26 +500,23 @@ impl Logs {
     /// and what it continues, can't be told: each session one of them
     /// names.
     pub fn follows(&self, session: &str) -> Continued {
-        let Some(found) = self.found.get(session) else {
-            return Ok(None);
-        };
-        let named: BTreeSet<Option<String>> = found
-            .iter()
-            .map(|log| Self::header_continues(log, session))
-            .collect();
-        if named.len() > 1 {
-            return Err(named.into_iter().flatten().collect());
+        if let Some(told) = self.told.borrow().get(session) {
+            return told.clone();
         }
-        Ok(named.into_iter().next().flatten())
-    }
-
-    /// The sessions whose several logs disagree on what they continue,
-    /// so what each continues can't be told.
-    pub fn doubled(&self) -> impl Iterator<Item = &str> {
-        self.found
-            .iter()
-            .filter(|(session, logs)| logs.len() > 1 && self.follows(session).is_err())
-            .map(|(session, _)| session.as_str())
+        let continued = self.found.get(session).map_or(Ok(None), |found| {
+            let named: BTreeSet<Option<String>> = found
+                .iter()
+                .map(|log| Self::header_continues(log, session))
+                .collect();
+            if named.len() > 1 {
+                return Err(named.into_iter().flatten().collect());
+            }
+            Ok(named.into_iter().next().flatten())
+        });
+        self.told
+            .borrow_mut()
+            .insert(session.to_owned(), continued.clone());
+        continued
     }
 
     /// What the log at `log` continues, as its first line names it, where

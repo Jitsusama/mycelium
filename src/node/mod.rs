@@ -539,9 +539,9 @@ fn plain_quest(quest: &str) -> bool {
 /// What each log under `logs` continues, the folder scanned once, as a
 /// lapse of the record of orchestrations asks only where a claim lapses;
 /// none where the folder can't be read, so what lapses is kept until it
-/// can be. That, each folder in it passed over as unreadable, and each
-/// session whose several logs disagree, is said once, so claims kept
-/// with no end name their cause.
+/// can be. That, and each folder in it passed over as unreadable, is said
+/// once, so claims kept with no end name their cause; a claim kept as
+/// logs disagree is said by the lapse itself ([`said_lapsed`]).
 fn continuing(
     logs: &Path,
     unreadable: &through::Unreadable,
@@ -564,16 +564,25 @@ fn continuing(
             "the sessions logged in a folder that can't be read continue none: {why}"
         ));
     }
-    // Kept where a lapse follows one back (`chain::Orchestrations::lapse`).
-    for session in found.doubled() {
-        say(format!(
-            "claims {}'s logs may continue are kept, rather than lapse, as the logs under {} \
-             named for it disagree on what it continues",
-            crate::carry::shown(session),
-            logs.display()
-        ));
-    }
     Some(move |session: &str| found.follows(session))
+}
+
+/// Says what became of each claim in `lapsed` in the node's log, where
+/// the record keeping it was `kept`: a claim handed on or forgotten only
+/// then, as a record read and let go of changes nothing, and one held
+/// once each, through `unreadable`, as it's held again at every lapse
+/// until the logs can tell.
+fn said_lapsed(lapsed: &[chain::Lapsed], kept: bool, unreadable: &through::Unreadable) {
+    for lapsed in lapsed {
+        let line = lapsed.to_string();
+        let said = match lapsed {
+            chain::Lapsed::Held { .. } => unreadable.first(&line),
+            chain::Lapsed::Handed { .. } | chain::Lapsed::Forgotten { .. } => kept,
+        };
+        if said {
+            eprintln!("{line}");
+        }
+    }
 }
 
 /// Whether `session` stands where a carry reaches it: running, or parked
@@ -6666,6 +6675,7 @@ impl<S: Store> Shared<S> {
         + 'static,
     ) -> Reply {
         let (file, claiming) = (self.orchestrations.clone(), self.claiming.clone());
+        let unreadable = Arc::clone(&self.unreadable);
         tokio::task::spawn_blocking(move || {
             let _claiming = claiming
                 .lock()
@@ -6677,9 +6687,7 @@ impl<S: Store> Shared<S> {
             record.keep(&file).map_err(|error| {
                 format!("the record of orchestrations couldn't be kept: {error}")
             })?;
-            for lapsed in lapsed {
-                eprintln!("{lapsed}");
-            }
+            said_lapsed(&lapsed, true, &unreadable);
             Ok(Response::Orchestrated)
         })
         .await
@@ -6770,7 +6778,8 @@ impl<S: Store> Shared<S> {
         let unreadable = Arc::clone(&self.unreadable);
         let record = tokio::task::spawn_blocking(move || {
             let mut record = chain::Orchestrations::read(&file)?;
-            record.lapse(&standing, || continuing(&logs, &unreadable));
+            let lapsed = record.lapse(&standing, || continuing(&logs, &unreadable));
+            said_lapsed(&lapsed, false, &unreadable);
             io::Result::Ok(record)
         })
         .await
@@ -6871,7 +6880,8 @@ impl<S: Store> Shared<S> {
             let mut record = chain::Orchestrations::read(&file).map_err(|error| {
                 format!("this node's record of orchestrations can't be read, so no carry is ordered: {error}")
             })?;
-            record.lapse(&standing, || continuing(&logs, &unreadable));
+            let lapsed = record.lapse(&standing, || continuing(&logs, &unreadable));
+            said_lapsed(&lapsed, false, &unreadable);
             Ok(record)
         })
         .await
