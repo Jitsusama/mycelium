@@ -782,7 +782,7 @@ impl Easing {
     /// landed yet, as [`on_way`] says, for the looks that follow.
     /// One refused as its session was told of it, as [`Easing::refused`]
     /// notes, isn't, though its record still stands ordered.
-    pub fn on_way(&mut self, mut on_way: Vec<Moved>) {
+    pub fn on_way(&mut self, mut on_way: Vec<Moved>, _now: Timestamp) {
         on_way.retain(|one| {
             self.refused
                 .get(&one.session)
@@ -2580,7 +2580,7 @@ mod tests {
             }
             // As the node does before each look, from the record that
             // still stands it ordered.
-            easing.on_way(vec![going(ago(30))]);
+            easing.on_way(vec![going(ago(30))], ago(20));
             first_carry(&looks(&mut easing, &[cell("s1")])).is_some()
         };
         assert!(!carried(None), "one on its way holds the next");
@@ -2591,6 +2591,38 @@ mod tests {
         assert!(
             !carried(Some(ago(31))),
             "a refusal before it holds no later carry of the session"
+        );
+    }
+
+    #[test]
+    fn a_refusal_is_forgotten_once_no_carry_on_its_way_can_be_older() {
+        let stuck = kept::STUCK_AFTER.as_mins();
+        let going = |at: Timestamp| Moved {
+            session: "s0".to_owned(),
+            from: "skiff".to_owned(),
+            to: "tern".to_owned(),
+            at,
+            eases: true,
+        };
+        let mut easing = Easing::after(&[], vec![going(ago(stuck - 1))]);
+        easing.refused("s0", ago(stuck - 2));
+        easing.refused("s9", ago(stuck + 1));
+        // As the node does before each look: one ordered longer ago than
+        // kept::STUCK_AFTER stands stuck, so none older is on its way.
+        easing.on_way(vec![going(ago(stuck - 1))], now());
+        assert!(
+            !easing.refused.contains_key("s9"),
+            "a refusal older than any carry on its way is forgotten: {:?}",
+            easing.refused
+        );
+        assert!(
+            easing.refused.contains_key("s0"),
+            "a newer refusal is kept: {:?}",
+            easing.refused
+        );
+        assert!(
+            first_carry(&looks(&mut easing, &[cell("s1")])).is_some(),
+            "the carry a newer refusal names still holds back no other"
         );
     }
 
