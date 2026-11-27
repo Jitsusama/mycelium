@@ -233,8 +233,7 @@ mod tests {
             "a watch names its kind and keys"
         );
         assert_eq!(
-            read(r#"{"id":6,"ask":"watch","kind":"message","latest":20}"#)
-                .map(|ask| ask.what),
+            read(r#"{"id":6,"ask":"watch","kind":"message","latest":20}"#).map(|ask| ask.what),
             Ok(What::Watch {
                 kind: "message".to_owned(),
                 keys: None,

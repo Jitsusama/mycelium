@@ -392,7 +392,11 @@ mod tests {
             vec!["message:b".to_owned(), "message:c".to_owned()],
             "the two heard last, newest first"
         );
-        assert_eq!(heard_last(&first, None, 5).len(), 3, "and all, where there are fewer");
+        assert_eq!(
+            heard_last(&first, None, 5).len(),
+            3,
+            "and all, where there are fewer"
+        );
         let mut sent: Shared = first
             .iter()
             .filter(|(key, _)| key.as_str() != "message:a")
