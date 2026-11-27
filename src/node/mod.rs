@@ -883,15 +883,20 @@ fn began_nothing_here(why: &str, machine: &str, folder: Option<&Path>) -> bool {
 /// is `machine`'s hold refusing it before anything began: another start
 /// there holds a session it names. Only `machine`'s own words are taken,
 /// whole: the refusal alone, or what follows [`AND_HERE`] where a start
-/// placed elsewhere was tried here, its word one unbroken token, so a
-/// peer's or a starter's refusal only ending in those words never
+/// placed elsewhere was tried here, its word one unbroken token or one
+/// of the start's own `named` words (a log's path may hold a space), so
+/// a peer's or a starter's refusal only ending in those words never
 /// escapes the limits. It isn't one [`began_nothing_here`] takes, since
 /// a start past room so refused stands rather than going elsewhere with
 /// a second log of the session.
-fn held_here_already(why: &str, machine: &str) -> bool {
+fn held_here_already(why: &str, machine: &str, named: &[String]) -> bool {
     let own = why.rsplit_once(AND_HERE).map_or(why, |(_, here)| here);
     own.strip_suffix(&format!("{BEING_REOPENED}{machine} already"))
-        .is_some_and(|word| !word.is_empty() && !word.contains(char::is_whitespace))
+        .is_some_and(|word| {
+            !word.is_empty()
+                && (!word.contains(char::is_whitespace)
+                    || named.iter().any(|name| name.escape_debug().eq(word.chars())))
+        })
 }
 
 /// Whether `why`, a refusal of an agent's start a relay was taken as
@@ -7825,7 +7830,11 @@ impl<S: Store> Shared<S> {
             }
         })?;
         // A start here refused before it began spent nothing here.
-        let unbegun_here = (matches!(whither, Whither::Here), asked.folder.clone());
+        let unbegun_here = (
+            matches!(whither, Whither::Here),
+            asked.folder.clone(),
+            hold::turn::sessions_named(&asked.command),
+        );
         let answered = match (whither, again) {
             // Asked again where it was asked under that name, in the
             // fence its first ask was placed in ([`Self::placed_held`]).
@@ -8720,13 +8729,13 @@ impl<S: Store> Shared<S> {
         &self,
         admitted: starts::Admitted,
         started: &Result<Started, String>,
-        (here, folder): (bool, Option<PathBuf>),
+        (here, folder, named): (bool, Option<PathBuf>, Vec<String>),
         joined: u32,
     ) {
         match started {
             Err(why)
                 if (here && began_nothing_here(why, &self.machine, folder.as_deref()))
-                    || held_here_already(why, &self.machine) =>
+                    || held_here_already(why, &self.machine, &named) =>
             {
                 self.starts.keep_unbegun(admitted, why, joined);
             }
@@ -8992,11 +9001,12 @@ impl<S: Store> Shared<S> {
     ) -> Reply {
         let within = relayed_within(at, jiff::Timestamp::now().as_millisecond());
         let fenced = (starts_in(fence, screen), within);
+        let named = hold::turn::sessions_named(&asked.command);
         let reply = self.start_on(machine.clone(), asked.clone(), fenced).await;
         // Refused by its machine's own hold, it began nothing there, so it
         // weighs there no longer (followup 454).
         if let Err(why) = &reply
-            && held_here_already(why, &machine)
+            && held_here_already(why, &machine, &named)
         {
             self.lock().starts.unplaced(&machine, weighed);
         }
@@ -26721,8 +26731,12 @@ esac
         .await
         .expect("the holder began");
         let held = "s-gone is being reopened on skiff already";
-        let again = skiff.start(asked.clone()).await;
-        let relayed = skiff.relayed("tern", asked).await;
+        let again = tokio::time::timeout(PATIENCE, skiff.start(asked.clone()))
+            .await
+            .expect("a second start answers");
+        let relayed = tokio::time::timeout(PATIENCE, skiff.relayed("tern", asked))
+            .await
+            .expect("a relayed start answers");
         fs::write(&release, "").expect("the holder is let answer");
         let started = starting.await;
         assert_eq!(
@@ -26730,9 +26744,11 @@ esac
             Some(held),
             "a second start is refused"
         );
-        assert!(
-            relayed.as_ref().is_err_and(|why| why.ends_with(held)),
-            "a relayed start is refused while the person's starts: {relayed:?}"
+        // Refused by the hold before a relay's refusal could wrap it.
+        assert_eq!(
+            relayed.err().as_deref(),
+            Some(held),
+            "a relayed start is refused while the person's starts"
         );
         started.expect("the person's start starts here");
     }
@@ -27622,9 +27638,30 @@ esac
                 false,
                 "naming no session",
             ),
+            (
+                "/k/My Logs/2026Z_s-1.jsonl is being reopened on skiff already",
+                true,
+                "a log's path with a space the start names",
+            ),
+            (
+                "wren hasn't the folder /src, and here: /k/My Logs/2026Z_s-1.jsonl is being \
+                 reopened on skiff already",
+                true,
+                "the same path after the refusal where placement chose",
+            ),
+            (
+                "/k/Other Logs/2026Z_s-1.jsonl is being reopened on skiff already",
+                false,
+                "a path with a space the start doesn't name",
+            ),
         ];
+        let named = hold::turn::sessions_named(&[
+            "pi".to_owned(),
+            "--session".to_owned(),
+            "/k/My Logs/2026Z_s-1.jsonl".to_owned(),
+        ]);
         for (why, unbegun, case) in cases {
-            assert_eq!(held_here_already(why, "skiff"), unbegun, "{case}");
+            assert_eq!(held_here_already(why, "skiff", &named), unbegun, "{case}");
         }
     }
 
