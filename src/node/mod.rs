@@ -1991,9 +1991,9 @@ fn let_go_ended(book: &Book, store: &impl Store, now: jiff::Timestamp) -> Vec<Ma
 struct Asker {
     told: String,
     unknown_because: Option<String>,
-    /// Whether it is told [`made::PERSON`] by the person's grant to it
-    /// ([`made::Grant`]) rather than being the person.
-    granted: bool,
+    /// Its own address where it is told [`made::PERSON`] by the person's
+    /// grant to it ([`made::Grant`]) rather than being the person.
+    granted: Option<String>,
 }
 
 /// `said` as a provider is told a mesh address, in capitals as the node
@@ -2211,6 +2211,85 @@ struct Vouched {
     /// The sessions claiming it, each with its quest, where it was shown
     /// unfenced, as [`Shared::unfenced_asking`] says.
     unfenced: Option<Vec<(String, serde_json::Value)>>,
+}
+
+/// The machine a rooms ask names, trimmed, where it reads as a machine's
+/// name does: letters, digits, `.`, `-` and `_` alone, so what is
+/// written in `agent-rooms` is the machine judged and no other, never a
+/// `#` or a line's end that would read as something else.
+fn room_named(machine: Option<&str>) -> Result<String, String> {
+    let name = machine
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "name the machine".to_owned())?;
+    let plain = |one: char| one.is_ascii_alphanumeric() || matches!(one, '.' | '-' | '_');
+    if name.len() > 253 || !name.chars().all(plain) {
+        return Err(format!(
+            "\"{}\" isn't a machine's name, which holds only letters, digits, '.', '-' and \
+             '_'",
+            name.escape_debug()
+        ));
+    }
+    Ok(name.to_owned())
+}
+
+/// Names `machine` a room in `book`'s rooms file for `who`, where
+/// [`may_name_room`] lets it, saying whether that changed the file, or
+/// why not. It is judged again once written, so a release whose book
+/// line landed meanwhile, which takes the name out only after it, never
+/// leaves the name behind it.
+fn name_room_for(book: &Book, machine: &str, who: &str) -> Result<bool, String> {
+    let refused = |why: String| {
+        eprintln!("{who} asked to name {machine} a room, refused: {why}");
+        why
+    };
+    may_name_room(book, machine, who).map_err(refused)?;
+    let named = book
+        .name_room(machine)
+        .map_err(|error| format!("{machine} isn't named a room: {error}"))?;
+    // Only a name this ask wrote is taken back: one there before it is
+    // left to its own release or remove.
+    if let Err(why) = may_name_room(book, machine, who) {
+        return Err(match named.then(|| book.unname_room(machine)) {
+            None | Some(Ok(_)) => refused(why),
+            Some(Err(error)) => refused(format!("{why}; and it stays named one: {error}")),
+        });
+    }
+    Ok(named)
+}
+
+/// Whether `who` may name `machine` a room, as `rooms_asked_by` says, by
+/// what `book` holds standing now, or why not.
+fn may_name_room(book: &Book, machine: &str, who: &str) -> Result<(), String> {
+    let standing = book
+        .standing()
+        .map_err(|error| format!("the book can't be read: {error}"))?;
+    let made = standing
+        .made
+        .iter()
+        .rev()
+        .find(|made| made.machine == machine);
+    match made.map(|made| made.asker.as_deref()) {
+        None => Err(format!(
+            "{machine} isn't named a room, since this node's book holds no such machine made \
+             and standing: one another node made, or the person's own, is never one"
+        )),
+        Some(None | Some(made::PERSON)) => Err(format!(
+            "{machine} isn't named a room, since it was made for the person"
+        )),
+        Some(Some(made::UNKNOWN)) => Err(format!(
+            "{machine} isn't named a room, since no proven agent asked for it: its make is \
+             booked for {}",
+            made::UNKNOWN
+        )),
+        Some(Some(asker)) if who != made::PERSON && !who.eq_ignore_ascii_case(asker) => {
+            Err(format!(
+                "{machine} isn't named a room for {who}, since it was made for {asker}: only \
+                 its asker or the person names it one"
+            ))
+        }
+        Some(Some(_)) => Ok(()),
+    }
 }
 
 /// Whether process `pid` runs in the program held here as `held`, among
@@ -5563,6 +5642,7 @@ impl<S: Store> Shared<S> {
             }
             Request::Free { .. } => Err("freeing a quest is answered by `frees`".to_owned()),
             Request::Starts { .. } => Err("starts are answered by `starts_asked`".to_owned()),
+            Request::Rooms { .. } => Err("rooms are answered by `rooms_asked`".to_owned()),
             Request::Spawned { .. } => Err("a spawner is answered by `spawned`".to_owned()),
             Request::Update { .. } => Err("an update is answered by `update`".to_owned()),
             Request::Carry { .. } => Err("carrying is answered by `carried`".to_owned()),
@@ -6947,6 +7027,69 @@ impl<S: Store> Shared<S> {
         Ok(Response::Starts {
             stopped: self.starts.stopped(),
             newest,
+        })
+    }
+
+    /// Names `machine` a room for agents to share, or takes it out, or
+    /// only says which machines are, as `act` asks, for whoever asks, as
+    /// [`Self::rooms_asked_by`] judges it.
+    async fn rooms_asked(&self, act: crate::wire::RoomsAct, machine: Option<String>) -> Reply {
+        // A session the person granted makes as the person, but names a
+        // room only as itself, so it opens no other agent's machine.
+        let who = if matches!(act, crate::wire::RoomsAct::List) {
+            String::new()
+        } else {
+            let asker = self.asker_of_a_make().await;
+            asker.granted.unwrap_or(asker.told)
+        };
+        self.rooms_asked_by(act, machine, &who).await
+    }
+
+    /// As [`Self::rooms_asked`], asked by `who`, as [`Self::asker_of_a_make`]
+    /// tells it, a granted session by its own address. This node writes
+    /// `agent-rooms` as asked, and names a machine
+    /// a room only where its own book holds it standing, made by this
+    /// realm's node for a proven agent, and only for that agent or the
+    /// person: never one made for the person, whose own sessions run
+    /// there, nor one another node made or nobody did, since naming one
+    /// lets every agent's work go there, and never another agent's, since
+    /// its booking kept others' work out of the home its make wrote. A
+    /// machine released is taken out ([`Book::released`]), so a name never
+    /// outlives what it was judged on. Taking one out sends work back to
+    /// the machines it would go to anyway, so anyone may.
+    async fn rooms_asked_by(
+        &self,
+        act: crate::wire::RoomsAct,
+        machine: Option<String>,
+        who: &str,
+    ) -> Reply {
+        use crate::wire::RoomsAct;
+        let naming = match act {
+            RoomsAct::List => None,
+            RoomsAct::Add => Some(true),
+            RoomsAct::Remove => Some(false),
+        };
+        if let Some(naming) = naming {
+            let machine = room_named(machine.as_deref())?;
+            let (book, name, asker) = (self.book.clone(), machine.clone(), who.to_owned());
+            let changed = tokio::task::spawn_blocking(move || {
+                if naming {
+                    name_room_for(&book, &name, &asker)
+                } else {
+                    book.unname_room(&name)
+                        .map_err(|error| format!("{name} stays a room: {error}"))
+                }
+            })
+            .await
+            .map_err(|error| format!("its rewrite stopped: {error}"))??;
+            match (changed, naming) {
+                (true, true) => eprintln!("{machine} is named a room, for {who}"),
+                (true, false) => eprintln!("{machine} is a room no longer, for {who}"),
+                (false, _) => {}
+            }
+        }
+        Ok(Response::Rooms {
+            rooms: self.book.agent_rooms().into_iter().collect(),
         })
     }
 
@@ -10206,7 +10349,7 @@ impl<S: Store> Shared<S> {
             return Admits::All;
         }
         let asker = self.asker_of_a_make().await;
-        if asker.granted {
+        if asker.granted.is_some() {
             Admits::Granted
         } else {
             Admits::Asker(asker.told)
@@ -10232,12 +10375,12 @@ impl<S: Store> Shared<S> {
         let unknown = |why: String| Asker {
             told: made::UNKNOWN.to_owned(),
             unknown_because: Some(why),
-            granted: false,
+            granted: None,
         };
         let told = |told: &str| Asker {
             told: told.to_owned(),
             unknown_because: None,
-            granted: false,
+            granted: None,
         };
         let standing = self.standing();
         match self.asking_session_among(&standing).await {
@@ -10258,7 +10401,7 @@ impl<S: Store> Shared<S> {
                     {
                         eprintln!("{address} asks for the person, by the person's grant to it");
                         Asker {
-                            granted: true,
+                            granted: Some(address),
                             ..told(made::PERSON)
                         }
                     }
@@ -10615,6 +10758,7 @@ async fn answered<S: Store>(shared: &Shared<S>, request: Result<Request, String>
         Ok(Request::Orchestrating) => shared.orchestrating().await.into(),
         Ok(Request::Free { quest }) => shared.frees(quest).await.into(),
         Ok(Request::Starts { act }) => shared.starts_asked(act).await.into(),
+        Ok(Request::Rooms { act, machine }) => shared.rooms_asked(act, machine).await.into(),
         Ok(Request::Spawned {
             pid,
             started,
@@ -11671,6 +11815,12 @@ mod tests {
         ]);
         let providers = providers_of(socket);
         let book = Book::at(socket.with_file_name("made.jsonl"));
+        // A test of what a realm's node judges by its own makes names the
+        // realm beside the socket before its node starts.
+        let book = match fs::read_to_string(socket.with_file_name("realm")) {
+            Ok(realm) => book.of_realm(realm.trim()),
+            Err(_) => book,
+        };
         let parked = parks_of(socket);
         let held = held_of(socket);
         let kernel = Processes::Folder(procs_of(socket));
@@ -25747,6 +25897,171 @@ esac
                 .and_then(|said| said.leaves_at),
             None,
             "unbooked, it is as it says"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_a_machine_this_node_made_for_an_agent_is_named_a_room() {
+        use crate::wire::RoomsAct;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        for (name, asker) in [
+            ("tern", Some("ASKER1")),
+            ("wren", Some(made::PERSON)),
+            ("osprey", None),
+            ("harbour", Some(made::UNKNOWN)),
+        ] {
+            let mut made = made_by("/usr/bin/lend", name, a_day_out());
+            made.asker = asker.map(str::to_owned);
+            shared.book.made(&made).expect("the make is kept");
+        }
+        // Another realm's node keeps the same book, and a room is its own.
+        let mut theirs = made_by("/usr/bin/lend", "kestrel", a_day_out());
+        theirs.asker = Some("ASKER1".to_owned());
+        Book::at(dir.path().join("made.jsonl"))
+            .of_realm("home")
+            .made(&theirs)
+            .expect("the make is kept");
+        for (machine, who, why) in [
+            ("wren", made::PERSON, "made for the person"),
+            ("osprey", made::PERSON, "made for the person"),
+            ("harbour", made::UNKNOWN, "no proven agent asked for it"),
+            ("kestrel", "ASKER1", "holds no such machine"),
+            ("skiff", "ASKER1", "holds no such machine"),
+            ("tern", "ASKER2", "only its asker or the person"),
+            ("tern", made::UNKNOWN, "only its asker or the person"),
+            ("tern #all", "ASKER1", "isn't a machine's name"),
+            ("tern\nwren", "ASKER1", "isn't a machine's name"),
+        ] {
+            let refused = shared
+                .rooms_asked_by(RoomsAct::Add, Some(machine.to_owned()), who)
+                .await;
+            assert!(
+                refused.as_ref().is_err_and(|said| said.contains(why)),
+                "{machine:?} isn't named a room for {who}, saying why: {refused:?}"
+            );
+        }
+        let rooms = |reply: Reply| match reply {
+            Ok(Response::Rooms { rooms }) => rooms,
+            other => panic!("no rooms: {other:?}"),
+        };
+        let added = shared
+            .rooms_asked_by(RoomsAct::Add, Some(" tern ".to_owned()), "asker1")
+            .await;
+        assert_eq!(rooms(added), ["tern"], "its asker's is named one, trimmed");
+        assert_eq!(
+            shared.book.agent_rooms(),
+            std::collections::BTreeSet::from(["tern".to_owned()]),
+            "in the file placement reads"
+        );
+        let removed = shared
+            .rooms_asked_by(RoomsAct::Remove, Some("osprey".to_owned()), "ASKER2")
+            .await;
+        assert_eq!(
+            rooms(removed),
+            ["tern"],
+            "taking out one never named changes nothing"
+        );
+        let removed = shared
+            .rooms_asked_by(RoomsAct::Remove, Some("tern".to_owned()), "ASKER2")
+            .await;
+        assert!(rooms(removed).is_empty(), "and anyone takes it out again");
+        assert!(
+            shared
+                .rooms_asked_by(RoomsAct::Add, None, "ASKER1")
+                .await
+                .is_err(),
+            "an add names its machine"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_room_released_is_a_room_no_longer() {
+        use crate::wire::RoomsAct;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        let mut tern = made_by("/usr/bin/lend", "tern", a_day_out());
+        tern.asker = Some("ASKER1".to_owned());
+        shared.book.made(&tern).expect("the make is kept");
+        let added = shared
+            .rooms_asked_by(RoomsAct::Add, Some("tern".to_owned()), made::PERSON)
+            .await;
+        assert!(
+            matches!(added, Ok(Response::Rooms { ref rooms }) if rooms == &["tern"]),
+            "the person names an agent's one too: {added:?}"
+        );
+        shared
+            .book
+            .released(&tern, "its work ended")
+            .expect("the release is kept");
+        assert!(
+            shared.book.agent_rooms().is_empty(),
+            "released, it is a room no longer"
+        );
+        let refused = shared
+            .rooms_asked_by(RoomsAct::Add, Some("tern".to_owned()), "ASKER1")
+            .await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|said| said.contains("holds no such machine")),
+            "nor named one again: {refused:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_granted_session_names_a_room_only_as_itself() {
+        use crate::wire::RoomsAct;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        fs::create_dir_all(dir.path().join("skiff")).expect("the machine's folder");
+        fs::set_permissions(dir.path().join("skiff"), fs::Permissions::from_mode(0o700))
+            .expect("the machine's folder is its own");
+        fs::write(socket.with_file_name("realm"), "work").expect("the realm is named");
+        let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
+        asks_below(&socket, 7001);
+        let book = Book::at(socket.with_file_name("made.jsonl")).of_realm("work");
+        // Its own make, asked before its grant, is booked for its address;
+        // one asked under the grant is booked for the person, as osprey.
+        for (name, asker) in [
+            ("tern", "ASKER1"),
+            ("wren", "WCJQSG"),
+            ("osprey", made::PERSON),
+        ] {
+            let mut made = made_by("/usr/bin/lend", name, a_day_out());
+            made.asker = Some(asker.to_owned());
+            book.made(&made).expect("the make is kept");
+        }
+        let until = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        fs::write(
+            socket.with_file_name(made::GRANTS),
+            json!([{"address": "WCJQSG", "said": "you may make it as me",
+                    "at": jiff::Timestamp::now(), "until": until}])
+            .to_string(),
+        )
+        .expect("the grant is written");
+        let add = |machine: &str| Request::Rooms {
+            act: RoomsAct::Add,
+            machine: Some(machine.to_owned()),
+        };
+        let refused = ask(socket.clone(), add("tern")).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.contains("for WCJQSG, since it was made for ASKER1")),
+            "though it makes as the person, it opens no other agent's machine: {refused:?}"
+        );
+        let refused = ask(socket.clone(), add("osprey")).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.contains("since it was made for the person")),
+            "nor one booked for the person, whose own sessions run there: {refused:?}"
+        );
+        let named = ask(socket.clone(), add("wren")).await;
+        assert!(
+            matches!(named, Ok(Response::Rooms { ref rooms }) if rooms == &["wren"]),
+            "its own it names: {named:?}"
         );
     }
 
