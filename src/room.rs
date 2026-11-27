@@ -412,16 +412,16 @@ mod tests {
             unsaid.get("cpu_minute").is_none(),
             "a room with no minute says none, as an older node's does"
         );
+        assert!(
+            unsaid.get("memory_full_minute").is_none(),
+            "nor a minute of memory stalls"
+        );
         let older: Room = serde_json::from_value(unsaid).expect("an older room reads");
         assert_eq!(older.cpu_minute, None, "and reads back as none");
         room.cpu_minute = Some(31.5);
         let said_on = serde_json::to_string(&room).expect("a room is json");
         let heard: Room = serde_json::from_str(&said_on).expect("a room reads");
         assert_eq!(heard.cpu_minute, Some(31.5), "a minute said is heard");
-        assert!(
-            unsaid.get("memory_full_minute").is_none(),
-            "nor a minute of memory stalls"
-        );
         room.memory_full_minute = Some(3.25);
         let said_on = serde_json::to_string(&room).expect("a room is json");
         let heard: Room = serde_json::from_str(&said_on).expect("a room reads");
