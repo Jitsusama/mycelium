@@ -76,8 +76,10 @@ pub struct Room {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_full_minute: Option<f64>,
     /// The share of the last minute in which all work at once waited on
-    /// its disks, machine-wide, in percent, as the machine's own kernel
-    /// says it ([`io_full_minute`]). Unknown as [`Room::cpu_minute`] is.
+    /// its disks, in percent: machine-wide, as the machine's own kernel
+    /// says it ([`io_full_minute`]), or the worst of the control groups
+    /// its ceiling names to read it from ([`io_full_minute_of`]) where
+    /// any of them says one. Unknown as [`Room::cpu_minute`] is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub io_full_minute: Option<f64>,
 }
@@ -270,12 +272,17 @@ pub fn io_full_minute(procs: &Path) -> Option<f64> {
 /// of `groups` waited on its disks, each a control group named by its
 /// path below `cgroups` (Linux's `/sys/fs/cgroup`, or a stand-in for it),
 /// as its `io.pressure` says it; none where none of them says one. A path
-/// that would climb out of `cgroups` is none of them.
+/// written from the root, as the kernel prints it, is read below
+/// `cgroups` as it would be without; one that would climb out of
+/// `cgroups`, or names it alone, is none of them.
 #[must_use]
 pub fn io_full_minute_of(cgroups: &Path, groups: &[String]) -> Option<f64> {
     groups
         .iter()
-        .map(Path::new)
+        .map(|group| {
+            let group = Path::new(group);
+            group.strip_prefix("/").unwrap_or(group)
+        })
         .filter(|group| {
             group.components().next().is_some()
                 && group
@@ -762,16 +769,31 @@ mod tests {
         );
         assert_eq!(of(&["gone.slice"]), None, "and none saying one says none");
         assert_eq!(of(&[]), None, "as no group named does");
+        assert_eq!(
+            of(&["/agents.slice"]),
+            Some(2.2),
+            "a group written from the root, as the kernel prints it, is read below it"
+        );
+        // The root's own figure, near the machine's, which no path may reach.
+        fs::write(
+            cgroups.path().join("io.pressure"),
+            "full avg10=9.00 avg60=9.90 avg300=9.00 total=1\n",
+        )
+        .expect("written");
         fs::create_dir_all(cgroups.path().join("agents.slice").join("inner"))
             .expect("a group within");
-        assert_eq!(
-            of(&[
-                "agents.slice/inner/../../guard.service",
-                "/guard.service",
-                ""
-            ]),
-            None,
-            "a path climbing out, rooted elsewhere or empty is none of them"
-        );
+        for group in [
+            "agents.slice/inner/../../guard.service",
+            "agents.slice/..",
+            "",
+            ".",
+            "/",
+        ] {
+            assert_eq!(
+                of(&[group]),
+                None,
+                "{group:?} climbs out or names the root, so it is none of them"
+            );
+        }
     }
 }

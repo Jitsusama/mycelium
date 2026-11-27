@@ -162,12 +162,16 @@ pub struct Lively {
     )]
     pub io_full: Option<u32>,
     /// The control groups, each a path below the kernel's root of them,
-    /// as `agents.slice`, whose disk pressure its node reads in place of
-    /// the machine's, the worst of them over the last minute; none where
-    /// it reads the machine's. Machine-wide, a task held back by a cap of
-    /// its own counts as waiting on the disks, so a machine whose capped
-    /// survey of its disks stalls alone reads past a ceiling its work
-    /// never feels. A list in another shape is none, spoiling only itself.
+    /// as `agents.slice` (or `/agents.slice`, as the kernel prints it),
+    /// whose disk pressure its node reads in place of the machine's, the
+    /// worst of them over the last minute; none where it reads the
+    /// machine's. Machine-wide, a task held back by a cap of its own
+    /// counts as waiting on the disks, so a machine whose capped survey of
+    /// its disks stalls alone reads past a ceiling its work never feels.
+    /// A list in another shape is none, spoiling only itself, and where
+    /// none of the groups says a minute its node reads the machine's, each
+    /// said on the node's log, so a misspelt group holds the machine to
+    /// the stricter minute rather than to none.
     #[serde(
         default,
         skip_serializing_if = "Vec::is_empty",
@@ -275,10 +279,20 @@ fn lively_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Option<Li
 
 /// The groups a ceiling's disk pressure is read from as declared, or none
 /// where they aren't a list of names, so the ceiling's other parts stand
-/// and its disk pressure is read machine-wide.
+/// and its disk pressure is read machine-wide, said on the node's log so
+/// the list is seen to be left out.
 fn groups_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Vec<String>, D::Error> {
     Ok(Option::<serde_json::Value>::deserialize(said)?
-        .and_then(|groups| serde_json::from_value(groups).ok())
+        .and_then(|groups| {
+            serde_json::from_value(groups)
+                .inspect_err(|error| {
+                    eprintln!(
+                        "the groups a ceiling reads its disks from aren't read, \
+                         so it reads them machine-wide: {error}"
+                    );
+                })
+                .ok()
+        })
         .unwrap_or_default())
 }
 
@@ -286,9 +300,17 @@ fn groups_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Vec<Strin
 /// percent, which spoils only that part: a fraction such as 0.5 is easy to
 /// write for a share the kernel says in hundredths, and dropping the whole
 /// ceiling for it would rank the machine as any machine, ahead of others.
+/// Each left out is said on the node's log, so the part is seen not to
+/// hold.
 fn whole_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Option<u32>, D::Error> {
-    Ok(Option::<serde_json::Value>::deserialize(said)?
-        .and_then(|part| serde_json::from_value(part).ok()))
+    let part = Option::<serde_json::Value>::deserialize(said)?;
+    Ok(part.and_then(|part| {
+        serde_json::from_value(part)
+            .inspect_err(|error| {
+                eprintln!("a part of a ceiling isn't a whole percent, so it's left out: {error}");
+            })
+            .ok()
+    }))
 }
 
 /// The rules of what work needs as declared, each one not in the shape
