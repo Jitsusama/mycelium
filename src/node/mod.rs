@@ -539,12 +539,13 @@ fn plain_quest(quest: &str) -> bool {
 /// What each log under `logs` continues, the folder scanned once, as a
 /// lapse of the record of orchestrations asks only where a claim lapses;
 /// none where the folder can't be read, so what lapses is kept until it
-/// can be. That, and each folder in it passed over as unreadable, is said
-/// once, so claims kept with no end name their cause; a claim kept as
-/// logs disagree is said by the lapse itself ([`said_lapsed`]).
+/// can be. That, each folder in it passed over as unreadable, and the
+/// paths of each session's logs that disagree are said once, so claims
+/// kept with no end name their cause and where to mend it; a claim kept
+/// as logs disagree is said by the lapse itself ([`said_lapsed`]).
 fn continuing(
     logs: &Path,
-    unreadable: &through::Unreadable,
+    unreadable: &Arc<through::Unreadable>,
 ) -> Option<impl Fn(&str) -> chain::Continued + use<>> {
     let say = |why: String| {
         if unreadable.first(&why) {
@@ -564,7 +565,17 @@ fn continuing(
             "the sessions logged in a folder that can't be read continue none: {why}"
         ));
     }
-    Some(move |session: &str| found.follows(session))
+    let unreadable = Arc::clone(unreadable);
+    Some(move |session: &str| {
+        let follows = found.follows(session);
+        if follows.is_err()
+            && let Some(why) = found.disagreeing(session)
+            && unreadable.first(&why)
+        {
+            eprintln!("{why}");
+        }
+        follows
+    })
 }
 
 /// Says what became of each claim in `lapsed` in the node's log, where
@@ -11316,7 +11327,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let logs = dir.path().join("sessions");
         fs::write(&logs, "not a folder\n").expect("written");
-        let unreadable = through::Unreadable::default();
+        let unreadable = Arc::new(through::Unreadable::default());
         assert!(
             continuing(&logs, &unreadable).is_none(),
             "read as empty, a claim that should pass on would lapse"
@@ -11379,8 +11390,7 @@ mod tests {
             format!("{{\"id\":\"{session}\",\"parentSession\":\"s-steward\"}}\n"),
         )
         .expect("written");
-        let continues = continuing(dir.path(), &through::Unreadable::default())
-            .expect("logs that read are read");
+        let continues = continuing(dir.path(), &Arc::default()).expect("logs that read are read");
         assert_eq!(continues(session), Ok(Some("s-steward".to_owned())));
     }
 

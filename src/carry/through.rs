@@ -660,9 +660,28 @@ fn failed_why(output: &[u8], errors: &[u8], ended: ExitStatus) -> String {
         (None, None) => "it ended".to_owned(),
     };
     match output.lines().map(str::trim).rfind(|line| !line.is_empty()) {
-        Some(last) => format!("{how}, saying nothing of why; its last line was {last}"),
+        Some(last) => format!(
+            "{how}, saying nothing of why; its last line was {}",
+            last_said(last)
+        ),
         None => format!("{how}, saying nothing"),
     }
+}
+
+/// The most of `pi-carry`'s last line [`failed_why`] quotes: enough for
+/// one of its JSON lines, short of one swamping the node's log.
+const LAST_SAID: usize = 200;
+
+/// `last`, the last line `pi-carry` printed, as [`failed_why`] quotes
+/// it: its control characters escaped, so it can't pass as the node's
+/// own words or break the log's one line, and cut to [`LAST_SAID`].
+fn last_said(last: &str) -> String {
+    let escaped = crate::declared::controls_escaped(last);
+    if escaped.chars().count() <= LAST_SAID {
+        return escaped;
+    }
+    let cut: String = escaped.chars().take(LAST_SAID).collect();
+    format!("{cut}...")
 }
 
 /// Whether the node's `answer` to `"Takes"` finds the starts taken: only

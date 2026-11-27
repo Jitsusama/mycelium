@@ -234,12 +234,12 @@ impl Orchestrations {
         for (claimer, claim) in &lapsing {
             // Kept by the claimer it was, which no longer stands, so no
             // standing session's own claim is overwritten.
-            if doubted.contains(claimer.as_str()) {
+            if let Some(doubting) = doubted.get(claimer.as_str()) {
                 self.sessions.insert(claimer.clone(), claim.clone());
                 lapsed.push(Lapsed::Held {
                     claimer: claimer.clone(),
                     heads: claim.heads.clone(),
-                    doubting: String::new(),
+                    doubting: doubting.clone(),
                 });
                 continue;
             }
@@ -351,7 +351,8 @@ impl Orchestrations {
 
 /// Each standing session continuing a lapsing claim, by the claimer, as
 /// [`Orchestrations::lapse`] follows each back through `continues`, and
-/// each claimer a log that can't be told may lead to. Every standing
+/// each claimer a log that can't be told may lead to, with the session
+/// whose logs those are, the first a walk met. Every standing
 /// session that continues a claim counts, one that claimed for itself
 /// too: that it continues the claimer still makes which goes on unclear
 /// to tell.
@@ -359,24 +360,28 @@ fn heirs<'a>(
     lapsing: &'a BTreeMap<String, Claim>,
     standing: &'a BTreeMap<String, Option<String>>,
     continues: &impl Fn(&str) -> Continued,
-) -> (BTreeMap<&'a str, Vec<&'a str>>, BTreeSet<&'a str>) {
+) -> (BTreeMap<&'a str, Vec<&'a str>>, BTreeMap<&'a str, String>) {
     let mut heirs: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    let mut doubted = BTreeSet::new();
+    let mut doubted = BTreeMap::new();
     for session in standing.keys() {
-        // Each log reached, and whether one that can't be told led there:
-        // one path, until a log's continuation can't be told.
-        let mut reached = BTreeSet::from([(session.clone(), false)]);
+        // Each log reached, and the first session whose logs can't be
+        // told that led there: one path, until a log's continuation
+        // can't be told.
+        let mut reached: BTreeSet<(String, Option<String>)> =
+            BTreeSet::from([(session.clone(), None)]);
         for _ in 0..CONTINUED_MOST {
             let mut next = BTreeSet::new();
-            for (at, doubtful) in reached {
-                let (before, doubtful): (Vec<String>, bool) = match continues(&at) {
-                    Ok(before) => (before.into_iter().collect(), doubtful),
-                    Err(may) => (may, true),
+            for (at, doubting) in reached {
+                let (before, doubting): (Vec<String>, Option<String>) = match continues(&at) {
+                    Ok(before) => (before.into_iter().collect(), doubting),
+                    Err(may) => (may, Some(doubting.unwrap_or_else(|| at.clone()))),
                 };
                 for before in before {
                     if let Some((claimer, _)) = lapsing.get_key_value(&before) {
-                        if doubtful {
-                            doubted.insert(claimer.as_str());
+                        if let Some(doubting) = &doubting {
+                            doubted
+                                .entry(claimer.as_str())
+                                .or_insert_with(|| doubting.clone());
                         } else {
                             heirs.entry(claimer).or_default().push(session);
                         }
@@ -385,7 +390,7 @@ fn heirs<'a>(
                         // is its own: what it continues isn't handed past
                         // it, so the walk goes on only past one that
                         // doesn't stand.
-                        next.insert((before, doubtful));
+                        next.insert((before, doubting.clone()));
                     }
                 }
             }
@@ -525,8 +530,19 @@ impl Logs {
     /// that isn't its own can be found; none where they agree.
     #[must_use]
     pub fn disagreeing(&self, session: &str) -> Option<String> {
-        let _ = session;
-        None
+        self.follows(session).err()?;
+        let found = self.found.get(session)?;
+        let paths: Vec<String> = found
+            .iter()
+            .map(|log| shown(&log.display().to_string()))
+            .collect();
+        Some(format!(
+            "the {} logs named for {} don't all say what it continues, so a claim it may \
+             lead to is kept until the one that isn't its own is moved: {}",
+            found.len(),
+            shown(session),
+            paths.join(", ")
+        ))
     }
 
     /// What the log at `log` continues, as its first line names it, where
@@ -605,12 +621,18 @@ impl std::fmt::Display for Lapsed {
                 shown(claimer),
                 shown(heir)
             ),
-            Self::Held { claimer, heads, .. } => write!(
+            Self::Held {
+                claimer,
+                heads,
+                doubting,
+            } => write!(
                 out,
-                "the claim to head {} is kept for {}, which no longer stands, as logs that may \
-                 continue it disagree on what they continue",
+                "the claim to head {} is kept for {}, which no longer stands, as the logs named \
+                 for {}, which may continue it, don't all say what it continues (one that \
+                 can't be read says none)",
                 shown(heads),
-                shown(claimer)
+                shown(claimer),
+                shown(doubting)
             ),
             Self::Forgotten {
                 claimer,
