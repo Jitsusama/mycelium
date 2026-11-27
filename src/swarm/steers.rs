@@ -662,6 +662,14 @@ mod tests {
             Err("dock could be Dock (no address to type) or Dock (HARBOR)".to_owned()),
             "an address that would steer a session instead is not given"
         );
+        // A peer's key holding a letter a keyboard doesn't type, here
+        // Cyrillic Ie drawn as an E, is no address, so none is given.
+        swarm.teams[0]["key"] = json!("team:R\u{415}EF01");
+        assert_eq!(
+            aim(&swarm, Act::Pause, "dock"),
+            Err("dock could be Dock (no address to type) or Dock (HARBOR)".to_owned()),
+            "a key holding a lookalike was given as an address to type"
+        );
     }
 
     #[test]

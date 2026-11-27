@@ -268,7 +268,7 @@ fn a_name_matching_none_or_several_is_said_plainly() {
     hidden.teams[1]["swarm"] = json!("harbor");
     hidden.teams[0]["swarm"] = json!("har\u{200B}bor");
     assert!(
-        team(&hidden, "HARBOR", &look()).is_ok(),
+        team(&hidden, "HARBOR", &look()).is_ok_and(|shown| shown.starts_with("Harbour")),
         "a short name cleaned to a team's address does not hide it"
     );
     // Nor is Reef drawn or offered by it, which typed would reach Harbour.
@@ -282,12 +282,8 @@ fn a_name_matching_none_or_several_is_said_plainly() {
     // Two short names that clean alike go to neither, so Harbour may lose
     // its own to the one drawn like it, and is offered by its title.
     assert!(
-        typed(&hidden)
-            .iter()
-            .filter(|name| *name == "harbor")
-            .count()
-            <= 1,
-        "harbor was offered for a team besides Harbour"
+        typed(&hidden).iter().all(|name| name != "harbor"),
+        "harbor was offered though two teams' names clean to it"
     );
 }
 
