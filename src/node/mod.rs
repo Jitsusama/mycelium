@@ -2208,9 +2208,8 @@ struct Vouched {
 /// name does: letters, digits, `.`, `-` and `_` alone, so what is
 /// written in `agent-rooms` is the machine judged and no other, never a
 /// `#` or a line's end that would read as something else.
-fn room_named(machine: Option<String>) -> Result<String, String> {
+fn room_named(machine: Option<&str>) -> Result<String, String> {
     let name = machine
-        .as_deref()
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .ok_or_else(|| "name the machine".to_owned())?;
@@ -6870,7 +6869,7 @@ impl<S: Store> Shared<S> {
             RoomsAct::Remove => Some(false),
         };
         if let Some(naming) = naming {
-            let machine = room_named(machine)?;
+            let machine = room_named(machine.as_deref())?;
             if naming && let Err(why) = self.may_name_room(&machine, who) {
                 eprintln!("{who} asked to name {machine} a room, refused: {why}");
                 return Err(why);
