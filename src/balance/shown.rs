@@ -1,6 +1,9 @@
 //! A reading of the realm's balance as a person reads it: a line saying
 //! the realm, a row for each machine, and a sentence for each thing wrong
 //! saying what it means and what follows.
+//!
+//! Long because its tests sit beside it, drawing the table at each width
+//! it keeps to, until they move to a file of their own.
 
 use std::fmt::Write as _;
 
