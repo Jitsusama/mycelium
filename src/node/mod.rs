@@ -26561,7 +26561,7 @@ esac
             Ok(strict),
             "declared, the person's run goes through the unfenced sessions' launcher"
         );
-        node.processes = Processes::Folder("/nowhere/proc".into());
+        node.processes = Arc::new(Processes::Folder("/nowhere/proc".into()));
         assert_eq!(
             node.launcher(By::Person, None, "tern", &mut started),
             Ok(Vec::new()),
