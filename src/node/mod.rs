@@ -8731,20 +8731,40 @@ impl<S: Store> Shared<S> {
         // strict, never in the agent fence alone. On a room that opens
         // nothing of the person's, over a link its key proved, the fence
         // declared is kept (`relayed_to_a_room`). Only where the asker is
-        // a link's end, never a session or a fenced process, which could
-        // say `proven` of its own relay.
-        let speaks = link_end::speaks_for_a_link(self.client, self.client_started, &self.processes);
-        if proven && !speaks {
+        // a link's end, never a session, one a session's claim marks, or
+        // a fenced process, which could say `proven` of its own relay.
+        let speaks =
+            link_end::speaks_for_a_link(self.client, self.client_started, claims, &self.processes);
+        // A session reopened as `reopens` reads it was raised above to
+        // the strictest it ran in here, and a new one ran nowhere; one pi
+        // opened any other way, or any program but pi, which may run pi
+        // itself, can't be told, so its start keeps no looser fence than
+        // strict.
+        let told = starts::tells_what_it_opens(&asked.command);
+        let opens_nothing = self.opens_nothing();
+        let room = unattended && proven && speaks && told && opens_nothing;
+        let declares_looser = asked.work.fence.is_some_and(|fence| {
+            crate::declared::Kind::from(fence.kind) < crate::declared::Kind::Strict
+        });
+        if declares_looser && !room {
+            let why = [
+                (proven, "no link's key proved it"),
+                (speaks, "its asker isn't a link's end"),
+                (told, "the session it opens can't be told"),
+                (unattended, "a person works on this machine"),
+                (
+                    opens_nothing,
+                    "this machine's agent fence may open something of the person's",
+                ),
+            ]
+            .into_iter()
+            .find_map(|(holds, why)| (!holds).then_some(why))
+            .unwrap_or_default();
             eprintln!(
-                "a start relayed from {from:?} says its link's key proved it, but its asker \
-                 isn't a link's end, so the fence it declares isn't kept: {judged}"
+                "a start relayed from {from:?} declares a looser fence than strict, which \
+                 isn't kept, as {why}: {judged}"
             );
         }
-        // A session reopened as `reopens` reads it was raised above to
-        // the strictest it ran in here; one opened any other way can't
-        // be told, so its start keeps no looser fence than strict.
-        let told = !starts::opens_an_unnamed_session(&asked.command);
-        let room = unattended && proven && speaks && told && self.opens_nothing();
         let by = asker::relayed_to_a_room(by, asked.work.fence, room);
         let looser = room && by == By::Agent(crate::declared::Kind::Fence);
         let (program, once) = (asked.command.first().cloned(), asked.once.clone());
@@ -28269,8 +28289,10 @@ esac
         );
         // A session pi fenced as the node's own account can open its
         // socket and say its own relay was proven; the fence's mark on it
-        // keeps it strict.
+        // keeps it strict. Its start is read as it connected, so only the
+        // mark refuses it.
         link.client = Some(50);
+        link.client_started = Some(500);
         assert_eq!(
             fenced_as(&link, &given, true, fenced).await,
             Some("PI_SANDBOX=strict"),
@@ -28278,8 +28300,39 @@ esac
         );
     }
 
+    // A room keeps the fence a proven relay declares only where the
+    // session it opens is told: a new one, or one pi reopens as a bare
+    // `--session` reads. One pi picks itself, or any program but pi,
+    // which may run pi, starts strict. Apart from the test above, since
+    // a cell starts at most 8 an hour.
+    #[tokio::test]
+    async fn a_room_starts_a_proven_relay_strict_where_what_it_opens_is_untold() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (link, fenced) = a_room_opening_nothing(dir.path());
+        let given = dir.path().join("given");
+        let running = |words: &[&str]| Start {
+            command: words.iter().map(|&word| word.to_owned()).collect(),
+            ..fenced.clone()
+        };
+        assert_eq!(
+            fenced_as(&link, &given, true, running(&["pi", "tidy the docs"])).await,
+            Some("FENCED=fence"),
+            "pi opening a new session, in the agent fence declared"
+        );
+        for (words, why) in [
+            (&["sh", "-c", "pi -c"][..], "a shell running pi"),
+            (&["pi", "--continue"], "pi picking its session"),
+        ] {
+            assert_eq!(
+                fenced_as(&link, &given, true, running(words)).await,
+                Some("FENCED=strict"),
+                "{why}, strict"
+            );
+        }
+    }
+
     // Each other room the ruling names starts that relay strict. Apart
-    // from the test above, since a cell starts at most 8 an hour.
+    // from the tests above, since a cell starts at most 8 an hour.
     #[tokio::test]
     async fn a_room_that_may_open_something_starts_a_proven_relay_strict() {
         let dir = tempfile::tempdir().expect("a temporary folder");

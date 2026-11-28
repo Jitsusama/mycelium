@@ -288,14 +288,18 @@ pub fn begins_another(session: &Session, sessions: &[Session]) -> bool {
 /// Whether `program` is the person's pi: named bare, as the person's
 /// login finds it, or by a path in [`PIS_FOLDERS`].
 fn persons_pi(program: &str) -> bool {
-    let named_pi = Path::new(program)
-        .file_name()
-        .and_then(|name| name.to_str())
-        == Some(PI);
     let persons = program == PI
         || (PIS_FOLDERS.iter().any(|folder| program.starts_with(folder))
             && !program.contains("/../"));
-    named_pi && persons
+    named_pi(program) && persons
+}
+
+/// Whether `program` is named pi, by any path.
+fn named_pi(program: &str) -> bool {
+    Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        == Some(PI)
 }
 
 /// The session `command` reopens and does nothing more: the person's pi,
@@ -344,17 +348,24 @@ pub fn opens_an_unnamed_session(command: &[String]) -> bool {
     let Some((program, words)) = command.split_first() else {
         return false;
     };
-    let pi = Path::new(program)
-        .file_name()
-        .and_then(|name| name.to_str())
-        == Some(PI);
     let opens = |word: &String| {
         ["-c", "-r"].contains(&word.as_str())
             || ["--session", "--continue", "--resume", "--fork"]
                 .iter()
                 .any(|flag| word.starts_with(flag))
     };
-    pi && reopens(command).is_none() && words.iter().any(opens)
+    named_pi(program) && reopens(command).is_none() && words.iter().any(opens)
+}
+
+/// Whether the session `command` opens is told: it runs pi, by any path,
+/// opening a new session or one as [`reopens`] reads it, which is raised
+/// to the strictest it ran in. Anything else isn't, so its start keeps
+/// no looser fence than strict: a shell, `env` or another program, which
+/// may run pi itself, or pi opening a session as
+/// [`opens_an_unnamed_session`] reads.
+#[must_use]
+pub fn tells_what_it_opens(command: &[String]) -> bool {
+    command.first().is_some_and(|program| named_pi(program)) && !opens_an_unnamed_session(command)
 }
 
 /// A start let go ahead, held as counted till it is kept.
@@ -1074,6 +1085,36 @@ mod tests {
             (&[], "nothing"),
         ] {
             assert!(!opens(words), "{why}: {words:?}");
+        }
+    }
+
+    #[test]
+    fn only_pi_opening_a_new_session_or_a_reopening_tells_what_it_opens() {
+        let tells = |words: &[&str]| {
+            let command: Vec<String> = words.iter().map(|&word| word.to_owned()).collect();
+            tells_what_it_opens(&command)
+        };
+        for (words, why) in [
+            (&["pi", "--session", "s-gone_1"][..], "a reopening"),
+            (&["pi", "go on"], "a new session"),
+            (&["pi"], "a bare pi"),
+            (&["/opt/bin/pi", "go on"], "pi by a path"),
+        ] {
+            assert!(tells(words), "{why}: {words:?}");
+        }
+        for (words, why) in [
+            (&["sh", "-c", "pi -c"][..], "a shell running pi"),
+            (
+                &["sh", "-c", "exec pi --session s-gone_1"],
+                "a shell reopening",
+            ),
+            (&["env", "pi", "--continue"], "env running pi"),
+            (&["agent"], "another program"),
+            (&["pi", "-c"], "pi picking its session"),
+            (&["pi", "--session=s-gone_1"], "a session named another way"),
+            (&[], "nothing"),
+        ] {
+            assert!(!tells(words), "{why}: {words:?}");
         }
     }
 

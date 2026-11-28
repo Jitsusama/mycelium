@@ -303,14 +303,23 @@ same code, each line a JSON value:
    (`--worker-uid` naming another account than the node's), and its
    agent fence declares no forge and no secret, accepts none from
    another machine and has a launcher, a relay marked `proven` takes
-   the fence it declares, never looser than the agent fence. The node
-   logs each it so takes, with the machine that relayed it, what it
-   runs, its name, the session it holds, how it judged the link's end
-   and the cell it charged. Only a link's end can mark a relay so: the
-   node keeps the mark only from an asker no pi, pi host or agent's
-   unit runs and no fence marks, by privileges it can't gain or mounts
-   of its own. So a strict session pi fenced as the node's account,
-   which can open its socket, can't, even forked away from its pi;
+   the fence it declares, never looser than the agent fence. Only one
+   whose session is told keeps it: pi, by any path, opening a new
+   session, or reopening one by a bare `--session` and its id, which
+   comes back no looser than the strictest fence it ran in there. One
+   pi opens any other way (`--session=`, `-c`, `--continue`, or a
+   `--session` with more words), and one any other program runs,
+   `sh -c`, `env` or the realm's `agent`, which may run pi itself,
+   starts strict. The node logs each it so takes, with the machine
+   that relayed it, what it runs, its name, the session it holds, how
+   it judged the link's end and the cell it charged, and why it kept
+   no looser fence one declared. Only a link's end can mark a relay
+   so: the node keeps the mark only from the asker that connected, its
+   start read again once it is judged, that no pi, pi host, agent's
+   unit or session's claim holds and no fence marks, by privileges it
+   can't gain or mounts of its own. So a strict session pi fenced as
+   the node's account, which can open its socket, can't, even forked
+   away from its pi;
    where sessions run as the node's account, nothing is kept. Elsewhere, a
    link's end an agent ran is taken so too, as is one whose owner the
    kernel can't tell, but one marked as the person's carry is refused,

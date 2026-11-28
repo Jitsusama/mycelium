@@ -11,8 +11,9 @@ const UNMARKED: &str = "nothing marks it an agent's";
 /// Whether process `asker`, which started at `started` as it connected,
 /// may speak as the link's end that relays a start here: one the kernel
 /// names, its forebears all read, that no pi, pi host or agent's unit
-/// runs, and that no fence marks by privileges it can't gain or mounts
-/// of its own. Neither mark is shed once set, so a session pi fenced as
+/// runs, that none of `claims`, the sessions whose claims mark it as
+/// theirs, holds, and that no fence marks by privileges it can't gain
+/// or mounts of its own. Neither mark is shed once set, so a session pi fenced as
 /// this node's own account, which can open its socket, can't say a
 /// link's key proved its relay, even forked away from the pi that
 /// started it. On a machine no person works on, which tells every asker
@@ -29,13 +30,15 @@ const UNMARKED: &str = "nothing marks it an agent's";
 pub(super) fn speaks_for_a_link(
     asker: Option<i32>,
     started: Option<u64>,
+    claims: &[String],
     processes: &Processes,
 ) -> bool {
     let (Some(pid), Some(ticks), Processes::Folder(procs)) = (asker, started, processes.kernel())
     else {
         return false;
     };
-    asker::unclaimed_because(asker, processes.kernel()) == UNMARKED
+    claims.is_empty()
+        && asker::unclaimed_because(asker, processes.kernel()) == UNMARKED
         && !asker::barred(procs, &pid.to_string())
         && asker::started(procs, pid) == Some(ticks)
 }
@@ -99,7 +102,7 @@ mod tests {
         let kernel = Processes::Folder(procs.path().to_owned());
         let unattended = Processes::Folder(procs.path().to_owned()).unattended();
         let speaks = |pid: i32, processes: &Processes| {
-            speaks_for_a_link(Some(pid), Some(began(pid)), processes)
+            speaks_for_a_link(Some(pid), Some(began(pid)), &[], processes)
         };
         for processes in [&kernel, &unattended] {
             assert!(speaks(31, processes), "the link's end, under sshd");
@@ -109,12 +112,12 @@ mod tests {
                 "one a fence barred from gaining privileges, though pi is gone"
             );
             assert!(
-                !speaks_for_a_link(None, None, processes),
+                !speaks_for_a_link(None, None, &[], processes),
                 "one the kernel doesn't name"
             );
             assert!(!speaks(60, processes), "one nothing can be read of");
             assert!(
-                !speaks_for_a_link(Some(31), None, processes),
+                !speaks_for_a_link(Some(31), None, &[], processes),
                 "one whose start wasn't read as it connected"
             );
         }
@@ -131,7 +134,7 @@ mod tests {
         // then took 31, unmarked, while the connection stayed open.
         let connected = began(31) - 1;
         assert!(
-            !speaks_for_a_link(Some(31), Some(connected), &kernel),
+            !speaks_for_a_link(Some(31), Some(connected), &[], &kernel),
             "the process judged isn't the one that connected"
         );
     }
@@ -148,8 +151,29 @@ mod tests {
         barred(procs.path(), 31);
         let kernel = Processes::Folder(procs.path().to_owned());
         assert!(
-            !speaks_for_a_link(Some(31), Some(began(31)), &kernel),
+            !speaks_for_a_link(Some(31), Some(began(31)), &[], &kernel),
             "a node run barred, as a basin's exec runs it, keeps no proof from a barred asker"
         );
+    }
+
+    #[test]
+    fn an_asker_a_sessions_claim_marks_speaks_for_no_link() {
+        let procs = procs(&[
+            (30, "sshd", 1, "system.slice/sshd.service"),
+            (31, "mycelium", 30, "system.slice/sshd.service"),
+        ]);
+        let kernel = Processes::Folder(procs.path().to_owned());
+        let unattended = Processes::Folder(procs.path().to_owned()).unattended();
+        let claimed = ["s-harbour".to_owned()];
+        for processes in [&kernel, &unattended] {
+            assert!(
+                speaks_for_a_link(Some(31), Some(began(31)), &[], processes),
+                "unclaimed, the link's end"
+            );
+            assert!(
+                !speaks_for_a_link(Some(31), Some(began(31)), &claimed, processes),
+                "one a session's claim marks as that session's, though nothing else does"
+            );
+        }
     }
 }
