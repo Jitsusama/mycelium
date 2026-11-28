@@ -618,7 +618,7 @@ pub struct EventLine {
     /// Where: a repository by its key, or a quest by its id.
     #[serde(rename = "where")]
     pub place: String,
-    /// What it is, in one short line.
+    /// One line of at most 120 characters, cleaned as [`crate::record::Event::title`] says.
     pub title: String,
 }
 

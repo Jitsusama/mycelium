@@ -254,7 +254,9 @@ pub struct Event {
     /// or a quest by its id.
     #[serde(rename = "where")]
     pub place: String,
-    /// What it is, in one short line.
+    /// What it is, as the node serves it: one line of at most 120
+    /// characters, its controls and breaks made spaces and its direction
+    /// marks dropped, ending on no space, joiner or Khmer coeng.
     pub title: String,
 }
 

@@ -509,31 +509,50 @@ fn doing(said: &Value) -> Option<Doing> {
 }
 
 /// The newest events a presence says, as it says them newest first,
-/// leaving out any it can't read and cutting a title past `LINE_MOST`.
-/// Cut or not, a title's end is then cleaned as a need's is, so it ends
-/// on no space and nothing left holding nothing, as a share's title
-/// does; only its end, so a title keeps whatever else it said.
+/// leaving out any it can't read, or whose `where` can't be a place
+/// ([`is_place`]). Each title is cleaned as a need is: made one line by
+/// [`crate::forage::one_line`], so a peer can't draw lines of its own,
+/// steer another's terminal or turn text around in it, then cut at
+/// `LINE_MOST` of the characters left, cleaned again, and its end
+/// cleaned so it ends on no space and nothing left holding nothing, as a
+/// share's title does; only its end, so a title keeps its start.
 fn events(said: &Value) -> Vec<Event> {
     said.as_array()
         .into_iter()
         .flatten()
         .filter_map(|event| Event::deserialize(event).ok())
-        .filter(|event| !event.place.is_empty() && is_instant(&event.at))
+        .filter(|event| is_place(&event.place) && is_instant(&event.at))
         .map(|mut event| {
-            let kept = event
-                .title
-                .char_indices()
-                .nth(LINE_MOST)
-                .map_or(event.title.len(), |(cut, _)| cut);
-            let ended = crate::forage::cut_ended(&event.title[..kept], char::is_whitespace);
-            event.title.truncate(ended.len());
-            // A cut keeps what was read, so a long title held for as long
-            // as its session would still cost its whole length without this.
-            event.title.shrink_to_fit();
+            let cut: String = crate::forage::one_line(&event.title)
+                .chars()
+                .take(LINE_MOST)
+                .collect();
+            let mut title = crate::forage::one_line(&cut);
+            let ended = crate::forage::cut_ended(&title, char::is_whitespace).len();
+            title.truncate(ended);
+            // Cleaning collects into room it may not fill, and trimming
+            // the end leaves more; the title lives as long as its
+            // session's record, so this keeps the record's copy to the
+            // bytes it holds. It frees only that copy: the whole title as
+            // said stays in the presence's body until its file changes.
+            title.shrink_to_fit();
+            event.title = title;
             event
         })
         .take(EVENTS_MOST)
         .collect()
+}
+
+/// Whether an event's `where` can be a repository's key or a quest's id:
+/// said, at most `LINE_MOST` characters, and already one clean line, as
+/// [`crate::forage::one_line`] would leave it, holding no control, break,
+/// direction mark or anything else drawn as nothing. It is served as
+/// said, so any of those in it would otherwise reach a reader's terminal
+/// whole; neither a key nor an id holds one.
+fn is_place(place: &str) -> bool {
+    !place.is_empty()
+        && place.chars().count() <= LINE_MOST
+        && crate::forage::one_line(place) == place
 }
 
 /// Whether a presence's time is an RFC 3339 instant.
@@ -1168,15 +1187,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_session_ends_each_event_title_cut_or_not_and_only_at_its_end() {
-        let titles = [
-            "é".repeat(130),
-            format!("{} \u{17D2}\u{1780}", "\u{1780}".repeat(118)),
-            " Tide\nturns \u{200D}\u{17D2}".to_owned(),
-            "\u{1780}".repeat(LINE_MOST),
-            " \u{17D2}".to_owned(),
-        ];
+    /// The titles a presence saying `titles` is read with, in order.
+    fn titles_read(titles: &[String]) -> Vec<String> {
         let said: Vec<Value> = titles
             .iter()
             .enumerate()
@@ -1186,12 +1198,25 @@ mod tests {
                 event
             })
             .collect();
-        let read = session(&saying_events(&json!(said)), "kestrel").expect("a presence reads");
-        let read: Vec<&str> = read
+        session(&saying_events(&json!(said)), "kestrel")
+            .expect("a presence reads")
             .events
-            .iter()
-            .map(|event| event.title.as_str())
-            .collect();
+            .into_iter()
+            .map(|event| event.title)
+            .collect()
+    }
+
+    #[test]
+    fn a_session_ends_each_event_title_cut_or_not_and_only_at_its_end() {
+        let titles = [
+            "é".repeat(130),
+            format!("{} \u{17D2}\u{1780}", "\u{1780}".repeat(118)),
+            " Tide\nturns \u{200D}\u{17D2}".to_owned(),
+            "\u{1780}".repeat(LINE_MOST),
+            " \u{17D2}".to_owned(),
+            "\u{1780}\u{17D2}\u{1780} \u{1F469}\u{200D}\u{1F469} done \u{17D2}".to_owned(),
+        ];
+        let read = titles_read(&titles);
         let cases = [
             ("é".repeat(120), "a long title is cut at 120 characters"),
             (
@@ -1199,9 +1224,9 @@ mod tests {
                 "a cut title ends on no coeng, nor the space it leaves last",
             ),
             (
-                " Tide\nturns".to_owned(),
+                " Tide turns".to_owned(),
                 "an uncut title ends on no joiner or lone coeng, nor its space, \
-                 and keeps its start and its inner break",
+                 and keeps its start, its inner break as a space",
             ),
             (
                 "\u{1780}".repeat(LINE_MOST),
@@ -1211,11 +1236,72 @@ mod tests {
                 String::new(),
                 "a title that ends as nothing reads as empty, its event kept",
             ),
+            (
+                "\u{1780}\u{17D2}\u{1780} \u{1F469}\u{200D}\u{1F469} done".to_owned(),
+                "a coeng or joiner inside a title is kept, only one at its end goes",
+            ),
         ];
         assert_eq!(read.len(), cases.len(), "every event is kept: {read:?}");
         for (title, (expected, what)) in read.iter().zip(&cases) {
-            assert_eq!(*title, expected.as_str(), "{what}");
+            assert_eq!(title, expected, "{what}");
         }
+    }
+
+    #[test]
+    fn a_session_serves_each_event_title_as_one_clean_line() {
+        let read = titles_read(&[
+            "Osprey\u{1B}[2J lands\nhere\u{2028}now \u{202E}wren".to_owned(),
+            format!("{}{}", "\u{202E}".repeat(10), "é".repeat(130)),
+            "\u{1F469}".repeat(1000),
+        ]);
+        assert_eq!(
+            read[0], "Osprey [2J lands here now wren",
+            "each control and break is one space, and a direction mark is gone"
+        );
+        assert_eq!(
+            read[1],
+            "é".repeat(LINE_MOST),
+            "the cut counts the cleaned title's characters, not what was dropped"
+        );
+        assert_eq!(read[2].chars().count(), LINE_MOST, "a long title is cut");
+        assert!(
+            read[2].capacity() <= 4 * LINE_MOST,
+            "and keeps no more room than its 120 characters can take: {}",
+            read[2].capacity()
+        );
+    }
+
+    #[test]
+    fn a_session_leaves_out_an_event_whose_where_cant_be_a_place() {
+        let places = [
+            "k".repeat(LINE_MOST),
+            "k".repeat(LINE_MOST + 1),
+            "github:Jitsusama/\u{1B}[2Jmycelium".to_owned(),
+            "github:Jitsusama/mycelium\n".to_owned(),
+            "github:Jitsusama/\u{2028}mycelium".to_owned(),
+            "github:Jitsusama/\u{202E}mycelium".to_owned(),
+            "github:Jitsusama/\u{200B}mycelium".to_owned(),
+            "QEST-20261115-TERNS0".to_owned(),
+        ];
+        let said: Vec<Value> = places
+            .iter()
+            .enumerate()
+            .map(|(n, place)| {
+                let mut event = event_said(n, "push");
+                event["where"] = json!(place);
+                event
+            })
+            .collect();
+        let read = session(&saying_events(&json!(said)), "kestrel").expect("a presence reads");
+        assert_eq!(
+            read.events
+                .iter()
+                .map(|event| event.place.as_str())
+                .collect::<Vec<_>>(),
+            [places[0].as_str(), places[7].as_str()],
+            "a `where` past 120 characters, or holding a control, a break, \
+             a direction mark or what draws nothing, leaves its event out"
+        );
     }
 
     #[test]

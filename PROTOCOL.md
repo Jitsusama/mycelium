@@ -1714,13 +1714,18 @@ on by number where it says one, the `next` thing it does and what it
 the `at` it said so; a `doing` it can't read, or whose line is longer, is
 left out whole), its latest `events`, newest first and at most 20 (each
 `at`, its `kind` as `commit`, `push`, `pr`, `merge` or `stage`, `where`
-as a repository's key or a quest's id, and a `title` cut to 120
-characters and then, cut or not, ending in no space, no joiner or
+as a repository's key or a quest's id, of at most 120 characters and
+holding no control, line or paragraph separator, direction mark or
+anything else drawn as nothing, and a `title` served with its controls
+and line and paragraph separators as spaces and its direction marks
+dropped, as every other line a peer says is, then cut to 120 of the
+characters left and, cut or not, ending in no space, no joiner or
 non-joiner left joining nothing and no Khmer coeng with no letter to
 subscript, so a title of those alone reads as empty, its event kept;
 each node cleans a title as it reads the presence, so two running
-different versions may say one event's title apart; any it can't read
-is left out), and the `window` it
+different versions may say one event's title apart; any it can't read,
+or whose `where` is longer or holds one of those, is left out), and the
+`window` it
 runs in (`terminal`, `id`, `within`, such as a kitty window's id and
 kitty's socket, and `app_id`, the app id its window was opened with,
 where its opener said so in `MYCELIUM_APP_ID`, which names the same
