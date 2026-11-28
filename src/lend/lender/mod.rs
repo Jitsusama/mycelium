@@ -13,6 +13,8 @@
 //! borrower never sees, is added here. Each use is written as one line,
 //! with no prompt, answer, header or key in it.
 
+mod health;
+mod plain_file;
 mod spend;
 #[cfg(test)]
 mod tests;
@@ -306,26 +308,37 @@ impl Lender {
             file.display(),
             folder.join("cuts.json").display()
         );
-        Self::new(file, declarers, folder, crate::place::login_runtime())
+        let lender = Self::new(file, declarers, folder, crate::place::login_runtime());
+        // Read once at the start, so a lend that isn't taken says so in
+        // the log before any machine asks of it; health reads it afresh.
+        let _ = lender.written();
+        lender
     }
 
     /// What may be lent, as the file says now. Why it isn't taken goes to
     /// this machine's log alone, since the asker is another machine's
     /// agent, and says where it doesn't parse but never what it found.
     fn written(&self) -> Result<Written, Refusal> {
+        self.read().map_err(|why| {
+            eprintln!(
+                "mycelium: this machine's lend, {}, isn't taken: {why}",
+                self.file.display()
+            );
+            refused(
+                503,
+                "this machine's lend isn't taken; its node's log says why".to_owned(),
+            )
+        })
+    }
+
+    /// What may be lent, as the file says now, or why it isn't taken: where
+    /// it doesn't parse, only what kind of fault and where, never what it
+    /// found, so it may be said beyond the log. Only a plain file is
+    /// read, so a pipe put in its place can't hold the node's health.
+    fn read(&self) -> Result<Written, String> {
         crate::declared::sealed(&self.file, &self.declarers)
-            .and_then(|()| fs::read(&self.file).map_err(|error| error.to_string()))
+            .and_then(|()| plain_file::read(&self.file).map_err(|error| error.to_string()))
             .and_then(|text| serde_json::from_slice(&text).map_err(|error| unparsed(&error)))
-            .map_err(|why| {
-                eprintln!(
-                    "mycelium: this machine's lend, {}, isn't taken: {why}",
-                    self.file.display()
-                );
-                refused(
-                    503,
-                    "this machine's lend isn't taken; its node's log says why".to_owned(),
-                )
-            })
     }
 
     /// Why `machine` is cut off, as the cuts say now, where it is: cuts
@@ -487,7 +500,7 @@ impl Lender {
 /// file yet.
 fn kept(file: &Path) -> Result<BTreeMap<String, u64>, Refusal> {
     let unread = |why: String| refused(503, format!("the day's tally can't be read: {why}"));
-    match fs::read(file) {
+    match plain_file::read(file) {
         Ok(text) => serde_json::from_slice(&text).map_err(|error| unread(error.to_string())),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(BTreeMap::new()),
         Err(error) => Err(unread(error.to_string())),
@@ -524,10 +537,14 @@ pub fn folder() -> PathBuf {
 }
 
 /// The machines cut off, as `folder` keeps them; none where nothing was
-/// ever cut.
+/// ever cut. Where they don't parse, the error says only what kind of
+/// fault and where, as [`unparsed`] does, never what was found. Only a
+/// plain file is read, so a pipe put in its place can't hold a lend or
+/// the node's health.
 fn cuts(folder: &Path) -> io::Result<Vec<String>> {
-    match fs::read(folder.join("cuts.json")) {
-        Ok(text) => serde_json::from_slice(&text).map_err(io::Error::other),
+    match plain_file::read(&folder.join("cuts.json")) {
+        Ok(text) => serde_json::from_slice(&text)
+            .map_err(|error| io::Error::other(unparsed_as(&error, "a list of machines"))),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(error) => Err(error),
     }
@@ -1418,11 +1435,16 @@ async fn unquiet<T>(reading: impl Future<Output = T>) -> Result<T, Ended> {
 /// fault and where, never the words found there, which may be a key
 /// pasted in the wrong place.
 fn unparsed(error: &serde_json::Error) -> String {
+    unparsed_as(error, "a lend")
+}
+
+/// Why a file meant to hold `what` doesn't parse, as [`unparsed`] says it.
+fn unparsed_as(error: &serde_json::Error, what: &str) -> String {
     let kind = match error.classify() {
-        serde_json::error::Category::Io => "couldn't be read",
-        serde_json::error::Category::Syntax => "isn't JSON",
-        serde_json::error::Category::Data => "isn't a lend",
-        serde_json::error::Category::Eof => "ends early",
+        serde_json::error::Category::Io => "couldn't be read".to_owned(),
+        serde_json::error::Category::Syntax => "isn't JSON".to_owned(),
+        serde_json::error::Category::Data => format!("isn't {what}"),
+        serde_json::error::Category::Eof => "ends early".to_owned(),
     };
     format!(
         "it {kind} at line {}, column {}",

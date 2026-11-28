@@ -2995,6 +2995,13 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             .chain(self.served.health())
             .chain(self.builders.health())
             .chain(self.murmurs.health())
+            // A lend not taken refuses every machine it lends to, so it
+            // is said here, not only in the log.
+            .chain(
+                self.lender
+                    .as_deref()
+                    .map(crate::lend::lender::Lender::health),
+            )
             .collect();
         serde_json::Map::from_iter([
             ("version".to_owned(), daemon::VERSION.into()),
@@ -20270,6 +20277,26 @@ esac
         };
         assert_eq!(status, 403, "{why}");
         assert!(why.contains("--lends-from"), "{why}");
+    }
+
+    #[tokio::test]
+    async fn a_lend_not_taken_is_said_in_the_nodes_health() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let given = Given {
+            lend: Some(dir.path().join("lend.json")),
+            ..given_beside(&socket, None, None)
+        };
+        let (_stop, _node) = alone_with(&Memory::default(), &socket, given);
+        let (mut client, _hello) = Speaking::hello(&socket).await;
+        client.ask(json!({"id": 2, "ask": "health"})).await;
+        let health = client.next().await;
+        assert!(
+            health["sources"].as_array().is_some_and(|sources| sources
+                .iter()
+                .any(|source| source["name"] == "lend" && source["state"] == "refused")),
+            "a lend file that isn't there refuses every machine: {health}"
+        );
     }
 
     #[tokio::test]

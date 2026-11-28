@@ -3351,7 +3351,15 @@ only the headers the shim hands on and `key`'s command's output in
 never leave it, and the key never crosses to it. A lend file that
 can't be read, which says why only in the lender's log, and there
 only what kind of fault and where, never the words found, or an
-upstream not answering is 503, and a key that
+upstream not answering is 503. The node reads the file once as it
+starts too, so a lend not taken is in the log before any lend is
+asked, and its `health` names a source `lend`, read afresh at each
+ask: `refused` with that why while the file isn't taken, isn't a
+plain file, a machine it lends to names a budget it doesn't keep,
+its cuts can't be read or every machine is cut off, and `answering`
+otherwise. The lend file, its cuts, the day's tally and spend-watch's
+word are each read only as a plain file, opened without waiting, so
+a pipe or a device at one's name never holds the lender. A key that
 can't be had is 502. An interim head the upstream sends, 1xx but 101,
 is passed over for the one after it, and a 204 or 304 has no body.
 An upstream that answers 421, its connection misdirected, is asked
@@ -3738,7 +3746,7 @@ in milliseconds.
 | `list` with `kind`, and `limit` and `fields` | `records`, every one of the kind |
 | `watch` with `kind`, and `keys`, `when` and `deep` | `records` whole, then `changed` and `gone` |
 | `unwatch` | nothing; the watch with that `id` ends |
-| `health` | `state`, and each linked machine and served file as a source |
+| `health` | `state`, and each linked machine and served file, and the lend, as a source |
 | `steer` with `address` and `steer` | `steered` with the `machine` whose session's inbox has it |
 | `update` with `machine` | `updated`, the ending its updater said, as `Updated` gives it |
 | `carry` with `quest` and `to` | `carried`, where its sessions went, as `mycelium carry` says it |

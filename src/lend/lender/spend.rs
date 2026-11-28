@@ -3,12 +3,11 @@
 //! sent, and what its answer says it used, read as it streams, to
 //! settle it by; and spend-watch's word on the budget it spends.
 
-use std::fs;
 use std::path::Path;
 
 use serde::Deserialize;
 
-use super::{Price, Refusal, refused, unparsed};
+use super::{Price, Refusal, plain_file, refused, unparsed};
 
 /// Where spend-watch says how each budget stands, within the account's
 /// runtime folder.
@@ -370,8 +369,10 @@ pub(super) fn spend_watch_allows(runtime: Option<&Path>, named: &str) -> Result<
     let file = runtime
         .ok_or_else(|| silent("this machine has no runtime folder to find it in".to_owned()))?
         .join(SPEND_WATCH);
-    let text =
-        fs::read(&file).map_err(|error| silent(format!("its word can't be read: {error}")))?;
+    // Read as a plain file alone, opened without waiting, so a pipe or a
+    // device put at its name never holds the lend's thread.
+    let text = plain_file::read(&file)
+        .map_err(|error| silent(format!("its word can't be read: {error}")))?;
     let said: Said = serde_json::from_slice(&text)
         .map_err(|error| silent(format!("its word {}", unparsed(&error))))?;
     let old = jiff::Timestamp::now().duration_since(said.at);
