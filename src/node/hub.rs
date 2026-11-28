@@ -17,11 +17,13 @@
 //! sends all its needs to fewer cells than its holders could share them
 //! among.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::hash::BuildHasher;
 
 use serde_json::json;
 
-use crate::{daemon, networks};
+use crate::record::{Session, State};
+use crate::{daemon, forage, networks};
 
 /// The kind of a subject's hubs' record.
 pub const KIND: &str = "hub";
@@ -60,6 +62,35 @@ pub struct Holder {
     /// How much it talked lately, as [`heard`] tells it: the less, the
     /// more room it has.
     pub heard: f64,
+}
+
+/// The holders among `sessions`, as the node reads them: each running
+/// and named by an address, saying a subject, and heard as `heard` says
+/// of its address in upper case, as tie records are keyed. It takes the
+/// sessions whole, as the node clones them out of what it holds, so each
+/// address moves into its holder rather than being copied. The fold of
+/// the ties that makes `heard` is the caller's, outside it.
+#[must_use]
+pub fn holders<S: BuildHasher>(
+    sessions: Vec<Session>,
+    heard: &HashMap<String, f64, S>,
+) -> Vec<Holder> {
+    sessions
+        .into_iter()
+        // One ended, or out of reach, takes no need.
+        .filter(|session| matches!(session.state, State::Busy | State::Idle))
+        .filter(|session| forage::is_address(&session.address))
+        .map(|session| Holder {
+            // Tie records are keyed in upper case.
+            heard: heard
+                .get(&session.address.to_ascii_uppercase())
+                .copied()
+                .unwrap_or_default(),
+            subjects: networks::subjects(&session.presence["subjects"]),
+            address: session.address,
+        })
+        .filter(|holder| !holder.subjects.is_empty())
+        .collect()
 }
 
 /// Each declared subject's hubs, by key, a subject read by

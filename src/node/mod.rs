@@ -77,7 +77,9 @@ mod formed;
 pub use formed::Formed;
 mod glyph;
 mod hub;
-pub use hub::{Holder as HubHolder, KIND as HUB_KIND, records as hub_records};
+pub use hub::{
+    Holder as HubHolder, KIND as HUB_KIND, holders as hub_holders, records as hub_records,
+};
 mod network;
 mod once;
 pub use network::{Holding, Standing, records as network_records};
@@ -4882,23 +4884,7 @@ impl<S: Store> Shared<S> {
         // A session that arrived stands as its cell, whose name its talk
         // is heard under.
         self.arrivals.named(&mut sessions);
-        let holders: Vec<hub::Holder> = sessions
-            .into_iter()
-            // One ended, or out of reach, takes no need.
-            .filter(|session| matches!(session.state, SessionState::Busy | SessionState::Idle))
-            .filter(|session| forage::is_address(&session.address))
-            .map(|session| hub::Holder {
-                // Tie records are keyed in upper case.
-                heard: heard
-                    .get(&session.address.to_ascii_uppercase())
-                    .copied()
-                    .unwrap_or_default(),
-                subjects: crate::networks::subjects(&session.presence["subjects"]),
-                address: session.address,
-            })
-            .filter(|holder| !holder.subjects.is_empty())
-            .collect();
-        hub::records(&holders)
+        hub::records(&hub::holders(sessions, &heard))
     }
 
     /// The records `making` makes of what the node holds, as the networks
