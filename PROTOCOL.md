@@ -3429,6 +3429,35 @@ before it was sent there, so a line naming one is one that was. A
 model's line says `charged_usd` and `spent_usd_today` besides, once
 it is settled.
 
+A lending node asked to stop, by its service manager's terminate or
+Ctrl-C, lets the lends it is answering end first. From the stop it
+takes no new lend: each is refused 503 at once, before anything of it
+goes upstream, its `why` exactly
+`this machine's node is stopping, so it takes no new lend; ask again soon`.
+A borrowing node that hears that as the first word of a lend asks it
+again every 5 s, for as long as it waits on a lender no link reaches,
+and then tells pi 503 that its lender's node was stopping; pi asks
+again on the 503 itself where an older node hands it on. Those in
+flight run on, for at most `--lends-drain-within SECS`, 60 unless said,
+which leaves the rest of the stop time within systemd's default stop
+timeout of 90 s. A lend counts as in flight until its link has written
+and flushed the last piece of its answer into its own connection, not
+only until that piece is queued; that is not proof the other end read
+it, which a connection ended at once after may still lose. A whole
+answer still queued at the bound is cut as any other, its borrower
+hearing its link end partway through. The
+node runs on as ever meanwhile, and its links, holds and watches end
+after, so its unit must send the terminate to the node alone, as
+systemd's `KillMode=mixed` does: one sent to its links' own processes
+too ends them at once. At the bound each lend still going is cut, its
+borrower is told 503 where it still takes what it is sent, and its
+line's `outcome` says `cut by the node's stop`, never
+`let go: its borrower stopped reading`, its `response_bytes` what it
+had sent; it is charged as any answer cut short is. A second stop
+meanwhile cuts them at once. Either way the stop waits as long as 5 s
+more for each cut lend to write its line. A node with no lend in
+flight stops at once.
+
 #### What a Model's Lend May Spend
 
 A model's lend spends money, so the lender, which alone sees the
