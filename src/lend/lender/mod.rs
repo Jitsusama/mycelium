@@ -228,6 +228,8 @@ struct Spending {
     price: Price,
     /// Its tokens asked at most, as its body's bytes.
     asked: u64,
+    /// Its tokens answered at most: its `max_tokens`.
+    answered: u64,
 }
 
 /// How many requests a lend's machine may make a day, and what a model's
@@ -706,12 +708,18 @@ async fn lent(
 
 /// What a model request that `spending` limits is charged, as it `ended`:
 /// what its answer said it used, once whole and done; nothing where the
-/// upstream refused it whole, saying it used nothing; and otherwise all it
-/// reserved, as an answer cut short or that didn't say, since it may have
-/// been made whole upstream.
+/// upstream refused it whole, saying it used nothing; for an answer not
+/// whole whose upstream stated its tokens asked, as a stream's
+/// `message_start` does, those at their own prices and its `max_tokens`
+/// answered, since it may have been made whole upstream but never runs
+/// past its most; and otherwise all it reserved, as an answer cut short
+/// before it stated them or whole but never saying what it used.
 fn charged(ended: &Ended, used: &Used, spending: Spending) -> u64 {
     let Ended::Whole = ended else {
-        return spending.reserved;
+        return match used.meter.as_ref().and_then(Meter::asked) {
+            Some(asked) => spending.price.cut_short(asked, spending.answered),
+            None => spending.reserved,
+        };
     };
     let refused_whole = used.status.is_some_and(|status| status >= 400);
     match used.meter.as_ref().and_then(Meter::usage) {
@@ -1018,6 +1026,7 @@ fn spending(
         reserved: price.reserved(asked, most),
         price,
         asked,
+        answered: most,
     })
 }
 
