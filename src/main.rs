@@ -884,6 +884,12 @@ struct Node {
     /// hands on none.
     #[arg(long)]
     lends_from: Option<String>,
+    /// What all this node's links send in bulk at most together, in bits
+    /// a second: the messages a catch-up offers and the files of shared
+    /// quests, never what a person or a session waits on. 0 holds nothing
+    /// back. PROTOCOL.md says more.
+    #[arg(long, default_value_t = link::pace::BULK_BITS_A_SECOND)]
+    links_bulk_at_most: u64,
     /// The sealed file saying what this machine lends the machines it
     /// made: each by the start of its name, with its budget and how many
     /// requests it may make a day, and each budget's relay, host, paths
@@ -2301,6 +2307,7 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
         lend: node.lend,
         worker: worker_given(node.worker_socket, node.worker_uid),
         gates: gates_given(node.answers_with, node.answers_for)?,
+        bulk_bits_a_second: node.links_bulk_at_most,
     };
     tell!(
         "mycelium: {}",
@@ -2389,6 +2396,9 @@ fn run_link(here: Here, realm: String, socket: PathBuf, far: Option<String>) -> 
         lender: None,
         // Nor answers any gate, which only the node's own links answer.
         gates: None,
+        // Each link dialled here is a process of its own, so each keeps
+        // to the pace alone.
+        pace: link::pace::Pace::at_most(link::pace::BULK_BITS_A_SECOND),
     };
     match far {
         Some(far) => {

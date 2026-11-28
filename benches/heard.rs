@@ -200,6 +200,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
                 lend: None,
                 worker: None,
                 gates: None,
+                bulk_bits_a_second: 0,
             },
             bound,
             until_stopped,

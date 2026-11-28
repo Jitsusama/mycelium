@@ -1226,6 +1226,9 @@ pub struct Given {
     /// The gates this machine answers for the workers it names, the one
     /// start a worker may ask of it, if it answers any (`gate`).
     pub gates: Option<Arc<crate::gate::Gates>>,
+    /// What all the node's links send in bulk at most together, in bits a
+    /// second ([`link::pace`]); 0 holds nothing back.
+    pub bulk_bits_a_second: u64,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -2516,6 +2519,8 @@ struct Shared<S> {
     lender: Option<Arc<crate::lend::lender::Lender>>,
     /// The gates this machine answers its workers, if it answers any.
     gates: Option<Arc<crate::gate::Gates>>,
+    /// The pace all this node's links send in bulk at together.
+    pace: link::pace::Pace,
     /// The ids of the signals this node said as its receptors this run,
     /// the only messages from a receptor's name it takes (`signals`).
     spoken: Arc<Mutex<HashSet<String>>>,
@@ -2685,6 +2690,7 @@ impl<S: Clone> Clone for Shared<S> {
             lends_from: self.lends_from.clone(),
             lender: self.lender.clone(),
             gates: self.gates.clone(),
+            pace: self.pace.clone(),
             spoken: Arc::clone(&self.spoken),
             refused: Arc::clone(&self.refused),
             receptors_at: self.receptors_at.clone(),
@@ -4075,6 +4081,7 @@ impl<S: Store> Shared<S> {
             // Bound and served by `run` alone.
             worker: _,
             gates,
+            bulk_bits_a_second,
         } = given;
         let lender = lend.map(|file| {
             Arc::new(crate::lend::lender::Lender::from_file(
@@ -4154,6 +4161,7 @@ impl<S: Store> Shared<S> {
             lends_from: lends_from.map(Into::into),
             lender,
             gates,
+            pace: link::pace::Pace::at_most(bulk_bits_a_second),
             spoken: Arc::default(),
             refused: Arc::default(),
             receptors_at: receptors,
@@ -5776,6 +5784,7 @@ impl<S: Store> Shared<S> {
             saturation: Some(self.saturation.clone()),
             lender: self.lender.clone(),
             gates: self.gates.clone(),
+            pace: self.pace.clone(),
         }
     }
 
@@ -11687,6 +11696,7 @@ mod tests {
             lend: None,
             worker: None,
             gates: None,
+            bulk_bits_a_second: 0,
         }
     }
 
@@ -12040,6 +12050,7 @@ mod tests {
             lend: None,
             worker: None,
             gates: None,
+            bulk_bits_a_second: 0,
         }
     }
 
@@ -12121,6 +12132,7 @@ mod tests {
                     saturation: None,
                     lender: None,
                     gates: None,
+                    pace: link::pace::Pace::unpaced(),
                 };
                 // The test judges the link by what crosses it.
                 let _ = if proven {
@@ -12451,6 +12463,7 @@ mod tests {
             saturation: None,
             lender: None,
             gates: None,
+            pace: link::pace::Pace::unpaced(),
         }
     }
 
@@ -12535,6 +12548,7 @@ mod tests {
             saturation: None,
             lender: None,
             gates: None,
+            pace: link::pace::Pace::unpaced(),
         };
         let membership = Realm {
             name: "work".to_owned(),

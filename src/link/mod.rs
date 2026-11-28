@@ -50,6 +50,7 @@ pub mod dial;
 pub mod discovery;
 mod have;
 pub mod membership;
+pub mod pace;
 pub mod refused;
 mod started;
 pub mod starts;
@@ -382,6 +383,9 @@ pub async fn run(
     let (starters, mut learned) = started::Starters::new();
     let inboxes = starting.as_ref().map(|starting| starting.steers.clone());
     let gates = gates_of(starting.as_ref());
+    let pace = starting
+        .as_ref()
+        .map_or_else(pace::Pace::unpaced, |starting| starting.pace.clone());
     let mut end = End {
         store,
         here: membership.hello().machine,
@@ -435,6 +439,8 @@ pub async fn run(
         listed_from: None,
         has: HashSet::new(),
         held_again: have::HeldAgain::default(),
+        owed: pace::Owed::default(),
+        pace,
         sent: BTreeMap::new(),
         carried: HashSet::new(),
         _claim: claim,
@@ -464,6 +470,11 @@ pub async fn run(
                 Some(said) = run_said.recv() => end.run_said(said, &mut writing).await,
                 Some(found) = learned.recv() => end.learned(found, &mut writing).await,
                 _ = looking.tick() => end.look(&mut writing).await,
+                // What is owed in bulk goes a frame at a time between the
+                // arms above, so none of them waits behind a catch-up.
+                () = end.pace.ready(), if !end.owed.is_empty() => {
+                    end.send_owed(&mut writing).await
+                }
                 () = own_health::moved(&mut end.health.told) => {
                     end.send_machine(&mut writing).await
                 }
@@ -1327,6 +1338,10 @@ struct End<S> {
     /// The messages the other end, a worker, said again just as this
     /// machine holds them, not yet told in the log.
     held_again: have::HeldAgain,
+    /// What this end owes the other in bulk, sent as `pace` lets it.
+    owed: pace::Owed,
+    /// The pace this end sends in bulk at, shared by its node's links.
+    pace: pace::Pace,
     /// Each living session's presence and leases, as last sent.
     sent: BTreeMap<String, Sent>,
     /// The realm's folder of held sessions on this machine, if this end
@@ -2704,7 +2719,61 @@ impl<S: Store> End<S> {
             return Ok(());
         }
         self.share(Exchange::look, writing).await?;
-        send(writing, &Frame::HandedOver).await
+        self.send_in_turn(Frame::HandedOver, writing).await
+    }
+
+    /// Sends `frame` now, unless frames are owed in bulk, behind which it
+    /// waits its turn, since frames cross in the order they are said.
+    async fn send_in_turn(
+        &mut self,
+        frame: Frame,
+        writing: &mut (impl AsyncWrite + Unpin),
+    ) -> io::Result<()> {
+        if self.owed.owes_frames() {
+            self.owed.frame(frame);
+            Ok(())
+        } else {
+            send(writing, &frame).await
+        }
+    }
+
+    /// Sends the first of what this end owes in bulk, taking its bytes
+    /// from the pace. A message the other end holds by now, or one that
+    /// stays on this machine, costs nothing, and the next goes in its
+    /// place, as does the end of a session whose presence was sent again
+    /// since, as a parked session's is as it wakes, which the end would
+    /// otherwise take from the other end. Once a catch-up's messages have
+    /// all gone, the link is caught up.
+    async fn send_owed(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
+        while let Some(owing) = self.owed.next() {
+            let frame = match owing {
+                pace::Owing::Frame(frame) => match *frame {
+                    Frame::Ended { session } if self.sent.contains_key(&session) => continue,
+                    frame => frame,
+                },
+                pace::Owing::Message(id) => {
+                    if self.has.contains(&id) {
+                        continue;
+                    }
+                    let Some(body) = self.store.message(&id) else {
+                        continue;
+                    };
+                    self.has.insert(id.clone());
+                    if mesh::stays_here(&body, |earlier| self.store.message(earlier)) {
+                        continue;
+                    }
+                    Frame::Message { id, body }
+                }
+            };
+            let line = line_of(&frame)?;
+            self.pace.spend(line.len());
+            write_line(writing, &line).await?;
+            break;
+        }
+        if self.owed.drained() {
+            self.hearing.caught_up.get_or_insert_with(now);
+        }
+        Ok(())
     }
 
     /// Takes the other end's word that its machine has handed over, if this
@@ -2767,7 +2836,13 @@ impl<S: Store> End<S> {
         match says {
             Ok(says) => {
                 for say in says {
-                    send(writing, &Frame::Share(say)).await?;
+                    // A file's body is bulk, and goes as the pace lets it;
+                    // what is said of files waits only on bodies before it.
+                    if matches!(say, Say::Piece { .. } | Say::File { .. }) {
+                        self.owed.frame(Frame::Share(say));
+                    } else {
+                        self.send_in_turn(Frame::Share(say), writing).await?;
+                    }
                 }
             }
             Err(error) => eprintln!("sharing quests with {}: {error}", self.other),
@@ -2789,21 +2864,31 @@ impl<S: Store> End<S> {
     /// began since its presence was last sent never goes ahead of it: a
     /// worker's message is taken only from a session whose presence the
     /// other end holds as it reads the message.
+    /// The messages go as the pace lets them, a frame at a time between
+    /// the link's other work ([`pace`]), and the link is caught up once
+    /// they have.
     async fn catch_up(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
         self.send_presence(writing).await?;
-        self.send_lacked(writing).await?;
-        self.hearing.caught_up.get_or_insert_with(now);
+        self.send_lacked();
+        if self.owed.caught_up() {
+            self.hearing.caught_up.get_or_insert_with(now);
+        }
         Ok(())
     }
 
-    /// Sends every message within reach the other end lacks, from where
+    /// Owes the other end every message within reach it lacks, from where
     /// its Have's list began, if it said: it holds those from before, or
-    /// let them go, so offering them again only has them refused.
-    async fn send_lacked(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
+    /// let them go, so offering them again only has them refused. They go
+    /// in bulk, as the pace lets them ([`Self::send_owed`]).
+    fn send_lacked(&mut self) {
         let ids = self
             .store
             .message_ids(have::offered_from(self.reach, self.listed_from));
-        self.send_messages(ids, writing).await
+        for id in ids {
+            if !self.has.contains(&id) {
+                self.owed.message(id);
+            }
+        }
     }
 
     /// Sends the messages among `ids` the other end doesn't hold yet,
@@ -2882,11 +2967,17 @@ impl<S: Store> End<S> {
             }
         }
         if !ended.is_empty() {
-            self.send_lacked(writing).await?;
+            self.send_lacked();
         }
         for session in ended {
             self.sent.remove(&session);
-            send(writing, &Frame::Ended { session }).await?;
+            // Behind the messages owed, which hold the session's words.
+            let frame = Frame::Ended { session };
+            if self.owed.is_empty() {
+                send(writing, &frame).await?;
+            } else {
+                self.owed.frame(frame);
+            }
         }
         Ok(())
     }
@@ -2953,10 +3044,20 @@ fn parked_in(body: &Value, boot: Option<&str>) -> bool {
 /// a link went on holding its claim on a node restarted at 18:48 on 25
 /// November, so the node's new link was refused there for minutes.
 async fn send(writing: &mut (impl AsyncWrite + Unpin), frame: &Frame) -> io::Result<()> {
+    write_line(writing, &line_of(frame)?).await
+}
+
+/// `frame` as the line that says it.
+fn line_of(frame: &Frame) -> io::Result<Vec<u8>> {
     let mut line = serde_json::to_vec(frame).map_err(io::Error::other)?;
     line.push(b'\n');
+    Ok(line)
+}
+
+/// Writes `line` to the other end, as [`send`] does.
+async fn write_line(writing: &mut (impl AsyncWrite + Unpin), line: &[u8]) -> io::Result<()> {
     let written = async {
-        writing.write_all(&line).await?;
+        writing.write_all(line).await?;
         writing.flush().await
     };
     tokio::time::timeout(SILENT_AFTER, written)
@@ -3219,6 +3320,7 @@ mod tests {
     use crate::wire::By;
 
     mod in_order;
+    mod paced;
 
     #[test]
     fn a_run_from_another_machine_that_doesnt_say_who_asks_runs_strictly_fenced() {
@@ -4122,6 +4224,7 @@ mod tests {
             saturation: None,
             lender: None,
             gates: None,
+            pace: pace::Pace::unpaced(),
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();
@@ -4289,6 +4392,7 @@ mod tests {
             saturation,
             lender: None,
             gates: None,
+            pace: pace::Pace::unpaced(),
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();
@@ -4333,6 +4437,7 @@ mod tests {
             saturation: None,
             lender: None,
             gates: None,
+            pace: pace::Pace::unpaced(),
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();
@@ -4568,6 +4673,7 @@ mod tests {
             saturation: None,
             lender: None,
             gates: None,
+            pace: pace::Pace::unpaced(),
         }
     }
 
@@ -4934,6 +5040,7 @@ mod tests {
             saturation: None,
             lender: None,
             gates: None,
+            pace: pace::Pace::unpaced(),
         };
         let (reading, writing) = tokio::io::split(far);
         let far = tokio::spawn(async move {
@@ -5662,6 +5769,7 @@ mod tests {
             saturation: None,
             lender: None,
             gates: None,
+            pace: pace::Pace::unpaced(),
         };
         let skiff_end = tokio::spawn(async move {
             run(
@@ -5728,6 +5836,7 @@ mod tests {
             saturation: None,
             lender: None,
             gates: None,
+            pace: pace::Pace::unpaced(),
         };
         let skiff_end = tokio::spawn(async move {
             run(
@@ -6844,6 +6953,7 @@ mod tests {
             saturation: None,
             lender: None,
             gates: None,
+            pace: pace::Pace::unpaced(),
         }
     }
 

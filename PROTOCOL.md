@@ -228,6 +228,24 @@ same code, each line a JSON value:
    each minute any since the link began that it hasn't yet sent or
    heard, which a watch that missed a write would otherwise leave
    behind for good.
+   What a catch-up offers goes in bulk: a message at a time between
+   the link's other work, at a pace every link of the node shares,
+   `--links-bulk-at-most` bits a second, 2,000,000 unless told, 0
+   for none. A file's `Piece` or `File` goes in bulk too, and what an
+   end says of its shares after one waits behind it, as does a
+   `HandedOver` and an `Ended`, so each still crosses in the order it
+   was said. What a person or a session waits on never waits on the
+   pace: a new message as it lands, presence, asks and their answers,
+   lends, runs' output and what the machine is. A pace lets a
+   quarter second's bytes go at once, and two links sending at the
+   same moment may each send one frame past it. The reach a link
+   leaves for the next moves on only once the catch-up's messages
+   have all gone, so a link that drops while it still owes them
+   loses none. A link a node dials keeps to the pace on its own, since
+   it is a process of its own. On 27 November a node's links to about
+   ten machines caught up all at once, filling a 10.8 Mbit/s uplink
+   for about 15 minutes, and the model relay sharing it reset about
+   40 connections a minute where it reset 1 to 3.
 4. `{"Presence": {"session", "body", "leases", "held", "started_by"}}`:
    a living session of the sending end's machine, or one parked as the
    Have counts it, again whenever it, its

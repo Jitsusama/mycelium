@@ -93,6 +93,9 @@ pub struct Starting {
     /// start a worker may ask of it; none for a machine answering none,
     /// which refuses every worker's start.
     pub gates: Option<Arc<crate::gate::Gates>>,
+    /// The pace every link of this machine's node sends in bulk at, shared
+    /// by them all ([`super::pace`]).
+    pub pace: super::pace::Pace,
 }
 
 /// How a link carries what this machine's node asks of the other machine.

@@ -8,3 +8,6 @@ module of its `tests` that shares its helpers:
   the worker judges each message against the presence its sender had:
   a session's last words go before its end, and its first after its
   presence.
+- `paced.rs`: what a link owes in bulk, a catch-up's messages, keeps to
+  the pace its node's links share, and what a session waits on, such as
+  a lend's answer, goes between, never behind it.
