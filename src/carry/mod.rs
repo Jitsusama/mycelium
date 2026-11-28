@@ -687,19 +687,32 @@ fn rest<F: FnMut(&Value)>(
 /// are named, each with where to see why: its start, joined by words
 /// quoted for a shell, while it may still be held, and the node log
 /// there, which alone says once the hold went, as it does with a pi
-/// that ended there or an arrival that exited.
+/// that ended there or an arrival that exited. One seen running on any
+/// look has run there, so a link to `to` that drops between looks, which
+/// reads each of its sessions out of reach, doesn't fail it after; one
+/// out of reach and never seen running is named as one whose running
+/// can't be told, not as one that ended.
 fn answered(hands: &mut impl Hands, to: &str, arrived: &[Arrived]) -> Result<(), String> {
+    let mut ran: BTreeSet<&str> = BTreeSet::new();
     loop {
         let there = hands.sessions()?;
+        let record = |one: &Arrived| {
+            there
+                .iter()
+                .find(|session| {
+                    session.machine == to && session_id(session) == Some(one.session.as_str())
+                })
+                .map(|session| session.state)
+        };
+        ran.extend(
+            arrived
+                .iter()
+                .filter(|one| matches!(record(one), Some(State::Busy | State::Idle)))
+                .map(|one| one.session.as_str()),
+        );
         let silent: Vec<&Arrived> = arrived
             .iter()
-            .filter(|one| {
-                !there.iter().any(|session| {
-                    session.machine == to
-                        && session_id(session) == Some(one.session.as_str())
-                        && runs(session)
-                })
-            })
+            .filter(|one| !ran.contains(one.session.as_str()))
             .collect();
         if silent.is_empty() {
             return Ok(());
@@ -708,26 +721,34 @@ fn answered(hands: &mut impl Hands, to: &str, arrived: &[Arrived]) -> Result<(),
             let each: Vec<String> = silent
                 .iter()
                 .map(|one| {
-                    let ended = there.iter().any(|session| {
-                        session.machine == to && session_id(session) == Some(one.session.as_str())
-                    });
-                    if ended {
-                        return format!(
+                    let attach: Vec<String> = one.attach.iter().map(|word| quoted(word)).collect();
+                    match record(one) {
+                        Some(State::Ended) => format!(
                             "{} started on {to} but its pi there has ended, its start with \
                              it, so {to}'s node log says why",
                             one.address
-                        );
+                        ),
+                        Some(State::Unreachable) => format!(
+                            "{} started on {to}, but {to} is out of reach, so whether it runs \
+                             there can't be told; once {to} is back, join its start with `{}` \
+                             to see, or, once it has gone, read {to}'s node log",
+                            one.address,
+                            attach.join(" ")
+                        ),
+                        _ => format!(
+                            "{} started on {to} but isn't running there; join its start with \
+                             `{}` to see why, or, once it has gone, read {to}'s node log",
+                            one.address,
+                            attach.join(" ")
+                        ),
                     }
-                    let attach: Vec<String> = one.attach.iter().map(|word| quoted(word)).collect();
-                    format!(
-                        "{} started on {to} but isn't running there; join its start with `{}` \
-                         to see why, or, once it has gone, read {to}'s node log",
-                        one.address,
-                        attach.join(" ")
-                    )
                 })
                 .collect();
-            return Err(each.join("; "));
+            return Err(format!(
+                "{}; a carry asked again carries only the quest's trees and won't say whether \
+                 they run, so look with `mycelium sessions`",
+                each.join("; ")
+            ));
         }
     }
 }
@@ -1568,6 +1589,13 @@ mod tests {
         /// The sessions, by id, whose record once started reads ended
         /// there, as one whose pi exited as it was taken up.
         ended_there: BTreeSet<String>,
+        /// The sessions, by id, whose record once started reads out of
+        /// reach there, as one on a machine whose link has dropped.
+        unreachable_there: BTreeSet<String>,
+        /// The sessions, by id, that read running there only on looks of
+        /// the parity given, and out of reach on the others, as over a
+        /// link that keeps dropping.
+        flapping: BTreeMap<String, usize>,
         /// The sessions, by id, listed once started under another
         /// session's id there, as a session the node there mistook.
         misnamed: BTreeSet<String>,
@@ -1668,8 +1696,14 @@ mod tests {
                     } else {
                         on.as_str()
                     };
+                    let flapped = self
+                        .flapping
+                        .get(id)
+                        .is_some_and(|parity| self.looks % 2 != *parity);
                     let state = if self.ended_there.contains(id) {
                         "ended"
+                    } else if self.unreachable_there.contains(id) || flapped {
+                        "unreachable"
                     } else {
                         "idle"
                     };
@@ -2783,6 +2817,48 @@ mod tests {
         assert!(
             !said.contains("attach") && said.contains("tern's node log"),
             "its start went as its pi ended there, so only the log there says why: {said}"
+        );
+    }
+
+    // Our stack round on #559 (2026-11-28, #577 F1): a record there out
+    // of reach was named as a pi that ended, sending whoever read it to a
+    // log that says nothing of it.
+    #[test]
+    fn a_session_out_of_reach_there_is_named_as_one_whose_running_cant_be_told() {
+        let mut realm = Realm {
+            unreachable_there: ["s-naps02"].map(str::to_owned).into(),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        assert_eq!(done, Err(Failed { step: Step::Answer }));
+        let said = last_said(&lines);
+        assert!(
+            said.contains("NAPS02") && !said.contains("BUSY01"),
+            "naming the one out of reach, not one running there: {said}"
+        );
+        assert!(
+            said.contains("tern is out of reach")
+                && !said.contains("has ended")
+                && said.contains("mycelium attach h1"),
+            "as out of reach, not ended, with how to join its start once tern is back: {said}"
+        );
+    }
+
+    // Our stack round on #559 (2026-11-28, F32): a session seen running
+    // has arrived, whatever a later look reads of it.
+    #[test]
+    fn a_session_seen_running_on_any_look_has_run_there() {
+        let mut realm = Realm {
+            flapping: [("s-busy01", 0), ("s-naps02", 1)]
+                .map(|(id, parity)| (id.to_owned(), parity))
+                .into(),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        assert!(
+            done.is_ok(),
+            "each ran there on a look of its own, though never both on one: {}",
+            last_said(&lines)
         );
     }
 
