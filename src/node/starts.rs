@@ -337,39 +337,47 @@ pub fn reopens(command: &[String]) -> Option<&str> {
         .then_some(session.as_str())
 }
 
-/// Whether `command` runs a pi, by any path, that may open a session
-/// other than as [`reopens`] reads it: one named another way
-/// (`--session=`, `--session-id`, or among other words), or one pi
-/// picks itself (`-c`, `-r`, `--continue`, `--resume`, `--fork`). It
-/// reads widely, since it serves only to keep such a start no looser,
-/// where the session it opens can't be told nor its fence raised.
-#[must_use]
-pub fn opens_an_unnamed_session(command: &[String]) -> bool {
-    let Some((program, words)) = command.split_first() else {
-        return false;
-    };
-    let opens = |word: &String| {
-        ["-c", "-r"].contains(&word.as_str())
-            || ["--session", "--continue", "--resume", "--fork"]
-                .iter()
-                .any(|flag| word.starts_with(flag))
-    };
-    named_pi(program) && reopens(command).is_none() && words.iter().any(opens)
-}
+/// The flags a told new session may be given, each with its value: they
+/// choose its model, and nothing pi loads, reads or opens.
+const TOLD_FLAGS: [&str; 3] = ["--model", "--provider", "--thinking"];
 
 /// Whether the session `command` opens is told: it runs the person's pi,
-/// as [`persons_pi`] reads it, opening a new session or one as
-/// [`reopens`] reads it, which is raised to the strictest it ran in.
-/// Anything else isn't, so its start keeps no looser fence than strict:
-/// a shell, `env` or another program, which may run pi itself, a program
-/// named pi elsewhere, which an agent may have written, or pi opening a
-/// session as [`opens_an_unnamed_session`] reads. That reads every flag
-/// with which pi opens a session, since pi matches its flags whole. It
-/// tells only the session pi itself opens: one a session's own commands
-/// open runs within that session's fence, as all its commands do.
+/// as [`persons_pi`] reads it, reopening a session as [`reopens`] reads
+/// it, which is raised to the strictest it ran in, or opening a new one
+/// given only first words and [`TOLD_FLAGS`]. First words are plain
+/// words to it: none begins `@`, which pi reads as a file, `/`, which it
+/// may read as a command, or `!`, which it may run. Anything else isn't,
+/// so its start keeps no looser fence than strict: a shell, `env` or
+/// another program, which may run pi itself, a program named pi
+/// elsewhere, which an agent may have written, or pi given any other
+/// flag, which may load an extension or open a session of its choosing.
+/// It tells only the session pi itself opens: one a session's own
+/// commands open runs within that session's fence, as all its commands
+/// do.
 #[must_use]
 pub fn tells_what_it_opens(command: &[String]) -> bool {
-    command.first().is_some_and(|program| persons_pi(program)) && !opens_an_unnamed_session(command)
+    let Some((program, mut words)) = command.split_first() else {
+        return false;
+    };
+    if !persons_pi(program) {
+        return false;
+    }
+    if reopens(command).is_some() {
+        return true;
+    }
+    while let Some((word, rest)) = words.split_first() {
+        words = if TOLD_FLAGS.contains(&word.as_str()) {
+            match rest.split_first() {
+                Some((value, after)) if !value.starts_with('-') => after,
+                _ => return false,
+            }
+        } else if word.is_empty() || word.starts_with(['-', '@', '/', '!']) {
+            return false;
+        } else {
+            rest
+        };
+    }
+    true
 }
 
 /// A start let go ahead, held as counted till it is kept.
@@ -1059,40 +1067,6 @@ mod tests {
     const NOW: i64 = 1_800_000_000_000;
 
     #[test]
-    fn a_session_opened_but_as_a_reopening_reads_is_told_apart() {
-        let opens = |words: &[&str]| {
-            let command: Vec<String> = words.iter().map(|&word| word.to_owned()).collect();
-            opens_an_unnamed_session(&command)
-        };
-        for words in [
-            &["pi", "--session=s-gone_1"][..],
-            &["pi", "--session", "s-gone_1", "go on"],
-            &["/opt/bin/pi", "-p", "x", "--session", "s-gone_1"],
-            &["pi", "--session-id", "s-gone_1"],
-            &["pi", "-c"],
-            &["pi", "--continue", "go on"],
-            &["pi", "-r"],
-            &["pi", "--fork", "s-gone_1"],
-        ] {
-            assert!(
-                opens(words),
-                "{words:?} opens a session not read as reopened"
-            );
-        }
-        for (words, why) in [
-            (
-                &["pi", "--session", "s-gone_1"][..],
-                "a reopening, raised as it is",
-            ),
-            (&["pi", "go on"], "a new session"),
-            (&["sh", "-c", "true"], "not pi"),
-            (&[], "nothing"),
-        ] {
-            assert!(!opens(words), "{why}: {words:?}");
-        }
-    }
-
-    #[test]
     fn only_the_persons_pi_opening_a_new_session_or_a_reopening_tells_what_it_opens() {
         let tells = |words: &[&str]| {
             let command: Vec<String> = words.iter().map(|&word| word.to_owned()).collect();
@@ -1102,6 +1076,17 @@ mod tests {
             (&["pi", "--session", "s-gone_1"][..], "a reopening"),
             (&["pi", "go on"], "a new session"),
             (&["pi"], "a bare pi"),
+            (
+                &[
+                    "pi",
+                    "--model",
+                    "skiff/large",
+                    "--thinking",
+                    "high",
+                    "go on",
+                ],
+                "a new session choosing its model",
+            ),
             (
                 &["/run/current-system/sw/bin/pi", "go on"],
                 "the person's pi by its path",
@@ -1121,6 +1106,27 @@ mod tests {
             (&["/tmp/skiff/pi"], "a pi an agent may have written"),
             (&["pi", "-c"], "pi picking its session"),
             (&["pi", "--session=s-gone_1"], "a session named another way"),
+            (
+                &["pi", "--session", "s-gone_1", "go on"],
+                "a reopening with more words",
+            ),
+            (
+                &["pi", "--session-id", "s-gone_1"],
+                "a session by its id flag",
+            ),
+            (&["pi", "--continue", "go on"], "pi continuing"),
+            (&["pi", "-r"], "pi resuming"),
+            (&["pi", "--fork", "s-gone_1"], "pi forking"),
+            (&["pi", "-e", "ext.ts"], "pi loading an extension"),
+            (&["pi", "@notes.md"], "pi reading a file"),
+            (&["pi", "/resume"], "pi given a command"),
+            (&["pi", "!pi --session s-gone_1"], "pi given a shell line"),
+            (
+                &["pi", "go on", "--fork", "s-gone_1"],
+                "a flag after first words",
+            ),
+            (&["pi", "--model"], "a told flag without its value"),
+            (&["pi", "--model", "--continue"], "a told flag given a flag"),
             (&[], "nothing"),
         ] {
             assert!(!tells(words), "{why}: {words:?}");

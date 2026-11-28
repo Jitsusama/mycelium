@@ -8170,6 +8170,25 @@ impl<S: Store> Shared<S> {
     /// bare resume of a session ([`declaring_resumed`]) declares at least
     /// the strictest fence it was seen in here, strict where that can't
     /// be read.
+    /// `asked`, declaring strict where it reopens, as [`starts::reopens`]
+    /// reads it, a session never seen here in any fence. What a session
+    /// shows of its fence is looked at only now and then, so one may have
+    /// run strict and ended unseen, and an agent's relay reopening it
+    /// can't be let looser than it ran. The person's own reopenings aren't
+    /// judged so, as their fence is theirs to choose.
+    fn unseen_comes_back_strict(&self, mut asked: Start) -> Start {
+        use crate::declared::Kind;
+        let unseen = starts::reopens(&asked.command).is_some_and(|session| {
+            self.fences
+                .strictest(session)
+                .is_ok_and(|kind| kind == Kind::None)
+        });
+        if unseen {
+            asked.work.fence = declaring_at_least(asked.work.fence, Some(Kind::Strict));
+        }
+        asked
+    }
+
     fn brought_back_declaring(&self, mut asked: Start) -> Start {
         use crate::declared::Kind;
         asked.work.fence = declaring_resumed(&asked.command, asked.work.fence, |session| {
@@ -8708,7 +8727,7 @@ impl<S: Store> Shared<S> {
         // A session that ran here, resumed or carried back, comes back no
         // looser than it ran, as a start asked here does, so a room taking
         // a proven relay's declaration never lets it down to that.
-        let asked = self.brought_back_declaring(asked);
+        let asked = self.unseen_comes_back_strict(self.brought_back_declaring(asked));
         let persons_carry = asked.carries;
         let judged = judged_as(
             by,
@@ -28319,9 +28338,32 @@ esac
             Some("FENCED=fence"),
             "pi opening a new session, in the agent fence declared"
         );
+        // A session seen here in the agent fence comes back in it; one
+        // never seen may have run strict unseen, so comes back strict.
+        link.lock().state.set_sessions(
+            ["s-tern", "s-wren"]
+                .map(|id| on_quest(id, "HARBOR", "skiff", "ended", "QEST-20261115-HARBOR"))
+                .to_vec(),
+        );
+        let ran = ("s-tern".to_owned(), crate::declared::Kind::Fence);
+        link.fences.raise(&BTreeMap::from([ran]));
+        assert_eq!(
+            fenced_as(&link, &given, true, running(&["pi", "--session", "s-tern"])).await,
+            Some("FENCED=fence"),
+            "a reopening of a session seen in the agent fence, in it"
+        );
         for (words, why) in [
             (&["sh", "-c", "pi -c"][..], "a shell running pi"),
             (&["pi", "--continue"], "pi picking its session"),
+            (&["pi", "-e", "ext.ts"], "pi loading an extension"),
+            (
+                &["/tmp/skiff/pi", "tidy the docs"],
+                "a pi an agent may have written",
+            ),
+            (
+                &["pi", "--session", "s-wren"],
+                "a reopening of a session never seen",
+            ),
         ] {
             assert_eq!(
                 fenced_as(&link, &given, true, running(words)).await,

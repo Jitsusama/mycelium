@@ -304,13 +304,19 @@ same code, each line a JSON value:
    agent fence declares no forge and no secret, accepts none from
    another machine and has a launcher, a relay marked `proven` takes
    the fence it declares, never looser than the agent fence. Only one
-   whose session is told keeps it: pi, by any path, opening a new
-   session, or reopening one by a bare `--session` and its id, which
-   comes back no looser than the strictest fence it ran in there. One
-   pi opens any other way (`--session=`, `-c`, `--continue`, or a
-   `--session` with more words), and one any other program runs,
-   `sh -c`, `env` or the realm's `agent`, which may run pi itself,
-   starts strict. The node logs each it so takes, with the machine
+   whose session is told keeps it: the person's pi, named bare or by
+   a path in the system's or the person's profile, opening a new
+   session given only first words and `--model`, `--provider` or
+   `--thinking`, each with its value, or reopening one by a bare
+   `--session` and its id, which comes back no looser than the
+   strictest fence it was seen to run in there, and strict where it
+   was never seen. First words beginning `@`, `/` or `!`, which pi
+   may read as a file, a command or a shell line, any other flag,
+   such as `-e`, `--session=`, `-c` or `--continue`, a pi by any
+   other path, which an agent may have written, and any other
+   program, `sh -c`, `env` or the realm's `agent`, which may run pi
+   itself, start strict. A pi a session runs runs within that
+   session's fence. The node logs each it so takes, with the machine
    that relayed it, what it runs, its name, the session it holds, how
    it judged the link's end and the cell it charged, and why it kept
    no looser fence one declared. Only a link's end can mark a relay
