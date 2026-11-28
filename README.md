@@ -212,7 +212,10 @@ The harness mesh's messages and presence, carried between machines:
   was told. `<NAME>` is read, in order, as a living session's address,
   a team's address, a team's short name, then words of a team's title
   and else a living session's; several it fits alike are each offered,
-  and none is told.
+  and none is told. A name a team's quest gives it that is held back,
+  as it reads as more than one name or as other than a name, finds no
+  team by any title, and the refusal names the team's address to ask
+  for it by.
 - `mycelium web <QUEST> say|tie|settle` speaks in a quest's web, the
   murmurs and ties its sessions share: each machine appends to its own
   file in the quest's `web` scratch folder, which a share carries like
