@@ -3253,13 +3253,16 @@ each link it lends by, to an end whose hello says `hands`, the
 lender's end sends a `"Hands"` frame as the link comes up and every
 ten minutes: `lend`, a lend file naming that machine alone, with the
 vm entry's `requests_a_day` and `usd_a_day` and that budget less its
-`key`, and `key`, the key the command printed. A file that names no
-budget to hand sends none, and one whose budget is missing, or whose
-key can't be had, sends none and says why in the lender's log, once
-for each reason. The borrowing node takes it only from the link to
-the machine `--lends-from` names, refusing any other, and only where
-its budgets name no `key` command, and keeps it in memory alone,
-never on disk or in a log; each it takes replaces the last whole, so
+`key` and its `spend_watch`, since spend-watch is the lender's own,
+and `key`, the key the command printed. The borrowing machine holds
+a model's lend to `usd_a_day` and the day's count alone, asking no
+spend-watch of its own. A file that names no budget to hand sends
+none, and one whose budget is missing, or whose key can't be had,
+sends none and says why in the lender's log, once for each reason.
+The borrowing node takes it only from the link to the machine
+`--lends-from` names, refusing any other, and only where its budgets
+name no `key` command, and keeps it in memory alone, never on disk or
+in a log; each it takes replaces the last whole, so
 a process asking in that machine's name can put its own budget and
 key in place but never read or spend the one handed. Its counts and
 cuts are kept in `lend/handed/` under the account's state folder,

@@ -455,6 +455,9 @@ impl Lender {
         let mut budget = raw["budgets"][name].clone();
         if let Some(budget) = budget.as_object_mut() {
             budget.remove("key");
+            // Spend-watch is this machine's own, and the machine handed the
+            // budget has none; the day's cap and count hold it there.
+            budget.remove("spend_watch");
         }
         let lend = json!({
             "vms": [{
@@ -1135,12 +1138,19 @@ fn spending(
             format!("this machine's lend caps no spend of {machine}'s, so it lends it no model"),
         )
     })?;
-    let watched = budget.spend_watch.as_deref().ok_or_else(|| {
-        refused(
-            403,
-            format!("the budget {named} names none in spend-watch, so it lends no model"),
-        )
-    })?;
+    // A budget handed here spends the money of the machine that handed
+    // it, whose spend-watch is its own and not this machine's, so the
+    // day's cap and count alone hold it here.
+    let watched = match (&budget.handed, budget.spend_watch.as_deref()) {
+        (Some(_), _) => None,
+        (None, Some(watched)) => Some(watched),
+        (None, None) => {
+            return Err(refused(
+                403,
+                format!("the budget {named} names none in spend-watch, so it lends no model"),
+            ));
+        }
+    };
     let model = used
         .model
         .as_deref()
@@ -1171,7 +1181,9 @@ fn spending(
             ),
         ));
     }
-    spend_watch_allows(lender.runtime.as_deref(), watched)?;
+    if let Some(watched) = watched {
+        spend_watch_allows(lender.runtime.as_deref(), watched)?;
+    }
     let asked = u64::try_from(body.len()).unwrap_or(u64::MAX);
     used.meter = Some(Meter::default());
     Ok(Spending {

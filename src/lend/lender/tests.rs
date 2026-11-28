@@ -952,7 +952,6 @@ fn hands(relay: &Path, key: &str) -> Hands {
                 "paths": ["/v1/messages"],
                 "auth_header": "authorization",
                 "prices": {"a-model": a_model()},
-                "spend_watch": "proxy",
             }},
         }),
         key: Key(key.to_owned()),
@@ -961,13 +960,13 @@ fn hands(relay: &Path, key: &str) -> Hands {
 
 #[tokio::test]
 async fn a_lender_handed_its_lend_lends_nothing_until_handed_and_then_with_the_key_handed() {
-    // Its folder holds the relay and spend-watch's word, which a model's
-    // lend needs as much here as on the machine that handed it.
+    // No runtime folder, so no spend-watch here: a budget handed is held
+    // by its day's cap and count alone.
     let mut lending = Lending::new();
     let handed = Arc::new(Lender::handed_in(
         lending.folder.path().join("handed"),
         lending.folder.path().join("own"),
-        Some(lending.folder.path().to_owned()),
+        None,
     ));
     assert!(!handed.lends(), "nothing was handed yet");
     let mut answers = answer(&handed, "skiff-1", lend("/v1/messages"));
@@ -1046,6 +1045,11 @@ async fn a_machine_its_vm_hands_a_budget_is_handed_it_alone_with_its_key() {
         "prices": {"a-model": a_model()},
         "spend_watch": "proxy",
     });
+    let mut handed = room.clone();
+    handed
+        .as_object_mut()
+        .expect("a budget")
+        .remove("spend_watch");
     let mut keyed = room.clone();
     keyed["key"] = key.clone();
     let lend = json!({
@@ -1081,9 +1085,9 @@ async fn a_machine_its_vm_hands_a_budget_is_handed_it_alone_with_its_key() {
         json!({
             "vms": [{"prefix": "skiff-1", "budget": "room", "requests_a_day": 40,
                      "usd_a_day": 12.5}],
-            "budgets": {"room": room},
+            "budgets": {"room": handed},
         }),
-        "the lend names skiff-1 alone, and its budget no key command"
+        "the lend names skiff-1 alone, and its budget no key command or spend-watch"
     );
     let taking = Lender::handed_in(
         lending.folder.path().join("handed"),
