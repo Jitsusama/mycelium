@@ -635,10 +635,15 @@ hearing the other end is said at the next look:
   (1 MiB from an end built before pieces shrank). The receiving end
   takes a piece of any length and asks next from where it ends, so the
   sender alone sets the size. It stages it under
-  `~/.local/state/mycelium/pieces/<machine>/` and asks for the next, so
-  the link's messages pass between pieces. Once whole, it is taken as a
-  `File`; a piece that doesn't follow what is staged is passed over, and
-  a link's start clears what an earlier one left.
+  `~/.local/state/mycelium/pieces/<machine>/` and keeps the next asked,
+  so the link's messages pass between pieces. Beyond the next, it keeps
+  up to 512 KiB more asked across the link, each as a `Want` of its own
+  `at`, so a wait at either end holds up a few pieces at once rather
+  than each alone; a piece longer than that is asked one at a time, and
+  none is asked past `len`. A sender answers each `Want` in turn, so the
+  pieces come in order. Once whole, it is taken as a `File`; a piece
+  that doesn't follow what is staged is passed over, and a link's start
+  clears what an earlier one left.
 - `{"File": {"quest", "file", "state", "body", "mode"}}`: the file, in
   base64, or no body once deleted, and its mode's permission bits, so a
   secret at 0600 lands at 0600. Its hash is checked before it is written,

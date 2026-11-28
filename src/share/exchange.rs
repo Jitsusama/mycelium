@@ -22,6 +22,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 
+use super::ahead::{Ahead, Landed};
 use super::clones::{Clone, Cloning};
 use super::ended::{Processes, Removal, Users, take_away};
 use super::ledger::{
@@ -480,6 +481,8 @@ pub struct Exchange {
     findings: Vec<Draft>,
     /// The large files crossing from the other end, a piece at a time.
     pieces: Pieces,
+    /// How far each of those crossings has been asked ahead.
+    ahead: Ahead,
     /// The shared scratch folders, watched so a look walks only those that
     /// changed.
     watch: Watch,
@@ -652,6 +655,7 @@ impl Exchange {
             told: BTreeMap::new(),
             findings: Vec::new(),
             pieces,
+            ahead: Ahead::default(),
             unsaid: BTreeMap::new(),
             cloning: Cloning::default(),
             theirs: None,
@@ -885,12 +889,12 @@ impl Exchange {
             return Vec::new();
         };
         match self.pieces.stage(id, key, hash, at, len, &body) {
-            Ok(Staged::More(next)) => vec![Say::Want {
-                quest: id.to_owned(),
-                file: key.to_owned(),
-                at: Some(next),
-            }],
+            Ok(Staged::More(next)) => {
+                let piece = u64::try_from(body.len()).unwrap_or(u64::MAX);
+                self.asks_ahead(id, key, hash, Landed { at, piece, len }, next)
+            }
             Ok(Staged::Whole(whole)) => {
+                self.ahead.done(id, key);
                 self.gate_whole(id, key, hash, &whole);
                 Vec::new()
             }
@@ -1308,6 +1312,7 @@ impl Exchange {
     /// decides again.
     fn stop(&mut self, ledgers: &Ledgers, id: &str, why: &str) -> io::Result<()> {
         ledgers.stop(id)?;
+        self.ahead.forget(id);
         self.unsaid.remove(id);
         self.held_back.remove(id);
         self.to_want.remove(id);
@@ -2012,6 +2017,9 @@ impl Exchange {
             );
         }
         for file in gone {
+            // Asked again from its start if at all, so what it asked ahead
+            // no longer holds the link's budget.
+            self.ahead.done(&file.0, &file.1);
             self.wanted.remove(&file);
             self.unanswered.insert(file);
         }
@@ -2112,6 +2120,7 @@ impl Exchange {
                 let file = (id.to_owned(), key.to_owned());
                 let lapsed = self.unanswered.remove(&file);
                 if lapsed && self.asked_of(id) >= ASKED_AT_ONCE {
+                    self.ahead.done(id, key);
                     let queued = self.to_want.entry(id.to_owned()).or_default();
                     queued.insert(key.to_owned());
                     return Ok(Vec::new());
@@ -2119,16 +2128,37 @@ impl Exchange {
                 if lapsed || self.wanted.contains_key(&file) {
                     self.wanted.insert(file, Instant::now());
                 }
-                Ok(vec![Say::Want {
-                    quest: id.to_owned(),
-                    file: key.to_owned(),
-                    at: Some(next),
-                }])
+                let piece = u64::try_from(body.len()).unwrap_or(u64::MAX);
+                Ok(self.asks_ahead(id, key, hash, Landed { at, piece, len }, next))
             }
-            Staged::Whole(whole) => self.take_file(id, key, theirs, Some(&whole), mode),
+            Staged::Whole(whole) => {
+                self.ahead.done(id, key);
+                self.take_file(id, key, theirs, Some(&whole), mode)
+            }
             // The crossing begun again over it carries on.
             Staged::Astray => Ok(Vec::new()),
         }
+    }
+
+    /// Asks for the pieces of file `key` of quest `id`, whose content is
+    /// `hash`, that [`Ahead`] keeps asked now the piece `landed` left the
+    /// file staged up to `next`.
+    fn asks_ahead(
+        &mut self,
+        id: &str,
+        key: &str,
+        hash: &str,
+        landed: Landed,
+        next: u64,
+    ) -> Vec<Say> {
+        let asks = self.ahead.asks(id, key, hash, landed, next);
+        asks.into_iter()
+            .map(|at| Say::Want {
+                quest: id.to_owned(),
+                file: key.to_owned(),
+                at: Some(at),
+            })
+            .collect()
     }
 
     /// Takes a file the other end sent, by how it settles against this
@@ -2378,6 +2408,7 @@ fn waits(quest: &str, ledger: &Ledger) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    use super::super::ahead::AHEAD;
     use super::super::settle::beside;
     use super::super::watch::HEARD_WITHIN;
 
@@ -4506,11 +4537,12 @@ mod tests {
     // On 27 November 2026 every turn of asked files lapsed on the tunnels
     // to cloud machines, which carried 26 KB a second at their slowest,
     // since a turn of 1 MiB pieces couldn't cross in the wait. A turn, as
-    // base64, crosses there in half the wait, or the next one lapses too.
+    // base64, with what the link asks ahead of it, crosses there in half
+    // the wait, or the next one lapses too.
     #[test]
     fn a_turn_of_pieces_crosses_the_slowest_link_in_half_its_wait() {
         const SLOWEST: u64 = 26_000;
-        let turn = PIECE * u64::try_from(ASKED_AT_ONCE).expect("few") * 4 / 3;
+        let turn = (PIECE * u64::try_from(ASKED_AT_ONCE).expect("few") + AHEAD) * 4 / 3;
         assert!(
             turn / SLOWEST < ANSWERED_WITHIN.as_secs() / 2,
             "a turn of {turn} bytes takes {} s of a {} s wait",
@@ -4565,7 +4597,7 @@ mod tests {
         assert_eq!(
             pieces,
             [(0, piece), (PIECE, piece), (2 * PIECE, piece / 2)],
-            "it crossed in three pieces, each asked for once the last was staged"
+            "it crossed in three pieces, in turn"
         );
         assert!(
             fs::read(at(&kestrel)).expect("it crossed") == bytes,
@@ -4583,6 +4615,64 @@ mod tests {
                 [Say::File { body: Some(_), .. }]
             ),
             "an end older than pieces, naming no offset, is sent it whole"
+        );
+    }
+
+    // On 27 November 2026 a carried session's 28.8 MB log took 26 minutes
+    // to cross, a piece asked only once the one before it landed, each
+    // waiting behind the link's looks at both ends.
+    #[test]
+    fn a_large_files_pieces_are_asked_eight_ahead_and_land_in_turn() {
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        let at = |machine: &Machine| machine.places.record(QUEST).join("harness.log");
+        let bytes: Vec<u8> = (0..=u8::MAX)
+            .cycle()
+            .take(usize::try_from(12 * PIECE + 7).expect("a size"))
+            .collect();
+        fs::create_dir_all(skiff.places.record(QUEST)).expect("made");
+        fs::write(at(&skiff), &bytes).expect("written");
+        share(&skiff, QUEST);
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
+
+        let mut to_far = near.look().expect("skiff looks");
+        far.look().expect("kestrel looks");
+        let (mut pieces, mut asked) = (Vec::new(), Vec::new());
+        for _ in 0..40 {
+            let mut to_near = Vec::new();
+            for say in to_far.drain(..) {
+                let landed = match &say {
+                    Say::Piece { at, .. } => Some(*at),
+                    _ => None,
+                };
+                let said = far.hear(say).expect("kestrel hears");
+                if let Some(at) = landed {
+                    let wants = said.iter().filter(|say| matches!(say, Say::Want { .. }));
+                    pieces.push(at);
+                    asked.push(wants.count());
+                }
+                to_near.extend(said);
+            }
+            for say in to_near {
+                to_far.extend(near.hear(say).expect("skiff hears"));
+            }
+            if to_far.is_empty() {
+                break;
+            }
+        }
+        assert_eq!(
+            pieces,
+            (0..=12).map(|n| n * PIECE).collect::<Vec<_>>(),
+            "each piece crossed once, in turn"
+        );
+        assert_eq!(
+            asked,
+            [8, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+            "the first piece asked eight ahead, and each after it one more, to the end"
+        );
+        assert!(
+            fs::read(at(&kestrel)).expect("it crossed") == bytes,
+            "and landed whole"
         );
     }
 

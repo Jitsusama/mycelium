@@ -1,13 +1,13 @@
 //! A large file crossing in pieces: each piece staged on this machine as it
 //! comes, until the file is whole.
 //!
-//! A file larger than a piece crosses a piece to a frame, each asked for
-//! once the one before it is staged, so the link's messages pass between
-//! them rather than waiting behind the whole file. The staged pieces are
-//! kept in mycelium's own folder, apart for each machine they come from and
-//! named by the file and the content it is to hold, so two crossings of
-//! different content never mix, and a crossing a link left unfinished is
-//! cleared when that machine links again.
+//! A file larger than a piece crosses a piece to a frame, a few asked
+//! ahead of what is staged (see [`super::ahead`]), so the link's messages
+//! pass between them rather than waiting behind the whole file. The
+//! staged pieces are kept in mycelium's own folder, apart for each machine
+//! they come from and named by the file and the content it is to hold, so
+//! two crossings of different content never mix, and a crossing a link
+//! left unfinished is cleared when that machine links again.
 
 use std::fs;
 use std::io::{self, Write};

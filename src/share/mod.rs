@@ -10,6 +10,7 @@
 //! own shape lets the two be merged, as a quest's journey's ([`journey`])
 //! and its harness log's ([`log`]) do.
 
+pub mod ahead;
 pub mod clones;
 pub mod disk;
 pub mod ended;
