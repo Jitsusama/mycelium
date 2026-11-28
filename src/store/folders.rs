@@ -421,11 +421,7 @@ impl Store for Folders {
 
     fn claim(&self, machine: &str) -> io::Result<Option<Claim>> {
         let lock = fs::File::create(self.claims.join(format!("{}.lock", safe(machine)?)))?;
-        match rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
-            Ok(()) => Ok(Some(Box::new(lock))),
-            Err(rustix::io::Errno::WOULDBLOCK) => Ok(None),
-            Err(error) => Err(error.into()),
-        }
+        locked(lock)
     }
 
     fn supersede(&self, machine: &str) -> io::Result<()> {
@@ -1009,6 +1005,15 @@ impl Owner {
 /// Reads `path` as `T`, or nothing when it is gone, half-written or not of
 /// this kind; the mesh rewrites these files as it runs, so a file that
 /// fails now is read again at its next change.
+/// A claim on `lock`, a machine's lock file, where no other holds it.
+fn locked(lock: fs::File) -> io::Result<Option<Claim>> {
+    match rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(Some(Box::new(lock))),
+        Err(rustix::io::Errno::WOULDBLOCK) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
