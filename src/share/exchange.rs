@@ -468,6 +468,20 @@ pub enum Say {
     },
 }
 
+impl Say {
+    /// The quest this says something of, or `None` for a Shares, which
+    /// speaks of every quest.
+    fn quest(&self) -> Option<&str> {
+        match self {
+            Self::Shares { .. } => None,
+            Self::Holds { quest, .. }
+            | Self::Want { quest, .. }
+            | Self::Piece { quest, .. }
+            | Self::File { quest, .. } => Some(quest),
+        }
+    }
+}
+
 /// This end's part in the talk.
 pub struct Exchange {
     places: Places,
@@ -508,7 +522,9 @@ pub struct Exchange {
     /// ([`Self::take_up_refused_when_due`]).
     take_up_again: Option<Instant>,
     /// How long the next refusal of a quest refused again waits, doubling
-    /// each time to [`TAKE_UP_AT_MOST`].
+    /// each time to [`TAKE_UP_AT_MOST`]. It is one wait for every quest
+    /// the link refuses, starting over at each Shares heard, which tries
+    /// them all again.
     take_up_wait: Duration,
     /// The quests of the other end's whose taking up, or whose scratch's
     /// or clones', was refused here, tried again when [`Self::take_up_again`]
@@ -519,6 +535,10 @@ pub struct Exchange {
     /// while it was refused passed over what wasn't taken up, and isn't
     /// said again until it changes.
     refused_holds: BTreeMap<String, BTreeMap<String, State>>,
+    /// What this end asks for of quests refused before and taken up since,
+    /// said with the next look that stands or the next Shares heard, so a
+    /// look that fails loses none of it: their Holds is heard only once.
+    owed: Vec<Say>,
     /// Whether a README, what the other end shares, or which quests this
     /// end shares changed since the last look decided which quests shared
     /// only for those under them are spent, so an idle look reads no
@@ -687,6 +707,7 @@ impl Exchange {
             sweep_again: BTreeMap::new(),
             take_up_again: None,
             take_up_wait: TAKE_UP_AGAIN,
+            owed: Vec::new(),
             refused: BTreeSet::new(),
             refused_holds: BTreeMap::new(),
             above_again: true,
@@ -1202,14 +1223,14 @@ impl Exchange {
 
     /// Takes up again each quest of the other end's refused here, and its
     /// scratch and clones, once the refusal's wait is over, returning what
-    /// this end asks for of those that pass. Those refused again wait twice
-    /// as long as before, to [`TAKE_UP_AT_MOST`].
-    fn take_up_refused_when_due(&mut self) -> Vec<Say> {
+    /// this end asks for of those that pass ([`Exchange::owed`]). Those
+    /// refused again wait twice as long as before, to [`TAKE_UP_AT_MOST`].
+    fn take_up_refused_when_due(&mut self) {
         if self
             .take_up_again
             .is_none_or(|again| again > Instant::now())
         {
-            return Vec::new();
+            return;
         }
         let named = self
             .theirs
@@ -1226,10 +1247,9 @@ impl Exchange {
                 self.refuse(&id, &error);
             }
         }
-        let wants = self.hear_refused_holds();
+        self.hear_refused_holds();
         let wait = self.take_up_wait.saturating_mul(2).min(TAKE_UP_AT_MOST);
         self.wait_to_take_up(wait);
-        wants
     }
 
     /// Has the quests refused, if any, taken up again `wait` from now, and
@@ -1245,9 +1265,10 @@ impl Exchange {
     }
 
     /// Hears again what the other end said it holds of each quest refused
-    /// before and taken up since ([`Exchange::refused_holds`]), returning
-    /// what this end asks for of them.
-    fn hear_refused_holds(&mut self) -> Vec<Say> {
+    /// before and taken up since ([`Exchange::refused_holds`]), keeping
+    /// what this end asks for of them until it is said
+    /// ([`Exchange::owed`]).
+    fn hear_refused_holds(&mut self) {
         let passed: Vec<String> = self
             .refused_holds
             .keys()
@@ -1271,14 +1292,14 @@ impl Exchange {
                 }
             }
         }
-        wants
+        self.owed.extend(wants);
     }
 
     /// Looks at every shared quest as [`Self::look`] does, asking for no
     /// file in its turn.
     fn look_quests(&mut self) -> io::Result<Vec<Say>> {
         self.cloning.reap();
-        let retaken = self.take_up_refused_when_due();
+        self.take_up_refused_when_due();
         let replay = (self.above == Above::Lifted).then(|| self.take_up_held_back());
         let ledgers = self.places.ledgers();
         let mut shares = BTreeMap::new();
@@ -1380,7 +1401,7 @@ impl Exchange {
             says.push(shares_said(&shares));
         }
         says.extend(holds);
-        says.extend(retaken);
+        says.append(&mut self.owed);
         self.told = shares;
         self.whole = whole;
         self.passed_over = passed_over;
@@ -1427,6 +1448,7 @@ impl Exchange {
         self.held_back.remove(id);
         self.refused.remove(id);
         self.refused_holds.remove(id);
+        self.owed.retain(|say| say.quest() != Some(id));
         self.to_want.remove(id);
         self.wanted.retain(|(quest, _), _| quest != id);
         self.unanswered.retain(|(quest, _)| quest != id);
@@ -1515,7 +1537,8 @@ impl Exchange {
             } => {
                 self.theirs = Some(self.taken_of(quests, scratch, clones, ended, above));
                 self.drop_unnamed();
-                Ok(self.take_up_theirs())
+                self.take_up_theirs();
+                Ok(std::mem::take(&mut self.owed))
             }
             Say::Holds { quest, .. } | Say::Piece { quest, .. } | Say::File { quest, .. }
                 if !self.takes(&quest) =>
@@ -1740,9 +1763,16 @@ impl Exchange {
     /// keep the replay going, and what the rest asked for still goes. A
     /// look that fails replays it all again at the next.
     fn take_up_held_back(&mut self) -> Vec<Say> {
-        let mut wants = self.take_up_theirs();
+        self.take_up_theirs();
         self.drop_unnamed();
+        let mut wants = Vec::new();
         for (quest, files) in self.held_back.clone() {
+            // A quest refused as it was taken up above keeps what it holds
+            // for when it is taken up again, since the replay lets it go.
+            if self.refused.contains(&quest) {
+                self.refused_holds.entry(quest).or_default().extend(files);
+                continue;
+            }
             let heard = if self.takes(&quest) {
                 self.take_holds(&quest, &files)
             } else {
@@ -1771,6 +1801,8 @@ impl Exchange {
         if let Some(named) = named {
             self.refused.retain(|quest| named.contains(quest));
             self.refused_holds.retain(|quest, _| named.contains(quest));
+            self.owed
+                .retain(|say| say.quest().is_none_or(|quest| named.contains(quest)));
             self.to_want.retain(|quest, _| named.contains(quest));
             self.wanted.retain(|(quest, _), _| named.contains(quest));
             self.unanswered.retain(|(quest, _)| named.contains(quest));
@@ -1784,15 +1816,16 @@ impl Exchange {
     /// one quest's fault never keeps every other from crossing, and it
     /// alone is taken up again at the first look a minute on
     /// ([`Self::take_up_refused_when_due`]), since the other end says again
-    /// only what changes. Returns what this end asks for of a quest refused
-    /// before that passes now ([`Self::hear_refused_holds`]). A scratch or
+    /// only what changes. What this end asks for of a quest refused before
+    /// that passes now is kept until said ([`Self::hear_refused_holds`]).
+    /// A scratch or
     /// clone named under no quest's id is passed over unrefused, since no
     /// quest of it could ever be taken up.
-    fn take_up_theirs(&mut self) -> Vec<Say> {
+    fn take_up_theirs(&mut self) {
         let before = std::mem::take(&mut self.refused);
         let Some(theirs) = self.theirs.as_ref() else {
             self.wait_to_take_up(TAKE_UP_AGAIN);
-            return Vec::new();
+            return;
         };
         let quests = theirs.quests.clone();
         let scratch = theirs.scratch.clone();
@@ -1844,9 +1877,8 @@ impl Exchange {
                 self.refuse(&id, &error);
             }
         }
-        let wants = self.hear_refused_holds();
+        self.hear_refused_holds();
         self.wait_to_take_up(TAKE_UP_AGAIN);
-        wants
     }
 
     /// Logs that quest `id`, which the other end shares, isn't taken up
@@ -2003,8 +2035,10 @@ impl Exchange {
             );
         } else {
             // A record's copy lies in the mesh's quests folder, which no
-            // sweep goes through; a scratch folder's, in the scratch the
-            // sweep takes away keeping it.
+            // sweep goes through, and no quest's reader takes it for one,
+            // since pi's passes over a folder named from a dot and this
+            // end's names no quest by it ([`is_quest`]); a scratch
+            // folder's, in the scratch the sweep takes away keeping it.
             let kept = if name == "record" {
                 "it stays there, as copies moved into mycelium's own folder do"
             } else {
@@ -3122,8 +3156,23 @@ mod tests {
             !counted(QUEST, "notes"),
             "the refused quest isn't tried again within the minute"
         );
+        let due = far.take_up_again.expect("the refusal has it tried again");
+        assert!(
+            due > Instant::now() + TAKE_UP_AGAIN / 2,
+            "about a minute on"
+        );
 
         far.take_up_again = Some(Instant::now());
+        // The first look to take it up again fails past it, its ledgers
+        // unlisted, and loses nothing asked of it: skiff's Holds, heard
+        // while it was refused, isn't said again.
+        let shared = kestrel.places.state.join("shared");
+        let mode = fs::metadata(&shared).expect("shared").permissions();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o300)).expect("unlisted");
+        far.watch.hear_anything();
+        let failed = far.look();
+        fs::set_permissions(&shared, mode).expect("listed");
+        assert!(failed.is_err(), "the look fails past the quest taken up");
         talk(&mut near, &mut far);
         assert!(
             counted(QUEST, "notes"),

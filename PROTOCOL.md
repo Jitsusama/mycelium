@@ -621,7 +621,11 @@ hearing the other end is said at the next look:
   of it crossed before stays. The quests refused, a scratch refused
   as a Holds brings an ended quest back included, are taken up again a
   minute on, with what the other end last said it holds of them, and
-  each refused again waits twice as long as before, to half an hour.
+  while any is refused again the next try waits twice as long as the
+  last, to half an hour; each Shares the other end says tries them all
+  again, and the wait starts over at a minute. What is asked of one
+  taken up again is said with the next look that stands, so a look
+  that fails loses none of it.
   A quest's own record moves only once the first of the sharing end's
   files comes to be written in its place; until then it stays where it
   was, neither read nor said, so a link that drops first leaves it

@@ -436,14 +436,15 @@ mod tests {
             return;
         }
 
-        let removal = take_away_keeping_aside(&scratch, &Said(false));
         let mode = |path: &Path| fs::metadata(path).expect("there").permissions().mode() & 0o777;
+        let before = mode(&elsewhere);
+        let removal = take_away_keeping_aside(&scratch, &Said(false));
         let (outer, inner) = (mode(&elsewhere), mode(&elsewhere.join("inner")));
         unlocked();
 
         assert!(matches!(removal, Removal::Stuck(_)), "the link is stuck");
         assert_eq!(inner, 0o500, "nothing it leads to is made writable");
-        assert_ne!(outer, 0o700, "not even where it leads");
+        assert_eq!(outer, before, "not even where it leads");
     }
 
     #[cfg(target_os = "linux")]
