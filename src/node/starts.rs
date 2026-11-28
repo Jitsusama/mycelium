@@ -44,9 +44,9 @@ const RESUMING: [&str; 1] = ["--session"];
 pub const CELL_AN_HOUR: usize = 8;
 
 /// The most sessions agents together may start through one node in an
-/// hour: room for eight cells' whole hours at once, since a realm with a
-/// dozen cloud machines to start on outgrew four.
-pub const NODE_AN_HOUR: usize = 64;
+/// hour: room for sixteen cells' whole hours at once, since a realm
+/// whose cells start their work in cloud rooms outgrew eight.
+pub const NODE_AN_HOUR: usize = 128;
 
 /// What a refusal of an agent's start, while the person's stop stands,
 /// ends by telling it to do: only the person lifts it, and an agent is
@@ -73,8 +73,9 @@ pub const UNTOLD_FOR_AN_AGENT: &str =
 /// node in an hour uncounted: past it, each counts as new work. A
 /// machine's sessions coming back after a restart fit within it, and an
 /// agent that ends the sessions it starts to bring them back free gains
-/// at most this many an hour beside the [`NODE_AN_HOUR`].
-pub const RESUMED_AN_HOUR: usize = 128;
+/// at most this many an hour beside the [`NODE_AN_HOUR`]. It stays
+/// twice that, so a wave past the node's number still comes back whole.
+pub const RESUMED_AN_HOUR: usize = 2 * NODE_AN_HOUR;
 
 /// How long after a start that brings a session back a second is
 /// refused, in milliseconds: the first may still be on its way, its pi
@@ -1493,7 +1494,7 @@ mod tests {
         let (_dir, starts) = ahead(HOUR / 2);
         let refused = starts
             .admit(resuming("OSPREY", "s-more", NOW))
-            .expect_err("a clock set back half an hour gains no fresh 128");
+            .expect_err("a clock set back half an hour gains no fresh hour");
         assert!(refused.contains("OSPREY started 8"), "{refused}");
         let (_dir, starts) = ahead(2 * HOUR);
         started(&starts, resuming("OSPREY", "s-more", NOW), "h");

@@ -810,7 +810,7 @@ in order and says each step:
    cell standing, naming the folder it read. On a
    machine nobody works at, every link's end is judged an agent's, so a
    person's carry there is started as an agent's start: counted among
-   the 8 an hour and 64 its asker and the node may start, arriving as
+   the 8 an hour and 128 its asker and the node may start, arriving as
    a new cell, and refused, where the limits or the person's stop
    refuse it, with no word of an orchestrator: it tells the person to
    carry to a machine a person works at, or, stopped, to resume starts
@@ -2324,7 +2324,7 @@ would wait longer than a minute from when the one before it would have
 gone. With `ordered`, an agent's start that is word for word a carry's
 arrival is weighed uncounted, as the carry line its order keeps would
 free it; that line is kept only after the ask, and the start itself is
-still held to it. At most 128 starts are weighed in one ask. It weighs
+still held to it. At most 256 starts are weighed in one ask. It weighs
 the realm's machines alone, never a machine made from an offer. It
 holds no room either: the carry's starts follow it by as long as its
 sessions take to end, up to 15 minutes, and other starts in that time
@@ -2666,9 +2666,9 @@ toward the agents of no known cell, who share one cell's number, as
 on a Mac, whose `ps` won't say it. An agent sets its own environment,
 so one on a host may name another of its sessions and charge that cell
 instead. In any hour a cell starts at most 8
-and every agent together at most 64, and one past either is refused,
+and every agent together at most 128, and one past either is refused,
 saying which. A claim proves nothing, so the 8 are a cell's fair
-share, and the 64, with the ended sessions below, the bound no agent
+share, and the 128, with the ended sessions below, the bound no agent
 gets round. A start counts whether it started or failed, since a failed one may
 still have spent, and so does one still starting, so starts asked at
 once can't pass the limit; a refused one doesn't, nor one relayed to
@@ -2677,7 +2677,7 @@ not taken now, or not to be begun for want of a launcher, a starter,
 a home, its folder or leave to begin at home. The person's own
 starts are never counted or refused. An agent's first start in the
 hour that brings back a session the node knows has ended, on the
-machine it ran on, counts toward neither, up to 128 through the node
+machine it ran on, counts toward neither, up to 256 through the node
 in the hour, so every session a restarted machine held comes back at
 once; past that, each counts as new work. A node knows only its own
 machine's sessions as ended, since another's presence goes when it
@@ -2694,7 +2694,7 @@ word but `--session` and the session's id, so no prompt or flag gives
 it new work, nor a file an agent wrote; never `--session-id`, with
 which pi begins a new session under an id it finds none of. A bare
 `pi` is the one the login finds, so it fences habit alone, and each
-ended session once an hour through each node, and the 128, bound what
+ended session once an hour through each node, and the 256, bound what
 it hides. A second bringing back the same one within the hour counts
 as new work, unless the first failed, which brought nothing back. An
 agent's start bringing back a session on its own machine while
@@ -2763,7 +2763,7 @@ there as that agent's own start.
 A session an orchestrator's carry takes to another machine begins no
 new work there, so on the node that ordered the carry its start counts
 toward neither limit, once an hour
-for each session, sharing the 128 with the sessions brought back. The
+for each session, sharing the 256 with the sessions brought back. The
 node asked judges it so only for a start counted toward the very cell
 that ordered the carry, word for word the start the carry gives its
 session, and matching the newest carry of that session this node kept
