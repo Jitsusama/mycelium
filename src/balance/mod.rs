@@ -140,12 +140,14 @@ pub struct Load {
     /// where its pressure is at [`OVER_CPU_PRESSURE`]. It is
     /// [`over`](Self::over) when this isn't empty or it is past its
     /// [`lively`](Self::lively) ceiling; a reading kept before it was said
-    /// has none.
+    /// has none. Empty says only that no limit is known past: its queue
+    /// may say it is past none, or be too old to say or say no room at
+    /// all, and these read the same here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub past: Vec<Limit>,
     /// Why it is past the ceiling it is kept lively to, where it is:
-    /// such a machine is over though its queue is past no limit, since
-    /// the person at it feels it before the queue does.
+    /// such a machine is over though its queue names no limit it is past,
+    /// since the person at it feels it before the queue does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lively: Option<String>,
     /// Whether it has room for more: not over, stalling under
@@ -562,10 +564,7 @@ mod tests {
             "it says the ceiling it is past: {:?}",
             tern.lively
         );
-        assert!(
-            tern.past.is_empty(),
-            "its queue is past no limit of its own"
-        );
+        assert!(tern.past.is_empty(), "its queue names no limit it is past");
         assert!(
             reading.flags.contains(&Flag::HotWhileCool {
                 hot: "tern".to_owned(),
@@ -583,23 +582,39 @@ mod tests {
 
     #[test]
     fn a_load_is_over_exactly_when_past_a_limit_or_its_lively_ceiling() {
-        let mut hot = machine("tern", 16, 64, 40, 45.0, 20);
-        hot.declared
-            .get_or_insert_with(Default::default)
-            .kept_lively = Some(Lively {
-            cpu: 30,
-            memory_available: None,
-            memory_full: None,
-            io_full: None,
-            io_full_from: Vec::new(),
-        });
-        // What each is past: a limit of its queue's, and its ceiling.
+        let lively = |mut one: Machine| {
+            one.declared
+                .get_or_insert_with(Default::default)
+                .kept_lively = Some(Lively {
+                cpu: 30,
+                memory_available: None,
+                memory_full: None,
+                io_full: None,
+                io_full_from: Vec::new(),
+            });
+            one
+        };
+        // What each is past, a limit of its queue's and its ceiling, and
+        // whether it is over for it.
         let loads = [
-            (machine("osprey", 12, 48, 41, 86.0, 40), (true, false)),
-            (hot, (false, true)),
-            (machine("kestrel", 16, 64, 40, 4.6, 20), (false, false)),
+            (machine("osprey", 12, 48, 41, 86.0, 40), (true, false), true),
+            (
+                lively(machine("tern", 16, 64, 40, 45.0, 20)),
+                (false, true),
+                true,
+            ),
+            (
+                lively(machine("skiff", 12, 48, 41, 86.0, 40)),
+                (true, true),
+                true,
+            ),
+            (
+                machine("kestrel", 16, 64, 40, 4.6, 20),
+                (false, false),
+                false,
+            ),
         ];
-        for (one, past) in loads {
+        for (one, past, over) in loads {
             let load = load(&one, &[], now());
             assert_eq!(
                 (!load.past.is_empty(), load.lively.is_some()),
@@ -608,8 +623,7 @@ mod tests {
                 load.machine
             );
             assert_eq!(
-                load.over,
-                !load.past.is_empty() || load.lively.is_some(),
+                load.over, over,
                 "{} is over exactly when past a limit or its ceiling",
                 load.machine
             );

@@ -537,8 +537,9 @@ fn a_machine_over_by_its_lively_ceiling_alone_says_so_and_why() {
     );
     assert!(
         shown.contains(
-            "lively: tern is over though its queue is past no limit, since it is kept \
-             lively, at processor pressure 30 at most, and is at 45 over ten seconds"
+            "lively: tern is over though its queue names no limit it is past, since it \
+             is kept lively, at processor pressure 30 at most, and is at 45 over ten \
+             seconds"
         ),
         "the line under the table says why:\n{shown}"
     );

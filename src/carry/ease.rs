@@ -618,7 +618,8 @@ fn carry(
 
 /// Whether `reading` says `here` is over by its own pressure, whether or
 /// not another machine has room: it takes work, and its queue says it is
-/// past a limit or its processor pressure is at the line.
+/// past a limit, its processor pressure is at the line, or it is past the
+/// [ceiling it is kept lively to](crate::balance::Load::lively).
 fn pressed(here: &str, reading: &Reading) -> bool {
     reading
         .machines
