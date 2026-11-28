@@ -47,9 +47,9 @@ pub struct Watch {
     /// The folders the watcher may hold though they aren't watched: one
     /// heard gone or made anew, or one a batch failed to start. Each is
     /// given back when its quest is forgotten, unless watched again first.
-    /// One whose watch the watcher refused isn't among them unless it was
-    /// before, as the watcher never held it, and giving back a path it
-    /// doesn't hold would split the forget's batch in two.
+    /// One whose watch the watcher refused stays among them only while the
+    /// watcher still holds it, since giving back a path it doesn't hold
+    /// would split the forget's batch in two.
     stale: BTreeSet<Folder>,
     /// The records it may hold though they aren't watched, likewise.
     records_stale: BTreeSet<String>,
