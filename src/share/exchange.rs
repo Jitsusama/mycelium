@@ -1878,6 +1878,10 @@ impl Exchange {
         quest: &Quest,
         changed: &mut bool,
     ) -> io::Result<()> {
+        // Each deletion this end takes or holds as the other end does, at
+        // the state the two now share, said back so that end knows when
+        // every machine holds it deleted and it can be forgotten.
+        let mut deleted = BTreeMap::new();
         for (key, theirs) in files {
             let Some(shared) = shared_of(&key).filter(|shared| quest.carries(shared)) else {
                 continue;
@@ -1908,6 +1912,16 @@ impl Exchange {
                 .map(Entry::state)
                 .unwrap_or_default();
             match settle(&shared, &ours, &theirs) {
+                Settled::Keep if ours.hash.is_none() && theirs.hash.is_none() => {
+                    if let Some(state) = held.ledger.deleted_there(&key, &theirs) {
+                        *changed |= held
+                            .ledger
+                            .files
+                            .get(&key)
+                            .is_some_and(|entry| entry.version != ours.version);
+                        deleted.insert(key, state);
+                    }
+                }
                 Settled::Keep => {}
                 Settled::Merge(_) | Settled::Beside if !self.settles() => {}
                 _ if theirs.hash.is_none() => {
@@ -1917,14 +1931,13 @@ impl Exchange {
                     if !(held.ledger.aside && shared.place == Place::Record) {
                         quest.write(&shared, None, None)?;
                     }
-                    held.ledger.files.insert(
-                        key,
-                        Entry {
-                            hash: None,
-                            version: ours.version.joined(&theirs.version),
-                            seen: None,
-                        },
-                    );
+                    let entry = Entry {
+                        hash: None,
+                        version: ours.version.joined(&theirs.version),
+                        seen: None,
+                    };
+                    deleted.insert(key.clone(), entry.state());
+                    held.ledger.files.insert(key, entry);
                     *changed = true;
                 }
                 _ => match asked {
@@ -1944,6 +1957,12 @@ impl Exchange {
                     }
                 },
             }
+        }
+        if !deleted.is_empty() {
+            wants.push(Say::Holds {
+                quest: id.to_owned(),
+                files: deleted,
+            });
         }
         Ok(())
     }
@@ -2044,7 +2063,11 @@ impl Exchange {
             return Ok(Vec::new());
         }
         let sight = held.ledger.scan_one(&quest, &shared, &self.machine)?;
-        if sight.is_new() {
+        // A machine asking holds the quest from now, so a deletion waits
+        // for it even if it drops before saying it took the file; a
+        // worker's word is kept apart and brings nothing back.
+        let asked = !self.worker && held.ledger.asked_by(&self.other);
+        if sight.is_new() || asked {
             held.keep()?;
         }
         if sight == Sight::Changed {
@@ -2830,6 +2853,61 @@ mod tests {
             !ledger(&kestrel).theirs["skiff"].contains_key(&format!("record/{plan}")),
             "a file deleted drops out of what the other end holds"
         );
+    }
+
+    #[test]
+    fn a_machine_away_when_a_file_was_deleted_is_still_told_of_it() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let tern = Machine::new("tern");
+        let plan = "plans/PLAN-20261115-AAAAAA.md";
+        kestrel.write("README.md", "# Shared\n");
+        kestrel.write(plan, "plan\n");
+        share(&kestrel, QUEST);
+        let key = format!("record/{plan}");
+        let ledger = |machine: &Machine| machine.places.ledgers().hold(QUEST).expect("held").ledger;
+
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        talk(&mut near, &mut far);
+        {
+            let (mut near, mut far) = (kestrel.exchange(&tern), tern.exchange(&kestrel));
+            talk(&mut near, &mut far);
+        }
+        assert_eq!(
+            tern.read(plan).as_deref(),
+            Some("plan\n"),
+            "tern took the plan, then went away"
+        );
+
+        fs::remove_file(kestrel.places.quests.join(QUEST).join(plan)).expect("removed");
+        talk(&mut near, &mut far);
+        assert_eq!(skiff.read(plan), None, "the deletion reached skiff");
+        assert!(
+            ledger(&kestrel)
+                .files
+                .get(&key)
+                .is_some_and(|entry| entry.hash.is_none()),
+            "kestrel keeps the deletion while tern, which held the plan, hasn't said it \
+             holds it deleted"
+        );
+        assert!(
+            !ledger(&skiff).files.contains_key(&key),
+            "skiff, sharing with kestrel alone, forgets it"
+        );
+
+        let (mut near, mut far) = (kestrel.exchange(&tern), tern.exchange(&kestrel));
+        talk(&mut near, &mut far);
+        assert_eq!(tern.read(plan), None, "tern, back, is told of the deletion");
+        assert_eq!(
+            kestrel.read(plan),
+            None,
+            "and its old copy never comes back"
+        );
+        assert!(
+            !ledger(&kestrel).files.contains_key(&key),
+            "once every machine holds it deleted, kestrel forgets it"
+        );
+        assert!(!ledger(&tern).files.contains_key(&key), "and so does tern");
     }
 
     /// Writes `text` at `path` within `root`, making the folders it is in.

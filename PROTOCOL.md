@@ -665,7 +665,26 @@ Each end keeps, in the quest's ledger as `theirs`, what the other said
 it holds in its `Holds`, and what it sent and was seen to take: an end
 that takes a file says `Holds` of it even when it now holds just what
 was sent, so the sender knows. Only files an end holds itself are kept
-there, so a file deleted drops out.
+there, and of a file it holds deleted, only the other's deletion.
+
+A ledger forgets a deletion once every machine in its `theirs` is known
+to hold that file deleted at the same state or newer, so a scratch whose
+files come and go keeps no deletion of each. An end that takes a
+deletion, or hears one of a file it holds deleted at another state or
+never held, says `Holds` of it back at the state the two now share, so
+the other end learns it. Until then the deletion is kept: a machine that
+held the file and was away is still told of it when it links again, and
+a deleted file never comes back because its deletion was forgotten. A
+machine that asks for a file is named in `theirs` from then on, so one
+that took it and dropped before saying so is waited for too. A file
+written again after its deletion was forgotten starts from every version
+forgotten, so it is newer than any deletion still kept elsewhere.
+
+Once a minute, a machine this node made that its book shows released,
+made again under no place since and doubted by no line it can't read, is
+let go of in every ledger, from `theirs` and from what workers read. A
+person's machine, never made, and one merely unlinked stay. Only the
+maker's book shows a release, so other nodes still wait on that machine.
 
 What a worker says it holds of a quest it was given is kept apart, as
 `read`, since nothing a worker says is taken: `theirs` would let its

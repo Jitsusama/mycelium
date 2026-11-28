@@ -5209,7 +5209,38 @@ impl<S: Store> Shared<S> {
         for made in let_go_ended(&self.book, &self.store, jiff::Timestamp::now()) {
             self.unbook(&made);
         }
+        self.forget_let_go();
         power
+    }
+
+    /// Lets go, in every shared quest's ledger, of each machine this
+    /// node made and its book shows released for good, so no deletion
+    /// waits on a machine that will never link again. The person's own
+    /// machines, never made, and one merely unlinked stay.
+    fn forget_let_go(&self) {
+        let Some(shares) = self.shares.as_deref() else {
+            return;
+        };
+        let let_go = match self.book.standing() {
+            Ok(standing) => standing.let_go,
+            Err(error) => {
+                eprintln!(
+                    "the book of machines made can't be read, so no ledger lets go of one: {error}"
+                );
+                return;
+            }
+        };
+        if let_go.is_empty() {
+            return;
+        }
+        match shares.ledgers().let_go(&let_go) {
+            Ok(quests) if quests.is_empty() => {}
+            Ok(quests) => eprintln!(
+                "{} let go of the machines released for good",
+                quests.join(", ")
+            ),
+            Err(error) => eprintln!("the ledgers couldn't let go of machines released: {error}"),
+        }
     }
 
     /// Reads the cell each session carried here arrived with, and tells

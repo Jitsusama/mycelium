@@ -50,6 +50,18 @@ impl Version {
         Self(counts)
     }
 
+    /// Whether no machine has changed it yet, as for a file never seen.
+    #[must_use]
+    pub fn is_unchanged(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Whether this version has seen every change `other` has.
+    #[must_use]
+    pub fn holds(&self, other: &Self) -> bool {
+        matches!(self.against(other), Standing::Same | Standing::Newer)
+    }
+
     /// How this version stands against `other`.
     #[must_use]
     pub fn against(&self, other: &Self) -> Standing {
