@@ -1181,16 +1181,22 @@ impl Exchange {
         Ok(Some((Arc::new(held.ledger), scan.changed)))
     }
 
-    /// Looks at every shared quest as [`Self::look`] does, asking for no
-    /// file in its turn.
-    fn look_quests(&mut self) -> io::Result<Vec<Say>> {
-        self.cloning.reap();
+    /// Takes up again the other end's quests once a refusal's wait is
+    /// over ([`TAKE_UP_AGAIN`]).
+    fn take_up_theirs_when_due(&mut self) {
         if self
             .take_up_again
             .is_some_and(|again| again <= Instant::now())
         {
             self.take_up_theirs();
         }
+    }
+
+    /// Looks at every shared quest as [`Self::look`] does, asking for no
+    /// file in its turn.
+    fn look_quests(&mut self) -> io::Result<Vec<Say>> {
+        self.cloning.reap();
+        self.take_up_theirs_when_due();
         let replay = (self.above == Above::Lifted).then(|| self.take_up_held_back());
         let ledgers = self.places.ledgers();
         let mut shares = BTreeMap::new();
