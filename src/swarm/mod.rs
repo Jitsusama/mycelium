@@ -1234,7 +1234,12 @@ pub(crate) enum Picked<'a, T> {
 /// `naming` says each; or none, or each of several. Where the address is
 /// `first`, as a team's is, it comes before a short name, which a peer
 /// picks and could clean to another's address to hide it; a network's
-/// name is a group a peer may pick as well, so it isn't. An address
+/// name is a group a peer may pick as well, so it isn't, save where the
+/// caller was asked by the mesh's spelling of a group, led by `#` or
+/// holding `/`, as `named_network` asks. That is safe there, since
+/// networks are keyed by their group's name, so two never share one,
+/// and `#` says the mesh's spelling, which names a group whole and never
+/// a short name, so a peer's short name can't stand in for it. An address
 /// matched in its own case comes before one matched in another, so two
 /// keyed alike but for case are each reached by the address told apart.
 /// A short name and a title are matched as they are drawn, cleaned on
