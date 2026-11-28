@@ -818,6 +818,51 @@ fn a_name_a_quest_gave_and_that_is_refused_keeps_any_drawn_alike_from_another() 
 }
 
 #[test]
+fn a_name_asked_composed_or_apart_finds_what_is_spelt_the_other_way() {
+    // A keyboard may type an accent composed or apart, and either finds a
+    // short or a title's word spelt the other way.
+    let mut short = swarm();
+    short.teams[1]["swarm"] = json!("tid\u{E9}");
+    let mut titled = swarm();
+    titled.teams[1]["title"] = json!("Harbour tide\u{301} pools");
+    for (swarm, asked) in [(&short, "tide\u{301}"), (&titled, "tid\u{E9}")] {
+        let found = team(swarm, asked, &look()).unwrap_or_default();
+        assert!(
+            found.starts_with("Harbour"),
+            "{asked:?} missed Harbour: {found}"
+        );
+    }
+}
+
+#[test]
+fn a_short_at_the_edge_of_what_a_keyboard_types_is_judged_there() {
+    // As many marks in a row on a letter as a short keeps, and a long dash
+    // ending a Han word, are kept; a long dash beside a digit, or leading a
+    // name, where retyped by eye it's a flag, is refused.
+    for kept in ["g\u{259}\u{301}\u{302}\u{303}", "\u{7B2C}\u{4E00}"] {
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!(kept);
+        assert!(
+            typed(&swarm).iter().any(|name| name == kept),
+            "{kept} was refused: {:?}",
+            typed(&swarm)
+        );
+    }
+    let mut untitled = swarm();
+    untitled.teams[1]["swarm"] = json!("\u{1F30A}");
+    let others = typed(&untitled);
+    for refused in ["1\u{30FC}2", "\u{4E00}\u{53F7}"] {
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!(refused);
+        assert_eq!(
+            typed(&swarm),
+            others,
+            "{refused} was given as Harbour's name"
+        );
+    }
+}
+
+#[test]
 fn two_shorts_drawn_alike_keep_neither() {
     // So a lookalike drawn as another team's short is never a twin that
     // steers it. Two whose letters Unicode's confusables draw alike, as a

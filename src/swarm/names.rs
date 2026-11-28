@@ -118,7 +118,10 @@ fn flags(given: &str) -> bool {
 /// hyphen by many fonts, would join `reef` to `pause` unseen, and two
 /// teams drawn as `tide-plan` would go by two names; so would a letter
 /// drawn as a long dash, as the katakana prolonged mark and Han's one
-/// are, kept only between Han, kana or Hangul. A shell reads `;`, `$`,
+/// are, kept only after Han, kana or Hangul, and before more of them or
+/// at the name's end, as `\u{7B2C}\u{4E00}` (first) ends. So one never
+/// leads a name, not even `\u{4E00}\u{53F7}` (number one): retyped by
+/// eye, it's a hyphen, and the name a flag. A shell reads `;`, `$`,
 /// quotes and the like as other than the name. An emoji or a mark
 /// standing alone can't be typed at all, nor a mark a keyboard has no
 /// composed letter for on an ASCII one.
@@ -533,7 +536,7 @@ pub(crate) fn says_again(title: &str, short: &str) -> bool {
 mod tests {
     use serde_json::json;
 
-    use super::{says_again, short_names, typed_form, unnamed};
+    use super::{acts_for, says_again, short_names, typable, typed_form, unnamed};
 
     #[test]
     fn every_dash_is_typed_as_the_keyboard_s_hyphen_and_nothing_beside_one() {
@@ -683,6 +686,21 @@ mod tests {
             said,
             [("ONE", "pipelines"), ("TWO", "migrate")],
             "ci/cd, which a shell reads as a path, took the place of a word that could be typed"
+        );
+    }
+
+    #[test]
+    fn a_word_drawn_as_an_act_is_refused_though_its_letters_can_be_typed() {
+        // Cyrillic's dze, a and u draw `say`, in a word wholly Cyrillic, so
+        // typable keeps it and the act is found by its skeleton alone.
+        let drawn_as_say = "\u{455}\u{430}\u{443}-\u{43C}\u{438}\u{440}";
+        assert!(typable(drawn_as_say), "{drawn_as_say} was untypable");
+        assert!(acts_for(drawn_as_say), "{drawn_as_say} hid no act");
+        let teams = [json!({"key": "team:ONE", "title": "Kelp", "swarm": drawn_as_say})];
+        assert!(
+            short_names(&teams).is_empty(),
+            "{drawn_as_say} was kept: {:?}",
+            short_names(&teams)
         );
     }
 
