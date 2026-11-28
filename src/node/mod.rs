@@ -20288,6 +20288,55 @@ esac
         );
     }
 
+    #[test]
+    fn a_lend_is_handed_this_machine_only_by_the_machine_it_borrows_from() {
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let given = Given {
+            lends_from: Some("osprey".to_owned()),
+            ..bare("/nowhere/steer".into(), None)
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            given,
+            to_dial,
+        );
+        let hands = || crate::lend::Hands {
+            lend: json!({
+                "vms": [{"prefix": "skiff", "budget": "room", "requests_a_day": 3}],
+                "budgets": {"room": {
+                    "upstream": "relay/room.sock", "host": "models.example",
+                    "paths": ["/v1/messages"], "auth_header": "authorization",
+                }},
+            }),
+            key: crate::lend::Key("Bearer handed-key".to_owned()),
+        };
+        let refused = shared.answer(Request::Hands {
+            from: "kestrel".to_owned(),
+            hands: hands(),
+        });
+        assert!(
+            matches!(&refused, Err(why) if why.contains("kestrel") && !why.contains("handed-key")),
+            "a machine skiff doesn't borrow from hands it nothing: {refused:?}"
+        );
+        assert!(!shared.handed.lends(), "so skiff lends nothing itself");
+        assert_eq!(
+            shared.answer(Request::Hands {
+                from: "osprey".to_owned(),
+                hands: hands(),
+            }),
+            Ok(Response::Handed)
+        );
+        assert!(
+            shared.handed.lends(),
+            "what osprey hands skiff, skiff lends"
+        );
+    }
+
     /// What `lent_on` hands on of `answers`, written to a client that
     /// stays, and how it ended.
     async fn handed(answers: Vec<Lent>) -> (Handed, Vec<Lent>) {
