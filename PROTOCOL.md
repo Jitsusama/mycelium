@@ -2693,9 +2693,10 @@ had and the folders it took off the path it was given, and ends 127, as
 the shell would. A program found that ends 127, as one does that runs a
 program it doesn't find, may have looked for a tool only those folders
 held, so where any were taken off, the run says the path and those
-folders after it ends, and ends as the program did. The agent runs as the run's own user,
-who can write folders outside the home too, so a folder that user owns or can
-write goes as well, and so does one under a folder it owns, or can write
+folders after it ends, and ends as the program did. The agent runs as
+the run's own user, who can write folders outside the home too, so a
+folder that user owns or can write goes as well, and so does one under
+a folder it owns, or can write
 without the sticky bit, up to `/`, since it could rename the folder away and
 put its own in its place: `/tmp` goes, though a folder under it that another
 owns and the user can't write stays. On a Mac, Homebrew's `/opt/homebrew/bin`
