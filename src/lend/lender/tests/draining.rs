@@ -211,6 +211,8 @@ async fn a_node_with_no_lends_in_flight_stops_at_once() {
         403,
         "a lend ended before the stop"
     );
+    // As the link lets an answer go once it has taken its last piece.
+    drop(answers);
     let began = Instant::now();
     lending.lender.drain(LENDS_DRAIN_WITHIN, pending()).await;
     assert_eq!(began.elapsed(), Duration::ZERO, "it doesn't wait at all");
