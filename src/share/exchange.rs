@@ -23,7 +23,7 @@ use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 
 use super::clones::{Clone, Cloning};
-use super::ended::{Processes, Removal, Users, take_away};
+use super::ended::{Processes, Removal, Users, beside, take_away_keeping_aside};
 use super::ledger::{
     Entry, Held, Ledger, Ledgers, Scan, Sight, clock, is_quest, lasting, shared_of,
 };
@@ -504,6 +504,9 @@ pub struct Exchange {
     users: Box<dyn Users>,
     /// When each ended quest's scratch, found in use, is tried again.
     sweep_again: BTreeMap<String, Instant>,
+    /// When what the other end shares is taken up again, where a quest of
+    /// it was refused ([`Self::take_up_theirs`]).
+    take_up_again: Option<Instant>,
     /// Whether a README, what the other end shares, or which quests this
     /// end shares changed since the last look decided which quests shared
     /// only for those under them are spent, so an idle look reads no
@@ -551,6 +554,12 @@ fn may_be_machine(name: &str) -> bool {
 /// tried again: reading every process's open files once a second, for as
 /// long as a session sits in it, would wake the node for nothing.
 const SWEEP_AGAIN: Duration = Duration::from_secs(60);
+
+/// How long a quest the other end shares, refused here, is let be before
+/// it is taken up again: what refused it, such as a full disk or a folder
+/// briefly locked, may pass, while trying at every look would fill the
+/// log with the same refusal.
+const TAKE_UP_AGAIN: Duration = Duration::from_secs(60);
 
 /// How many files of one quest this end asks of the other at once. A link
 /// carries everything in the order it was said, and each file asked for
@@ -660,6 +669,7 @@ impl Exchange {
             unanswered: BTreeSet::new(),
             users: Box::new(Processes),
             sweep_again: BTreeMap::new(),
+            take_up_again: None,
             above_again: true,
             worker: false,
             above: Above::Carried,
@@ -1051,7 +1061,9 @@ impl Exchange {
     }
 
     /// Takes ended quest `id`'s scratch away on this machine, as
-    /// concluding it did where it ended, saying whether it is gone. One a
+    /// concluding it did where it ended, saying whether it is gone, but
+    /// for this machine's own copies moved aside in it before it was
+    /// shared, which are kept ([`take_away_keeping_aside`]). One a
     /// process works inside is let be, and tried again a minute on, with
     /// the quest still shared meanwhile; one that can't be removed is left
     /// and said, since trying again won't help.
@@ -1064,9 +1076,17 @@ impl Exchange {
             return false;
         }
         let scratch = self.places.scratch.join(id);
-        match take_away(&scratch, self.users.as_ref()) {
+        match take_away_keeping_aside(&scratch, self.users.as_ref()) {
             Removal::Removed => {
                 eprintln!("{id} has ended, so its scratch here is taken away");
+            }
+            Removal::Kept(kept) => {
+                let kept: Vec<String> =
+                    kept.iter().map(|path| path.display().to_string()).collect();
+                eprintln!(
+                    "{id} has ended, so its scratch here is taken away, but for this machine's own copies moved aside before it was shared, kept at {}",
+                    kept.join(", ")
+                );
             }
             Removal::Absent => {}
             Removal::InUse => {
@@ -1165,6 +1185,12 @@ impl Exchange {
     /// file in its turn.
     fn look_quests(&mut self) -> io::Result<Vec<Say>> {
         self.cloning.reap();
+        if self
+            .take_up_again
+            .is_some_and(|again| again <= Instant::now())
+        {
+            self.take_up_theirs();
+        }
         let replay = (self.above == Above::Lifted).then(|| self.take_up_held_back());
         let ledgers = self.places.ledgers();
         let mut shares = BTreeMap::new();
@@ -1652,8 +1678,12 @@ impl Exchange {
     /// the scratch folders and clones named of those this link carries
     /// whole ([`Self::carries_whole`]). A quest whose taking up fails is
     /// logged with its id and passed over while the rest are taken up, so
-    /// one quest's fault never keeps every other from crossing.
+    /// one quest's fault never keeps every other from crossing, and it is
+    /// all taken up again at the first look a minute on
+    /// ([`TAKE_UP_AGAIN`]), since the other end says again only what
+    /// changes.
     fn take_up_theirs(&mut self) {
+        self.take_up_again = None;
         let Some(theirs) = self.theirs.as_ref() else {
             return;
         };
@@ -1697,15 +1727,18 @@ impl Exchange {
                 self.refuse(id, &error, &mut refused);
             }
         }
+        if !refused.is_empty() {
+            self.take_up_again = Some(Instant::now() + TAKE_UP_AGAIN);
+        }
     }
 
     /// Logs that quest `id`, which the other end shares, isn't taken up
     /// for `error`, and counts it among the `refused`, so nothing more of
-    /// it is taken up until the other end next says what it shares.
+    /// it is taken up until it is tried again.
     fn refuse(&self, id: &str, error: &io::Error, refused: &mut BTreeSet<String>) {
         eprintln!(
-            "{id}, which {} shares, isn't taken up: {error}; the rest are, and it's tried again when {} next says what it shares, or the link is dialled again",
-            self.other, self.other
+            "{id}, which {} shares, isn't taken up: {error}; the rest are, and it's tried again a minute on",
+            self.other
         );
         refused.insert(id.to_owned());
     }
@@ -1828,9 +1861,8 @@ impl Exchange {
     /// mycelium's own folder, if it has one, so nothing it held is lost.
     /// Where mycelium's folder is on another filesystem, as a quest's
     /// scratch kept as a subvolume of its own is, the copy moves beside
-    /// itself instead ([`aside`]). That copy lasts only as long as the
-    /// folder it stands in: a scratch's goes with the quest's workspace
-    /// when the quest ends.
+    /// itself instead ([`aside`]), and is kept when the node takes the
+    /// rest of an ended quest's scratch away ([`Self::swept`]).
     fn move_aside(&self, folder: &std::path::Path, id: &str, name: &str) -> io::Result<()> {
         if !folder.exists() {
             return Ok(());
@@ -1838,16 +1870,12 @@ impl Exchange {
         let stamp = jiff::Timestamp::now()
             .strftime("%Y%m%dT%H%M%SZ")
             .to_string();
-        let kept = self
-            .places
-            .state
-            .join("before-share")
-            .join(&stamp)
-            .join(id)
-            .join(name);
+        let root = self.places.state.join("before-share");
+        let kept = root.join(&stamp).join(id).join(name);
         let moved = aside(
             folder,
             &kept,
+            &root,
             &stamp,
             |from: &std::path::Path, to: &std::path::Path| fs::rename(from, to),
         )?;
@@ -1858,7 +1886,7 @@ impl Exchange {
             );
         } else {
             eprintln!(
-                "moved this machine's copy of {id}'s {name} aside to {}, beside it, as mycelium's own folder is on another filesystem; it lasts only as long as the folder it stands in, so a scratch's copy goes when the quest ends",
+                "moved this machine's copy of {id}'s {name} aside to {}, beside it, as mycelium's own folder is on another filesystem; it is kept when the quest ends and the rest of its scratch is taken away",
                 moved.display()
             );
         }
@@ -2451,38 +2479,43 @@ fn waits(quest: &str, ledger: &Ledger) -> io::Result<()> {
     )))
 }
 
-/// Moves `folder` to `kept` by `rename`, answering where it went. Where
-/// that crosses filesystems, it moves beside itself instead, under a name
-/// starting with a dot and stamped `stamp`, which [`may_name`] never
-/// shares, and the folders made for `kept` are taken away again as far up
-/// as they are empty.
+/// Moves `folder` to `kept`, under `root`, by `rename`, answering where it
+/// went. Where that fails, the folders made for `kept` are taken away
+/// again as far up as they are empty, short of `root`; and where it
+/// failed for crossing filesystems, `folder` moves beside itself instead,
+/// under a name starting with a dot and stamped `stamp` ([`beside`]),
+/// which [`may_name`] never shares. Any other failure is answered as it
+/// is, with `folder` where it was.
 fn aside(
     folder: &std::path::Path,
     kept: &std::path::Path,
+    root: &std::path::Path,
     stamp: &str,
     rename: impl Fn(&std::path::Path, &std::path::Path) -> io::Result<()>,
 ) -> io::Result<PathBuf> {
     let made = kept.parent().unwrap_or(kept);
     fs::create_dir_all(made)?;
-    match rename(folder, kept) {
-        Ok(()) => Ok(kept.to_owned()),
-        Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {
-            // The quest's id, the stamp and a name's own folder at most.
-            for empty in made.ancestors().take(3) {
-                if fs::remove_dir(empty).is_err() {
-                    break;
-                }
-            }
-            let name = folder
-                .file_name()
-                .ok_or_else(|| io::Error::other(format!("{} names no folder", folder.display())))?;
-            let beside =
-                folder.with_file_name(format!(".{}.before-share-{stamp}", name.to_string_lossy()));
-            rename(folder, &beside)?;
-            Ok(beside)
+    let error = match rename(folder, kept) {
+        Ok(()) => return Ok(kept.to_owned()),
+        Err(error) => error,
+    };
+    for empty in made
+        .ancestors()
+        .take_while(|at| *at != root && at.starts_with(root))
+    {
+        if fs::remove_dir(empty).is_err() {
+            break;
         }
-        Err(error) => Err(error),
     }
+    if error.kind() != io::ErrorKind::CrossesDevices {
+        return Err(error);
+    }
+    let name = folder
+        .file_name()
+        .ok_or_else(|| io::Error::other(format!("{} names no folder", folder.display())))?;
+    let moved = folder.with_file_name(beside(&name.to_string_lossy(), stamp));
+    rename(folder, &moved)?;
+    Ok(moved)
 }
 
 #[cfg(test)]
@@ -2895,6 +2928,8 @@ mod tests {
     fn a_quest_whose_own_copy_cant_move_aside_is_refused_and_the_rest_cross() {
         use std::os::unix::fs::PermissionsExt;
 
+        // Sorted after QUEST, so its scratch is taken up after QUEST's
+        // fails, as a fault that stopped the rest would show.
         let other = "QEST-20261026-IZH11J";
         let skiff = Machine::new("skiff");
         let kestrel = Machine::new("kestrel");
@@ -2910,13 +2945,30 @@ mod tests {
         let readme = skiff.places.quests.join(other).join("README.md");
         fs::create_dir_all(readme.parent().expect("a file has a folder")).expect("made");
         fs::write(&readme, "# Other\n").expect("written");
+        let bench = skiff.places.scratch.join(other).join("bench");
+        fs::create_dir_all(&bench).expect("made");
+        fs::write(bench.join("run.md"), "a run\n").expect("written");
         share(&skiff, other);
+        skiff
+            .places
+            .name_scratch(other, "bench")
+            .expect("bench named");
         // Kestrel's own notes can't leave a scratch it may not write, as
         // one on another filesystem can't.
         let scratch = kestrel.places.scratch.join(QUEST);
         fs::create_dir_all(scratch.join("notes")).expect("made");
         fs::write(scratch.join("notes/old.md"), "kestrel's own\n").expect("written");
         fs::set_permissions(&scratch, fs::Permissions::from_mode(0o555)).expect("locked");
+        if fs::create_dir(scratch.join(".probe")).is_ok() {
+            fs::set_permissions(&scratch, fs::Permissions::from_mode(0o755)).expect("unlocked");
+            eprintln!("skipped: a folder locked 0o555 is writable here, as it is to root");
+            return;
+        }
+        let counted = |id: &str, folder: &str| match kestrel.places.ledgers().read(id) {
+            Ok(ledger) => ledger.scratch.contains(folder),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => panic!("{id}'s ledger can't be read: {error}"),
+        };
 
         let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
@@ -2927,6 +2979,10 @@ mod tests {
             Some("# Other\n"),
             "the other quest crossed"
         );
+        assert!(
+            counted(other, "bench"),
+            "its scratch too, taken up after the refused quest's"
+        );
         assert_eq!(
             fs::read_to_string(scratch.join("notes/old.md"))
                 .as_deref()
@@ -2934,13 +2990,27 @@ mod tests {
             Some("kestrel's own\n"),
             "the refused quest's own notes stay where they were"
         );
+        assert!(!counted(QUEST, "notes"), "and aren't counted shared");
+
+        talk(&mut near, &mut far);
         assert!(
-            !kestrel
-                .places
-                .ledgers()
-                .read(QUEST)
-                .is_ok_and(|ledger| ledger.scratch.contains("notes")),
-            "and aren't counted shared"
+            !counted(QUEST, "notes"),
+            "the refused quest isn't tried again within the minute"
+        );
+
+        far.take_up_again = Some(Instant::now());
+        talk(&mut near, &mut far);
+        assert!(
+            counted(QUEST, "notes"),
+            "a minute on, once what refused it has passed, it is taken up"
+        );
+        assert!(
+            !scratch.join("notes/old.md").exists(),
+            "with kestrel's own notes moved aside"
+        );
+        assert!(
+            far.take_up_again.is_none(),
+            "and nothing is left to try again"
         );
     }
 
@@ -2951,12 +3021,13 @@ mod tests {
         fs::create_dir_all(&folder).expect("made");
         fs::write(folder.join("old.md"), "kestrel's own\n").expect("written");
         let state = dir.path().join("state");
+        let root = state.join("before-share");
         let stamp = "20261127T000000Z";
-        let kept = state
-            .join("before-share")
-            .join(stamp)
-            .join(QUEST)
-            .join("scratch/notes");
+        let kept = root.join(stamp).join(QUEST).join("scratch/notes");
+        // Another quest's copy moved aside in the same second stays.
+        let neighbour = root.join(stamp).join("QEST-20261026-IZH11J/record");
+        fs::create_dir_all(&neighbour).expect("made");
+        fs::write(neighbour.join("README.md"), "# Other\n").expect("written");
         let across = |from: &std::path::Path, to: &std::path::Path| {
             if to.starts_with(&state) {
                 Err(io::Error::from(io::ErrorKind::CrossesDevices))
@@ -2965,12 +3036,16 @@ mod tests {
             }
         };
 
-        let moved = aside(&folder, &kept, stamp, across).expect("moved");
+        let moved = aside(&folder, &kept, &root, stamp, across).expect("moved");
 
         assert_eq!(
             moved,
             folder.with_file_name(format!(".notes.before-share-{stamp}")),
             "beside itself"
+        );
+        assert!(
+            super::super::ended::is_beside(&moved.file_name().expect("named").to_string_lossy()),
+            "under a name the sweep keeps"
         );
         assert_eq!(
             fs::read_to_string(moved.join("old.md")).expect("kept"),
@@ -2984,20 +3059,22 @@ mod tests {
         let name = moved.file_name().expect("named").to_string_lossy();
         assert!(!may_name(&name), "and the copy aside is never shared");
         assert!(
-            !state.join("before-share").join(stamp).exists(),
+            !root.join(stamp).join(QUEST).exists(),
             "no empty folder is left in mycelium's own"
+        );
+        assert_eq!(
+            fs::read_to_string(neighbour.join("README.md")).expect("kept"),
+            "# Other\n",
+            "but one holding another's copy stays"
         );
 
         let again = dir.path().join("scratch").join(QUEST).join("bench");
         fs::create_dir_all(&again).expect("made");
-        let kept = state
-            .join("before-share")
-            .join(stamp)
-            .join(QUEST)
-            .join("scratch/bench");
+        let kept = root.join(stamp).join(QUEST).join("scratch/bench");
         let moved = aside(
             &again,
             &kept,
+            &root,
             stamp,
             |from: &std::path::Path, to: &std::path::Path| fs::rename(from, to),
         )
@@ -3006,6 +3083,45 @@ mod tests {
             moved, kept,
             "one on the same filesystem goes into mycelium's own"
         );
+    }
+
+    #[test]
+    fn a_copy_that_cant_move_aside_for_any_other_reason_stays_where_it_is() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let scratch = dir.path().join("scratch").join(QUEST);
+        let folder = scratch.join("notes");
+        fs::create_dir_all(&folder).expect("made");
+        fs::write(folder.join("old.md"), "kestrel's own\n").expect("written");
+        let root = dir.path().join("state/before-share");
+        let stamp = "20261127T000000Z";
+        let kept = root.join(stamp).join(QUEST).join("scratch/notes");
+        let refused = |from: &std::path::Path, to: &std::path::Path| {
+            if to.starts_with(&root) {
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            } else {
+                fs::rename(from, to)
+            }
+        };
+
+        let error = aside(&folder, &kept, &root, stamp, refused).expect_err("refused");
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        assert_eq!(
+            fs::read_to_string(folder.join("old.md")).expect("kept"),
+            "kestrel's own\n",
+            "the copy stays where it was"
+        );
+        let beside: Vec<_> = fs::read_dir(&scratch)
+            .expect("read")
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(beside, ["notes"], "with nothing moved beside it");
+        assert!(
+            !root.join(stamp).exists(),
+            "and no folder made for it is left"
+        );
+        assert!(root.exists(), "short of mycelium's own");
     }
 
     #[test]

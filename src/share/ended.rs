@@ -7,11 +7,13 @@
 //! hand. Each machine's node now takes its own copy away once the quest
 //! has ended at both ends of a link, as the harness does where it ended:
 //! never while a process has its working folder or an open file inside,
-//! since a session or a build still at work there would lose it.
+//! since a session or a build still at work there would lose it. A copy
+//! the machine moved aside beside itself before sharing, its own work, is
+//! kept ([`take_away_keeping_aside`]).
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// What on this machine works inside a folder. One implementation reads
@@ -88,9 +90,28 @@ pub enum Removal {
     Absent,
     /// A process works inside it, so it was left for a later try.
     InUse,
+    /// It's gone but for the copies moved aside beside themselves, kept
+    /// in it as this machine's own work.
+    Kept(Vec<PathBuf>),
     /// It couldn't be removed, even made writable.
     Stuck(io::Error),
 }
+
+/// The name a copy of `name` moved aside beside itself at `stamp` takes:
+/// it starts with a dot, so no end shares it.
+#[must_use]
+pub fn beside(name: &str, stamp: &str) -> String {
+    format!(".{name}{BESIDE}{stamp}")
+}
+
+/// Whether `name` is a copy moved aside beside itself ([`beside`]).
+#[must_use]
+pub fn is_beside(name: &str) -> bool {
+    name.starts_with('.') && name.contains(BESIDE)
+}
+
+/// What a copy moved aside beside itself holds in its name.
+const BESIDE: &str = ".before-share-";
 
 /// Takes `folder` away, unless something works inside it. A folder made
 /// read-only, as Go's module cache is, is made writable so its files can
@@ -102,13 +123,52 @@ pub fn take_away(folder: &Path, users: &dyn Users) -> Removal {
     if users.inside(folder) {
         return Removal::InUse;
     }
-    if fs::remove_dir_all(folder).is_ok() {
-        return Removal::Removed;
-    }
-    match make_writable(folder).and_then(|()| fs::remove_dir_all(folder)) {
+    match remove(folder) {
         Ok(()) => Removal::Removed,
         Err(error) => Removal::Stuck(error),
     }
+}
+
+/// Takes `folder` away as [`take_away`] does, but for the copies this
+/// machine moved aside beside themselves in it before sharing
+/// ([`is_beside`]): they are its own work, which no other machine holds,
+/// so they are kept, and `folder` is left holding only them.
+pub fn take_away_keeping_aside(folder: &Path, users: &dyn Users) -> Removal {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return take_away(folder, users);
+    };
+    let (kept, rest): (Vec<PathBuf>, Vec<PathBuf>) = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .partition(|path| {
+            path.file_name()
+                .is_some_and(|name| is_beside(&name.to_string_lossy()))
+        });
+    if kept.is_empty() {
+        return take_away(folder, users);
+    }
+    if users.inside(folder) {
+        return Removal::InUse;
+    }
+    for path in rest {
+        let gone = match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_dir() => remove(&path),
+            Ok(_) => fs::remove_file(&path),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = gone {
+            return Removal::Stuck(error);
+        }
+    }
+    Removal::Kept(kept)
+}
+
+/// Removes `folder` and all in it, made writable where it must be.
+fn remove(folder: &Path) -> io::Result<()> {
+    if fs::remove_dir_all(folder).is_ok() {
+        return Ok(());
+    }
+    make_writable(folder).and_then(|()| fs::remove_dir_all(folder))
 }
 
 /// Every folder under `folder`, and `folder`, writable by its owner.
@@ -156,6 +216,61 @@ mod tests {
             matches!(take_away(&scratch, &Said(false)), Removal::Absent),
             "a second try finds none"
         );
+    }
+
+    #[test]
+    fn a_copy_moved_aside_beside_itself_is_kept_when_the_rest_goes() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let scratch = dir.path().join("scratch");
+        let copy = scratch.join(beside("notes", "20261127T000000Z"));
+        fs::create_dir_all(&copy).expect("made");
+        fs::write(copy.join("old.md"), "this machine's own\n").expect("written");
+        fs::create_dir_all(scratch.join("notes")).expect("made");
+        fs::write(scratch.join("notes/plan.md"), "shared\n").expect("written");
+        fs::write(scratch.join("loose.md"), "shared\n").expect("written");
+        fs::write(scratch.join(".hidden"), "not a copy\n").expect("written");
+
+        assert!(
+            matches!(
+                take_away_keeping_aside(&scratch, &Said(true)),
+                Removal::InUse
+            ),
+            "a scratch in use is left"
+        );
+        let kept = take_away_keeping_aside(&scratch, &Said(false));
+
+        assert!(
+            matches!(&kept, Removal::Kept(kept) if kept.as_slice() == [copy.clone()]),
+            "the copy is kept: {kept:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(copy.join("old.md")).expect("kept"),
+            "this machine's own\n",
+            "with all it held"
+        );
+        let left: Vec<_> = fs::read_dir(&scratch)
+            .expect("read")
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        assert_eq!(left, [copy], "and nothing else is left");
+
+        fs::remove_dir_all(scratch.join(beside("notes", "20261127T000000Z"))).expect("removed");
+        assert!(
+            matches!(
+                take_away_keeping_aside(&scratch, &Said(false)),
+                Removal::Removed
+            ),
+            "with no copy aside the scratch goes whole"
+        );
+        assert!(!scratch.exists());
+    }
+
+    #[test]
+    fn only_a_dotted_name_holding_the_mark_is_a_copy_aside() {
+        assert!(is_beside(&beside("notes", "20261127T000000Z")));
+        assert!(!is_beside("notes.before-share-20261127T000000Z"));
+        assert!(!is_beside(".notes"));
     }
 
     #[test]

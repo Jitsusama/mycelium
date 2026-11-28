@@ -611,13 +611,14 @@ hearing the other end is said at the next look:
   `~/.local/state/mycelium/before-share/<when>/<QUEST>/`. Where that
   folder is on another filesystem, as a scratch kept as a subvolume of
   its own is, the copy moves beside itself instead, under a name
-  starting with a dot that no end shares; it lasts only as long as the
-  folder it stands in, so a scratch's copy goes when the quest ends. A
-  quest whose copy can't move aside is refused alone, logged with its
-  id, and the rest are still taken up. A quest's own record moves only
-  once the first of the sharing end's files comes to be written in its
-  place; until then it stays where it was, neither read nor said, so a
-  link that drops first leaves it there.
+  starting with a dot that no end shares, and it is kept when the
+  node takes the rest of an ended quest's scratch away. A quest
+  whose copy can't move aside is refused alone, logged with its id,
+  and the rest are still taken up; it is taken up again a minute on.
+  A quest's own record moves only once the first of the sharing end's
+  files comes to be written in its place; until then it stays where it
+  was, neither read nor said, so a link that drops first leaves it
+  there.
   A scratch folder named moves aside as it is named. It is said
   before the files, so a folder's files are carried once heard of.
   An ended quest's record still crosses, so the README saying it ended
