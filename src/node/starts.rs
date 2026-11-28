@@ -15,6 +15,10 @@
 //! started (`"machine"` and `"held"`), or why it didn't (`"failed"`), or
 //! why it was refused (`"refused"`). The person's stop is the file
 //! `starts.stopped` beside it, there for as long as starts are stopped.
+//! The [`line`] agents' starts wait in for the node's room is kept in
+//! memory alone.
+
+mod line;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, Write};
@@ -380,12 +384,18 @@ pub struct Starts {
     file: PathBuf,
     stopped: PathBuf,
     book: Mutex<Book>,
+    /// Told whenever room may have freed or the line moved, so the starts
+    /// waiting in it look again at once rather than polling.
+    freed: tokio::sync::Notify,
 }
 
 #[derive(Debug, Default, Clone)]
 struct Book {
     kept: VecDeque<Kept>,
     going: Vec<(u64, Kept)>,
+    /// The starts waiting for the node's room, and the places kept for
+    /// those refused it.
+    line: line::Line,
     next: u64,
     /// The bytes its file has grown by since it was last written whole.
     written: u64,
@@ -476,6 +486,7 @@ impl Starts {
             stopped: file.with_file_name("starts.stopped"),
             file,
             book: Mutex::new(book),
+            freed: tokio::sync::Notify::new(),
         }
     }
 
@@ -501,7 +512,10 @@ impl Starts {
     ///
     /// When the stop can't be written.
     pub fn stop(&self) -> std::io::Result<()> {
-        std::fs::write(&self.stopped, "")
+        std::fs::write(&self.stopped, "")?;
+        // Every start waiting in line is refused at once, not at its end.
+        self.freed.notify_waiters();
+        Ok(())
     }
 
     /// Lets agents start again, within their limits.
@@ -512,7 +526,10 @@ impl Starts {
     pub fn resume(&self) -> std::io::Result<()> {
         match std::fs::remove_file(&self.stopped) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
-            _ => Ok(()),
+            _ => {
+                self.freed.notify_waiters();
+                Ok(())
+            }
         }
     }
 
@@ -521,30 +538,20 @@ impl Starts {
     /// its cell, or agents together, have started their most in the hour
     /// before it, or where it brings back a session already coming back.
     /// Each is judged under the lock that holds it as going, so two asked
-    /// at once can't both pass.
+    /// at once can't both pass. It waits for nothing, so it goes behind
+    /// every start waiting in the node's line for room ([`line`]), and
+    /// one refused for room keeps a place there for its cell. Only tests
+    /// ask it, since a node's start waits with
+    /// [`Self::admitted_in_turn`], which judges it the same way.
     ///
     /// # Errors
     ///
     /// Why it is refused.
+    #[cfg(test)]
     pub fn admit(&self, asked: Kept) -> Result<Admitted, String> {
         let mut asked = bounded(asked);
-        let refused = {
-            let mut book = self.lock();
-            let refused = Self::coming_back(&book, &asked).or_else(|| {
-                Self::once_an_hour(&book, &mut asked);
-                self.refusal(&book, &asked, asked.at).map(|(why, _)| why)
-            });
-            if refused.is_none() {
-                let id = book.next;
-                book.next += 1;
-                book.going.push((id, asked.clone()));
-                return Ok(Admitted { id, asked });
-            }
-            refused
-        };
-        asked.refused.clone_from(&refused);
-        self.keep_line(&mut self.lock(), asked);
-        Err(refused.unwrap_or_default())
+        self.in_turn(&mut asked, None)
+            .map_err(|(why, room)| self.refused(asked, None, why, room))
     }
 
     /// Which of `asked` would be refused first as [`Self::admit`] judges
@@ -564,7 +571,7 @@ impl Starts {
             one.at = one.at.max(gone);
             let refused = Self::coming_back(&book, &one).or_else(|| {
                 Self::once_an_hour(&book, &mut one);
-                match self.refusal(&book, &one, said_at)? {
+                match self.refusal(&book, &one, said_at, None)? {
                     (_, Some(room)) if room <= one.at + waits => {
                         one.at = room;
                         None
@@ -633,13 +640,15 @@ impl Starts {
 
     /// When the limits that refuse `asked` would let it, in milliseconds
     /// since the epoch, or none while they let it or the person's stop
-    /// holds it.
+    /// holds it. Only tests ask it, since a start waiting for room is
+    /// told when by the line.
+    #[cfg(test)]
     #[must_use]
     pub fn room(&self, asked: &Kept) -> Option<i64> {
         let book = self.lock();
         let mut asked = asked.clone();
         Self::once_an_hour(&book, &mut asked);
-        self.refusal(&book, &asked, asked.at)
+        self.refusal(&book, &asked, asked.at, None)
             .and_then(|(_, room)| room)
     }
 
@@ -688,8 +697,14 @@ impl Starts {
 
     /// Why `asked` is refused, if it is, with its room said from `said_at`,
     /// and when the limits that refuse it would let it, where it is they
-    /// that do.
-    fn refusal(&self, book: &Book, asked: &Kept, said_at: i64) -> Option<(String, Option<i64>)> {
+    /// that do. It waits in the node's line as `ticket`, if it does.
+    fn refusal(
+        &self,
+        book: &Book,
+        asked: &Kept,
+        said_at: i64,
+        ticket: Option<u64>,
+    ) -> Option<(String, Option<i64>)> {
         if !matches!(asked.by, By::Agent(_)) {
             return None;
         }
@@ -714,12 +729,14 @@ impl Starts {
         if !asked.counts() {
             return None;
         }
-        let (why, room) = Self::past_limits(book, asked)?;
+        let (why, room) = Self::past_limits(book, asked, ticket)?;
         Some((paced(&why, room, said_at), Some(room)))
     }
 
-    /// Which limit `asked` would pass, said, and when it would no longer.
-    fn past_limits(book: &Book, asked: &Kept) -> Option<(String, i64)> {
+    /// Which limit `asked`, waiting in line as `ticket` if it does, would
+    /// pass, said, and when it would no longer. Every start the line lets
+    /// take the node's room before it counts as taken already.
+    fn past_limits(book: &Book, asked: &Kept, ticket: Option<u64>) -> Option<(String, i64)> {
         let since = asked.at - HOUR;
         let counted: Vec<&Kept> = book
             .kept
@@ -736,7 +753,17 @@ impl Starts {
             .filter(|one| one.started_by == asked.started_by)
             .map(|one| one.at)
             .collect();
-        let all: Vec<i64> = counted.iter().map(|one| one.at).collect();
+        let mut all: Vec<i64> = counted.iter().map(|one| one.at).collect();
+        let started = all.len();
+        let mut cells: BTreeMap<Option<&str>, usize> = BTreeMap::new();
+        for one in &counted {
+            *cells.entry(one.started_by.as_deref()).or_default() += 1;
+        }
+        let ahead = book.line.ahead(asked, ticket, |cell| {
+            cells.get(&cell).is_some_and(|begun| *begun >= CELL_AN_HOUR)
+        });
+        // Those ahead take their room now, so it is theirs for the hour.
+        all.resize(started + ahead, asked.at);
         let cell = asked
             .started_by
             .as_deref()
@@ -751,12 +778,19 @@ impl Starts {
             );
             (why, room)
         });
-        let node_limit = room_after(all.clone(), NODE_AN_HOUR).map(|room| {
-            let why = format!(
-                "agents started {} sessions through this node in the last hour, and they start \
-                 at most {NODE_AN_HOUR} an hour",
-                all.len()
-            );
+        let node_limit = room_after(all, NODE_AN_HOUR).map(|room| {
+            let why = if ahead == 0 {
+                format!(
+                    "agents started {started} sessions through this node in the last hour, and \
+                     they start at most {NODE_AN_HOUR} an hour"
+                )
+            } else {
+                format!(
+                    "agents started {started} sessions through this node in the last hour and \
+                     {ahead} more wait ahead in its line for room or hold their place there, and \
+                     they start at most {NODE_AN_HOUR} an hour"
+                )
+            };
             (why, room)
         });
         // The limit said is the one whose room comes last.
@@ -784,6 +818,8 @@ impl Starts {
         let mut book = self.lock();
         book.going.retain(|(going, _)| *going != id);
         self.keep_line(&mut book, asked);
+        drop(book);
+        self.freed.notify_waiters();
     }
 
     /// Keeps `admitted`, joined `joined` times, as refused for `why`,
@@ -799,6 +835,9 @@ impl Starts {
         let mut book = self.lock();
         book.going.retain(|(going, _)| *going != id);
         self.keep_line(&mut book, asked);
+        drop(book);
+        // It spent nothing, so its room is free again for the line.
+        self.freed.notify_waiters();
     }
 
     /// Writes `start` in the book, in one write so two kept at once never

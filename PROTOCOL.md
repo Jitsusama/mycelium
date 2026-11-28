@@ -2727,7 +2727,28 @@ start past the limits with room again within a minute waits for it
 and goes through; one further off is refused, saying in how many
 minutes and at what time there is room, and that it goes to the
 agent's orchestrator as a finding, since pacing is never the person's
-to lift. The person stops the agents' starts asked of a node in one
+to lift.
+
+Starts waiting for room wait in the node's line, so room goes to
+them in a fair order rather than to whichever asks first. As room
+frees, the cell that took the node's room least lately goes first,
+and within a cell the oldest ask; a start waiting for nothing, or
+asked while others wait, goes behind them. One past its own cell's 8
+waits for its cell's room, holding no one's turn meanwhile. A waiter
+looks again only when room may have freed: a start kept, one leaving
+the hour, a waiter leaving the line or a place lapsing. One whose
+asker is gone leaves the line at once. A start refused for room keeps
+its cell's place for three minutes from the room it was told of: an
+ask from that cell then takes the room ahead of every other, and the
+room is held from the rest till it does or the place lapses. A cell
+keeps at most 8 places, and the line holds at most 256 waiters and
+places together; a start past that is refused at once, and a refusal
+past it keeps no place. The line and its places are held in memory
+alone, so a node started again begins with an empty line, which
+costs only fairness, never a start. The person's starts never wait
+in it. No wait passes the minute.
+
+The person stops the agents' starts asked of a node in one
 act, `mycelium starts stop`, which holds through a restart till
 `mycelium starts resume`, and while whether it stands can't be told;
 an agent asking either, or the list, is refused. The stop is

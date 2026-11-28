@@ -8640,29 +8640,13 @@ impl<S: Store> Shared<S> {
     /// Lets `asked` go ahead as the book of starts does, waiting for room
     /// where the limits refuse it and there is room again within `waits`
     /// milliseconds, so a start a little early goes through by
-    /// itself; one refused later is told when. Waking, it asks again, so
-    /// one whose room another took waits on for the next, within the same
-    /// minute.
-    async fn admitted(
-        &self,
-        mut asked: starts::Kept,
-        waits: i64,
-    ) -> Result<starts::Admitted, String> {
-        let until = asked.at + waits;
-        // The minute is kept by a clock that never steps back, so the
-        // wall clock set back meanwhile holds no start past it.
-        let began = tokio::time::Instant::now();
-        while let Some(room) = self.starts.room(&asked).filter(|room| *room <= until) {
-            let waited = i64::try_from(began.elapsed().as_millis()).unwrap_or(i64::MAX);
-            let left = waits.saturating_sub(waited);
-            if left <= 0 {
-                break;
-            }
-            let wait = u64::try_from((room - asked.at).clamp(0, left)).unwrap_or(0) + 1;
-            tokio::time::sleep(Duration::from_millis(wait)).await;
-            asked.at = jiff::Timestamp::now().as_millisecond();
-        }
-        self.starts.admit(asked)
+    /// itself; one refused later is told when. It waits in the node's
+    /// line, so room freed goes to the cells waiting in turn, and one
+    /// refused keeps its cell's place for when it asks again.
+    async fn admitted(&self, asked: starts::Kept, waits: i64) -> Result<starts::Admitted, String> {
+        self.starts
+            .admitted_in_turn(asked, waits, || jiff::Timestamp::now().as_millisecond())
+            .await
     }
 
     /// Why the person's carry, taken as an agent's start where no person
