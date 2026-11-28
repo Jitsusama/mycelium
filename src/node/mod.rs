@@ -4682,16 +4682,17 @@ impl<S: Store> Shared<S> {
     /// # Errors
     ///
     /// Where the carries can't be read, saying why, as the node also says
-    /// once on its standard error, since which are on their way can't
-    /// be told then.
+    /// on its standard error, once until they read again, since which
+    /// are on their way can't be told then.
     fn easing_on_way(&self, now: jiff::Timestamp) -> Result<Vec<ease::Moved>, String> {
         let sightings = self.sightings();
+        let about = format!("the carries in {} can't be read", self.carries.display());
         let carries = self
             .carries_here_read(now - kept::STUCK_AFTER)
             .map_err(|error| {
                 let why = format!(
-                    "the carries kept here can't be read ({error}), so which of {}'s carries \
-                     are on their way can't be told",
+                    "{about} ({error}), so which of {}'s carries are on their way can't be \
+                     told",
                     self.machine
                 );
                 if self.unreadable.first(&why) {
@@ -4699,6 +4700,9 @@ impl<S: Store> Shared<S> {
                 }
                 why
             })?;
+        // The record read, so a later outage of it is said again, though
+        // its error be the same.
+        self.unreadable.read_again(&about);
         Ok(easing::on_way(&carries, &self.machine, |carry| {
             let seen = sightings.seen(carry, self.handed(carry));
             kept::judged(carry, &seen, now)
@@ -15338,6 +15342,34 @@ esac
                 "and nothing refused is kept as carried"
             );
         }
+    }
+
+    // PR 567's review, F3: the node says on its standard error once why
+    // the carries on their way can't be read, naming the file, and says
+    // it again after they have read once in between.
+    #[tokio::test]
+    async fn the_carries_on_their_way_unread_are_said_again_once_they_read() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let shared = easing_skiff(&socket, &["remote"]).await;
+        let carries = socket.with_file_name("carries.jsonl");
+        fs::create_dir(&carries).expect("a folder where the carries are read");
+        let now = jiff::Timestamp::now();
+        let why = shared.easing_on_way(now).expect_err("they can't be read");
+        assert!(
+            why.starts_with(&format!(
+                "the carries in {} can't be read (",
+                carries.display()
+            )),
+            "it names the file: {why}"
+        );
+        assert!(!shared.unreadable.first(&why), "it was said: {why}");
+        fs::remove_dir(&carries).expect("the folder goes");
+        assert_eq!(shared.easing_on_way(now), Ok(Vec::new()), "they read");
+        assert!(
+            shared.unreadable.first(&why),
+            "so the same outage again is said again: {why}"
+        );
     }
 
     #[tokio::test]
