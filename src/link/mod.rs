@@ -1074,12 +1074,18 @@ fn claim_as_asked(store: &impl Store, machine: &str) -> io::Result<Option<(Claim
 }
 
 /// Waits until a newer link with `machine` asks for the claim this link
-/// took while `asked_as_claimed` stood, looking each [`LOOK_EVERY`].
+/// took while `asked_as_claimed` stood, looking each [`LOOK_EVERY`]. An
+/// ask that can't be read this time is no ask: nothing takes one away, so
+/// a read that fails, as one does when the node is out of open files,
+/// says nothing of a newer link and never ends this one.
 async fn superseded(store: &impl Store, machine: &str, asked_as_claimed: Option<i64>) {
     let mut looking = tokio::time::interval(LOOK_EVERY);
     loop {
         looking.tick().await;
-        if store.superseded(machine) != asked_as_claimed {
+        if store
+            .superseded(machine)
+            .is_some_and(|asked| Some(asked) != asked_as_claimed)
+        {
             return;
         }
     }
