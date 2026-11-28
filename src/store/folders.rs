@@ -2805,6 +2805,48 @@ mod tests {
         }
     }
 
+    // Followup 570: the fake puts under one lock, so only the folders can
+    // show a put that moves the mark is told once its record is written.
+    #[tokio::test]
+    async fn a_put_that_moves_the_mark_is_told_only_once_its_record_is_written() {
+        let (_dir, store) = store();
+        let mut changes = store.changes().expect("the store tells its changes");
+        // A machine new each time, so a change told late of the one before
+        // is never taken for this one's.
+        for name in ["kestrel", "osprey", "skiff", "tern", "wren"] {
+            let mut machine = crate::placement::tests::machine(name, "linux", 32, &[]);
+            machine.worker = true;
+            let told = Change::Machine(name.to_owned());
+            let read = std::thread::scope(|scope| {
+                scope.spawn(|| store.put_machine(&machine).expect("its link keeps it"));
+                // Asked without pause rather than awaited, so the machines
+                // are read the moment the change is told, before a write
+                // still under way could end.
+                let patience = Instant::now() + PATIENCE;
+                loop {
+                    match changes.changes.try_recv() {
+                        Ok(change) if change == told => break store.machines(),
+                        Ok(_) | Err(mpsc::error::TryRecvError::Empty) => {
+                            assert!(
+                                Instant::now() < patience,
+                                "{name}'s put was told within {PATIENCE:?}"
+                            );
+                            std::hint::spin_loop();
+                        }
+                        Err(mpsc::error::TryRecvError::Disconnected) => {
+                            panic!("the store stopped telling")
+                        }
+                    }
+                }
+            });
+            let kept: Vec<_> = read.iter().map(|one| (&*one.name, one.worker)).collect();
+            assert!(
+                kept.contains(&(name, true)),
+                "the change woke a reader that read {name}'s record and mark both: {kept:?}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_machine_saying_itself_again_is_told_by_its_name() {
         let (dir, store) = store();

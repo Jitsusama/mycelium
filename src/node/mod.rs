@@ -27202,6 +27202,9 @@ esac
                 // Empty, so nothing is preloaded into the test's own process.
                 .env("LD_PRELOAD", "")
                 .env("BASH_ENV", &startup)
+                // Followup 569: killed if the wait runs out, rather than
+                // left running with a node bound in a deleted folder.
+                .kill_on_drop(true)
                 .output();
             let again = tokio::time::timeout(PATIENCE * 2, again)
                 .await

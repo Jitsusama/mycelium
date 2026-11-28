@@ -664,13 +664,18 @@ mod tests {
         );
     }
 
-    /// The `sh` on this test's own path, by where it is, since a `PATH`
-    /// a test gives its child is where a bare `sh` would be looked for.
+    /// The program `name` on this test's own path, by where it is, since a
+    /// `PATH` a test gives its child is where a bare name would be looked
+    /// for; none where the path holds no such program.
+    fn on_the_path(name: &str) -> Option<PathBuf> {
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|folder| folder.join(name))
+            .find(|program| program.is_file())
+    }
+
+    /// The `sh` on this test's own path ([`on_the_path`]).
     fn the_shell() -> PathBuf {
-        std::env::split_paths(&std::env::var_os("PATH").expect("a PATH"))
-            .map(|folder| folder.join("sh"))
-            .find(|sh| sh.is_file())
-            .expect("sh is on the PATH")
+        on_the_path("sh").expect("sh is on the PATH")
     }
 
     /// Two folders a plain run keeps, by where they lead: the one holding
@@ -694,6 +699,14 @@ mod tests {
     /// Both shells are named by where they are, so a `PATH` the profile
     /// gives, which may hold no `sh`, finds neither.
     fn run_through(words: &[String], program: &str, profile: &[(&str, &str)]) -> String {
+        let said = stand_in(words, program, profile)
+            .output()
+            .expect("the stand-in shell runs");
+        String::from_utf8_lossy(&said.stdout).into_owned()
+    }
+
+    /// The stand-in shell that [`run_through`] runs, not yet started.
+    fn stand_in(words: &[String], program: &str, profile: &[(&str, &str)]) -> Command {
         let sh = the_shell();
         // A login shell's flags first, since a Mac's yielding words hold
         // a `-c` of their own before them.
@@ -702,17 +715,72 @@ mod tests {
             .position(|word| word == "-lic" || word == "-lc")
             .or_else(|| words.iter().position(|word| word == "-c"))
             .expect("the words run a shell");
-        let said = Command::new(&sh)
+        let mut command = Command::new(&sh);
+        command
             .arg("-c")
             .args(&words[script + 1..])
             .arg(&sh)
             .args(["-c", program])
             // Whatever this test runs in, only the profile says an agent.
             .env_remove("MYCELIUM_AGENT")
-            .envs(profile.iter().copied())
-            .output()
-            .expect("the stand-in shell runs");
-        String::from_utf8_lossy(&said.stdout).into_owned()
+            .envs(profile.iter().copied());
+        command
+    }
+
+    /// What [`run_through`] prints with `folder` standing at `onto`, in a
+    /// user namespace in which this test's user is itself and a file
+    /// another owns reads as no one's, so a folder it doesn't own lies
+    /// under one it does, as only root could lay it out otherwise. None
+    /// where this machine has no `unshare` or `mount` on the path, or
+    /// makes no user namespace.
+    #[cfg(target_os = "linux")]
+    fn run_with_a_folder_standing(
+        (folder, onto): (&Path, &Path),
+        words: &[String],
+        program: &str,
+        profile: &[(&str, &str)],
+    ) -> Option<String> {
+        let (unshare, mount) = (on_the_path("unshare")?, on_the_path("mount")?);
+        let outer = ["--user", "--map-root-user", "--mount"];
+        let made = Command::new(&unshare).args(outer).arg("true").status();
+        if !made.is_ok_and(|status| status.success()) {
+            return None;
+        }
+        // Root in an outer namespace, which alone may bind a folder, then
+        // this test's own user again in an inner one, so the run reads
+        // owners as it would outside. Each program by where it is, since
+        // the profile's path may hold none of them.
+        let standing = concat!(
+            r#"mount=$1 unshare=$2; "$mount" --bind "$3" "$4" || exit 125; "#,
+            r#"user=$5 group=$6; shift 6; "#,
+            r#"exec "$unshare" --user --map-user="$user" --map-group="$group" "$@""#,
+        );
+        let run = stand_in(words, program, profile);
+        let mut namespaced = Command::new(&unshare);
+        namespaced
+            .args(outer)
+            .arg(the_shell())
+            .args(["-c", standing, "sh"])
+            .args([&mount, &unshare])
+            .args([folder, onto])
+            .arg(rustix::process::getuid().as_raw().to_string())
+            .arg(rustix::process::getgid().as_raw().to_string())
+            .arg(run.get_program())
+            .args(run.get_args());
+        for (name, value) in run.get_envs() {
+            if let Some(value) = value {
+                namespaced.env(name, value);
+            } else {
+                namespaced.env_remove(name);
+            }
+        }
+        let said = namespaced.output().expect("the namespaced run starts");
+        assert!(
+            said.status.success(),
+            "the folder stood and the run ended well: {}",
+            String::from_utf8_lossy(&said.stderr)
+        );
+        Some(String::from_utf8_lossy(&said.stdout).into_owned())
     }
 
     #[test]
@@ -1046,6 +1114,86 @@ mod tests {
             format!("{}:{}", shown(&system), shown(&above)),
             "a folder outside the home its user owns or could replace goes, as the home's do"
         );
+    }
+
+    // Followup 567: a folder its user neither owns nor could write goes too
+    // where it lies under one the user owns, who could rename it away.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_plain_run_keeps_no_folder_under_one_its_user_owns_whoever_owns_it() {
+        let made = tempfile::tempdir().expect("a temporary folder");
+        let at = fs::canonicalize(made.path()).expect("the folder's place");
+        let (home, sealed) = (at.join("home"), at.join("held/sealed"));
+        for folder in [&home, &sealed] {
+            fs::create_dir_all(folder).expect("a folder outside the home");
+        }
+        // The system's folder stands at `sealed`, so the folder there is
+        // one only the system could write, under `held`, this test's
+        // user's own; one made there would go for being its user's
+        // (`a_plain_run_keeps_no_folder_its_user_could_write`).
+        let (system, above) = the_systems_folders();
+        let standing = (system.as_path(), sealed.as_path());
+        let shown = |folder: &Path| folder.display().to_string();
+        let path = format!("{}:{}", shown(&sealed), shown(&above));
+        let profile = [("HOME", shown(&home)), ("PATH", path)];
+        let profile = profile
+            .each_ref()
+            .map(|(name, value)| (*name, value.as_str()));
+        let plain = plain_run("harbour", None, &home);
+        let sealed = shown(&sealed);
+        let neither = format!(r#"[ -O "{sealed}" ] || [ -w "{sealed}" ] || printf neither"#);
+        let Some(owned) = run_with_a_folder_standing(standing, &plain, &neither, &profile) else {
+            eprintln!(
+                "skipped: this machine makes no user namespace, in which alone a test \
+                 without root can lay a folder another owns under one its user owns"
+            );
+            return;
+        };
+        assert_eq!(
+            owned, "neither",
+            "the folder at {sealed} is one its user neither owns nor could write"
+        );
+        assert_eq!(
+            run_with_a_folder_standing(standing, &plain, r#"printf %s "$PATH""#, &profile),
+            Some(shown(&above)),
+            "the folder at {sealed} goes, since its user owns the one above it"
+        );
+    }
+
+    // Followup 567: a folder outside the home that leads into it goes for
+    // where it leads alone, though only the system could write it.
+    #[test]
+    fn a_plain_run_keeps_no_folder_that_leads_into_its_home_whoever_could_write_it() {
+        let made = tempfile::tempdir().expect("a temporary folder");
+        let at = fs::canonicalize(made.path()).expect("the folder's place");
+        // The home is the system's folder, which this test's user neither
+        // owns nor could write, nor any above it, so where a folder leads
+        // is all that can take it off; a folder made here would go for
+        // being its user's (`a_plain_run_keeps_no_folder_its_user_could_write`).
+        let (system, above) = the_systems_folders();
+        let leads = at.join("leads");
+        std::os::unix::fs::symlink(&system, &leads).expect("a folder leading into the home");
+        let shown = |folder: &Path| folder.display().to_string();
+        let path = format!("{}:{}", shown(&leads), shown(&above));
+        let elsewhere = at.join("elsewhere");
+        for (home, kept) in [
+            (&system, shown(&above)),
+            // Another home keeps it, by where it leads, so it is the home
+            // that took it off above.
+            (&elsewhere, format!("{}:{}", shown(&system), shown(&above))),
+        ] {
+            let plain = plain_run("harbour", None, home);
+            assert_eq!(
+                run_through(
+                    &plain,
+                    r#"printf %s "$PATH""#,
+                    &[("HOME", &shown(home)), ("PATH", &path)]
+                ),
+                kept,
+                "a folder leading into the home {} goes, whoever could write it",
+                home.display()
+            );
+        }
     }
 
     // Its case of the home moved here from
