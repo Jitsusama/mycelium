@@ -364,7 +364,7 @@ pub async fn run(
     .await?;
     pinned(&store, named.as_deref(), &other.machine)?;
     know_how_it_runs(starting.as_ref(), &other.machine);
-    let (claim, claimed_at) = claimed(&store, &other.machine).await?;
+    let (claim, asked_as_claimed) = claimed(&store, &other.machine).await?;
     let reach = reach_start(&store, &other.machine);
     // As it stood before admission, which marks a machine never linked
     // as of now.
@@ -475,7 +475,7 @@ pub async fn run(
     // still lets its claim go to a newer one at once.
     let result = tokio::select! {
         result = carrying => result,
-        () = superseded(&store, &other_machine, claimed_at) => Err(io::Error::new(
+        () = superseded(&store, &other_machine, asked_as_claimed) => Err(io::Error::new(
             io::ErrorKind::ConnectionAborted,
             format!("a newer link with {other_machine} took over"),
         )),
@@ -1035,22 +1035,23 @@ fn pinned(store: &impl Store, named: Option<&OnceLock<String>>, said: &str) -> i
 /// carried in under a second.
 const TAKEN_OVER_WITHIN: Duration = Duration::from_secs(10);
 
-/// This link's hold on `machine`, and when it took it. Where another link
-/// holds it, that one is asked to let it go ([`Store::supersede`]), since a
-/// newer link from the same machine means the older one's other end is
-/// gone though it hasn't heard so: a node restarted on 25 November had its
-/// new links to a cloud machine refused there while the old one's end
-/// went on for minutes. Refused when it isn't let go in time.
-async fn claimed(store: &impl Store, machine: &str) -> io::Result<(Claim, i64)> {
-    if let Some(claim) = store.claim(machine)? {
-        return Ok((claim, now()));
+/// This link's hold on `machine`, and the ask for it that stood as it took
+/// it, if any ([`claim_as_asked`]). Where another link holds it, that one
+/// is asked to let it go ([`Store::supersede`]), since a newer link from
+/// the same machine means the older one's other end is gone though it
+/// hasn't heard so: a node restarted on 25 November had its new links to a
+/// cloud machine refused there while the old one's end went on for
+/// minutes. Refused when it isn't let go in time.
+async fn claimed(store: &impl Store, machine: &str) -> io::Result<(Claim, Option<i64>)> {
+    if let Some(claimed) = claim_as_asked(store, machine)? {
+        return Ok(claimed);
     }
     store.supersede(machine)?;
     let taken = tokio::time::timeout(TAKEN_OVER_WITHIN, async {
         loop {
             tokio::time::sleep(LOOK_EVERY / 4).await;
-            if let Some(claim) = store.claim(machine)? {
-                return Ok::<_, io::Error>((claim, now()));
+            if let Some(claimed) = claim_as_asked(store, machine)? {
+                return Ok::<_, io::Error>(claimed);
             }
         }
     });
@@ -1062,16 +1063,23 @@ async fn claimed(store: &impl Store, machine: &str) -> io::Result<(Claim, i64)> 
     })
 }
 
+/// `machine`'s claim, unless another link holds it, with the ask for it
+/// that stood before it was taken. Any ask that stands later is a newer
+/// link's, whatever it is stamped: each is stamped by its own link's
+/// clock, which may read the millisecond the claim was taken in, or one
+/// before it.
+fn claim_as_asked(store: &impl Store, machine: &str) -> io::Result<Option<(Claim, Option<i64>)>> {
+    let asked = store.superseded(machine);
+    Ok(store.claim(machine)?.map(|claim| (claim, asked)))
+}
+
 /// Waits until a newer link with `machine` asks for the claim this link
-/// took at `claimed_at`, looking each [`LOOK_EVERY`].
-async fn superseded(store: &impl Store, machine: &str, claimed_at: i64) {
+/// took while `asked_as_claimed` stood, looking each [`LOOK_EVERY`].
+async fn superseded(store: &impl Store, machine: &str, asked_as_claimed: Option<i64>) {
     let mut looking = tokio::time::interval(LOOK_EVERY);
     loop {
         looking.tick().await;
-        if store
-            .superseded(machine)
-            .is_some_and(|asked| asked > claimed_at)
-        {
+        if store.superseded(machine) != asked_as_claimed {
             return;
         }
     }
