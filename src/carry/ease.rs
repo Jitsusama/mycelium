@@ -830,19 +830,31 @@ fn carried(
     })
 }
 
-/// Where `work` goes of `peers`, or why none takes it: the person's own
-/// machines first, and only where none of them takes it, the best of the
-/// rest. Placement keeps work that names no worker off every machine it
-/// counts a worker, the person's cloud machines among them, so each of
-/// those is placed by name, alone, and they are ranked here as placement
-/// ranks machines: by tier, then by headroom, then by name.
+/// Where `work` goes of `peers`, or why none takes it, tried in three
+/// steps, each taking the first placement it makes: the cloud ground a
+/// carry takes as the person's own ([`ground::in_cloud`]), rooms its node
+/// names for agents and the person's own machines in the cloud; then the
+/// person's other machines, such as a Mac; then the workers. Easing is
+/// there to move load into the cloud and keep the person's own machines
+/// light, so a room that takes the session goes before their Mac with
+/// more room, and only where no cloud ground takes it does one of their
+/// others. Placement keeps work that names no worker off every machine it
+/// counts a worker, the person's cloud machines among them, so the first
+/// and last steps place each machine by name, alone ([`best_alone`]),
+/// while the person's other machines are placed together, as any work is.
 fn placed(work: &Work, peers: &[Machine], loads: &Loads, now: Timestamp) -> Result<String, String> {
     let weights = &placement::Weights::STARTING;
-    let (own, workers): (Vec<Machine>, Vec<Machine>) = peers.iter().cloned().partition(|machine| {
-        ground::Lent::of(machine) == ground::Lent::Not
-            && !machine.declared.as_ref().is_some_and(Declared::is_worker)
-    });
+    let (cloud, rest): (Vec<Machine>, Vec<Machine>) = peers
+        .iter()
+        .cloned()
+        .partition(|machine| ground::in_cloud(machine, now));
+    let (own, workers): (Vec<Machine>, Vec<Machine>) = rest
+        .into_iter()
+        .partition(|machine| ground::Lent::at(machine, now) == ground::Lent::Not);
     let mut refused = Vec::new();
+    if let Some(best) = best_alone(work, &cloud, loads, now, &mut refused) {
+        return Ok(best);
+    }
     if !own.is_empty() {
         match placement::decide_as(work, &own, loads, &[], now, weights).placement {
             Placement::Placed { machine, .. } => return Ok(machine),
@@ -851,17 +863,31 @@ fn placed(work: &Work, peers: &[Machine], loads: &Loads, now: Timestamp) -> Resu
             }
         }
     }
+    best_alone(work, &workers, loads, now, &mut refused).ok_or_else(|| refused.join("; "))
+}
+
+/// The best of `machines` to take `work`, each placed by name, alone, and
+/// ranked as placement ranks machines: by tier, then by headroom, then by
+/// name. Why each that doesn't take it doesn't is added to `refused`.
+fn best_alone(
+    work: &Work,
+    machines: &[Machine],
+    loads: &Loads,
+    now: Timestamp,
+    refused: &mut Vec<String>,
+) -> Option<String> {
+    let weights = &placement::Weights::STARTING;
     let mut taking = Vec::new();
-    for worker in &workers {
+    for machine in machines {
         let mut named = work.clone();
-        named.needs.push(Need::Machine(worker.name.clone()));
+        named.needs.push(Need::Machine(machine.name.clone()));
         // One of the person's own stays past the bar a carry holds it to,
         // so it is placed for a session that long rather than refused for
         // leaving at all, as the Mac would never be.
-        if ground::Lent::of(worker) == ground::Lent::Not {
+        if ground::Lent::at(machine, now) == ground::Lent::Not {
             named.lasts = Some(ground::STAYS_FOR);
         }
-        let alone = std::slice::from_ref(worker);
+        let alone = std::slice::from_ref(machine);
         let decision = placement::decide_as(&named, alone, loads, &[], now, weights);
         match decision.placement {
             Placement::Placed { .. } => taking.extend(decision.judged),
@@ -880,7 +906,6 @@ fn placed(work: &Work, peers: &[Machine], loads: &Loads, now: Timestamp) -> Resu
                 .then_with(|| one.machine.cmp(&other.machine))
         })
         .map(|best| best.machine)
-        .ok_or_else(|| refused.join("; "))
 }
 
 /// Those of `peers` the start bringing back a session in the fence `kind`
@@ -2323,8 +2348,8 @@ pub(super) mod tests {
         both.push(machine("wren", 20.0));
         assert_eq!(
             carries(&chose(&both, &[cell("s1")], &hot_for(&both, 11))),
-            Some(("s1", "wren")),
-            "a machine placement takes unnamed goes first"
+            Some(("s1", "tern")),
+            "one in the cloud goes before wren, which isn't"
         );
     }
 
