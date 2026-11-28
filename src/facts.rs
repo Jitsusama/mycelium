@@ -387,27 +387,70 @@ pub fn measure_in(name: &str, realm: &str, sources: &Sources) -> Machine {
 /// The share of the last minute in which its disks held all its work at
 /// once, read from the groups its ceiling names where it names any, since
 /// machine-wide a task held back by a cap of its own counts, and from the
-/// machine's otherwise. Where none of the groups it names says a minute
-/// and the machine says one, the machine's is read, said on the node's
-/// log, so a misspelt group holds the machine to the stricter minute
-/// rather than turning its disk ceiling off.
+/// machine's otherwise, as [`worst_of_groups`] weighs them; what it says
+/// of a group saying none is said once on the node's log.
 fn io_full_minute(declared: Option<&Declared>, sources: &Sources) -> Option<f64> {
-    let machine = room::io_full_minute(&sources.procs);
-    match declared.and_then(|declared| declared.kept_lively.as_ref()) {
-        Some(lively) if !lively.io_full_from.is_empty() => {
-            room::io_full_minute_of(&sources.cgroups, &lively.io_full_from).or_else(|| {
-                if machine.is_some() {
-                    eprintln!(
-                        "none of {:?}, the groups a ceiling reads its disks from, \
-                         says a minute, so its disks are read machine-wide",
-                        lively.io_full_from
-                    );
-                }
-                machine
-            })
-        }
-        _ => machine,
+    let machine = || room::io_full_minute(&sources.procs);
+    let groups = declared
+        .and_then(|declared| declared.kept_lively.as_ref())
+        .map_or(&[][..], |lively| &lively.io_full_from[..]);
+    if groups.is_empty() {
+        return machine();
     }
+    let read: Vec<(&str, Option<f64>)> = groups
+        .iter()
+        .map(|group| {
+            (
+                group.as_str(),
+                room::io_full_minute_in(&sources.cgroups, group),
+            )
+        })
+        .collect();
+    let (minute, lines) = worst_of_groups(&read, machine);
+    for line in lines {
+        declared::say_once(line);
+    }
+    minute
+}
+
+/// The worst of the minutes `read` from the groups a ceiling names, each
+/// beside its name, with what the node should say of those saying none:
+/// each by its name where others say one, so a misspelt group among them
+/// is seen; and where none of them says one, `machine`'s minute, the
+/// stricter figure, so a misspelt group holds the machine to it rather
+/// than turning its disk ceiling off, said where the machine says one.
+fn worst_of_groups(
+    read: &[(&str, Option<f64>)],
+    machine: impl FnOnce() -> Option<f64>,
+) -> (Option<f64>, Vec<String>) {
+    let silent = read.iter().filter(|(_, minute)| minute.is_none());
+    if let Some(worst) = read
+        .iter()
+        .filter_map(|(_, minute)| *minute)
+        .reduce(f64::max)
+    {
+        let lines = silent
+            .map(|(group, _)| {
+                format!(
+                    "{group:?}, a group a declared ceiling reads its disks from, \
+                     says no minute, so the worst of the others is read"
+                )
+            })
+            .collect();
+        return (Some(worst), lines);
+    }
+    let groups: Vec<&str> = silent.map(|(group, _)| *group).collect();
+    let machine = machine();
+    let lines = machine
+        .map(|_| {
+            format!(
+                "none of {groups:?}, the groups a declared ceiling reads its disks \
+                 from, says a minute, so its disks are read machine-wide"
+            )
+        })
+        .into_iter()
+        .collect();
+    (machine, lines)
 }
 
 /// Measures this machine, named `name`, reading the rest from `sources`.
@@ -1462,6 +1505,8 @@ mod tests {
         std::fs::create_dir_all(cgroups.join("agents.slice")).expect("its group");
         std::fs::write(cgroups.join("agents.slice").join("io.pressure"), full(2.2))
             .expect("written");
+        std::fs::create_dir_all(cgroups.join("idle.slice")).expect("its group");
+        std::fs::write(cgroups.join("idle.slice").join("io.pressure"), full(0.0)).expect("written");
         let declared = home.path().join("declared.json");
         let sources = Sources {
             queue: Some(queue),
@@ -1490,6 +1535,19 @@ mod tests {
             "the group it names, not the machine its capped survey stalls"
         );
         assert_eq!(
+            io_with(r#"{"cpu": 28, "io_full": 1, "io_full_from": ["idle.slice"]}"#),
+            Some(0.0),
+            "a group reading 0.00 says a minute, never falling back to the machine's"
+        );
+        assert_eq!(
+            io_with(
+                r#"{"cpu": 28, "io_full": 1,
+                    "io_full_from": ["idle.slice", "gone.slice", "agents.slice"]}"#
+            ),
+            Some(2.2),
+            "the worst of the groups that say one, a group saying none passed over"
+        );
+        assert_eq!(
             io_with(r#"{"cpu": 28, "io_full": 1}"#),
             Some(8.5),
             "and the machine's where it names none"
@@ -1504,6 +1562,34 @@ mod tests {
             io_with(r#"{"cpu": 28, "io_full": 1, "io_full_from": ["gone.slice"]}"#),
             None,
             "and no minute where the machine says none either"
+        );
+    }
+
+    #[test]
+    fn a_group_saying_no_minute_is_said_by_its_name() {
+        let (minute, lines) = worst_of_groups(
+            &[
+                ("agents.slice", Some(2.2)),
+                ("gone.slice", None),
+                ("idle.slice", Some(0.0)),
+            ],
+            || panic!("the machine's minute is read only where no group says one"),
+        );
+        assert_eq!(minute, Some(2.2), "the worst of the groups that say one");
+        assert_eq!(lines.len(), 1, "one line, for the one group saying none");
+        assert!(lines[0].contains("\"gone.slice\""), "naming it: {lines:?}");
+        let (minute, lines) =
+            worst_of_groups(&[("gone.slice", None), ("lost.slice", None)], || Some(8.5));
+        assert_eq!(minute, Some(8.5), "none saying one reads the machine's");
+        assert_eq!(lines.len(), 1, "in one line: {lines:?}");
+        assert!(
+            lines[0].contains(r#"["gone.slice", "lost.slice"]"#),
+            "naming them all: {lines:?}"
+        );
+        assert_eq!(
+            worst_of_groups(&[("gone.slice", None)], || None),
+            (None, Vec::new()),
+            "and with no machine's minute either, no minute and nothing to say"
         );
     }
 
