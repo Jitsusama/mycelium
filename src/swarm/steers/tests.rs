@@ -177,11 +177,44 @@ fn a_peer_s_team_under_a_session_s_address_never_takes_its_words() {
         words: "Stop that".to_owned(),
         now: false,
     };
-    let aimed = aim(&swarm, say, "BUSY").expect("aimed");
+    let aimed = aim(&swarm, say.clone(), "BUSY").expect("aimed");
     assert_eq!(
         addresses(&aimed),
         ["BUSY"],
         "a team led by another took the words said to a session"
+    );
+    // A session record is a peer's presence too, so its lead may say
+    // the working session's address as well. Neither the team nor
+    // the session is sure to be the one meant, so both are named.
+    swarm.sessions[0]["address"] = json!("BUSY");
+    let refused = "a steer to BUSY is refused: Harbour's lead (s-lead) and Busy one \
+                   (s-busy) each say that address, and only some lead the team going by it";
+    assert_eq!(
+        aim(&swarm, say, "BUSY"),
+        Err(refused.to_owned()),
+        "a twin leading a team keyed by a working session's address took its words"
+    );
+    assert_eq!(
+        aim(&swarm, Act::Pause, "BUSY"),
+        Err(refused.to_owned()),
+        "a twin leading a team keyed by a working session's address took its pause"
+    );
+}
+
+#[test]
+fn sessions_apart_only_by_case_are_each_steered_by_their_own() {
+    let swarm = crate::swarm::tests::kelp_twins();
+    let aimed = aim(&swarm, say("Stop that"), "KELP01").expect("aimed");
+    assert_eq!(
+        (addresses(&aimed), &aimed.team),
+        (vec!["KELP01"], &None),
+        "a team led by a session alike but for case took a working session's words"
+    );
+    let aimed = aim(&swarm, say("Stop that"), "kelp01").expect("aimed");
+    assert_eq!(
+        (addresses(&aimed), aimed.team.as_deref()),
+        (vec!["kelp01"], Some("Kelp")),
+        "a working session alike but for case took the words said to a team"
     );
 }
 
@@ -191,6 +224,7 @@ fn a_team_goes_by_its_lead_s_address() {
     let mut swarm = swarm();
     swarm.teams[1]["key"] = json!("team:LEAD");
     swarm.teams[2]["within"] = json!("LEAD");
+    // Every session holding the address, here its one, leads the team.
     let aimed = aim(&swarm, Act::Pause, "LEAD").expect("aimed");
     assert_eq!(
         addresses(&aimed),
@@ -198,16 +232,21 @@ fn a_team_goes_by_its_lead_s_address() {
         "an orchestrator's team goes by its address, as it leads it"
     );
     // A second session saying the lead's address, found before it,
-    // still leaves the steer to the team the lead leads.
+    // refuses the steer. Picking a side would leave a hole either
+    // way: the twin that leads nothing may be a peer's, taking the
+    // team's steer, or the lead may be, hiding a working session as
+    // a team keyed by its address; nothing tells which is the peer's,
+    // so the person is shown both.
     let mut twin = swarm.sessions[0].clone();
     twin["id"] = json!("s-twin");
     twin["address"] = json!("LEAD");
     swarm.sessions.insert(0, twin);
-    let aimed = aim(&swarm, Act::Pause, "LEAD").expect("aimed");
+    let refused = "a steer to LEAD is refused: Harbour's lead (s-twin) and Harbour's lead \
+                   (s-lead) each say that address, and only some lead the team going by it";
     assert_eq!(
-        addresses(&aimed),
-        addresses(&whole),
-        "a session saying its lead's address took the team's steer"
+        aim(&swarm, Act::Pause, "LEAD"),
+        Err(refused.to_owned()),
+        "a session saying its lead's address, or the lead, took the steer"
     );
 }
 

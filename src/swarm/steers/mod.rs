@@ -16,7 +16,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::{
-    Standing, Swarm, address, asked, either, listed, names, shorts_of, title, told_apart, unmarked,
+    Held, Standing, Swarm, address, asked, either, held, listed, names, shorts_of, title,
+    told_apart, unmarked,
 };
 
 /// Who a steer is from: the person, as the harness's steers name them.
@@ -72,44 +73,53 @@ fn paused(session: &Value) -> bool {
     session["presence"]["paused"] == json!(true)
 }
 
-/// The living session `asked` names by its address, unless a team goes
-/// by that address and the session leads it, as an orchestrator's team
-/// goes by its lead's. A team is keyed by what its members say
-/// orchestrates them, so a peer could otherwise key one by a working
-/// session's address, lead it, and take the words meant for that
-/// session. One whose address is `asked` in its own case comes first.
-/// Where any session holding that address leads the team, none is
-/// named, so a second session saying the same address can't take the
-/// team's words by being found before its lead.
-pub(super) fn session_by_address<'a>(swarm: &'a Swarm, asked: &str) -> Option<&'a Value> {
-    let leads = |team: &Value, session: &Value| {
-        team["lead"]
-            .as_str()
-            .is_some_and(|lead| session["id"].as_str() == Some(lead))
+/// What a steer typed with `asked` does by address among the living
+/// sessions, as [`held`] judges: left to a team where every session
+/// holding it leads the team going by it, as an orchestrator's team goes
+/// by its lead's; taken by the first where none does; refused where they
+/// disagree. A team is keyed by what its members say orchestrates them,
+/// and a session record is a peer's presence, so a peer could key a team
+/// by a working session's address and lead it with a twin of that
+/// session, or put a twin that leads nothing beside a team's lead; were
+/// either side to win, the steer could reach the peer's session. Pages
+/// keep short names by the same rule, so what they draw steers as shown.
+pub(super) fn session_by_address<'a>(swarm: &'a Swarm, asked: &str) -> Held<&'a Value> {
+    let living: Vec<&Value> = swarm
+        .sessions
+        .iter()
+        .filter(|session| Standing::of(session).is_some())
+        .collect();
+    let said = |session: &&'a Value| {
+        (
+            session["address"].as_str().unwrap_or_default(),
+            session["id"].as_str(),
+        )
     };
-    let living = || {
-        swarm
-            .sessions
-            .iter()
-            .filter(|session| Standing::of(session).is_some())
-    };
-    let holding = |session: &&Value| {
-        session["address"]
-            .as_str()
-            .is_some_and(|address| address.eq_ignore_ascii_case(asked))
-    };
-    let led = living().filter(holding).any(|session| {
-        swarm
-            .teams
-            .iter()
-            .any(|team| address(team).eq_ignore_ascii_case(asked) && leads(team, session))
-    });
-    if led {
-        return None;
-    }
-    living()
-        .find(|session| session["address"].as_str() == Some(asked))
-        .or_else(|| living().find(holding))
+    held(&swarm.teams, &living, said, asked).map(|session| *session)
+}
+
+/// Why a steer to `asked` is refused where the living sessions holding
+/// it, `holders`, disagree on leading the team going by it: each is
+/// named by its title and its id, as twins may be titled alike, so a
+/// person can tell which is whose.
+pub(super) fn refused(asked: &str, holders: &[&Value]) -> String {
+    // Each is a peer's text, so each is held to one line.
+    let named: Vec<String> = holders
+        .iter()
+        .map(|session| {
+            format!(
+                "{} ({})",
+                unmarked(title(session)),
+                unmarked(session["id"].as_str().unwrap_or("no id"))
+            )
+        })
+        .collect();
+    format!(
+        "a steer to {} is refused: {} each say that address, and only some lead the team \
+         going by it",
+        unmarked(asked),
+        listed(&named.iter().map(String::as_str).collect::<Vec<_>>())
+    )
 }
 
 /// Whether a steer naming `asked` goes to `team` alone, as `named`
@@ -119,9 +129,10 @@ pub(super) fn reaches(swarm: &Swarm, asked: &str, team: &Value) -> bool {
 }
 
 /// The team or session `asked` names: a living session by its address,
-/// as [`session_by_address`] finds it, then a team by its address, then
-/// a team by its short name, then a team by a part of its name, then a
-/// living session by a part of its. An address comes before a short
+/// as [`session_by_address`] finds it, or why a steer by it is refused
+/// there, then a team by its address, then a team by its short name,
+/// then a team by a part of its name, then a living session by a part
+/// of its. An address comes before a short
 /// name because a peer picks its team's short name, and could otherwise
 /// pick another's address and take the words meant for it, or clean to
 /// it and hide it. A team whose address is `asked` in its own case comes
@@ -142,8 +153,10 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
     // cleaned on both sides, as `picked` matches them, so the name a page
     // shows steers the team it names.
     let joined = unmarked(&asked.split_whitespace().collect::<Vec<_>>().join("-"));
-    if let Some(session) = session_by_address(swarm, asked) {
-        return Ok(Named::Session(session));
+    match session_by_address(swarm, asked) {
+        Held::Left => {}
+        Held::One(session) => return Ok(Named::Session(session)),
+        Held::Split(holders) => return Err(refused(asked, &holders)),
     }
     let exactly: Vec<Named<'_>> = swarm
         .teams
@@ -200,8 +213,8 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
             // typing it steers the one it names. An act's word or `team`
             // isn't, since `swarm` reads the first act it finds as the
             // act, so typed before the act it would do another, and a
-            // team's address that a living session goes by steers that
-            // session, unless it leads the team.
+            // team's address is given only where a steer by it is left to
+            // a team, a session's only where it takes that session.
             let typeable =
                 |address: &str| crate::forage::is_address(address) && names::one_word(address);
             let typed = told_apart(
@@ -211,15 +224,18 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
                         Named::Team(record) => (
                             unmarked(names::typed(record, &shorts)),
                             Some(address(record)).filter(|address| {
-                                typeable(address) && session_by_address(swarm, address).is_none()
+                                typeable(address)
+                                    && matches!(session_by_address(swarm, address), Held::Left)
                             }),
                         ),
                         Named::Session(record) => (
                             unmarked(title(record)),
                             record["address"].as_str().filter(|address| {
                                 typeable(address)
-                                    && session_by_address(swarm, address)
-                                        .is_some_and(|found| found["id"] == record["id"])
+                                    && matches!(
+                                        session_by_address(swarm, address),
+                                        Held::One(found) if found["id"] == record["id"]
+                                    )
                             }),
                         ),
                     })

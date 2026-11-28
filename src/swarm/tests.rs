@@ -6,6 +6,7 @@
 
 use serde_json::{Value, json};
 
+use super::steers::{Act, aim};
 use super::{
     LONGEST_RUN, Look, Swarm, WHOLE, aligned, drawn_width, fit, most_steps, overview, padded, team,
     typed, unmarked, within, wrapped,
@@ -106,6 +107,20 @@ pub(super) fn swarm() -> Swarm {
     }
 }
 
+/// The harbour's swarm with Kelp keyed `kelp01` and led by its one
+/// session, which says that address, beside a working session found
+/// first that says `KELP01`: two addresses apart only by case.
+pub(super) fn kelp_twins() -> Swarm {
+    let mut swarm = swarm();
+    swarm.teams[2]["key"] = json!("team:kelp01");
+    swarm.teams[2]["lead"] = json!("s-ask");
+    swarm.sessions[3]["address"] = json!("kelp01");
+    swarm
+        .sessions
+        .insert(0, session("s-kelp01", "Working on kelp", "busy"));
+    swarm
+}
+
 #[test]
 fn the_overview_lists_every_team_worst_first_nested_with_their_counts() {
     let shown = overview(&swarm(), &look());
@@ -202,6 +217,17 @@ fn a_team_page_by_a_session_s_address_says_a_steer_reaches_that_session() {
     assert!(
         !led.contains("a steer to"),
         "a team its address steers said otherwise:\n{led}"
+    );
+    // Its lead saying BUSY too, a steer by it is refused, and so said.
+    swarm.sessions[0]["address"] = json!("BUSY");
+    let shown = team(&swarm, "BUSY", &look()).expect("Harbour is found by its key");
+    assert_eq!(
+        shown.lines().nth(2),
+        Some(
+            "a steer to BUSY is refused: Harbour's lead (s-lead) and Busy one (s-busy) each \
+             say that address, and only some lead the team going by it"
+        ),
+        "the page let a refused steer seem to reach the team or a session:\n{shown}"
     );
 }
 
@@ -620,6 +646,64 @@ fn a_lead_s_address_as_its_team_s_short_name_is_never_drawn_where_the_team_goes_
     assert!(
         !typed(&swarm).contains(&"lead".to_owned()),
         "a shell was offered a name that reaches the session LEAD alone"
+    );
+}
+
+#[test]
+fn a_short_name_held_by_sessions_split_over_leading_is_never_drawn_or_offered() {
+    // Harbour goes by its lead's address and is short-named for it, but a
+    // twin saying that address leads nothing, so a steer by the name is
+    // refused, and a page or a shell offering it would offer nothing.
+    let mut swarm = swarm();
+    swarm.teams[1]["key"] = json!("team:LEAD");
+    swarm.teams[2]["within"] = json!("LEAD");
+    swarm.teams[1]["swarm"] = json!("lead");
+    let drawn = |swarm: &Swarm| {
+        overview(swarm, &look())
+            .lines()
+            .any(|line| line.trim_start().starts_with("lead "))
+    };
+    assert!(
+        drawn(&swarm) && typed(&swarm).contains(&"lead".to_owned()),
+        "a team led by the session of its address lost its short name"
+    );
+    let mut twin = swarm.sessions[0].clone();
+    twin["id"] = json!("s-twin");
+    swarm.sessions.insert(0, twin);
+    assert!(
+        aim(&swarm, Act::Pause, "lead").is_err(),
+        "a steer by a name its holders split over was taken"
+    );
+    assert!(
+        !drawn(&swarm),
+        "a page drew a name a steer refuses:\n{}",
+        overview(&swarm, &look())
+    );
+    assert!(
+        !typed(&swarm).contains(&"lead".to_owned()),
+        "a shell was offered a name a steer refuses"
+    );
+}
+
+#[test]
+fn a_short_name_alike_but_for_case_to_a_session_s_address_is_drawn_where_its_case_leads() {
+    // Kelp goes by kelp01, which its lead says; the working session
+    // KELP01 differs only by case, so a steer by kelp01 still reaches Kelp.
+    let mut swarm = kelp_twins();
+    swarm.teams[2]["swarm"] = json!("kelp01");
+    let aimed = aim(&swarm, Act::Pause, "kelp01").expect("aimed");
+    assert_eq!(aimed.team.as_deref(), Some("Kelp"), "kelp01 missed Kelp");
+    let shown = overview(&swarm, &look());
+    assert!(
+        shown
+            .lines()
+            .any(|line| line.trim_start().starts_with("kelp01 ")),
+        "a page hid a name that reaches its team:\n{shown}"
+    );
+    assert!(
+        typed(&swarm).contains(&"kelp01".to_owned()),
+        "a shell wasn't offered a name that reaches its team: {:?}",
+        typed(&swarm)
     );
 }
 
