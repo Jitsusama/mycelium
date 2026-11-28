@@ -1584,10 +1584,10 @@ mod tests {
         assert_eq!(unsaid.io_full_minute, None, "or its disks");
     }
 
-    #[test]
-    fn a_machine_no_queue_is_kept_on_says_the_room_its_kernel_feels() {
-        let home = tempfile::tempdir().expect("a temporary folder");
-        let procs = home.path().join("proc");
+    /// The sources of a machine whose kernel, in `home`, feels pressure on
+    /// its processors, memory and disks, and half its memory free.
+    fn a_kernel_feeling_its_room(home: &Path) -> Sources {
+        let procs = home.join("proc");
         std::fs::create_dir_all(procs.join("pressure")).expect("its pressure");
         // Each window says its own number, so a reading taken from the
         // wrong one shows.
@@ -1605,10 +1605,16 @@ mod tests {
         write("pressure/memory", &pressure(3.0, 1.5));
         write("pressure/io", &pressure(6.0, 2.5));
         write("meminfo", "MemTotal: 2048 kB\nMemAvailable: 1024 kB\n");
-        let sources = Sources {
-            procs: procs.clone(),
+        Sources {
+            procs,
             ..Sources::nowhere()
-        };
+        }
+    }
+
+    #[test]
+    fn a_machine_no_queue_is_kept_on_says_the_room_its_kernel_feels() {
+        let home = tempfile::tempdir().expect("a temporary folder");
+        let sources = a_kernel_feeling_its_room(home.path());
         let room = measure("tern", &sources)
             .room
             .expect("a machine no harness runs on still feels its room");
@@ -1633,6 +1639,18 @@ mod tests {
             (0, 0),
             "a room no queue keeps starts no build or VM test"
         );
+        std::fs::remove_file(sources.procs.join("meminfo")).expect("removed");
+        assert_eq!(
+            measure("tern", &sources).room,
+            None,
+            "a kernel saying no memory free, as a Mac's, says no room"
+        );
+    }
+
+    #[test]
+    fn a_kernel_feels_its_room_only_with_no_queue_kept_and_within_no_other() {
+        let home = tempfile::tempdir().expect("a temporary folder");
+        let sources = a_kernel_feeling_its_room(home.path());
         let unwritten = Sources {
             queue: Some(home.path().join("queue.json")),
             ..sources.clone()
@@ -1692,12 +1710,6 @@ mod tests {
             measure("tern", &within).room,
             None,
             "a machine within another never feels its own, whose kernel misses its host's work"
-        );
-        std::fs::remove_file(procs.join("meminfo")).expect("removed");
-        assert_eq!(
-            measure("tern", &sources).room,
-            None,
-            "a kernel saying no memory free, as a Mac's, says no room"
         );
     }
 
