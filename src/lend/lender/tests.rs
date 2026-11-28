@@ -1007,6 +1007,9 @@ async fn a_hand_running_a_key_command_or_with_a_key_of_two_lines_or_to_a_file_is
     let folder = tempfile::tempdir().expect("a folder");
     let relay = folder.path().join("relay.sock");
     let handed = Lender::handed_in(folder.path().join("handed"), folder.path().to_owned(), None);
+    handed
+        .hand(hands(&relay, "Bearer handed-key"))
+        .expect("a lend is taken first");
     let mut commanded = hands(&relay, "Bearer handed-key");
     commanded.lend["budgets"]["room"]["key"] = json!(["/bin/sh", "-c", "printf key"]);
     let why = handed
@@ -1020,7 +1023,13 @@ async fn a_hand_running_a_key_command_or_with_a_key_of_two_lines_or_to_a_file_is
         !why.contains("kittiwake") && !why.contains("plover"),
         "the key isn't said: {why}"
     );
-    assert!(!handed.lends(), "nothing refused is taken");
+    assert!(why.contains("can't stand"), "{why}");
+    // Round 2's F18: a refused hand can't stand in for the lend before
+    // it, but leaves it standing neither, so it fails closed.
+    assert!(
+        !handed.lends(),
+        "nothing refused is taken, and what it would replace stands no more"
+    );
 
     let lending = Lending::new();
     let why = lending
@@ -1109,6 +1118,11 @@ async fn a_machine_its_vm_hands_a_budget_is_handed_it_alone_with_its_key() {
     taking
         .hand(uncapped)
         .expect("and that is taken too, lending no model");
+    assert!(taking.lends(), "what is taken lends");
+    let mut answers = answer_handed(&Arc::new(taking), "wren-1", self::lend("/v1/messages"));
+    let (status, why) = refusal_and_why(&mut answers).await;
+    assert_eq!(status, 403, "a model is refused: {why}");
+    assert!(why.contains("caps no spend"), "and that stands: {why}");
     assert_eq!(
         lending.lender.handing("tern-1").await,
         Ok(None),
@@ -1169,6 +1183,37 @@ async fn a_lend_taken_back_or_standing_too_long_lends_nothing_here() {
         .hand(hands(&relay, "Bearer handed-key"))
         .expect("the lend is taken");
     assert!(!stale.lends(), "a lend not handed again in time ends");
+}
+
+// Round 2's F7 and F13: a lend lasting no time can't show that handing it
+// again keeps it standing past when the first would have ended.
+#[test]
+fn a_lend_handed_again_stands_past_the_first_ones_end_until_its_own() {
+    let folder = tempfile::tempdir().expect("a folder");
+    let relay = folder.path().join("relay.sock");
+    let lasts = Duration::from_secs(60 * 60);
+    let handed = Lender::handed_in(folder.path().join("handed"), folder.path().to_owned(), None)
+        .lasting(lasts);
+    handed
+        .hand(hands(&relay, "Bearer first"))
+        .expect("the lend is taken");
+    let first = handed.handed_at().expect("it holds the lend");
+    // The clock moves on, if only by a tick, before it is handed again.
+    while Instant::now() <= first {}
+    handed
+        .hand(hands(&relay, "Bearer again"))
+        .expect("the lend is taken again");
+    let again = handed.handed_at().expect("it holds the lend");
+    let standing = handed.held_at(first + lasts).map(|hands| hands.key);
+    assert_eq!(
+        standing,
+        Some(Key("Bearer again".to_owned())),
+        "handed again, it stands past the first one's end"
+    );
+    assert!(
+        handed.held_at(again + lasts).is_none(),
+        "and ends at its own"
+    );
 }
 
 #[tokio::test]

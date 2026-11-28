@@ -367,7 +367,10 @@ impl Lender {
     /// Takes `hands` as what may be lent from now on, in place of all it
     /// was handed before, so a key and the budget it came with are never
     /// mixed with another's; a lend taken back ([`Hands::taken_back`])
-    /// leaves nothing handed. Refused by a lender reading a file.
+    /// leaves nothing handed, and so does one that is no lend, which
+    /// can't stand in for what was handed before but can't leave it
+    /// standing either, since it may have been sent to take it back.
+    /// Refused by a lender reading a file.
     ///
     /// # Errors
     ///
@@ -378,29 +381,49 @@ impl Lender {
                 "this machine lends as its own file says, and is handed nothing".to_owned(),
             );
         };
-        let handed = if hands.is_taken_back() {
-            None
+        let (handed, taken) = if hands.is_taken_back() {
+            (None, Ok(()))
         } else {
-            handed_written(&hands)?;
-            Some((hands, Instant::now()))
+            match handed_written(&hands) {
+                Ok(_) => (Some((hands, Instant::now())), Ok(())),
+                Err(why) => (None, Err(why)),
+            }
         };
         *held
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = handed;
-        Ok(())
+        taken
     }
 
     /// What it was handed last, while that stands: none once it is taken
     /// back or [`Self::lasts`] has passed since.
     fn held(&self) -> Option<Hands> {
+        self.held_at(Instant::now())
+    }
+
+    /// What it was handed last, as it stands at `now`.
+    fn held_at(&self, now: Instant) -> Option<Hands> {
         let Source::Handed(held) = &self.source else {
             return None;
         };
         held.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
-            .filter(|(_, at)| at.elapsed() < self.lasts)
+            .filter(|(_, at)| now.saturating_duration_since(*at) < self.lasts)
             .map(|(hands, _)| hands.clone())
+    }
+
+    /// When what it holds was last handed it, if it holds anything, so a
+    /// test can weigh when it ends without waiting for it to.
+    #[cfg(test)]
+    fn handed_at(&self) -> Option<Instant> {
+        let Source::Handed(held) = &self.source else {
+            return None;
+        };
+        held.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|(_, at)| *at)
     }
 
     /// Whether it lends anything now: one reading a file always may, and
@@ -559,9 +582,15 @@ impl Lender {
     /// once the day's requests are made or where what it may spend would
     /// pass what is left of the day's, and answering the day it counted
     /// in. A model's reserves the most it may spend, so requests asked at
-    /// once can't pass the cap together.
+    /// once can't pass the cap together. Where the counts themselves can't
+    /// be kept, as where the state folder faults, another lender may lend
+    /// it, since this one can't count it, though nothing refused it.
     fn count(&self, machine: &str, limits: Limits) -> Result<String, Refusal> {
         let day = jiff::Timestamp::now().strftime("%Y-%m-%d").to_string();
+        let faulted = |refusal: Refusal| Refusal {
+            elsewhere: refusal.status == 503,
+            ..refusal
+        };
         self.counted(machine, &day, |tally| {
             if tally.requests >= limits.requests {
                 return Err(refused(
@@ -586,7 +615,8 @@ impl Lender {
             }
             tally.requests += 1;
             Ok(())
-        })?;
+        })
+        .map_err(faulted)?;
         Ok(day)
     }
 
