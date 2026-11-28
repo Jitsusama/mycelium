@@ -138,6 +138,12 @@ impl Memory {
         self.held().messages.insert(id.to_owned(), body);
     }
 
+    /// Asks for `machine`'s claim as of `at`, in milliseconds since the
+    /// epoch, as a newer link whose clock reads `at` would.
+    pub fn supersede_as_of(&self, machine: &str, at: i64) {
+        self.held().superseded.insert(machine.to_owned(), at);
+    }
+
     /// Says a watch may have missed something, as one that overflowed
     /// does.
     pub fn overflow(&self) {
@@ -264,8 +270,7 @@ impl Store for Memory {
     }
 
     fn supersede(&self, machine: &str) -> io::Result<()> {
-        let at = jiff::Timestamp::now().as_millisecond();
-        self.held().superseded.insert(machine.to_owned(), at);
+        self.supersede_as_of(machine, jiff::Timestamp::now().as_millisecond());
         Ok(())
     }
 

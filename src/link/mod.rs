@@ -5351,6 +5351,30 @@ mod tests {
         .await;
     }
 
+    #[tokio::test]
+    async fn a_newer_link_asking_as_of_the_older_ones_claim_still_takes_over() {
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
+        kestrel.start_here("walgit", json!({"session": "walgit"}), true);
+        // A newer link's clock may read the millisecond the older link
+        // claimed kestrel in, or one before it, when set back.
+        let asked = now();
+        let (first, _first_far) = linked(&skiff, &kestrel, 1 << 16);
+        until(&skiff, |store| !store.presences().is_empty()).await;
+
+        skiff.supersede_as_of("kestrel", asked);
+        let ended = tokio::time::timeout(PATIENCE, first)
+            .await
+            .expect("the older link lets kestrel go in time")
+            .expect("the older link's end runs to its end");
+        let why = ended.expect_err("the older link ends as taken over");
+        assert!(
+            why.to_string()
+                .contains("a newer link with kestrel took over"),
+            "the older link lets its claim go to the newer one: {why}"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_write_the_other_end_never_takes_ends_the_link() {
         let (mut near, _far) = tokio::io::duplex(8);
