@@ -623,4 +623,38 @@ mod tests {
             "a lone change is sent within BETWEEN_SENDS and a little"
         );
     }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_burst_of_watches_begun_at_different_changes_builds_the_kind_once() {
+        const BURST: u64 = 8;
+        let holds = Moving::new();
+        let mut running = Vec::new();
+        for id in 0..BURST {
+            running.push(watch_moving(&holds, id));
+            holds.moves();
+            tokio::time::sleep(BETWEEN_SENDS / 10).await;
+        }
+        for (seen, _when) in &mut running {
+            seen.wait_for(Option::is_some).await.expect("its first answer");
+        }
+        assert_eq!(
+            holds.builds(),
+            1,
+            "{BURST} watches begun at {BURST} changes within BETWEEN_SENDS share one build"
+        );
+        let last = holds.moved.load(Ordering::SeqCst);
+        let by = Instant::now() + 2 * BETWEEN_SENDS;
+        for (id, (seen, _when)) in running.iter_mut().enumerate() {
+            let sent = tokio::time::timeout_at(by, seen.wait_for(|moved| *moved == Some(last)));
+            assert!(
+                matches!(sent.await, Ok(Ok(_))),
+                "watch {id} is sent the burst's last change"
+            );
+        }
+        assert_eq!(
+            holds.builds(),
+            2,
+            "and catching every watch up to it builds the kind once more, not once each"
+        );
+    }
 }
