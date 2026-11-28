@@ -2181,6 +2181,27 @@ mod tests {
         );
     }
 
+    /// A claim lets go as it drops though its lock file is still open
+    /// elsewhere, as it is in a process forked meanwhile until that execs,
+    /// which other tests in the suite do; a stop's put-away otherwise read
+    /// wren, which its sweep had just claimed and let go, as a link's.
+    #[test]
+    fn a_claim_lets_go_as_it_drops_though_its_file_is_open_elsewhere() {
+        let (_dir, store) = store();
+        let path = store.claims.join("wren.lock");
+        let lock = fs::File::create(path).expect("made");
+        // The same open file, as a fork holds it until it execs.
+        let forked = lock.try_clone().expect("held twice");
+        let claim = locked(lock).expect("locked").expect("none holds it");
+        drop(claim);
+
+        assert!(
+            store.claim("wren").expect("claimed").is_some(),
+            "the claim is let go though the fork holds its file"
+        );
+        drop(forked);
+    }
+
     /// A link running apart from the node marks only when the link went,
     /// keeping an older mark's time and the file's; a sight is never before
     /// the drop it kept.
