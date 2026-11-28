@@ -394,8 +394,16 @@ pub fn measure_in(name: &str, realm: &str, sources: &Sources) -> Machine {
 /// another never feels its own, since its kernel doesn't see its host's
 /// work, so it has its host's word or none. Nor has a machine whose
 /// kernel can't say all of its pressure and memory free, as a Mac's.
+/// A record that can't be looked for, as behind a fault of its folder's,
+/// is taken as written and so says no room. The record lives in the
+/// runtime folder, which a restart empties, so a harness that never came
+/// back from one reads as none kept: its kernel's room is said until a
+/// declaration says a harness keeps a queue there.
 fn room_of(declared: Option<&Declared>, sources: &Sources, now: jiff::Timestamp) -> Option<Room> {
-    let record = sources.queue.as_deref().filter(|queue| queue.exists());
+    let record = sources
+        .queue
+        .as_deref()
+        .filter(|queue| queue.try_exists().unwrap_or(true));
     if let Some(queue) = record {
         // The queue says the last ten seconds' pressure; the last minute's
         // is the kernel's own, which no queue's record carries.
@@ -1438,7 +1446,7 @@ mod tests {
         );
         assert!(
             said["room"].is_null(),
-            "with no queue kept, its room is unknown"
+            "with no queue kept and no kernel to feel, its room is unknown"
         );
         assert!(
             said["declared"].is_null(),
@@ -1661,6 +1669,16 @@ mod tests {
         assert!(
             (unkept.pressure.cpu - 82.0).abs() < f64::EPSILON,
             "so its kernel's room is said"
+        );
+        std::fs::write(home.path().join("jobs"), "").expect("a file where a folder would be");
+        let unlooked = Sources {
+            queue: Some(home.path().join("jobs").join("queue.json")),
+            ..sources.clone()
+        };
+        assert_eq!(
+            measure("tern", &unlooked).room,
+            None,
+            "a record that can't be looked for is no proof none is kept, so no room"
         );
         let queue = |heartbeat: i64| {
             serde_json::json!({
