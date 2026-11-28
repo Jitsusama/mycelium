@@ -5504,9 +5504,12 @@ impl<S: Store> Shared<S> {
     /// began ([`store::last_linked`]): the links this node keeps and those
     /// another machine dialled, which run apart from it and mark no worker
     /// it can read, both keep those marks in the store. Set both ways, so
-    /// nothing a machine says of itself, or a record says of it, counts.
+    /// nothing a machine says of itself, or its record says of it, counts.
     /// One unheard is said out of reach, whatever its record says: the
-    /// record outlives the node, and a session may write it ready.
+    /// record outlives the node, and a session may write it ready. The
+    /// marks lie beside the claims, where a session of this machine could
+    /// write one too, so they keep out a stale record, not a session set on
+    /// faking a link.
     fn as_heard(&self, mut machines: Vec<facts::Machine>) -> Vec<facts::Machine> {
         for one in machines.iter_mut().filter(|one| one.name != self.machine) {
             one.heard = store::last_linked(&self.store, &one.name)

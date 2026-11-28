@@ -1910,7 +1910,10 @@ Its `heard_this_run` is `true`, in a node's answer to `"Machines"`
 alone, where a link was let in with the machine, or stood linked with
 it, since that node began, a link it keeps or one the machine dialled;
 it is absent otherwise, and from a node too old to say, and nothing
-the machine or its record says sets it.
+the machine or its record says sets it. The marks it is read from lie
+in the node's state folder, where a session on the node's own machine
+could write one, so it keeps out a stale record, not a session set on
+faking a link.
 
 Its `fences_held` is `true` where its node starts an agent's held
 session through the launcher the session's fence declares there, as a
