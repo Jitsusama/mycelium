@@ -88,7 +88,7 @@ async fn a_room_is_kept_past_its_handover_while_used_and_let_go_once_empty_a_whi
         "a room another cell still runs on is kept, however long"
     );
     shared.lock().state.set_sessions(Vec::new());
-    tokio::time::sleep(EMPTY_FOR - Duration::from_secs(60)).await;
+    tokio::time::sleep(EMPTY_FOR.saturating_sub(Duration::from_secs(60))).await;
     assert!(
         !kept.is_finished(),
         "a room is kept a while after its last session ends"

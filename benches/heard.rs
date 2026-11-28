@@ -177,6 +177,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
                 serves: std::collections::BTreeMap::new(),
                 providers: Vec::new(),
                 book: mycelium::made::Book::at("/nowhere/made.jsonl".into()),
+                demand: node::demand::Given::default(),
                 flows: mycelium::flow::Flows::default(),
                 parked: "/nowhere/parked".into(),
                 held: "/nowhere/held".into(),

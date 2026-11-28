@@ -2163,6 +2163,24 @@ fn worker_given(socket: Option<PathBuf>, uid: Option<u32>) -> Option<node::Worke
         .map(|(socket, uid)| node::Worker { socket, uid })
 }
 
+/// What the node is given of its makes' demand: each `--via-marks`, by
+/// the `--via` it marks, and the budget file `--makes-within` names.
+///
+/// # Errors
+///
+/// When a `--via-marks` names a place no `--via` dials.
+fn demand_given(
+    programs: &[Program],
+    via_marks: Vec<(String, mycelium::made::Marks)>,
+    makes_within: Option<PathBuf>,
+) -> io::Result<node::demand::Given> {
+    Ok(node::demand::Given {
+        via_marks: node::demand::via_marks(programs, via_marks)
+            .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?,
+        makes_within,
+    })
+}
+
 /// The gates the node answers its workers, if it is given a program to
 /// answer them `with` and a list of whom `for`.
 ///
@@ -2235,11 +2253,7 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
     // given, else the system's, recorded once its realm is settled.
     let machine = place::node_machine(node.here.machine.as_deref())?;
     let (dials, serves) = (node.dials(), node.serves(&machine)?);
-    let demand = node::demand::Given {
-        via_marks: node::demand::via_marks(&node.programs, node.via_marks)
-            .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?,
-        makes_within: node.makes_within,
-    };
+    let demand = demand_given(&node.programs, node.via_marks, node.makes_within)?;
     let providers = node.providers;
     let declared = node.declared.unwrap_or_else(place::declared);
     let processes = processes_here(node.unattended);
