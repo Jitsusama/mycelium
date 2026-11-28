@@ -10544,10 +10544,10 @@ impl<S: Store> Shared<S> {
     /// forgets the mark after it rather than before.
     fn leaves(&self, made: &Made, at: jiff::Timestamp) -> bool {
         let inner = self.lock();
-        let ours = !inner
+        let ours = inner
             .booked
             .get(&made.machine)
-            .is_some_and(|(place, _)| *place != made.place);
+            .is_none_or(|(place, _)| *place == made.place);
         if ours {
             self.store.mark_left(&made.machine, at);
         }

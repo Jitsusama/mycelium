@@ -795,7 +795,8 @@ impl Store for Folders {
         let left = self.left.lock().unwrap_or_else(PoisonError::into_inner);
         for machine in &mut machines {
             machine.worker = workers.contains(&machine.name);
-            super::held_left(machine, left.get(&machine.name).copied());
+            let at = left.get(&machine.name).copied();
+            super::held_left(machine, at);
         }
         drop(left);
         drop(workers);

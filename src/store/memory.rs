@@ -561,7 +561,8 @@ impl Store for Memory {
                     worker: held.workers.contains(&machine.name),
                     ..machine.clone()
                 };
-                super::held_left(&mut machine, held.left.get(&machine.name).copied());
+                let left = held.left.get(&machine.name).copied();
+                super::held_left(&mut machine, left);
                 machine
             })
             .collect()
