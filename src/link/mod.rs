@@ -1811,13 +1811,22 @@ impl<S: Store> End<S> {
     /// let it send as that session, and only the label on its words would
     /// tell them apart; a parked one is woken by what is sent it, so its
     /// name is as taken.
+    ///
+    /// A session still living here under the same id is one carried onto
+    /// the worker, come up there before it ends here, so it isn't taken:
+    /// the store holds the worker's presence back until it ends here, and
+    /// an idle one says it only once, so dropping it would lose it.
     fn taken_name(&self, session: &str, body: &Value) -> Option<String> {
         let its = names(session, body);
         self.store
             .presences()
             .into_iter()
             .filter(|presence| {
-                stands(presence) && presence.elsewhere.as_deref() != Some(self.other.as_str())
+                stands(presence)
+                    && presence.elsewhere.as_deref() != Some(self.other.as_str())
+                    && !(presence.session == session
+                        && presence.lives
+                        && presence.elsewhere.is_none())
             })
             .flat_map(|presence| names(&presence.session, &presence.body))
             .find(|name| its.iter().any(|said| said.eq_ignore_ascii_case(name)))
@@ -2116,8 +2125,22 @@ impl<S: Store> End<S> {
     /// Puts each unkept presence again, since this machine's sessions
     /// moved and one of them may have ended here. One still refused was
     /// said in the log when it first came, so it isn't said again.
+    ///
+    /// A worker's is judged again first, as one it said while its session
+    /// lived here may since have parked here rather than ended, whose name
+    /// stays taken.
     fn put_unkept(&mut self) {
         for (session, (body, leases)) in std::mem::take(&mut self.unkept) {
+            if self.worker
+                && let Some(name) = self.taken_name(&session, &body)
+            {
+                eprintln!(
+                    "{} spoke for {session} as {name}, which a session parked here or \
+                     living elsewhere answers to, so a worker can't, and it isn't taken",
+                    self.other
+                );
+                continue;
+            }
             if let Err(error) = self.keep_presence(&session, body, leases)
                 && error.kind() != io::ErrorKind::PermissionDenied
             {
