@@ -28457,6 +28457,10 @@ esac
         let mut link = holding_skiff(dir, Memory::default(), None, unattended);
         runs_commands(&mut link, dir);
         declares_agent_fence(&link.declared, |_| {});
+        // Where the fences each session was seen in can be kept, since
+        // one that can't be kept tells none, so every reopening comes
+        // back strict whatever it was seen in.
+        link.fences = Arc::new(fences::Seen::at(dir.join("fences.json")));
         link.fences_held = true;
         link.starts_apart = true;
         // Never the node's own process.
