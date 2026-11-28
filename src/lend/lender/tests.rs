@@ -938,3 +938,171 @@ async fn a_key_that_cant_be_had_is_refused_and_never_said() {
         "nothing keyless reaches the relay"
     );
 }
+
+/// A lend handed to `skiff-` machines through the budget `room`, whose
+/// upstream is `relay`, with `key` as its key.
+fn hands(relay: &Path, key: &str) -> Hands {
+    Hands {
+        lend: json!({
+            "vms": [{"prefix": "skiff-", "budget": "room", "requests_a_day": 3,
+                     "usd_a_day": 10.0}],
+            "budgets": {"room": {
+                "upstream": relay,
+                "host": "models.example",
+                "paths": ["/v1/messages"],
+                "auth_header": "authorization",
+                "prices": {"a-model": a_model()},
+                "spend_watch": "proxy",
+            }},
+        }),
+        key: Key(key.to_owned()),
+    }
+}
+
+#[tokio::test]
+async fn a_lender_handed_its_lend_lends_nothing_until_handed_and_then_with_the_key_handed() {
+    // Its folder holds the relay and spend-watch's word, which a model's
+    // lend needs as much here as on the machine that handed it.
+    let mut lending = Lending::new();
+    let handed = Arc::new(Lender::handed_in(
+        lending.folder.path().join("handed"),
+        Some(lending.folder.path().to_owned()),
+    ));
+    assert!(!handed.lends(), "nothing was handed yet");
+    let mut answers = answer(&handed, "skiff-1", lend("/v1/messages"));
+    assert_eq!(refusal(&mut answers).await, 503);
+    assert!(!lending.relay.was_asked(), "nothing reaches the relay");
+
+    let relay = lending.folder.path().join("relay/agents.sock");
+    handed
+        .hand(hands(&relay, "Bearer handed-key"))
+        .expect("the lend is taken");
+    assert!(handed.lends());
+    let mut answers = answer(&handed, "skiff-1", lend("/v1/messages"));
+    let asked = lending.relay.asked().await;
+    let head = asked.head.to_ascii_lowercase();
+    assert!(
+        head.contains("\r\nauthorization: bearer handed-key\r\n"),
+        "{head}"
+    );
+    assert!(
+        !head.contains("lent-key") && !head.contains("the-vms-own"),
+        "neither the file's key nor the borrower's goes up: {head}"
+    );
+    asked
+        .answer
+        .send(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok".to_vec())
+        .expect("the relay answers");
+    let (lent, body) = whole(&mut answers).await;
+    assert_eq!(body, b"ok");
+    assert_eq!(lent.last(), Some(&Lent::Done), "{lent:?}");
+    assert!(
+        !format!("{lent:?}").contains("handed-key"),
+        "the key stays here"
+    );
+}
+
+#[tokio::test]
+async fn a_hand_running_a_key_command_or_with_a_key_of_two_lines_or_to_a_file_is_refused() {
+    let folder = tempfile::tempdir().expect("a folder");
+    let relay = folder.path().join("relay.sock");
+    let handed = Lender::handed_in(folder.path().join("handed"), None);
+    let mut commanded = hands(&relay, "Bearer handed-key");
+    commanded.lend["budgets"]["room"]["key"] = json!(["/bin/sh", "-c", "printf key"]);
+    let why = handed
+        .hand(commanded)
+        .expect_err("a budget handed runs no command of its own");
+    assert!(why.contains("key command"), "{why}");
+    let why = handed
+        .hand(hands(&relay, "Bearer kittiwake\nplover"))
+        .expect_err("a key of two lines can't stand in a request");
+    assert!(
+        !why.contains("kittiwake") && !why.contains("plover"),
+        "the key isn't said: {why}"
+    );
+    assert!(!handed.lends(), "nothing refused is taken");
+
+    let lending = Lending::new();
+    let why = lending
+        .lender
+        .hand(hands(&relay, "Bearer handed-key"))
+        .expect_err("a lender reading its file is handed nothing");
+    assert!(!why.contains("handed-key"), "{why}");
+}
+
+#[tokio::test]
+async fn a_machine_its_vm_hands_a_budget_is_handed_it_alone_with_its_key() {
+    let lending = Lending::bare(&json!({"vms": [], "budgets": {}}));
+    let script = lending.folder.path().join("key.sh");
+    fs::write(&script, "printf 'Bearer room-key\\n'\n").expect("the key's script");
+    let shell = std::env::var("BASH").unwrap_or_else(|_| "/bin/sh".to_owned());
+    let key = json!([shell, script]);
+    let room = json!({
+        "upstream": "relay/room.sock",
+        "host": "models.example",
+        "paths": ["/v1/messages"],
+        "auth_header": "authorization",
+        "prices": {"a-model": a_model()},
+        "spend_watch": "proxy",
+    });
+    let mut keyed = room.clone();
+    keyed["key"] = key.clone();
+    let lend = json!({
+        "vms": [
+            {"prefix": "skiff-", "budget": "models", "hands": "room",
+             "requests_a_day": 40, "usd_a_day": 12.5},
+            {"prefix": "tern-", "budget": "models", "requests_a_day": 3},
+            {"prefix": "wren-", "budget": "models", "hands": "room",
+             "requests_a_day": 5},
+        ],
+        "budgets": {
+            "models": {
+                "upstream": "relay/agents.sock",
+                "host": "models.example",
+                "paths": ["/v1/messages"],
+                "auth_header": "authorization",
+                "key": key,
+            },
+            "room": keyed,
+        },
+    });
+    fs::write(lending.folder.path().join("lend.json"), lend.to_string()).expect("the lend");
+
+    let handing = lending
+        .lender
+        .handing("skiff-1")
+        .await
+        .expect("the lend reads")
+        .expect("skiff-1 is handed its budget");
+    assert_eq!(handing.key, Key("Bearer room-key".to_owned()));
+    assert_eq!(
+        handing.lend,
+        json!({
+            "vms": [{"prefix": "skiff-1", "budget": "room", "requests_a_day": 40,
+                     "usd_a_day": 12.5}],
+            "budgets": {"room": room},
+        }),
+        "the lend names skiff-1 alone, and its budget no key command"
+    );
+    let taking = Lender::handed_in(lending.folder.path().join("handed"), None);
+    taking.hand(handing).expect("what is handed is taken");
+    let uncapped = lending
+        .lender
+        .handing("wren-1")
+        .await
+        .expect("the lend reads")
+        .expect("wren-1 is handed its budget");
+    assert_eq!(
+        uncapped.lend["vms"][0]["usd_a_day"],
+        serde_json::Value::Null,
+        "a vm capping no spend hands none"
+    );
+    taking
+        .hand(uncapped)
+        .expect("and that is taken too, lending no model");
+    assert_eq!(
+        lending.lender.handing("tern-1").await,
+        Ok(None),
+        "a vm handed no budget is handed nothing"
+    );
+}
