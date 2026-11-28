@@ -300,11 +300,11 @@ fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
             .map(str::to_owned)
     };
     let mut acting = swarm();
-    acting.teams[1]["swarm"] = json!("harbour;ls");
+    acting.teams[1]["swarm"] = json!("_harbour");
     assert_eq!(
         hint(&acting).as_deref(),
         Some("HARBOR"),
-        "a short name a shell acts on is given as the team's address"
+        "a short name not led by a letter is given as the team's address"
     );
     acting.teams[1]["swarm"] = json!("harbour tides");
     assert_eq!(
@@ -324,6 +324,11 @@ fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
         ),
         ("--names", "a name swarm reads as an option"),
         ("-ojson", "or as its output"),
+        ("harbour;ls", "a name a shell acts on"),
+        (
+            "kelp --names",
+            "or one written with an option among its words",
+        ),
         ("team", "a name read as the person saying what follows"),
         // Resume, as no session is addressed by it, so the act is what
         // refuses it, not the address a cleaned name would take.
@@ -338,9 +343,9 @@ fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
             misread.push(said);
         }
     }
-    // Kelp stays within it, so Harbour still leads, by a short name a
-    // shell would act on, so its address is what the hint would give.
-    acting.teams[1]["swarm"] = json!("harbour;ls");
+    // Kelp stays within it, so Harbour still leads, by a short name not
+    // led by a letter, so its address is what the hint would give.
+    acting.teams[1]["swarm"] = json!("_harbour");
     acting.teams[2]["within"] = json!("PAUSE");
     acting.teams[1]["key"] = json!("team:PAUSE");
     if hint(&acting).as_deref() != Some("<team>") {
@@ -621,6 +626,340 @@ fn a_short_name_that_cleans_to_an_act_is_never_drawn() {
 }
 
 #[test]
+fn a_team_held_back_by_its_title_s_act_is_reached_by_its_title_however_dashed() {
+    // Its short is held back, so its title is what's typed, with the
+    // keyboard's hyphen for the lookalike the title spells.
+    let mut titled = swarm();
+    titled.teams[1]["title"] = json!("Bootstrap reef\u{2011}pause tools");
+    let found = team(&titled, "reef-pause", &look()).unwrap_or_default();
+    assert!(
+        found.starts_with("Bootstrap"),
+        "a title's dash missed the keyboard's: {found}"
+    );
+    // Where two titles spell it apart, a page draws both alike, so either
+    // spelling, which may be pasted from either, finds both, to be told
+    // apart, each by the short worked out from its title.
+    titled.teams[0]["title"] = json!("Coral reef-pause notes");
+    for asked in ["reef-pause", "reef\u{2011}pause"] {
+        assert_eq!(
+            team(&titled, asked, &look()),
+            Err(format!("{asked} could be notes or tools")),
+            "two titles drawn alike, one was picked"
+        );
+    }
+}
+
+#[test]
+fn a_short_spelt_with_any_dash_is_drawn_with_a_hyphen_and_reached_however_dashed() {
+    // A dash drawn like a hyphen is typed as the keyboard's, and asked
+    // for as the quest spelt it, or with another dash, it reaches the
+    // team too; names.rs's own case tries every dash.
+    for (given, other) in [
+        ("harbour\u{2011}tides", "harbour\u{2212}tides"),
+        ("harbour\u{2212}tides", "harbour\u{2011}tides"),
+        ("harbour\u{FF0D}tides", "harbour\u{2013}tides"),
+        ("harbour\u{58A}tides", "harbour\u{2010}tides"),
+        ("harbour\u{10EAD}tides", "harbour\u{FE63}tides"),
+    ] {
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!(given);
+        let shown = overview(&swarm, &look());
+        assert!(
+            !shown.contains(given) && typed(&swarm).iter().any(|name| name == "harbour-tides"),
+            "{given} was not drawn as harbour-tides:\n{shown}"
+        );
+        for asked in ["harbour-tides", "harbour tides", given, other] {
+            let found = team(&swarm, asked, &look()).unwrap_or_default();
+            assert!(
+                found.starts_with("Harbour"),
+                "{asked}, given as {given}, missed Harbour: {found}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_short_a_keyboard_types_is_kept_and_one_it_cannot_is_not() {
+    // Letters, digits, `-`, `_` and `.` are typed as drawn, and so is a
+    // mark or joiner on a letter: an accent, held composed as a keyboard
+    // types it, Hindi's virama, after a nukta too, Thai's tone mark,
+    // Persian's non-joiner; a word of one script not drawn as Latin;
+    // and ASCII beside Han or Hangul, and Latin letters past Latin-1, as
+    // Azerbaijani's schwa and Hawaiian's okina are. What's drawn like a
+    // hyphen and isn't one, what a shell reads otherwise, an emoji, a
+    // lone mark or a pile of them, a mark on an ASCII letter, another
+    // script's letter drawn like Latin's beside it or two such scripts
+    // mixed, a word wholly of letters drawn as Latin's, and ASCII's
+    // fullwidth, mathematical, circled or superscript forms aren't, so
+    // the team goes by its title.
+    for (given, kept) in [
+        ("kelp_beds", "kelp_beds"),
+        ("v2.1", "v2.1"),
+        ("tid\u{E9}", "tid\u{E9}"),
+        ("tide\u{301}", "tid\u{E9}"),
+        ("\u{6E2F}\u{6E7E}", "\u{6E2F}\u{6E7E}"),
+        ("ai\u{6226}\u{7565}", "ai\u{6226}\u{7565}"),
+        ("k8s-\u{C6B4}\u{C601}", "k8s-\u{C6B4}\u{C601}"),
+        ("G\u{259}nc\u{259}", "g\u{259}nc\u{259}"),
+        ("hawai\u{2BB}i", "hawai\u{2BB}i"),
+        ("\u{6E2F}\u{4E00}\u{6E7E}", "\u{6E2F}\u{4E00}\u{6E7E}"),
+        (
+            "\u{30BF}\u{30A4}\u{30C9}\u{30FC}",
+            "\u{30BF}\u{30A4}\u{30C9}\u{30FC}",
+        ),
+        (
+            "\u{939}\u{93F}\u{928}\u{94D}\u{926}\u{940}",
+            "\u{939}\u{93F}\u{928}\u{94D}\u{926}\u{940}",
+        ),
+        ("\u{E44}\u{E21}\u{E48}", "\u{E44}\u{E21}\u{E48}"),
+        (
+            "\u{91C}\u{93C}\u{94D}\u{92F}\u{93E}\u{926}\u{93E}",
+            "\u{91C}\u{93C}\u{94D}\u{92F}\u{93E}\u{926}\u{93E}",
+        ),
+        ("\u{43C}\u{438}\u{440}", "\u{43C}\u{438}\u{440}"),
+        (
+            "\u{645}\u{6CC}\u{200C}\u{62E}\u{648}\u{627}\u{647}\u{645}",
+            "\u{645}\u{6CC}\u{200C}\u{62E}\u{648}\u{627}\u{647}\u{645}",
+        ),
+        ("Kelp \u{2013} Beds", "kelp---beds"),
+    ] {
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!(given);
+        assert!(
+            typed(&swarm).iter().any(|name| name == kept),
+            "{given} was refused: {:?}",
+            typed(&swarm)
+        );
+    }
+    // Refused, Harbour has no short, so the swarm's names are those of
+    // the others alone.
+    let mut untitled = swarm();
+    untitled.teams[1]["swarm"] = json!("\u{1F30A}");
+    let others = typed(&untitled);
+    for refused in [
+        "tide\u{2043}plan",
+        "\u{1F30A}tide",
+        "\u{301}tide",
+        "tide;ls",
+        "tide$(ls)",
+        "tide'-'plan",
+        "tide\u{FF70}plan",
+        "tide\u{30FC}plan",
+        "tide\u{2CBB}plan",
+        "tide\u{4E00}plan",
+        "t\u{456}de",
+        // Wholly Cyrillic and wholly Greek, drawn as coco and opo.
+        "\u{441}\u{43E}\u{441}\u{43E}",
+        "\u{3BF}\u{3C1}\u{3BF}",
+        "\u{435}\u{441}\u{43E}-\u{440}\u{430}\u{57D}\u{455}\u{435}",
+        "\u{FF54}\u{FF49}\u{FF44}\u{FF45}",
+        "\u{1D5CD}\u{1D5C2}\u{1D5BD}\u{1D5BE}",
+        "\u{24E3}\u{24D8}\u{24D3}\u{24D4}",
+        "\u{1D57}\u{2071}\u{1D48}\u{1D49}",
+        "\u{217D}\u{217C}\u{2170}",
+        // Not `ke\u{1C0}p`, drawn as Kelp's own short, which it takes
+        // from Kelp, as a refused name a quest gave says.
+        "ho\u{1C0}d",
+        "q\u{301}",
+        "v2\u{20E3}",
+        "g\u{259}\u{301}\u{302}\u{303}\u{304}",
+        // A non-joiner after a digit joins nothing a word spells.
+        "\u{663}\u{200C}\u{628}",
+        // Drawn like a hyphen by many fonts, and no dash: a hyphen
+        // bullet, a heavy minus, a box line and a modifier minus.
+        "reef\u{2043}pause",
+        "reef\u{2796}pause",
+        "reef\u{2500}pause",
+        "reef\u{2D7}pause",
+        "\u{2043}\u{2043}names",
+    ] {
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!(refused);
+        assert_eq!(
+            typed(&swarm),
+            others,
+            "{refused} was given as Harbour's name"
+        );
+    }
+}
+
+#[test]
+fn a_name_a_quest_gave_and_that_is_held_back_says_why_it_reaches_no_team() {
+    // Harbour's quest names it with a character a shell reads otherwise,
+    // so the name is held back, and asking for it says whose it was;
+    // a name no quest gave says only that nothing goes by it.
+    let mut held = swarm();
+    held.teams[1]["swarm"] = json!("tide;plan");
+    assert_eq!(
+        team(&held, "tide;plan", &look()),
+        Err(
+            "no team is named tide;plan: Harbour's quest gives it that name, held back as, \
+             typed or drawn, it reads as more than one name or as other than a name; ask for it \
+             by its address, HARBOR"
+                .to_owned()
+        ),
+        "a held-back name said nothing of why"
+    );
+    // Nor does another team whose title holds it show in Harbour's place.
+    held.teams[2]["title"] = json!("Kelp tide;plan drills");
+    assert!(
+        team(&held, "tide;plan", &look()).is_err_and(|why| why.contains("Harbour's quest")),
+        "a held-back name showed a team found by its title"
+    );
+    assert_eq!(
+        team(&held, "ebb", &look()),
+        Err("no team is named ebb".to_owned()),
+        "a name no quest gave was said to be held back"
+    );
+}
+
+/// Why a held-back name reaches no team, as a refusal words it.
+const HELD_BACK: &str =
+    "held back as, typed or drawn, it reads as more than one name or as other than a name";
+
+#[test]
+fn a_held_back_team_whose_title_holds_its_name_is_reached_by_its_address() {
+    // A held-back name finds nothing by a title holding it, its team's
+    // own among them, so the refusal names the address that reaches it.
+    let mut held = swarm();
+    held.teams[1]["title"] = json!("Tide;plan");
+    held.teams[1]["swarm"] = json!("tide;plan");
+    assert_eq!(
+        team(&held, "tide;plan", &look()),
+        Err(format!(
+            "no team is named tide;plan: Tide;plan's quest gives it that name, {HELD_BACK}; \
+             ask for it by its address, HARBOR"
+        )),
+        "a held-back name named no way to reach its team"
+    );
+    let found = team(&held, "HARBOR", &look()).unwrap_or_default();
+    assert!(
+        found.starts_with("Tide;plan"),
+        "its address missed it: {found}"
+    );
+}
+
+#[test]
+fn a_name_a_quest_gave_and_that_is_refused_keeps_any_drawn_alike_from_another() {
+    // Harbour's quest gives `kelp --names`, held back as a flag, and
+    // Reef's `kelp---names`, which is how Harbour's is typed, so one
+    // asking for it, typed or quoted, may mean either, and neither takes
+    // it. A name refused as untypable is drawn alike with the keyboard's
+    // spelling too, as a Cyrillic i is with `tide` and a hyphen bullet is
+    // with `tide-plan`, and one retyping it by eye types that.
+    for (refused, alike) in [
+        ("kelp --names", "kelp---names"),
+        ("t\u{456}de", "tide"),
+        ("tide\u{2043}plan", "tide-plan"),
+    ] {
+        let mut twins = swarm();
+        twins.teams[1]["swarm"] = json!(refused);
+        twins.teams[0]["swarm"] = json!(alike);
+        let names = typed(&twins);
+        assert!(
+            !names.iter().any(|name| name == alike),
+            "{alike} was kept beside {refused}: {names:?}"
+        );
+        for asked in [alike, refused] {
+            assert_eq!(
+                team(&twins, asked, &look()),
+                Err(format!(
+                    "no team is named {asked}: the quests of Reef and Harbour each give their \
+                     team that name, {HELD_BACK}; ask for one by its address, REEF01 or HARBOR"
+                )),
+                "{asked} reached a team, or named only one, beside {refused}"
+            );
+        }
+    }
+    // A short worked out from a title is kept from its team as surely,
+    // and its title found by it no more, as one asking may mean Harbour.
+    let mut drawn = swarm();
+    drawn.teams[1]["swarm"] = json!("ke\u{1C0}p");
+    let names = typed(&drawn);
+    assert!(
+        !names.iter().any(|name| name == "kelp"),
+        "kelp was kept beside ke\u{1C0}p: {names:?}"
+    );
+    assert_eq!(
+        team(&drawn, "kelp", &look()),
+        Err(format!(
+            "no team is named kelp: Harbour's quest gives it that name, {HELD_BACK}; ask for \
+             it by its address, HARBOR"
+        )),
+        "kelp reached Kelp beside ke\u{1C0}p"
+    );
+}
+
+#[test]
+fn a_name_asked_composed_or_apart_finds_what_is_spelt_the_other_way() {
+    // A keyboard may type an accent composed or apart, and either finds a
+    // short or a title's word spelt the other way.
+    let mut short = swarm();
+    short.teams[1]["swarm"] = json!("tid\u{E9}");
+    let mut titled = swarm();
+    titled.teams[1]["title"] = json!("Harbour tide\u{301} pools");
+    for (swarm, asked) in [(&short, "tide\u{301}"), (&titled, "tid\u{E9}")] {
+        let found = team(swarm, asked, &look()).unwrap_or_default();
+        assert!(
+            found.starts_with("Harbour"),
+            "{asked:?} missed Harbour: {found}"
+        );
+    }
+}
+
+#[test]
+fn a_short_at_the_edge_of_what_a_keyboard_types_is_judged_there() {
+    // As many marks in a row on a letter as a short keeps, and a long dash
+    // ending a Han word, are kept; a long dash beside a digit, or leading a
+    // name, where retyped by eye it's a flag, is refused.
+    for kept in ["g\u{259}\u{301}\u{302}\u{303}", "\u{7B2C}\u{4E00}"] {
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!(kept);
+        assert!(
+            typed(&swarm).iter().any(|name| name == kept),
+            "{kept} was refused: {:?}",
+            typed(&swarm)
+        );
+    }
+    let mut untitled = swarm();
+    untitled.teams[1]["swarm"] = json!("\u{1F30A}");
+    let others = typed(&untitled);
+    for refused in ["1\u{30FC}2", "\u{4E00}\u{53F7}"] {
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!(refused);
+        assert_eq!(
+            typed(&swarm),
+            others,
+            "{refused} was given as Harbour's name"
+        );
+    }
+}
+
+#[test]
+fn two_shorts_drawn_alike_keep_neither() {
+    // So a lookalike drawn as another team's short is never a twin that
+    // steers it. Two whose letters Unicode's confusables draw alike, as a
+    // dotless i and an i, or spelt composed and apart, are drawn alike,
+    // so neither keeps it; one refused as untypable keeps it from the
+    // other too, as the case of a refused name a quest gave says.
+    for (one, other) in [
+        ("tide-plan", "t\u{131}de-plan"),
+        ("tid\u{E9}", "tide\u{301}"),
+    ] {
+        let mut twins = swarm();
+        twins.teams[0]["swarm"] = json!(one);
+        twins.teams[1]["swarm"] = json!(other);
+        let names = typed(&twins);
+        assert!(
+            !names
+                .iter()
+                .any(|name| name.starts_with("tid") || name.starts_with("t\u{131}d")),
+            "{one} and {other}, drawn alike, kept a short: {names:?}"
+        );
+    }
+}
+
+#[test]
 fn a_short_name_is_drawn_as_it_is_typed_and_reaches_only_its_team() {
     // Drawn with its space, `tide plan` typed would reach `tide-plan`'s
     // team; a braille blank or a control draws like a space but parts no
@@ -654,14 +993,24 @@ fn a_short_name_is_drawn_as_it_is_typed_and_reaches_only_its_team() {
         "reef\u{2800}pause",
         "reef\u{1b}pause",
         "--names",
+        "kelp --names",
+        "kelp \u{2212}\u{2212}names",
+        "reef\u{2010}pause",
+        "reef\u{2013}pause",
+        "reef\u{FE63}pause",
+        "\u{2212}\u{2212}names",
+        "\u{FF0D}names",
+        // A mark on the act's own word, apart or composed, and an act
+        // spelt in Cyrillic letters drawn as its own, dze, a and u.
+        "reef-pause\u{301}",
+        "reef-paus\u{E9}",
+        "\u{455}\u{430}\u{443}",
     ] {
         let mut acting = swarm();
         acting.teams[1]["swarm"] = json!(given);
         let names = typed(&acting);
         assert!(
-            !names
-                .iter()
-                .any(|name| name.contains("pause") || name.contains("names")),
+            names.iter().any(|name| name == "Harbour"),
             "{given} was given as Harbour's name: {names:?}"
         );
     }
@@ -675,20 +1024,24 @@ fn a_short_name_is_drawn_as_it_is_typed_and_reaches_only_its_team() {
         "a title's controlled word was not drawn as typed: {:?}, {found}",
         typed(&controlled)
     );
-    // And to the same rule on acts.
-    let worked_out = "Bootstrap reef\u{2800}pause tools";
-    let mut titled = swarm();
-    titled.teams[1]["title"] = json!(worked_out);
-    assert!(
-        !typed(&titled)
-            .iter()
-            .any(|name| name != worked_out && name.contains("pause")),
-        "a title's word was given as Harbour's name: {:?}",
-        typed(&titled)
-    );
-    // A spaced name, a controlled one and a hyphened one are typed alike,
-    // so go to neither.
-    for spaced in ["tide plan", "tide\u{1b}plan"] {
+    // And to the same rule on acts, a dash in a title's word too.
+    for worked_out in [
+        "Bootstrap reef\u{2800}pause tools",
+        "Bootstrap reef\u{2011}pause tools",
+    ] {
+        let mut titled = swarm();
+        titled.teams[1]["title"] = json!(worked_out);
+        assert!(
+            !typed(&titled)
+                .iter()
+                .any(|name| name != worked_out && name.contains("pause")),
+            "a title's word was given as Harbour's name: {:?}",
+            typed(&titled)
+        );
+    }
+    // A spaced name, a controlled one, one with a lookalike dash and a
+    // hyphened one are typed alike, so go to neither.
+    for spaced in ["tide plan", "tide\u{1b}plan", "tide\u{2010}plan"] {
         let mut twins = swarm();
         twins.teams[0]["swarm"] = json!("tide-plan");
         twins.teams[1]["swarm"] = json!(spaced);

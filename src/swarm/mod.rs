@@ -27,7 +27,7 @@ pub(crate) use asks::{ASKS_FIT, together};
 pub(crate) use asks::{asked, asking};
 pub use asks::{read, records};
 pub use names::short_names;
-pub(crate) use names::{says_again, shell_word};
+pub(crate) use names::{drawn_form, says_again, shell_word};
 pub use shapes::Shapes;
 
 /// The swarm as the node holds it.
@@ -1078,9 +1078,20 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
         short: shorts.get(address(team)).map(String::as_str),
         title: title(team),
     };
-    match picked(&swarm.teams, asked, true, naming) {
+    let held = names::held_back(&swarm.teams, &shorts, asked);
+    // A name a quest gave its team and that's held back meant that team,
+    // so no other is found by a title holding it, as no steer is.
+    let found = if held.is_empty() {
+        picked(&swarm.teams, asked, true, naming)
+    } else {
+        picked(&swarm.teams, asked, true, |team| Naming {
+            title: "",
+            ..naming(team)
+        })
+    };
+    match found {
         Picked::One(team) => Ok(team),
-        Picked::None => Err(format!("no team is named {asked}")),
+        Picked::None => Err(names::unnamed(asked, &held, "no team is named", &typeable)),
         Picked::Several(many) => {
             // Each is a peer's text, so it is held to one line.
             let named = told_apart(
@@ -1131,16 +1142,22 @@ pub(crate) enum Picked<'a, T> {
 /// name is a group a peer may pick as well, so it isn't. An address
 /// matched in its own case comes before one matched in another, so two
 /// keyed alike but for case are each reached by the address told apart.
-/// A short name and a title are matched as they are drawn, cleaned on
-/// both sides, so what a page or hint shows finds what it names.
+/// A short name and a title are matched in their [`drawn_form`], as is
+/// what's asked, so what a page or hint shows finds what it names, and
+/// two titles a page draws alike, however their dashes are spelt, are
+/// several, whichever spelling is asked: one may be pasted from another.
 pub(crate) fn picked<'a: 'n, 'n, T>(
     things: &'a [T],
     asked: &str,
     first: bool,
     naming: impl Fn(&'a T) -> Naming<'n>,
 ) -> Picked<'a, T> {
-    // A short name's words may be typed apart, as `part deux`.
-    let joined = unmarked(&asked.split_whitespace().collect::<Vec<_>>().join("-"));
+    // A short name's words may be typed apart, as `part deux`, and its
+    // dashes spelt as the keyboard's hyphen or as the quest wrote them.
+    let joined = drawn_form(
+        &asked.split_whitespace().collect::<Vec<_>>().join("-"),
+        true,
+    );
     let exactly: Vec<&T> = things
         .iter()
         .filter(|thing| naming(thing).address == asked)
@@ -1156,7 +1173,7 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
     let by_short = |thing: &'a T| {
         naming(thing)
             .short
-            .is_some_and(|short| unmarked(short).eq_ignore_ascii_case(&joined))
+            .is_some_and(|short| drawn_form(short, true) == joined)
     };
     let whole: Vec<&T> = if first && !by_address.is_empty() {
         by_address
@@ -1168,15 +1185,11 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
             })
             .collect()
     };
-    let lower = unmarked(asked).to_lowercase();
     let found = if whole.is_empty() {
+        let lower = drawn_form(asked, true);
         things
             .iter()
-            .filter(|thing| {
-                unmarked(naming(thing).title)
-                    .to_lowercase()
-                    .contains(&lower)
-            })
+            .filter(|thing| drawn_form(naming(thing).title, true).contains(&lower))
             .collect()
     } else {
         whole

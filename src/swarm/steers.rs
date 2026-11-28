@@ -6,6 +6,10 @@
 //! person, so the harness reads it as the person's own words rather than
 //! a peer's. A team is named as the swarm's overview names it; a session
 //! by its address, or by its name when no team's matches.
+//!
+//! Long because its cases are most of it: each way a typed name could
+//! reach another than the one a page draws is pinned beside the order
+//! that keeps it from doing so.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -16,7 +20,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::{
-    Standing, Swarm, address, asked, either, listed, names, shorts_of, title, told_apart, unmarked,
+    Standing, Swarm, address, asked, drawn_form, either, listed, names, shorts_of, title,
+    told_apart, unmarked,
 };
 
 /// Who a steer is from: the person, as the harness's steers name them.
@@ -107,6 +112,28 @@ fn session_by_address<'a>(swarm: &'a Swarm, asked: &str) -> Option<&'a Value> {
         })
 }
 
+/// The teams whose titles hold `asked`, else the living sessions whose
+/// titles do, each in its [`drawn_form`] with dashes `folded` or not.
+/// Titles are matched folded, so two a page draws alike are several and
+/// a team's comes before a session's; spelt as asked, only to tell a
+/// session drawn alike with a team apart from none.
+fn titled<'a>(swarm: &'a Swarm, asked: &str, folded: bool) -> Vec<Named<'a>> {
+    let lower = drawn_form(asked, folded);
+    let matches = |record: &&Value| drawn_form(title(record), folded).contains(&lower);
+    let teams: Vec<&Value> = swarm.teams.iter().filter(matches).collect();
+    if teams.is_empty() {
+        swarm
+            .sessions
+            .iter()
+            .filter(|session| Standing::of(session).is_some())
+            .filter(matches)
+            .map(Named::Session)
+            .collect()
+    } else {
+        teams.into_iter().map(Named::Team).collect()
+    }
+}
+
 /// The team or session `asked` names: a living session by its address,
 /// as [`session_by_address`] finds it, then a team by its address, then
 /// a team by its short name, then a team by a part of its name, then a
@@ -117,20 +144,21 @@ fn session_by_address<'a>(swarm: &'a Swarm, asked: &str) -> Option<&'a Value> {
 /// before one keyed alike but for case. Several are each named as
 /// they're typed, a team by its short name, so one can be picked; two
 /// teams whose short names clean alike are several, as `picked` finds
-/// them, so neither takes a steer meant for the other.
+/// them, so neither takes a steer meant for the other; so are a team
+/// whose title holds what's asked only once its dashes fold and a
+/// session whose title holds it as typed, as a page draws them alike.
 fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
-    let living = || {
-        swarm
-            .sessions
-            .iter()
-            .filter(|session| Standing::of(session).is_some())
-    };
     let shorts = shorts_of(swarm);
     // A short name's words may be typed apart, as `part deux`. Short
     // names and titles are matched as the swarm's pages draw them,
-    // cleaned on both sides, as `picked` matches them, so the name a page
-    // shows steers the team it names.
-    let joined = unmarked(&asked.split_whitespace().collect::<Vec<_>>().join("-"));
+    // cleaned on both sides, with each dash the keyboard's hyphen, as
+    // `picked` matches them, so the name a page shows steers the team it
+    // names, and the spelling its quest gave reaches it rather than a
+    // session whose title holds that spelling.
+    let joined = drawn_form(
+        &asked.split_whitespace().collect::<Vec<_>>().join("-"),
+        true,
+    );
     if let Some(session) = session_by_address(swarm, asked) {
         return Ok(Named::Session(session));
     }
@@ -157,21 +185,29 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
             .filter(|team| {
                 shorts
                     .get(address(team))
-                    .is_some_and(|short| unmarked(short).eq_ignore_ascii_case(&joined))
+                    .is_some_and(|short| drawn_form(short, true) == joined)
             })
             .map(Named::Team)
             .collect()
     } else {
         by_address
     };
-    let mut found: Vec<Named<'_>> = if whole.is_empty() {
-        let lower = unmarked(asked).to_lowercase();
-        let matches = |record: &&Value| unmarked(title(record)).to_lowercase().contains(&lower);
-        let teams: Vec<&Value> = swarm.teams.iter().filter(matches).collect();
-        if teams.is_empty() {
-            living().filter(matches).map(Named::Session).collect()
-        } else {
-            teams.into_iter().map(Named::Team).collect()
+    // A name a quest gave its team and that's held back meant that team,
+    // so it steers nothing found only by a title holding it, team or
+    // session.
+    let held = names::held_back(&swarm.teams, &shorts, asked);
+    let mut found: Vec<Named<'_>> = if whole.is_empty() && held.is_empty() {
+        // A team found only once its dashes fold is drawn alike with a
+        // session whose title holds what's asked as typed, however that
+        // spells its dashes, as it may be pasted from either, so each is
+        // named for the person to pick, rather than one taking the steer.
+        let folded = titled(swarm, asked, true);
+        let spelt = titled(swarm, asked, false);
+        match (folded.first(), spelt.first()) {
+            (Some(Named::Team(_)), Some(Named::Session(_))) => {
+                folded.into_iter().chain(spelt).collect()
+            }
+            _ => folded,
         }
     } else {
         whole
@@ -181,18 +217,22 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
     {
         return Ok(one);
     }
+    // An address is named where typing it steers the one it names. An
+    // act's word or `team` isn't, since `swarm` reads the first act it
+    // finds as the act, so typed before the act it would do another, and
+    // a team's address that a living session goes by steers that
+    // session, unless it leads the team.
+    let typeable = |address: &str| crate::forage::is_address(address) && names::one_word(address);
     match found.as_slice() {
-        [] => Err(format!("nothing in the swarm is named {asked}")),
+        [] => Err(names::unnamed(
+            asked,
+            &held,
+            "nothing in the swarm is named",
+            &|address| typeable(address) && session_by_address(swarm, address).is_none(),
+        )),
         many => {
             // Each is a peer's text, so each is held to one line.
-            // Two drawn alike are each given their address too, where
-            // typing it steers the one it names. An act's word or `team`
-            // isn't, since `swarm` reads the first act it finds as the
-            // act, so typed before the act it would do another, and a
-            // team's address that a living session goes by steers that
-            // session, unless it leads the team.
-            let typeable =
-                |address: &str| crate::forage::is_address(address) && names::one_word(address);
+            // Two drawn alike are each given their address too.
             let typed = told_apart(
                 &many
                     .iter()
@@ -570,6 +610,156 @@ mod tests {
                 "{asked} steered another than Harbour"
             );
         }
+    }
+
+    #[test]
+    fn a_steer_finds_a_team_however_its_dashes_are_spelt() {
+        // The short is held with the keyboard's hyphen, so the quest's own
+        // spelling must meet it too, rather than miss it and fall through
+        // to the one session whose title holds that spelling.
+        let mut short = swarm();
+        short.teams[1]["swarm"] = json!("harbour\u{2011}tides");
+        short.sessions[4]["title"] = json!("harbour\u{2011}tides notes");
+        // And a title's dash spelt as a lookalike meets the keyboard's.
+        let mut titled = swarm();
+        titled.teams[1]["title"] = json!("Harbour\u{2011}Tides");
+        for (swarm, asked) in [
+            (&short, "harbour\u{2011}tides"),
+            (&short, "harbour-tides"),
+            (&titled, "bour-tid"),
+        ] {
+            let aimed = aim(swarm, Act::Pause, asked)
+                .unwrap_or_else(|why| panic!("{asked} missed Harbour: {why}"));
+            assert_eq!(
+                addresses(&aimed),
+                ["LEAD", "BUSY", "ASK"],
+                "{asked} steered another than Harbour"
+            );
+        }
+    }
+
+    #[test]
+    fn a_team_and_a_session_whose_titles_spell_a_dash_apart_are_several_however_asked() {
+        // A page draws Harbour's title and a session's alike, and either
+        // spelling may be pasted from one or the other, so asked with the
+        // session's lookalike, neither takes the steer; each is named to
+        // be picked. With the team's own spelling, the team's title holds
+        // it as typed, and a team comes before a session.
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!("dock");
+        swarm.teams[1]["title"] = json!("Bootstrap harbour-tides tools");
+        swarm.sessions[4]["title"] = json!("harbour\u{2011}tides notes");
+        assert_eq!(
+            aim(&swarm, Act::Pause, "harbour\u{2011}tides").map(|aimed| addresses(&aimed).len()),
+            Err("harbour\u{2011}tides could be dock or harbour\u{2011}tides notes".to_owned()),
+            "one of two drawn alike took the steer"
+        );
+        let aimed = aim(&swarm, Act::Pause, "harbour-tides")
+            .unwrap_or_else(|why| panic!("harbour-tides steered nothing: {why}"));
+        assert_eq!(
+            addresses(&aimed),
+            ["LEAD", "BUSY", "ASK"],
+            "harbour-tides steered another"
+        );
+        // Spelt the other way round, the keyboard's hyphen a person types
+        // for both can't say which was meant either.
+        swarm.teams[1]["title"] = json!("Bootstrap harbour\u{2011}tides tools");
+        swarm.sessions[4]["title"] = json!("harbour-tides notes");
+        assert_eq!(
+            aim(&swarm, Act::Pause, "harbour-tides").map(|aimed| addresses(&aimed).len()),
+            Err("harbour-tides could be dock or harbour-tides notes".to_owned()),
+            "one of two drawn alike took the steer"
+        );
+    }
+
+    #[test]
+    fn a_name_a_quest_gave_and_that_is_held_back_steers_no_session_and_says_why() {
+        // Harbour's quest names it as an act would be typed, so its name
+        // is held back; a session whose title holds that name isn't what
+        // a person typing it meant, and the refusal says whose it was.
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!("reef pause");
+        swarm.sessions[4]["title"] = json!("reef-pause notes");
+        assert_eq!(
+            aim(&swarm, Act::Pause, "reef-pause").map(|aimed| addresses(&aimed).len()),
+            Err(
+                "nothing in the swarm is named reef-pause: Harbour's quest gives it that name, \
+                 held back as, typed or drawn, it reads as more than one name or as other than \
+                 a name; ask for it by its address, HARBOR"
+                    .to_owned()
+            ),
+            "a held-back name steered a session, or said nothing of why"
+        );
+    }
+
+    #[test]
+    fn a_held_back_team_whose_title_holds_its_name_is_steered_by_its_address() {
+        // Its title is searched no more than any other's is for a name
+        // held back, so its address is all that reaches it, and the
+        // refusal names it.
+        let mut swarm = swarm();
+        swarm.teams[1]["title"] = json!("Tide;plan");
+        swarm.teams[1]["swarm"] = json!("tide;plan");
+        let why = "held back as, typed or drawn, it reads as more than one name or as other \
+                   than a name";
+        assert_eq!(
+            aim(&swarm, Act::Pause, "tide;plan").map(|aimed| addresses(&aimed).len()),
+            Err(format!(
+                "nothing in the swarm is named tide;plan: Tide;plan's quest gives it that name, \
+                 {why}; ask for it by its address, HARBOR"
+            )),
+            "a held-back name named no way to reach its team"
+        );
+        let aimed = aim(&swarm, Act::Pause, "HARBOR")
+            .unwrap_or_else(|why| panic!("its address missed it: {why}"));
+        assert_eq!(
+            addresses(&aimed),
+            ["LEAD", "BUSY", "ASK"],
+            "its address steered another"
+        );
+        // A living session going by that address takes it, so the title
+        // is all the refusal can offer.
+        let moored = json!({"key": "session:s-harbor", "id": "s-harbor",
+                            "address": "HARBOR", "title": "Moored", "state": "busy"});
+        swarm.sessions.push(moored);
+        assert_eq!(
+            aim(&swarm, Act::Pause, "tide;plan").map(|aimed| addresses(&aimed).len()),
+            Err(format!(
+                "nothing in the swarm is named tide;plan: Tide;plan's quest gives it that name, \
+                 {why}; ask for it by its title"
+            )),
+            "an address a session takes was offered for its team"
+        );
+    }
+
+    #[test]
+    fn a_held_back_name_steers_no_team_by_its_title_and_names_each_quest_giving_it() {
+        // Kelp's title holds the name Harbour's quest gave Harbour, which
+        // a person typing it meant, so Kelp doesn't take the steer.
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!("reef pause");
+        swarm.teams[2]["title"] = json!("Kelp reef-pause drills");
+        let why = "held back as, typed or drawn, it reads as more than one name or as other \
+                   than a name";
+        assert_eq!(
+            aim(&swarm, Act::Pause, "reef-pause").map(|aimed| addresses(&aimed).len()),
+            Err(format!(
+                "nothing in the swarm is named reef-pause: Harbour's quest gives it that name, \
+                 {why}; ask for it by its address, HARBOR"
+            )),
+            "a held-back name steered a team found by its title"
+        );
+        // Given by two quests, it names both, not the first alone.
+        swarm.teams[0]["swarm"] = json!("reef pause");
+        assert_eq!(
+            aim(&swarm, Act::Pause, "reef-pause").map(|aimed| addresses(&aimed).len()),
+            Err(format!(
+                "nothing in the swarm is named reef-pause: the quests of Reef and Harbour each \
+                 give their team that name, {why}; ask for one by its address, REEF01 or \
+                 HARBOR"
+            )),
+            "a held-back name given by two quests named one"
+        );
     }
 
     #[test]
