@@ -262,6 +262,14 @@ same code, each line a JSON value:
    while one whose process still lives there never does.
 5. `{"Ended": {"session"}}`: a session of the sending end's machine has
    ended.
+   An end says a session's presence before any message it sent, and
+   says it ended only after every message within reach the other end
+   lacks: it reads its sessions as they stand when it comes to a
+   change, which may be after a session's last message landed and the
+   session parked or ended. Its minute's catch-up says the presences
+   first and the messages after. So the other end judges each message
+   against the presence its sender had as it said it, as a worker's
+   messages are, below.
 6. `{"Share": say}`: talk about shared quests, as below. An end that
    shares nothing sends none, so it still links with an end older than
    sharing.

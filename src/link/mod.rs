@@ -2784,15 +2784,26 @@ impl<S: Store> End<S> {
         }
     }
 
-    /// Sends every message within reach the other end lacks, from where
-    /// its Have's list began, if it said.
+    /// Sends every message within reach the other end lacks, after the
+    /// presences of the sessions living now, so a message from one that
+    /// began since its presence was last sent never goes ahead of it: a
+    /// worker's message is taken only from a session whose presence the
+    /// other end holds as it reads the message.
     async fn catch_up(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
+        self.send_presence(writing).await?;
+        self.send_lacked(writing).await?;
+        self.hearing.caught_up.get_or_insert_with(now);
+        Ok(())
+    }
+
+    /// Sends every message within reach the other end lacks, from where
+    /// its Have's list began, if it said: it holds those from before, or
+    /// let them go, so offering them again only has them refused.
+    async fn send_lacked(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
         let ids = self
             .store
             .message_ids(have::offered_from(self.reach, self.listed_from));
-        self.send_messages(ids, writing).await?;
-        self.hearing.caught_up.get_or_insert_with(now);
-        self.send_presence(writing).await
+        self.send_messages(ids, writing).await
     }
 
     /// Sends the messages among `ids` the other end doesn't hold yet,
@@ -2817,7 +2828,14 @@ impl<S: Store> End<S> {
         Ok(())
     }
 
-    /// Sends what changed in this machine's living sessions since last sent.
+    /// Sends what changed in this machine's living sessions since last sent,
+    /// then, where any ended, every message the other end lacks before
+    /// their ends. A change is told after it lands, and this reads the
+    /// sessions as they are by then, so a session whose last message is
+    /// still waiting to be told may have ended already: its end would go
+    /// ahead of its words, and a worker's link refuses a message from a
+    /// session it holds no presence for, as it refused a room's session's
+    /// last words on 27 November.
     async fn send_presence(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
         let living = self.living();
         self.handover.ran |= !living.is_empty();
@@ -2827,10 +2845,6 @@ impl<S: Store> End<S> {
             .filter(|session| !living.contains_key(*session))
             .cloned()
             .collect();
-        for session in ended {
-            self.sent.remove(&session);
-            send(writing, &Frame::Ended { session }).await?;
-        }
         self.ask_starters(&living);
         let holdings = self.store.holdings();
         for (session, (body, held)) in living {
@@ -2866,6 +2880,13 @@ impl<S: Store> End<S> {
                 .await?;
                 self.sent.insert(session, said);
             }
+        }
+        if !ended.is_empty() {
+            self.send_lacked(writing).await?;
+        }
+        for session in ended {
+            self.sent.remove(&session);
+            send(writing, &Frame::Ended { session }).await?;
         }
         Ok(())
     }
@@ -3196,6 +3217,8 @@ mod tests {
     use crate::steer;
     use crate::store::memory::Memory;
     use crate::wire::By;
+
+    mod in_order;
 
     #[test]
     fn a_run_from_another_machine_that_doesnt_say_who_asks_runs_strictly_fenced() {
