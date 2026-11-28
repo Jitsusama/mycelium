@@ -23,7 +23,7 @@ use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 
 use super::clones::{Clone, Cloning};
-use super::ended::{Processes, Removal, Users, take_away};
+use super::ended::{Processes, Removal, Users, beside, take_away_keeping_aside};
 use super::ledger::{
     Entry, Held, Ledger, Ledgers, Scan, Sight, clock, is_quest, lasting, shared_of,
 };
@@ -468,6 +468,20 @@ pub enum Say {
     },
 }
 
+impl Say {
+    /// The quest this says something of, or `None` for a Shares, which
+    /// speaks of every quest.
+    fn quest(&self) -> Option<&str> {
+        match self {
+            Self::Shares { .. } => None,
+            Self::Holds { quest, .. }
+            | Self::Want { quest, .. }
+            | Self::Piece { quest, .. }
+            | Self::File { quest, .. } => Some(quest),
+        }
+    }
+}
+
 /// This end's part in the talk.
 pub struct Exchange {
     places: Places,
@@ -504,6 +518,27 @@ pub struct Exchange {
     users: Box<dyn Users>,
     /// When each ended quest's scratch, found in use, is tried again.
     sweep_again: BTreeMap<String, Instant>,
+    /// When the quests of the other end's refused here are taken up again
+    /// ([`Self::take_up_refused_when_due`]).
+    take_up_again: Option<Instant>,
+    /// How long the next refusal of a quest refused again waits, doubling
+    /// each time to [`TAKE_UP_AT_MOST`]. It is one wait for every quest
+    /// the link refuses, starting over at each Shares heard, which tries
+    /// them all again.
+    take_up_wait: Duration,
+    /// The quests of the other end's whose taking up, or whose scratch's
+    /// or clones', was refused here, tried again when [`Self::take_up_again`]
+    /// comes.
+    refused: BTreeSet<String>,
+    /// What the other end said it holds of each refused quest, heard again
+    /// once it is taken up ([`Self::hear_refused_holds`]): a Holds heard
+    /// while it was refused passed over what wasn't taken up, and isn't
+    /// said again until it changes.
+    refused_holds: BTreeMap<String, BTreeMap<String, State>>,
+    /// What this end asks for of quests refused before and taken up since,
+    /// said with the next look that stands or the next Shares heard, so a
+    /// look that fails loses none of it: their Holds is heard only once.
+    owed: Vec<Say>,
     /// Whether a README, what the other end shares, or which quests this
     /// end shares changed since the last look decided which quests shared
     /// only for those under them are spent, so an idle look reads no
@@ -551,6 +586,16 @@ fn may_be_machine(name: &str) -> bool {
 /// tried again: reading every process's open files once a second, for as
 /// long as a session sits in it, would wake the node for nothing.
 const SWEEP_AGAIN: Duration = Duration::from_secs(60);
+
+/// How long a quest the other end shares, refused here, is let be before
+/// it is taken up again: what refused it, such as a full disk or a folder
+/// briefly locked, may pass, while trying at every look would fill the
+/// log with the same refusal.
+const TAKE_UP_AGAIN: Duration = Duration::from_secs(60);
+
+/// The longest a quest refused again and again waits to be taken up again,
+/// so one that never passes is tried, and logged, only twice an hour.
+const TAKE_UP_AT_MOST: Duration = Duration::from_secs(30 * 60);
 
 /// How many files of one quest this end asks of the other at once. A link
 /// carries everything in the order it was said, and each file asked for
@@ -660,6 +705,11 @@ impl Exchange {
             unanswered: BTreeSet::new(),
             users: Box::new(Processes),
             sweep_again: BTreeMap::new(),
+            take_up_again: None,
+            take_up_wait: TAKE_UP_AGAIN,
+            owed: Vec::new(),
+            refused: BTreeSet::new(),
+            refused_holds: BTreeMap::new(),
             above_again: true,
             worker: false,
             above: Above::Carried,
@@ -1051,7 +1101,9 @@ impl Exchange {
     }
 
     /// Takes ended quest `id`'s scratch away on this machine, as
-    /// concluding it did where it ended, saying whether it is gone. One a
+    /// concluding it did where it ended, saying whether it is gone, but
+    /// for this machine's own copies moved aside in it before it was
+    /// shared, which are kept ([`take_away_keeping_aside`]). One a
     /// process works inside is let be, and tried again a minute on, with
     /// the quest still shared meanwhile; one that can't be removed is left
     /// and said, since trying again won't help.
@@ -1064,9 +1116,17 @@ impl Exchange {
             return false;
         }
         let scratch = self.places.scratch.join(id);
-        match take_away(&scratch, self.users.as_ref()) {
+        match take_away_keeping_aside(&scratch, self.users.as_ref()) {
             Removal::Removed => {
                 eprintln!("{id} has ended, so its scratch here is taken away");
+            }
+            Removal::Kept(kept) => {
+                let kept: Vec<String> =
+                    kept.iter().map(|path| path.display().to_string()).collect();
+                eprintln!(
+                    "{id} has ended, so its scratch here is taken away, but for this machine's own copies moved aside before it was shared, kept at {}",
+                    kept.join(", ")
+                );
             }
             Removal::Absent => {}
             Removal::InUse => {
@@ -1161,10 +1221,85 @@ impl Exchange {
         Ok(Some((Arc::new(held.ledger), scan.changed)))
     }
 
+    /// Takes up again each quest of the other end's refused here, and its
+    /// scratch and clones, once the refusal's wait is over, returning what
+    /// this end asks for of those that pass ([`Exchange::owed`]). Those
+    /// refused again wait twice as long as before, to [`TAKE_UP_AT_MOST`].
+    fn take_up_refused_when_due(&mut self) {
+        if self
+            .take_up_again
+            .is_none_or(|again| again > Instant::now())
+        {
+            return;
+        }
+        let named = self
+            .theirs
+            .as_ref()
+            .map(|theirs| theirs.quests.clone())
+            .unwrap_or_default();
+        for id in std::mem::take(&mut self.refused) {
+            let taken = if named.contains(&id) && !self.places.ended(&id) {
+                self.take_up(&id, &BTreeMap::new()).map(|_| ())
+            } else {
+                Ok(())
+            };
+            if let Err(error) = taken.and_then(|()| self.take_up_scratch(&id)) {
+                self.refuse(&id, &error);
+            }
+        }
+        self.hear_refused_holds();
+        let wait = self.take_up_wait.saturating_mul(2).min(TAKE_UP_AT_MOST);
+        self.wait_to_take_up(wait);
+    }
+
+    /// Has the quests refused, if any, taken up again `wait` from now, and
+    /// the wait start over where none is.
+    fn wait_to_take_up(&mut self, wait: Duration) {
+        if self.refused.is_empty() {
+            self.take_up_again = None;
+            self.take_up_wait = TAKE_UP_AGAIN;
+        } else {
+            self.take_up_again = Some(Instant::now() + wait);
+            self.take_up_wait = wait;
+        }
+    }
+
+    /// Hears again what the other end said it holds of each quest refused
+    /// before and taken up since ([`Exchange::refused_holds`]), keeping
+    /// what this end asks for of them until it is said
+    /// ([`Exchange::owed`]).
+    fn hear_refused_holds(&mut self) {
+        let passed: Vec<String> = self
+            .refused_holds
+            .keys()
+            .filter(|id| !self.refused.contains(*id))
+            .cloned()
+            .collect();
+        let mut wants = Vec::new();
+        for id in passed {
+            let Some(files) = self.refused_holds.remove(&id) else {
+                continue;
+            };
+            let heard = if self.takes(&id) {
+                self.take_holds(&id, &files)
+            } else {
+                Ok(None)
+            };
+            match heard {
+                Ok(said) => wants.extend(said.unwrap_or_default()),
+                Err(error) => {
+                    eprintln!("what {} holds of {id} isn't taken up: {error}", self.other);
+                }
+            }
+        }
+        self.owed.extend(wants);
+    }
+
     /// Looks at every shared quest as [`Self::look`] does, asking for no
     /// file in its turn.
     fn look_quests(&mut self) -> io::Result<Vec<Say>> {
         self.cloning.reap();
+        self.take_up_refused_when_due();
         let replay = (self.above == Above::Lifted).then(|| self.take_up_held_back());
         let ledgers = self.places.ledgers();
         let mut shares = BTreeMap::new();
@@ -1266,6 +1401,7 @@ impl Exchange {
             says.push(shares_said(&shares));
         }
         says.extend(holds);
+        says.append(&mut self.owed);
         self.told = shares;
         self.whole = whole;
         self.passed_over = passed_over;
@@ -1310,6 +1446,9 @@ impl Exchange {
         ledgers.stop(id)?;
         self.unsaid.remove(id);
         self.held_back.remove(id);
+        self.refused.remove(id);
+        self.refused_holds.remove(id);
+        self.owed.retain(|say| say.quest() != Some(id));
         self.to_want.remove(id);
         self.wanted.retain(|(quest, _), _| quest != id);
         self.unanswered.retain(|(quest, _)| quest != id);
@@ -1398,8 +1537,8 @@ impl Exchange {
             } => {
                 self.theirs = Some(self.taken_of(quests, scratch, clones, ended, above));
                 self.drop_unnamed();
-                self.take_up_theirs()?;
-                Ok(Vec::new())
+                self.take_up_theirs();
+                Ok(std::mem::take(&mut self.owed))
             }
             Say::Holds { quest, .. } | Say::Piece { quest, .. } | Say::File { quest, .. }
                 if !self.takes(&quest) =>
@@ -1442,6 +1581,13 @@ impl Exchange {
             }
             Say::Want { quest, .. } if self.withholds_quest(&quest)? => Ok(Vec::new()),
             Say::Holds { quest, files } => {
+                // Kept for when a refused quest is taken up again.
+                if self.refused.contains(&quest) {
+                    self.refused_holds
+                        .entry(quest.clone())
+                        .or_default()
+                        .extend(files.clone());
+                }
                 // What this says joins what was kept back of it first, so
                 // whatever fails below, no replay hears the older over it.
                 let files = match self.held_back.get_mut(&quest) {
@@ -1509,12 +1655,17 @@ impl Exchange {
             return Ok(None);
         }
         // A failure here costs only the scratch, never the record the
-        // Holds brings back: that Holds isn't said again.
+        // Holds brings back, and the scratch is taken up again as any
+        // refused quest's is, with what this Holds named of it.
         if brought && let Err(error) = self.take_up_scratch(id) {
-            eprintln!(
-                "{id}'s scratch named by {} isn't taken up: {error}; it's tried again when {} next says what it shares, or the link is dialled again",
-                self.other, self.other
-            );
+            self.refuse(id, &error);
+            self.refused_holds
+                .entry(id.to_owned())
+                .or_default()
+                .extend(files.clone());
+            if self.take_up_again.is_none() {
+                self.wait_to_take_up(self.take_up_wait);
+            }
         }
         let wants = self.held(id, files.clone())?;
         let heard = self.places.ledgers().hold(id).and_then(|mut held| {
@@ -1612,12 +1763,16 @@ impl Exchange {
     /// keep the replay going, and what the rest asked for still goes. A
     /// look that fails replays it all again at the next.
     fn take_up_held_back(&mut self) -> Vec<Say> {
-        if let Err(error) = self.take_up_theirs() {
-            eprintln!("what {} shares isn't all taken up: {error}", self.other);
-        }
+        self.take_up_theirs();
         self.drop_unnamed();
         let mut wants = Vec::new();
         for (quest, files) in self.held_back.clone() {
+            // A quest refused as it was taken up above keeps what it holds
+            // for when it is taken up again, since the replay lets it go.
+            if self.refused.contains(&quest) {
+                self.refused_holds.entry(quest).or_default().extend(files);
+                continue;
+            }
             let heard = if self.takes(&quest) {
                 self.take_holds(&quest, &files)
             } else {
@@ -1644,6 +1799,10 @@ impl Exchange {
         // no ask of a quest it doesn't share, so each would lapse and the
         // next be asked, for as long as the link stands.
         if let Some(named) = named {
+            self.refused.retain(|quest| named.contains(quest));
+            self.refused_holds.retain(|quest, _| named.contains(quest));
+            self.owed
+                .retain(|say| say.quest().is_none_or(|quest| named.contains(quest)));
             self.to_want.retain(|quest, _| named.contains(quest));
             self.wanted.retain(|(quest, _), _| named.contains(quest));
             self.unanswered.retain(|(quest, _)| named.contains(quest));
@@ -1652,10 +1811,21 @@ impl Exchange {
 
     /// Takes up what the other end last said it shares: each quest, then
     /// the scratch folders and clones named of those this link carries
-    /// whole ([`Self::carries_whole`]).
-    fn take_up_theirs(&mut self) -> io::Result<()> {
+    /// whole ([`Self::carries_whole`]). A quest whose taking up fails is
+    /// logged with its id and passed over while the rest are taken up, so
+    /// one quest's fault never keeps every other from crossing, and it
+    /// alone is taken up again at the first look a minute on
+    /// ([`Self::take_up_refused_when_due`]), since the other end says again
+    /// only what changes. What this end asks for of a quest refused before
+    /// that passes now is kept until said ([`Self::hear_refused_holds`]).
+    /// A scratch or
+    /// clone named under no quest's id is passed over unrefused, since no
+    /// quest of it could ever be taken up.
+    fn take_up_theirs(&mut self) {
+        let before = std::mem::take(&mut self.refused);
         let Some(theirs) = self.theirs.as_ref() else {
-            return Ok(());
+            self.wait_to_take_up(TAKE_UP_AGAIN);
+            return;
         };
         let quests = theirs.quests.clone();
         let scratch = theirs.scratch.clone();
@@ -1664,21 +1834,62 @@ impl Exchange {
             // A quest ended here waits for what the other end holds of it,
             // since only that says whether taking it up brings a record
             // back ([`Self::brings_back`]).
-            if !self.places.ended(id) {
-                self.take_up(id, &BTreeMap::new())?;
+            if !self.places.ended(id)
+                && let Err(error) = self.take_up(id, &BTreeMap::new())
+            {
+                self.refuse(id, &error);
             }
         }
         for (id, folders) in &scratch {
-            if !self.places.ended(id) && self.carries_whole(id)? {
-                self.share_scratch(id, folders)?;
+            if !is_quest(id) || self.refused.contains(id) || self.places.ended(id) {
+                continue;
+            }
+            let shared = match self.carries_whole(id) {
+                Ok(true) => self.share_scratch(id, folders),
+                Ok(false) => Ok(()),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = shared {
+                self.refuse(id, &error);
             }
         }
         for (id, clones) in &clones {
-            if !self.places.ended(id) && self.carries_whole(id)? {
-                self.clone_what(id, clones)?;
+            if !is_quest(id) || self.refused.contains(id) || self.places.ended(id) {
+                continue;
+            }
+            let taken = match self.carries_whole(id) {
+                Ok(true) => self.clone_what(id, clones),
+                Ok(false) => Ok(()),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = taken {
+                self.refuse(id, &error);
             }
         }
-        Ok(())
+        // A quest ended here and brought back by a Holds is passed over
+        // above, so its scratch, refused before, is tried here.
+        let ended: Vec<String> = before
+            .into_iter()
+            .filter(|id| self.places.ended(id))
+            .collect();
+        for id in ended {
+            if let Err(error) = self.take_up_scratch(&id) {
+                self.refuse(&id, &error);
+            }
+        }
+        self.hear_refused_holds();
+        self.wait_to_take_up(TAKE_UP_AGAIN);
+    }
+
+    /// Logs that quest `id`, which the other end shares, isn't taken up
+    /// for `error`, and counts it [`Exchange::refused`], so nothing more of
+    /// it is taken up until it is tried again.
+    fn refuse(&mut self, id: &str, error: &io::Error) {
+        eprintln!(
+            "{id}, which {} shares, isn't taken up: {error}; the rest are, and it's tried again later",
+            self.other
+        );
+        self.refused.insert(id.to_owned());
     }
 
     /// Takes up the scratch folders and clones the other end's last Shares
@@ -1797,27 +2008,47 @@ impl Exchange {
 
     /// Moves this machine's copy of `id`'s `name`, at `folder`, aside into
     /// mycelium's own folder, if it has one, so nothing it held is lost.
+    /// Where mycelium's folder is on another filesystem, as a quest's
+    /// scratch kept as a subvolume of its own is, the copy moves beside
+    /// itself instead ([`aside`]), and is kept when the node takes the
+    /// rest of an ended quest's scratch away ([`Self::swept`]).
     fn move_aside(&self, folder: &std::path::Path, id: &str, name: &str) -> io::Result<()> {
         if !folder.exists() {
             return Ok(());
         }
-        let aside = self
-            .places
-            .state
-            .join("before-share")
-            .join(
-                jiff::Timestamp::now()
-                    .strftime("%Y%m%dT%H%M%SZ")
-                    .to_string(),
-            )
-            .join(id)
-            .join(name);
-        fs::create_dir_all(aside.parent().unwrap_or(&aside))?;
-        fs::rename(folder, &aside)?;
-        eprintln!(
-            "moved this machine's copy of {id}'s {name} aside to {}",
-            aside.display()
-        );
+        let stamp = jiff::Timestamp::now()
+            .strftime("%Y%m%dT%H%M%SZ")
+            .to_string();
+        let root = self.places.state.join("before-share");
+        let kept = root.join(&stamp).join(id).join(name);
+        let moved = aside(
+            folder,
+            &kept,
+            &root,
+            &stamp,
+            |from: &std::path::Path, to: &std::path::Path| fs::rename(from, to),
+        )?;
+        if moved == kept {
+            eprintln!(
+                "moved this machine's copy of {id}'s {name} aside to {}",
+                moved.display()
+            );
+        } else {
+            // A record's copy lies in the mesh's quests folder, which no
+            // sweep goes through, and no quest's reader takes it for one,
+            // since pi's passes over a folder named from a dot and this
+            // end's names no quest by it ([`is_quest`]); a scratch
+            // folder's, in the scratch the sweep takes away keeping it.
+            let kept = if name == "record" {
+                "it stays there, as copies moved into mycelium's own folder do"
+            } else {
+                "it is kept when the quest ends and the rest of its scratch is taken away"
+            };
+            eprintln!(
+                "moved this machine's copy of {id}'s {name} aside to {}, beside it, as mycelium's own folder is on another filesystem; {kept}",
+                moved.display()
+            );
+        }
         Ok(())
     }
 
@@ -2407,6 +2638,45 @@ fn waits(quest: &str, ledger: &Ledger) -> io::Result<()> {
     )))
 }
 
+/// Moves `folder` to `kept`, under `root`, by `rename`, answering where it
+/// went. Where that fails, the folders made for `kept` are taken away
+/// again as far up as they are empty, short of `root`; and where it
+/// failed for crossing filesystems, `folder` moves beside itself instead,
+/// under a name starting with a dot and stamped `stamp` ([`beside`]),
+/// which [`may_name`] never shares. Any other failure is answered as it
+/// is, with `folder` where it was.
+fn aside(
+    folder: &std::path::Path,
+    kept: &std::path::Path,
+    root: &std::path::Path,
+    stamp: &str,
+    rename: impl Fn(&std::path::Path, &std::path::Path) -> io::Result<()>,
+) -> io::Result<PathBuf> {
+    let made = kept.parent().unwrap_or(kept);
+    fs::create_dir_all(made)?;
+    let error = match rename(folder, kept) {
+        Ok(()) => return Ok(kept.to_owned()),
+        Err(error) => error,
+    };
+    for empty in made
+        .ancestors()
+        .take_while(|at| *at != root && at.starts_with(root))
+    {
+        if fs::remove_dir(empty).is_err() {
+            break;
+        }
+    }
+    if error.kind() != io::ErrorKind::CrossesDevices {
+        return Err(error);
+    }
+    let name = folder
+        .file_name()
+        .ok_or_else(|| io::Error::other(format!("{} names no folder", folder.display())))?;
+    let moved = folder.with_file_name(beside(&name.to_string_lossy(), stamp));
+    rename(folder, &moved)?;
+    Ok(moved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2811,6 +3081,241 @@ mod tests {
             Some("# Changed there\n"),
             "a change comes back"
         );
+    }
+
+    #[test]
+    fn a_quest_whose_own_copy_cant_move_aside_is_refused_and_the_rest_cross() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Sorted after QUEST, so its scratch is taken up after QUEST's
+        // fails, as a fault that stopped the rest would show.
+        let other = "QEST-20261026-IZH11J";
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        skiff.write("README.md", "# Shared\n");
+        let notes = skiff.places.scratch.join(QUEST).join("notes");
+        fs::create_dir_all(&notes).expect("made");
+        fs::write(notes.join("plan.md"), "notes\n").expect("written");
+        share(&skiff, QUEST);
+        skiff
+            .places
+            .name_scratch(QUEST, "notes")
+            .expect("notes named");
+        let readme = skiff.places.quests.join(other).join("README.md");
+        fs::create_dir_all(readme.parent().expect("a file has a folder")).expect("made");
+        fs::write(&readme, "# Other\n").expect("written");
+        let bench = skiff.places.scratch.join(other).join("bench");
+        fs::create_dir_all(&bench).expect("made");
+        fs::write(bench.join("run.md"), "a run\n").expect("written");
+        share(&skiff, other);
+        skiff
+            .places
+            .name_scratch(other, "bench")
+            .expect("bench named");
+        // Kestrel's own notes can't leave a scratch it may not write, as
+        // one on another filesystem can't.
+        let scratch = kestrel.places.scratch.join(QUEST);
+        fs::create_dir_all(scratch.join("notes")).expect("made");
+        fs::write(scratch.join("notes/old.md"), "kestrel's own\n").expect("written");
+        fs::set_permissions(&scratch, fs::Permissions::from_mode(0o555)).expect("locked");
+        if fs::create_dir(scratch.join(".probe")).is_ok() {
+            fs::set_permissions(&scratch, fs::Permissions::from_mode(0o755)).expect("unlocked");
+            eprintln!("skipped: a folder locked 0o555 is writable here, as it is to root");
+            return;
+        }
+        let counted = |id: &str, folder: &str| match kestrel.places.ledgers().read(id) {
+            Ok(ledger) => ledger.scratch.contains(folder),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => panic!("{id}'s ledger can't be read: {error}"),
+        };
+
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
+        talk(&mut near, &mut far);
+        fs::set_permissions(&scratch, fs::Permissions::from_mode(0o755)).expect("unlocked");
+
+        assert_eq!(
+            there(&kestrel, other, "README.md").as_deref(),
+            Some("# Other\n"),
+            "the other quest crossed"
+        );
+        assert!(
+            counted(other, "bench"),
+            "its scratch too, taken up after the refused quest's"
+        );
+        assert_eq!(
+            fs::read_to_string(scratch.join("notes/old.md"))
+                .as_deref()
+                .ok(),
+            Some("kestrel's own\n"),
+            "the refused quest's own notes stay where they were"
+        );
+        assert!(!counted(QUEST, "notes"), "and aren't counted shared");
+
+        talk(&mut near, &mut far);
+        assert!(
+            !counted(QUEST, "notes"),
+            "the refused quest isn't tried again within the minute"
+        );
+        let due = far.take_up_again.expect("the refusal has it tried again");
+        assert!(
+            due > Instant::now() + TAKE_UP_AGAIN / 2,
+            "about a minute on"
+        );
+
+        far.take_up_again = Some(Instant::now());
+        // The first look to take it up again fails past it, its ledgers
+        // unlisted, and loses nothing asked of it: skiff's Holds, heard
+        // while it was refused, isn't said again.
+        let shared = kestrel.places.state.join("shared");
+        let mode = fs::metadata(&shared).expect("shared").permissions();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o300)).expect("unlisted");
+        far.watch.hear_anything();
+        let failed = far.look();
+        fs::set_permissions(&shared, mode).expect("listed");
+        assert!(failed.is_err(), "the look fails past the quest taken up");
+        talk(&mut near, &mut far);
+        assert!(
+            counted(QUEST, "notes"),
+            "a minute on, once what refused it has passed, it is taken up"
+        );
+        assert!(
+            !scratch.join("notes/old.md").exists(),
+            "with kestrel's own notes moved aside"
+        );
+        assert_eq!(
+            fs::read_to_string(scratch.join("notes/plan.md"))
+                .ok()
+                .as_deref(),
+            Some("notes\n"),
+            "and skiff's notes, said while it was refused, cross"
+        );
+        let aside = fs::read_dir(kestrel.places.state.join("before-share"))
+            .expect("something moved aside")
+            .map(|entry| entry.expect("an entry").path())
+            .find_map(|at| fs::read_to_string(at.join(QUEST).join("scratch/notes/old.md")).ok());
+        assert_eq!(
+            aside.as_deref(),
+            Some("kestrel's own\n"),
+            "where all they held is kept"
+        );
+        assert!(
+            far.take_up_again.is_none(),
+            "and nothing is left to try again"
+        );
+    }
+
+    #[test]
+    fn a_copy_that_cant_cross_filesystems_moves_aside_beside_itself() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let folder = dir.path().join("scratch").join(QUEST).join("notes");
+        fs::create_dir_all(&folder).expect("made");
+        fs::write(folder.join("old.md"), "kestrel's own\n").expect("written");
+        let state = dir.path().join("state");
+        let root = state.join("before-share");
+        let stamp = "20261127T000000Z";
+        let kept = root.join(stamp).join(QUEST).join("scratch/notes");
+        // Another quest's copy moved aside in the same second stays.
+        let neighbour = root.join(stamp).join("QEST-20261026-IZH11J/record");
+        fs::create_dir_all(&neighbour).expect("made");
+        fs::write(neighbour.join("README.md"), "# Other\n").expect("written");
+        let across = |from: &std::path::Path, to: &std::path::Path| {
+            if to.starts_with(&state) {
+                // As the kernel says it, so the mapping to the kind the
+                // move reads is pinned too.
+                Err(io::Error::from_raw_os_error(
+                    rustix::io::Errno::XDEV.raw_os_error(),
+                ))
+            } else {
+                fs::rename(from, to)
+            }
+        };
+
+        let moved = aside(&folder, &kept, &root, stamp, across).expect("moved");
+
+        assert_eq!(
+            moved,
+            folder.with_file_name(format!(".notes.before-share-{stamp}")),
+            "beside itself"
+        );
+        assert!(
+            super::super::ended::is_beside(&moved.file_name().expect("named").to_string_lossy()),
+            "under a name the sweep keeps"
+        );
+        assert_eq!(
+            fs::read_to_string(moved.join("old.md")).expect("kept"),
+            "kestrel's own\n",
+            "where nothing it held is lost"
+        );
+        assert!(
+            !folder.exists(),
+            "its place is free for the other end's copy"
+        );
+        let name = moved.file_name().expect("named").to_string_lossy();
+        assert!(!may_name(&name), "and the copy aside is never shared");
+        assert!(
+            !root.join(stamp).join(QUEST).exists(),
+            "no empty folder is left in mycelium's own"
+        );
+        assert_eq!(
+            fs::read_to_string(neighbour.join("README.md")).expect("kept"),
+            "# Other\n",
+            "but one holding another's copy stays"
+        );
+
+        let again = dir.path().join("scratch").join(QUEST).join("bench");
+        fs::create_dir_all(&again).expect("made");
+        let kept = root.join(stamp).join(QUEST).join("scratch/bench");
+        let moved = aside(
+            &again,
+            &kept,
+            &root,
+            stamp,
+            |from: &std::path::Path, to: &std::path::Path| fs::rename(from, to),
+        )
+        .expect("moved");
+        assert_eq!(
+            moved, kept,
+            "one on the same filesystem goes into mycelium's own"
+        );
+    }
+
+    #[test]
+    fn a_copy_that_cant_move_aside_for_any_other_reason_stays_where_it_is() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let scratch = dir.path().join("scratch").join(QUEST);
+        let folder = scratch.join("notes");
+        fs::create_dir_all(&folder).expect("made");
+        fs::write(folder.join("old.md"), "kestrel's own\n").expect("written");
+        let root = dir.path().join("state/before-share");
+        let stamp = "20261127T000000Z";
+        let kept = root.join(stamp).join(QUEST).join("scratch/notes");
+        let refused = |from: &std::path::Path, to: &std::path::Path| {
+            if to.starts_with(&root) {
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            } else {
+                fs::rename(from, to)
+            }
+        };
+
+        let error = aside(&folder, &kept, &root, stamp, refused).expect_err("refused");
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        assert_eq!(
+            fs::read_to_string(folder.join("old.md")).expect("kept"),
+            "kestrel's own\n",
+            "the copy stays where it was"
+        );
+        let beside: Vec<_> = fs::read_dir(&scratch)
+            .expect("read")
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(beside, ["notes"], "with nothing moved beside it");
+        assert!(
+            !root.join(stamp).exists(),
+            "and no folder made for it is left"
+        );
+        assert!(root.exists(), "short of mycelium's own");
     }
 
     #[test]
@@ -5225,6 +5730,46 @@ mod tests {
         assert!(
             !shares(&skiff) && !shares(&kestrel),
             "and neither end shares the quest"
+        );
+    }
+
+    // #586 round 2 F34: the sweep of an ended quest keeps the copies this
+    // machine moved aside beside themselves, its own work, and takes the
+    // rest away as concluding does.
+    #[test]
+    fn an_ended_quests_sweep_keeps_this_machines_own_copy_moved_aside() {
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        let readme = |status: &str| format!("---\nid: {QUEST}\nstatus: {status}\n---\n# Shared\n");
+        let shares = |machine: &Machine| machine.places.ledgers().shares(QUEST);
+        let scratch = kestrel.places.scratch.join(QUEST);
+        let copy = scratch.join(super::super::ended::beside("notes", "20261127T000000Z"));
+        skiff.write("README.md", &readme("active"));
+        share(&skiff, QUEST);
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
+        talk(&mut near, &mut far);
+        fs::create_dir_all(&copy).expect("made");
+        fs::write(copy.join("old.md"), "kestrel's own\n").expect("written");
+        fs::create_dir_all(scratch.join("notes")).expect("made");
+        fs::write(scratch.join("notes/plan.md"), "shared\n").expect("written");
+
+        skiff.write("README.md", &readme("concluded"));
+        for _ in 0..3 {
+            talk(&mut near, &mut far);
+        }
+
+        assert!(
+            !shares(&skiff) && !shares(&kestrel),
+            "neither end shares the ended quest"
+        );
+        assert!(
+            !scratch.join("notes").exists(),
+            "the Mac's scratch is taken away"
+        );
+        assert_eq!(
+            fs::read_to_string(copy.join("old.md")).as_deref().ok(),
+            Some("kestrel's own\n"),
+            "but for its own copy moved aside, kept whole"
         );
     }
 

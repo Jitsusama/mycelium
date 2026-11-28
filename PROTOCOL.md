@@ -608,10 +608,28 @@ hearing the other end is said at the next look:
   as quests above others, which the other end shares so too and doesn't
   take up once none is under them. The other end starts sharing
   any quest or folder it didn't, moving its own copy aside to
-  `~/.local/state/mycelium/before-share/<when>/<QUEST>/`. A quest's
-  own record moves only once the first of the sharing end's files
-  comes to be written in its place; until then it stays where it was,
-  neither read nor said, so a link that drops first leaves it there.
+  `~/.local/state/mycelium/before-share/<when>/<QUEST>/`. Where that
+  folder is on another filesystem, as a scratch kept as a subvolume of
+  its own is, the copy moves beside itself instead, under a name
+  starting with a dot that no end shares. A scratch folder's copy is
+  kept when the node takes the rest of an ended quest's scratch away,
+  though a session concluding the quest on that machine takes the whole
+  scratch, the copy with it; a record's copy lies beside the record in
+  the mesh's quests folder, which no sweep goes through, so it stays,
+  as copies in `before-share` do. A quest whose copy can't move aside
+  is refused, logged with its id, and the rest are still taken up; what
+  of it crossed before stays. The quests refused, a scratch refused
+  as a Holds brings an ended quest back included, are taken up again a
+  minute on, with what the other end last said it holds of them, and
+  while any is refused again the next try waits twice as long as the
+  last, to half an hour; each Shares the other end says tries them all
+  again, and the wait starts over at a minute. What is asked of one
+  taken up again is said with the next look that stands, so a look
+  that fails loses none of it.
+  A quest's own record moves only once the first of the sharing end's
+  files comes to be written in its place; until then it stays where it
+  was, neither read nor said, so a link that drops first leaves it
+  there.
   A scratch folder named moves aside as it is named. It is said
   before the files, so a folder's files are carried once heard of.
   An ended quest's record still crosses, so the README saying it ended
@@ -621,8 +639,9 @@ hearing the other end is said at the next look:
   where the quest ended, then stops sharing it and isn't taken up
   again, its record left as it is. A scratch where a process has its
   working folder or an open file is let be, with the quest still
-  shared, and tried again a minute on; one that can't be removed is
-  left and said. Linux's `/proc` says what works where, and `lsof`
+  shared, and tried again a minute on; one that can't be removed, or
+  read through to find its copies aside, is left and said, and one
+  that is a link is only unlinked. Linux's `/proc` says what works where, and `lsof`
   does on a Mac; where neither answers, the scratch counts as in use.
   An end older than `ended` names none, so a quest stays shared with
   it.
