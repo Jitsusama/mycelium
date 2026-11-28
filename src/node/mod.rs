@@ -28245,7 +28245,7 @@ esac
         // A session that ran strict here, resumed over a proven link
         // declaring the agent fence, comes back strict.
         let ran = ("s-harbour".to_owned(), crate::declared::Kind::Strict);
-        link.fences.raise(&std::collections::BTreeMap::from([ran]));
+        link.fences.raise(&BTreeMap::from([ran]));
         let resumed = Start {
             command: ["pi", "--session", "s-harbour"].map(str::to_owned).to_vec(),
             ..fenced.clone()
