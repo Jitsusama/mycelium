@@ -1688,12 +1688,12 @@ impl Exchange {
             if refused.contains(id) || self.places.ended(id) {
                 continue;
             }
-            let cloned = match self.carries_whole(id) {
+            let taken = match self.carries_whole(id) {
                 Ok(true) => self.clone_what(id, clones),
                 Ok(false) => Ok(()),
                 Err(error) => Err(error),
             };
-            if let Err(error) = cloned {
+            if let Err(error) = taken {
                 self.refuse(id, &error, &mut refused);
             }
         }
