@@ -942,6 +942,12 @@ fn held_here_already(why: &str, machine: &str, named: &[String]) -> bool {
 /// own hold refusing it ([`held_here_already`]), alone or wrapped as a
 /// relay taken as an agent's ([`relayed_why`]), so it began nothing
 /// there.
+// Followup 530: no path of today's node reaches it wrapped. A relay is
+// wrapped only in `relayed_start`, the one caller of `relay_refused`, and
+// `relayed` asks the hold before calling it, answering the hold's refusal
+// bare; a start naming no session is held to nothing, and one relayed here
+// starts through `here`, which never asks the hold. The wrapped reading is
+// kept as a guard, should a hold ever be asked within the relay.
 fn held_there_already(why: &str, machine: &str, named: &[String]) -> bool {
     held_here_already(relayed_why(why, machine).unwrap_or(why), machine, named)
 }
@@ -1681,6 +1687,9 @@ async fn keep_linked(
 struct Keeping<S> {
     book: Book,
     store: S,
+    /// Keeps that the machine left at the time given, unless a make of
+    /// its name was booked since, and says which.
+    leaves: Box<dyn FnOnce(jiff::Timestamp) -> bool + Send>,
     unbook: Box<dyn FnOnce() + Send>,
 }
 
@@ -1839,6 +1848,7 @@ async fn keep_made(
     Keeping {
         book,
         store,
+        leaves,
         unbook,
     }: Keeping<impl Store>,
     unwanted: Arc<Notify>,
@@ -1858,7 +1868,12 @@ async fn keep_made(
             (Some("its time was up".to_owned()), false)
         }
     };
-    store::left(&store, &made.machine, jiff::Timestamp::now());
+    // A make of the same name since stands, so its sessions and its
+    // record are its own.
+    let now = jiff::Timestamp::now();
+    if leaves(now) {
+        store::left(&store, &made.machine, now);
+    }
     unbook();
     let why = match release {
         None => "its work handed over".to_owned(),
@@ -2387,8 +2402,12 @@ fn may_name_room(book: &Book, machine: &str, who: &str) -> Result<(), String> {
             "{machine} isn't named a room, since this node's book holds no such machine made \
              and standing: one another node made, or the person's own, is never one"
         )),
-        Some(None | Some(made::PERSON)) => Err(format!(
+        Some(Some(made::PERSON)) => Err(format!(
             "{machine} isn't named a room, since it was made for the person"
+        )),
+        Some(None) => Err(format!(
+            "{machine} isn't named a room, since its make was booked before makes said for \
+             whom: it takes no asker's work, so release it and make another"
         )),
         Some(Some(made::UNKNOWN)) => Err(format!(
             "{machine} isn't named a room, since no proven agent asked for it: its make is \
@@ -3433,14 +3452,14 @@ enum Admits {
     /// Every machine: a preview, or a start already pinned to its machine.
     All,
     /// Those booked for this asker, as a make would tell it: for
-    /// [`made::PERSON`], those booked for the person or for nobody told,
-    /// never one an agent's make booked, whose worker home that agent
-    /// wrote; and none for [`made::UNKNOWN`].
+    /// [`made::PERSON`], only those booked for the person, never one an
+    /// agent's make booked, whose worker home that agent wrote, nor one
+    /// booked for nobody told, which is read as an agent's, as its worker
+    /// mark reads it; and none for [`made::UNKNOWN`].
     Asker(String),
     /// A session the person granted ([`made::Grant`]), whose makes are
     /// booked for the person: of those booked, only the person's own,
-    /// those booked for the person or for nobody told, and only where its
-    /// work names them.
+    /// those booked for the person, and only where its work names them.
     Granted,
     /// Of the machines booked here, only rooms made for agents to share,
     /// for the person's run sent to one as an agent's
@@ -3457,9 +3476,14 @@ impl Admits {
     /// agent's, granted or not, since its booking says who pays for it and
     /// may let it go, not who may use it; the person's own starts are held
     /// to the person's machines all the same, never where an agent's make
-    /// booked, whose worker home that agent wrote.
+    /// booked, whose worker home that agent wrote. A booking for nobody
+    /// told (`None`), as one written before makes told askers, is read as
+    /// an agent's whose asker is unknown, as one for [`made::UNKNOWN`] is,
+    /// so that worker's home is held from the person's starts too. It is
+    /// only asked of a machine booked here ([`Shared::admitted_among`]):
+    /// one not booked at all is every placement's, the person's included.
     fn takes(&self, booked: Option<&str>, room: bool, named: bool) -> bool {
-        let the_persons = booked.is_none() || booked == Some(made::PERSON);
+        let the_persons = booked == Some(made::PERSON);
         match self {
             Self::All => true,
             Self::Asker(told) if told == made::PERSON => the_persons,
@@ -5767,10 +5791,7 @@ impl<S: Store> Shared<S> {
                     .booked
                     .iter()
                     .filter(|(name, (_, booked))| {
-                        booked
-                            .as_deref()
-                            .is_none_or(|booked| booked == made::PERSON)
-                            && !rooms.contains(*name)
+                        booked.as_deref() == Some(made::PERSON) && !rooms.contains(*name)
                     })
                     .map(|(name, _)| name.clone())
                     .collect()
@@ -10449,12 +10470,14 @@ impl<S: Store> Shared<S> {
     /// never fenced, never runs in the worker home that agent wrote. So
     /// does a room this node never booked that its link reached as a
     /// worker, since bookings are each node's own and only one booked for
-    /// the person here is known to be theirs. One that is no worker, as
-    /// the person's own machines aren't, stays theirs: any session may
-    /// write the rooms' file, but none can make a machine a worker by it.
-    /// One machine named twice is still one. This node's own machine,
-    /// which it never books, stays the person's whatever the file says.
-    /// Any other run is held to who asks it.
+    /// the person here is known to be theirs: one whose booking names no
+    /// asker, as one written before makes told theirs, is an agent's, as
+    /// its worker mark reads it ([`Shared::with_makes_marked`]). One that
+    /// is no worker, as the person's own machines aren't, stays theirs:
+    /// any session may write the rooms' file, but none can make a machine
+    /// a worker by it. One machine named twice is still one. This node's
+    /// own machine, which it never books, stays the person's whatever the
+    /// file says. Any other run is held to who asks it.
     fn as_a_room_takes(&self, by: By, work: &Work, admits: Admits) -> (By, Admits) {
         taken_as(self.recasts(by, work), by, admits)
     }
@@ -10473,11 +10496,11 @@ impl<S: Store> Shared<S> {
         if *room == self.machine || named.any(|other| other != room) {
             return None;
         }
-        let booked = self.lock().booked.get(room).map(|(_, booked)| {
-            booked
-                .as_deref()
-                .is_some_and(|booked| booked != made::PERSON)
-        });
+        let booked = self
+            .lock()
+            .booked
+            .get(room)
+            .map(|(_, booked)| booked.as_deref() != Some(made::PERSON));
         let recast = match booked {
             Some(true) => Recast::AnAgentsBooking,
             Some(false) => return None,
@@ -10490,11 +10513,31 @@ impl<S: Store> Shared<S> {
     /// booking, let go with it.
     fn keeping(&self, made: &Made) -> Keeping<S> {
         let (shared, made) = (self.clone(), made.clone());
+        let (leaving, left) = (self.clone(), made.clone());
         Keeping {
             book: self.book.clone(),
             store: self.store.clone(),
+            leaves: Box::new(move |at| leaving.leaves(&left, at)),
             unbook: Box::new(move || shared.unbook(&made)),
         }
+    }
+
+    /// Keeps that `made` left `at` ([`Store::mark_left`]) and says so,
+    /// unless a make of the same name was booked at another place since,
+    /// whose machine stands: the leaving is then the old one's alone, and
+    /// saying it by name would hold the new one left. Asked under the
+    /// bookings' lock, so a make booked meanwhile ([`Shared::book_for`])
+    /// forgets the mark after it rather than before.
+    fn leaves(&self, made: &Made, at: jiff::Timestamp) -> bool {
+        let inner = self.lock();
+        let ours = inner
+            .booked
+            .get(&made.machine)
+            .is_none_or(|(place, _)| *place == made.place);
+        if ours {
+            self.store.mark_left(&made.machine, at);
+        }
+        ours
     }
 
     /// Takes away `made`'s booking, where the machine of its name is still
@@ -10528,6 +10571,11 @@ impl<S: Store> Shared<S> {
         };
         inner.ends.insert(made.machine.clone(), made.until);
         drop(inner);
+        // A machine made again under a left one's name is a new machine,
+        // whose own word of itself stands. Forgotten once it is booked, so
+        // the old make's end, which asks the booking first, says no leaving
+        // after ([`Shared::leaves`]).
+        self.store.forget_left(&made.machine);
         Arc::new(Program {
             program: made.provider.clone(),
             place: made.place.clone(),
@@ -11287,7 +11335,8 @@ fn shell_for(asked_by: Option<By>, home: &Path) -> run::Shell<'_> {
 /// ([`Shared::recasts`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Recast {
-    /// An agent's make booked the room here.
+    /// An agent's make booked the room here, or one whose booking names
+    /// no asker, which the worker mark reads as an agent's too.
     AnAgentsBooking,
     /// No booking here names the room, which this node's link reached
     /// as a worker: one another node made, or one this node's booking
@@ -26116,10 +26165,13 @@ esac
             !asker(made::UNKNOWN).takes(Some(made::UNKNOWN), false, false),
             "a start from no one known takes no booked machine"
         );
+        // Followup 562: a booking for nobody told is an agent's.
         assert!(
-            asker(made::PERSON).takes(None, false, false)
+            !asker(made::PERSON).takes(None, false, false)
+                && !asker(made::PERSON).takes(None, true, true)
                 && !asker("P9R1KI").takes(None, false, false),
-            "a machine whose make told no asker takes only the person's starts"
+            "a machine whose make told no asker is an agent's, its asker unknown, so it takes \
+             neither the person's starts, though it is a room or named, nor one agent's"
         );
         assert!(
             Admits::All.takes(Some("P9R1KI"), false, false),
@@ -26129,19 +26181,20 @@ esac
             [asker("QK4T7Z"), asker(made::UNKNOWN), Admits::Granted]
                 .iter()
                 .all(|admits| admits.takes(Some("P9R1KI"), true, false)
-                    && admits.takes(Some(made::PERSON), true, false)),
+                    && admits.takes(Some(made::PERSON), true, false)
+                    && admits.takes(None, true, false)),
             "a room made for agents to share takes every agent's starts, whoever it is booked for"
         );
         assert!(
             !Admits::Granted.takes(Some(made::PERSON), false, false)
                 && !Admits::Granted.takes(None, false, false)
                 && !Admits::Granted.takes(Some("P9R1KI"), false, true)
-                && !Admits::Granted.takes(Some(made::UNKNOWN), false, true),
+                && !Admits::Granted.takes(Some(made::UNKNOWN), false, true)
+                && !Admits::Granted.takes(None, false, true),
             "a granted session's starts take no other booked machine, an agent's though named"
         );
         assert!(
-            Admits::Granted.takes(Some(made::PERSON), false, true)
-                && Admits::Granted.takes(None, false, true),
+            Admits::Granted.takes(Some(made::PERSON), false, true),
             "and the person's own only where they name it"
         );
         assert!(
@@ -26278,7 +26331,7 @@ esac
             .expect("the make is kept");
         for (machine, who, why) in [
             ("wren", made::PERSON, "made for the person"),
-            ("osprey", made::PERSON, "made for the person"),
+            ("osprey", made::PERSON, "before makes said for whom"),
             ("harbour", made::UNKNOWN, "no proven agent asked for it"),
             ("kestrel", "ASKER1", "holds no such machine"),
             ("skiff", "ASKER1", "holds no such machine"),
@@ -26774,19 +26827,21 @@ esac
             (None, Some("osprey")),
             "its last session is kept for the person"
         );
+        // Followup 562: rebooked for nobody told, promising nothing, it is
+        // an agent's, so neither start that names it goes there.
         let mut unasked = made_by("/usr/bin/lend", "osprey", a_day_out());
         unasked.asker = None;
         shared.book_for(&unasked);
-        shared.lock().promised.insert("osprey".to_owned(), 1);
         let mut naming = basin();
         naming.push(Need::Machine("osprey".to_owned()));
         assert_eq!(
             (
                 placed(naming.clone(), &Admits::Granted),
-                placed(naming, &Admits::Asker(made::PERSON.to_owned())).as_deref(),
+                placed(naming, &Admits::Asker(made::PERSON.to_owned())),
             ),
-            (None, Some("osprey")),
-            "so is one made at no asker's word"
+            (None, None),
+            "one made at no asker's word is an agent's, which takes neither the person's start \
+             nor a granted one"
         );
     }
 
@@ -26916,9 +26971,6 @@ esac
             Some("tern"),
             "so the person's run recast for tern reaches tern"
         );
-        let mut unasked = made_by("/usr/bin/lend", "tern", a_day_out());
-        unasked.asker = None;
-        shared.book_for(&unasked);
         fs::write(
             dir.path().join(made::AGENT_ROOMS),
             "reef\nwren\ntern\nskiff\n",
@@ -26929,11 +26981,6 @@ esac
                 By::Person,
                 naming(&["wren"]),
                 "a room the person's make booked",
-            ),
-            (
-                By::Person,
-                naming(&["tern"]),
-                "a room made at no asker's word",
             ),
             (
                 By::Person,
@@ -26986,6 +27033,45 @@ esac
             ),
             (By::Person, person()),
             "this node's own machine, which no booking here names, is held to who asks"
+        );
+    }
+
+    // Followup 552: a booking that names no asker, as one written before
+    // makes told theirs, is read as an agent's both where the node marks
+    // the machine a worker and where it recasts the person's run.
+    #[tokio::test]
+    async fn a_room_booked_at_no_askers_word_is_an_agents_where_listed_and_recast() {
+        use crate::declared::Kind;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        fs::write(dir.path().join(made::AGENT_ROOMS), "osprey\n").expect("named");
+        // No link has said it is a worker, so only its booking marks it.
+        let osprey = placement::tests::machine("osprey", "linux", 32, &["basin"]);
+        shared.store.put_machine(&osprey).expect("kept");
+        let mut unasked = made_by("/usr/bin/lend", "osprey", a_day_out());
+        unasked.asker = None;
+        shared.book_for(&unasked);
+        let Ok(Response::Machines(machines)) = shared.answer(Request::Machines) else {
+            panic!("the node says its machines");
+        };
+        assert_eq!(
+            machines
+                .iter()
+                .find(|one| one.name == "osprey")
+                .map(|one| one.worker),
+            Some(true),
+            "the node lists it a worker, as it lists an agent's make"
+        );
+        let naming = work(vec![Need::Machine("osprey".to_owned())]);
+        assert_eq!(
+            shared.recasts(By::Person, &naming),
+            Some(Recast::AnAgentsBooking),
+            "so the person's run naming it is recast as for an agent's booking"
+        );
+        assert_eq!(
+            shared.as_a_room_takes(By::Person, &naming, Admits::Asker(made::PERSON.to_owned())),
+            (By::Agent(Kind::Fence), Admits::Rooms),
+            "and runs there as an agent's, never through the person's own login"
         );
     }
 
@@ -27112,6 +27198,74 @@ esac
                 "a run asked by {asked:?} goes through the login shell"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_plain_run_here_has_none_of_its_nodes_variables_that_load_code() {
+        // Followup 549: the node's own environment must name them, and
+        // setting one in this process is unsafe, so the test runs itself
+        // again as a process whose environment names two, whose node runs
+        // the person's run sent from tern, and which writes what it had
+        // where it is told to.
+        const NAME: &str = "a_plain_run_here_has_none_of_its_nodes_variables_that_load_code";
+        const TOLD: &str = "MYCELIUM_TEST_TOLD";
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let Some(told) = std::env::var_os(TOLD) else {
+            let told = dir.path().join("told");
+            let startup = dir.path().join("startup");
+            fs::write(&startup, "").expect("a startup file is written");
+            let (_, tests) = module_path!().split_once("::").expect("in a crate");
+            let again = tokio::process::Command::new(std::env::current_exe().expect("this test"))
+                .arg(format!("{tests}::{NAME}"))
+                .arg("--exact")
+                .env(TOLD, &told)
+                // Empty, so nothing is preloaded into the test's own process.
+                .env("LD_PRELOAD", "")
+                .env("BASH_ENV", &startup)
+                // Followup 569: killed if the wait runs out, rather than
+                // left running with a node bound in a deleted folder.
+                .kill_on_drop(true)
+                .output();
+            let again = tokio::time::timeout(PATIENCE * 2, again)
+                .await
+                .expect("it ends in time")
+                .expect("it runs");
+            assert!(
+                again.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&again.stdout),
+                String::from_utf8_lossy(&again.stderr)
+            );
+            // Nothing written is a test that never ran, as a renamed one.
+            assert_eq!(
+                fs::read_to_string(&told).expect("the run's process wrote what it had"),
+                "told,",
+                "a plain run keeps the node's other variables, but none that loads code"
+            );
+            return;
+        };
+        let socket = dir.path().join("skiff").join("work.sock");
+        let (_stop, _node) = alone(&Memory::default(), "skiff", &socket);
+        asks_as_person(&socket);
+        let had = "printf %s, ${MYCELIUM_TEST_TOLD+told} ${LD_PRELOAD+LD_PRELOAD} \
+                   ${BASH_ENV+BASH_ENV}";
+        let came = run_through(
+            socket,
+            Run {
+                from: Some("tern".to_owned()),
+                asked_by: Some(By::Person),
+                ..run_of("skiff", had)
+            },
+        )
+        .await
+        .expect("the person's run sent from tern runs here");
+        assert_eq!(
+            came.ended,
+            Some(Ran::Exited(0)),
+            "{}",
+            String::from_utf8_lossy(&came.err)
+        );
+        fs::write(told, came.out).expect("what it had is written");
     }
 
     #[test]
@@ -27315,9 +27469,10 @@ esac
         made.asker = None;
         shared.book_for(&made);
         assert_eq!(
-            (placed("P9R1KI"), placed(made::PERSON).as_deref()),
-            (None, Some("osprey")),
-            "a machine whose make told no asker takes only the person's starts"
+            (placed("P9R1KI"), placed(made::PERSON)),
+            (None, None),
+            "a machine whose make told no asker is an agent's, its asker unknown, so it takes \
+             neither one agent's start nor the person's"
         );
         assert!(
             !shared.admitted_on("osprey", &Admits::Asker("P9R1KI".to_owned()))
@@ -28119,6 +28274,44 @@ esac
         jiff::Timestamp::now() + jiff::SignedDuration::from_hours(24)
     }
 
+    /// A make's end says its machine left only where no make of the same
+    /// name was booked at another place since, and booking a make again
+    /// lets go of the old one's leaving, so the new machine's word stands.
+    #[test]
+    fn a_makes_end_holds_no_newer_make_of_its_name_left() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let old = made_by("/usr/bin/lend", "tern", soon);
+        let mut new = made_by("/usr/bin/lend", "tern", soon);
+        new.place = "tern-elsewhere".to_owned();
+        let at = jiff::Timestamp::now();
+        shared.book_for(&old);
+        assert!(shared.leaves(&old, at), "alone, a make's end leaves");
+        assert_eq!(
+            shared.store.left_at("tern"),
+            Some(at),
+            "and its leaving is kept"
+        );
+
+        shared.book_for(&new);
+        assert_eq!(
+            shared.store.left_at("tern"),
+            None,
+            "made again, tern hasn't left"
+        );
+        assert!(
+            !shared.leaves(&old, at),
+            "the old make's end, once a newer one is booked, leaves nothing"
+        );
+        assert_eq!(
+            shared.store.left_at("tern"),
+            None,
+            "so the new machine isn't held left"
+        );
+        assert!(shared.leaves(&new, at), "the new make's own end leaves");
+    }
+
     fn made_by(provider: &str, machine: &str, until: jiff::Timestamp) -> Made {
         Made {
             provider: provider.to_owned(),
@@ -28535,13 +28728,8 @@ esac
             .hold_reopenings(&["s-held".to_owned()], None, &[])
             .expect("another start holds it");
         let start = Start {
-            work: work(vec![Need::Machine("skiff".to_owned())]),
-            folder: None,
-            strict: false,
             command: ["pi", "--session", "s-held"].map(str::to_owned).to_vec(),
-            may_cost: false,
-            carries: false,
-            once: None,
+            ..start_of_skiff()
         };
         let at = jiff::Timestamp::now().as_millisecond();
         let asked = skiff.placed((start, at), None, Screen::Ground, false).await;
@@ -28597,7 +28785,8 @@ esac
         );
     }
 
-    /// A start pinned to skiff that names no folder, as a hold's tests ask it.
+    /// A start pinned to skiff that names no folder, as the tests of where a
+    /// start is unbooked ask it, each naming its own session or machine.
     fn start_of_skiff() -> Start {
         Start {
             work: work(vec![Need::Machine("skiff".to_owned())]),
@@ -28607,6 +28796,252 @@ esac
             may_cost: false,
             carries: false,
             once: None,
+        }
+    }
+
+    /// How many of the starts skiff's node booked on `machine` weigh there
+    /// now.
+    fn placed_on(skiff: &Shared<Memory>, machine: &str) -> u32 {
+        let machines = skiff.machines();
+        let loads =
+            skiff
+                .lock()
+                .starts
+                .loads(&machines, std::iter::empty(), jiff::Timestamp::now());
+        loads.get(machine).map_or(0, |load| load.placed)
+    }
+
+    /// A node at `socket` that says its machine is `facts` and answers the
+    /// starts relayed to it with `answers` in turn, as another machine's
+    /// node would, refusing whatever else it is asked.
+    fn stand_in_node(socket: &Path, facts: facts::Machine, answers: Vec<Reply>) {
+        let listener = UnixListener::bind(socket).expect("the stand-in node listens");
+        let measured: Reply = Ok(Response::Machine(Box::new(facts)));
+        tokio::spawn(async move {
+            let mut answers = answers.into_iter();
+            while let Ok((stream, _)) = listener.accept().await {
+                let (reading, mut writing) = stream.into_split();
+                let Ok(Some(line)) = BufReader::new(reading).lines().next_line().await else {
+                    continue;
+                };
+                let reply = match serde_json::from_str::<Request>(&line) {
+                    Ok(Request::Machine) => measured.clone(),
+                    Ok(Request::Relayed { .. }) => answers
+                        .next()
+                        .unwrap_or_else(|| Err("the test answers no more starts".to_owned())),
+                    _ => Err("the stand-in node answers nothing else".to_owned()),
+                };
+                let mut said = serde_json::to_string(&reply).expect("a reply");
+                said.push('\n');
+                let _ = writing.write_all(said.as_bytes()).await;
+            }
+        });
+    }
+
+    /// Links skiff's node, keeping what it hears in `store`, to the machine
+    /// `facts` names, whose node is a stand-in in `dir` answering the starts
+    /// relayed to it with `answers` in turn ([`stand_in_node`]), once
+    /// skiff's node may ask it and knows what it is.
+    async fn linked_to_one_answering(
+        (skiff, store): (&Shared<Memory>, &Memory),
+        dir: &Path,
+        facts: facts::Machine,
+        answers: Vec<Reply>,
+    ) {
+        let name = facts.name.clone();
+        let far_node = dir.join(format!("{name}.sock"));
+        stand_in_node(&far_node, facts, answers);
+        // Neither end reads a file of what it declares, so the far end asks
+        // its node what its machine is, as a dialled link's end does.
+        let starting = |node: PathBuf, asking: Option<Asking>| Starting {
+            node,
+            held: dir.join("held"),
+            asking,
+            steers: dir.join("steer"),
+            parked: dir.join("parked"),
+            health: None,
+            declared: None,
+            kit: None,
+            saturation: None,
+            lender: None,
+            gates: None,
+        };
+        let there: link::starts::There = Arc::new(|_: &str, words: &[String]| words.to_vec());
+        let near_end = starting(
+            dir.join("node.sock"),
+            Some(Asking::Kept(skiff.asks.clone(), there)),
+        );
+        let far_end = starting(far_node, None);
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let near_store = store.clone();
+        tokio::spawn(async move {
+            let here = Realm {
+                name: "work".to_owned(),
+                machine: "skiff".to_owned(),
+            };
+            let _ = link::run(near_store, &here, piped(near), None, Some(near_end)).await;
+        });
+        let machine = name.clone();
+        tokio::spawn(async move {
+            let realm = Realm {
+                name: "work".to_owned(),
+                machine,
+            };
+            let _ = link::run(Memory::default(), &realm, piped(far), None, Some(far_end)).await;
+        });
+        tokio::time::timeout(PATIENCE, async {
+            while skiff.asks.there(&name).is_none()
+                || !store.machines().iter().any(|one| one.name == name)
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("skiff's node reaches it and knows what it is");
+    }
+
+    // Followup 524: a start placed here that began nothing weighs nowhere it was placed.
+    #[tokio::test]
+    async fn a_start_placed_here_that_began_nothing_weighs_where_it_was_placed_no_longer() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let folder = dir.path();
+        let store = Memory::default();
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let skiff = holding_skiff(folder, store.clone(), None, processes);
+        let lacks = start::no_folder("tern", folder);
+        let tern = reaching_basin("tern", false, true);
+        let answers = vec![Err(lacks.clone())];
+        linked_to_one_answering((&skiff, &store), folder, tern, answers).await;
+        // A strict start naming no machine, placed on tern, which hasn't its
+        // folder, is placed here, where another start holds its session.
+        let other = skiff
+            .hold_reopenings(&["s-held".to_owned()], None, &[])
+            .expect("another start holds it");
+        let weighed = jiff::Timestamp::now();
+        skiff.lock().starts.placed("tern", weighed);
+        let strict = Start {
+            work: work(Vec::new()),
+            folder: Some(folder.to_owned()),
+            strict: true,
+            command: ["pi", "--session", "s-held"].map(str::to_owned).to_vec(),
+            ..start_of_skiff()
+        };
+        let admits = skiff.admits().await;
+        let at = jiff::Timestamp::now().as_millisecond();
+        let ground = (at, None, Screen::Ground, &admits);
+        let refused = skiff
+            .started_where_placed(("tern".to_owned(), weighed), strict, ground)
+            .await;
+        skiff.let_reopenings_go(&other);
+        assert_eq!(
+            refused.err(),
+            Some(format!(
+                "{lacks}{AND_HERE}s-held is being reopened on skiff already"
+            )),
+            "refused here by this machine's own hold"
+        );
+        assert_eq!(
+            placed_on(&skiff, "skiff"),
+            0,
+            "what it booked here is taken back"
+        );
+        assert_eq!(placed_on(&skiff, "tern"), 0, "and what it booked on tern");
+        // Placed elsewhere, it is never asked here.
+        let elsewhere = Start {
+            work: work(vec![Need::Machine("tern".to_owned())]),
+            ..start_of_skiff()
+        };
+        let at = jiff::Timestamp::now().as_millisecond();
+        let refused = skiff
+            .placed_here((elsewhere, at), None, Screen::Ground, &admits)
+            .await;
+        assert_eq!(refused.err().as_deref(), Some("it would go to tern"));
+        assert_eq!(
+            placed_on(&skiff, "tern"),
+            0,
+            "what it booked on tern is taken back"
+        );
+    }
+
+    // Followup 524: a cloud machine past room whose hold refuses a start leaves it unbooked.
+    #[tokio::test]
+    async fn a_start_past_room_refused_by_a_cloud_machines_hold_weighs_there_no_longer() {
+        let held = "s-1 is being reopened on wren already";
+        // A refusal that isn't the hold's keeps what it booked, so only the
+        // hold's is taken back.
+        for (refusal, kept) in [(held, 0), ("its program failed", 1)] {
+            let dir = tempfile::tempdir().expect("a temporary folder");
+            let store = Memory::default();
+            store
+                .put_machine(&reaching_basin("tern", true, true))
+                .expect("what it said is kept");
+            let mut wren = reaching_basin("wren", false, true);
+            wren.declared.as_mut().expect("declared").costs_money = true;
+            let processes = Processes::Folder("/nowhere/proc".into());
+            let skiff = holding_skiff(dir.path(), store.clone(), None, processes);
+            let answers = vec![Err(refusal.to_owned())];
+            linked_to_one_answering((&skiff, &store), dir.path(), wren, answers).await;
+            let start = Start {
+                work: work(vec![Need::Reach("basin".to_owned())]),
+                command: ["pi", "--session", "s-1"].map(str::to_owned).to_vec(),
+                may_cost: true,
+                ..start_of_skiff()
+            };
+            let at = jiff::Timestamp::now().as_millisecond();
+            let asked = skiff.placed((start, at), None, Screen::Ground, false).await;
+            assert_eq!(
+                asked.err().as_deref(),
+                Some(refusal),
+                "wren's refusal stands"
+            );
+            assert_eq!(
+                placed_on(&skiff, "wren"),
+                kept,
+                "{refusal}: what it booked on wren"
+            );
+            assert_eq!(
+                placed_on(&skiff, "tern"),
+                0,
+                "{refusal}: nothing weighs on tern, as it went to the cloud"
+            );
+        }
+    }
+
+    // Followup 525: a relay's wrapping of a hold's refusal unbooks a start, as a bare one does.
+    #[tokio::test]
+    async fn a_start_placed_where_a_relayed_hold_refused_it_weighs_there_no_longer() {
+        let held = "s-held is being reopened on tern already";
+        let failed = "it didn't start: its program failed";
+        let wrapped = |why: &str| relay_refused("tern", true, "", why);
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let store = Memory::default();
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let skiff = holding_skiff(dir.path(), store.clone(), None, processes);
+        let tern = reaching_basin("tern", false, true);
+        let answers = vec![Err(wrapped(held)), Err(wrapped(failed))];
+        linked_to_one_answering((&skiff, &store), dir.path(), tern, answers).await;
+        let admits = skiff.admits().await;
+        // A refusal that isn't the hold's keeps what it booked, so only the
+        // hold's is taken back.
+        for (why, kept) in [(held, 0), (failed, 1)] {
+            let weighed = jiff::Timestamp::now();
+            skiff.lock().starts.placed("tern", weighed);
+            let asked = Start {
+                work: work(vec![Need::Machine("tern".to_owned())]),
+                command: ["pi", "--session", "s-held"].map(str::to_owned).to_vec(),
+                ..start_of_skiff()
+            };
+            let at = jiff::Timestamp::now().as_millisecond();
+            let ground = (at, None, Screen::Ground, &admits);
+            let refused = skiff
+                .started_where_placed(("tern".to_owned(), weighed), asked, ground)
+                .await;
+            assert_eq!(refused.err(), Some(wrapped(why)), "tern's relay refused it");
+            assert_eq!(
+                placed_on(&skiff, "tern"),
+                kept,
+                "{why}: what it booked on tern"
+            );
         }
     }
 
@@ -30420,9 +30855,13 @@ esac
         // its link returns.
         let kestrel = placement::tests::machine("kestrel", "linux", 32, &[]);
         shared.store.put_machine(&kestrel).expect("kept");
+        // Asked as the node is asked, so a booking that marks it a worker
+        // is read through the answer's own wiring.
         let listed = || {
-            shared
-                .with_makes_marked(shared.others())
+            let Ok(Response::Machines(machines)) = shared.answer(Request::Machines) else {
+                panic!("the node says its machines");
+            };
+            machines
                 .into_iter()
                 .find(|one| one.name == "kestrel")
                 .map(|one| one.worker)
@@ -30447,6 +30886,17 @@ esac
                 "and is listed as one before its link says so: {worker}"
             );
         }
+        // Followup 551(b): a booking for the person adds no mark, and takes
+        // none away, so the mark its link set stands.
+        let mut made = made_by("/nowhere/lend", "kestrel", later);
+        made.asker = Some(made::PERSON.to_owned());
+        shared.book_for(&made);
+        shared.store.mark_worker("kestrel", true);
+        assert_eq!(
+            listed(),
+            Some(true),
+            "a worker its link marked stays one, though booked for the person"
+        );
     }
 
     #[test]

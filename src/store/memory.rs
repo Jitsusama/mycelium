@@ -41,6 +41,9 @@ struct Held {
     /// The machines a link last said it reached as a worker, by its
     /// admission or its puts, which alone make one, as over folders.
     workers: BTreeSet<String>,
+    /// When the node said each machine left, until it made one of that
+    /// name again, the earliest kept, as over folders.
+    left: BTreeMap<String, jiff::Timestamp>,
     /// The carries each machine's node told of.
     carries: BTreeMap<String, Vec<Value>>,
     /// Processes said to have ended, whose sessions are ended whatever
@@ -154,6 +157,16 @@ impl Held {
     fn tell(&mut self, change: &Change) {
         self.told
             .retain(|sender| sender.send(change.clone()).is_ok());
+    }
+
+    /// Marks `machine` a worker or not, telling nobody, and says whether
+    /// the mark moved.
+    fn mark(&mut self, machine: &str, worker: bool) -> bool {
+        if worker {
+            self.workers.insert(machine.to_owned())
+        } else {
+            self.workers.remove(machine)
+        }
     }
 
     fn holds_for(&self, session: &str, machine: &str) -> bool {
@@ -543,16 +556,24 @@ impl Store for Memory {
         let held = self.held();
         held.machines
             .values()
-            .map(|machine| Machine {
-                worker: held.workers.contains(&machine.name),
-                ..machine.clone()
+            .map(|machine| {
+                let mut machine = Machine {
+                    worker: held.workers.contains(&machine.name),
+                    ..machine.clone()
+                };
+                let left = held.left.get(&machine.name).copied();
+                super::held_left(&mut machine, left);
+                machine
             })
             .collect()
     }
 
     fn put_machine(&self, machine: &Machine) -> io::Result<()> {
-        self.mark_worker(&machine.name, machine.worker);
         let mut held = self.held();
+        // As the folders store does, the put tells its change once, the
+        // mark and the record both moved, so no watch it wakes reads the
+        // one without the other.
+        held.mark(&machine.name, machine.worker);
         held.machines.insert(machine.name.clone(), machine.clone());
         held.tell(&Change::Machine(machine.name.clone()));
         Ok(())
@@ -560,18 +581,36 @@ impl Store for Memory {
 
     fn mark_worker(&self, machine: &str, worker: bool) {
         let mut held = self.held();
-        let moved = if worker {
-            held.workers.insert(machine.to_owned())
-        } else {
-            held.workers.remove(machine)
-        };
-        if moved {
+        // As the folders store does: a worker admitted whose far end says
+        // nothing of itself changes only here, so a mark that moves is told.
+        if held.mark(machine, worker) {
             held.tell(&Change::Machine(machine.to_owned()));
         }
     }
 
     fn is_worker(&self, machine: &str) -> bool {
         self.held().workers.contains(machine)
+    }
+
+    fn mark_left(&self, machine: &str, at: jiff::Timestamp) {
+        let mut held = self.held();
+        // As the folders store does: the earliest stands, and a new one is
+        // told.
+        if held.left.get(machine).is_none_or(|kept| at < *kept) {
+            held.left.insert(machine.to_owned(), at);
+            held.tell(&Change::Machine(machine.to_owned()));
+        }
+    }
+
+    fn forget_left(&self, machine: &str) {
+        let mut held = self.held();
+        if held.left.remove(machine).is_some() {
+            held.tell(&Change::Machine(machine.to_owned()));
+        }
+    }
+
+    fn left_at(&self, machine: &str) -> Option<jiff::Timestamp> {
+        self.held().left.get(machine).copied()
     }
 
     fn told_carries(&self) -> BTreeMap<String, Vec<Value>> {

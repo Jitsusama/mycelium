@@ -5,6 +5,7 @@
   stdenv,
   rustPlatform,
   git,
+  util-linux,
   # Whether the tests run as it builds on a Mac (see `doCheck`).
   macTests ? false,
 }:
@@ -23,8 +24,10 @@ rustPlatform.buildRustPackage {
     ];
   };
   cargoLock.lockFile = ../Cargo.lock;
-  # The tests make a git clone, as a machine does of one another holds.
-  nativeCheckInputs = [ git ];
+  # The tests make a git clone, as a machine does of one another holds,
+  # and on Linux lay a folder another owns under one their user owns, in a
+  # user namespace `unshare` makes and `mount` binds the folder in.
+  nativeCheckInputs = [ git ] ++ lib.optional stdenv.hostPlatform.isLinux util-linux;
   # Nix's sandbox on a Mac lets a build start no FSEvents stream, which
   # notify watches files through there, and bind no listener, even on the
   # loopback, so a Mac that builds its system sandboxed fails every test

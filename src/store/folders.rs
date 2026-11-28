@@ -128,6 +128,10 @@ pub struct Folders {
     /// by its file, which any session running as this account could
     /// write.
     workers: Arc<Mutex<BTreeSet<String>>>,
+    /// When this store's node said each machine left, since it opened and
+    /// until it made one of that name again, the earliest kept: the
+    /// node's word alone, never a file's, as the workers are.
+    left: Arc<Mutex<BTreeMap<String, jiff::Timestamp>>>,
 }
 
 /// Whether each session's process lives, as last judged, kept until an end
@@ -177,6 +181,7 @@ impl Folders {
             kept: Arc::default(),
             judged: Arc::default(),
             workers: Arc::default(),
+            left: Arc::default(),
         })
     }
 
@@ -317,6 +322,26 @@ impl Folders {
     fn ended_processes(&self) -> MutexGuard<'_, BTreeSet<i32>> {
         // Each change to the set is one insert or remove, whole either way.
         self.ended.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Marks `machine` a worker or not, telling nobody, and says whether
+    /// the mark moved.
+    fn mark(&self, machine: &str, worker: bool) -> bool {
+        let mut workers = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
+        if worker {
+            workers.insert(machine.to_owned())
+        } else {
+            workers.remove(machine)
+        }
+    }
+
+    /// Tells every reader `machine` should be read again.
+    fn tell_machine(&self, machine: &str) {
+        let change = Change::Machine(machine.to_owned());
+        self.told
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|told| told.send(change.clone()).is_ok());
     }
 
     /// Tells every reader the sessions should be judged again.
@@ -767,9 +792,13 @@ impl Store for Folders {
             .filter_map(|entry| read(&entry.path()))
             .collect();
         let workers = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
+        let left = self.left.lock().unwrap_or_else(PoisonError::into_inner);
         for machine in &mut machines {
             machine.worker = workers.contains(&machine.name);
+            let at = left.get(&machine.name).copied();
+            super::held_left(machine, at);
         }
+        drop(left);
         drop(workers);
         machines.sort_by(|a, b| a.name.cmp(&b.name));
         machines
@@ -777,26 +806,38 @@ impl Store for Folders {
 
     fn put_machine(&self, machine: &Machine) -> io::Result<()> {
         let file = format!("{}{SAID}", safe(&machine.name)?);
-        self.mark_worker(&machine.name, machine.worker);
-        let body = serde_json::to_value(machine).map_err(io::Error::other)?;
-        write_whole(&self.claims, &file, &body)
+        // The mark moves first, so a watch the record's write wakes reads
+        // the machine as its link now says it, and a record that can't be
+        // written still leaves the mark the room gate reads as said.
+        let moved = self.mark(&machine.name, machine.worker);
+        let written = serde_json::to_value(machine)
+            .map_err(io::Error::other)
+            .and_then(|mut body| {
+                // Whether it is a worker is never read back from the record,
+                // which a session may write, so the record doesn't say it;
+                // one an older node wrote saying it still reads, its word
+                // passed over.
+                if let Some(record) = body.as_object_mut() {
+                    record.remove("worker");
+                }
+                write_whole(&self.claims, &file, &body)
+            });
+        // The mark's move is told once the write is done, not as it moves:
+        // a watch woken between the two would read the new mark beside the
+        // old record, or beside none for a machine new here. Told though
+        // the write failed, since the mark moved all the same.
+        if moved {
+            self.tell_machine(&machine.name);
+        }
+        written
     }
 
     fn mark_worker(&self, machine: &str, worker: bool) {
-        let mut workers = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
-        let moved = if worker {
-            workers.insert(machine.to_owned())
-        } else {
-            workers.remove(machine)
-        };
-        drop(workers);
-        // The mark is in memory alone, so no file's watch tells it.
-        if moved {
-            let change = Change::Machine(machine.to_owned());
-            self.told
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .retain(|told| told.send(change.clone()).is_ok());
+        // The mark is in memory alone, so no file's watch tells it, and a
+        // worker admitted whose far end says nothing of itself changes only
+        // here: a watch of the machines would never hear of it.
+        if self.mark(machine, worker) {
+            self.tell_machine(machine);
         }
     }
 
@@ -805,6 +846,41 @@ impl Store for Folders {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .contains(machine)
+    }
+
+    fn mark_left(&self, machine: &str, at: jiff::Timestamp) {
+        let new = {
+            let mut left = self.left.lock().unwrap_or_else(PoisonError::into_inner);
+            let new = left.get(machine).is_none_or(|kept| at < *kept);
+            if new {
+                left.insert(machine.to_owned(), at);
+            }
+            new
+        };
+        // As a worker's mark: in memory alone, so no file's watch tells it.
+        if new {
+            self.tell_machine(machine);
+        }
+    }
+
+    fn forget_left(&self, machine: &str) {
+        let forgot = self
+            .left
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(machine)
+            .is_some();
+        if forgot {
+            self.tell_machine(machine);
+        }
+    }
+
+    fn left_at(&self, machine: &str) -> Option<jiff::Timestamp> {
+        self.left
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(machine)
+            .copied()
     }
 
     fn told_carries(&self) -> BTreeMap<String, Vec<Value>> {
@@ -2651,6 +2727,62 @@ mod tests {
         );
     }
 
+    // A leaving is the node's word kept in memory: the earliest it said
+    // stands over what any record says after, until it makes the machine
+    // again, a record a session wrote says none, and a node opening again
+    // has heard none.
+    #[test]
+    fn a_leaving_is_kept_only_as_this_stores_node_said_it() {
+        let (dir, store) = store();
+        let at = |second| jiff::Timestamp::from_second(second).expect("a time");
+        let leaves = |store: &Folders| {
+            store
+                .machines()
+                .into_iter()
+                .find(|machine| machine.name == "tern")
+                .and_then(|machine| machine.declared)
+                .and_then(|declared| declared.leaves_at)
+        };
+        let mut tern = crate::placement::tests::machine("tern", "linux", 32, &[]);
+        tern.declared = Some(crate::declared::Declared {
+            leaves_at: Some(at(1_000)),
+            ..crate::declared::Declared::default()
+        });
+        let record = dir.path().join("claims").join(format!("tern{SAID}"));
+        fs::write(&record, serde_json::to_vec(&tern).expect("JSON")).expect("a session writes");
+        assert_eq!(store.left_at("tern"), None, "a record says no leaving");
+
+        // Its link, or one tern dialled in, puts it back saying it never
+        // leaves.
+        tern.declared = Some(crate::declared::Declared::default());
+        fs::write(&record, serde_json::to_vec(&tern).expect("JSON")).expect("a link writes");
+        store.mark_left("tern", at(2_000));
+        store.mark_left("tern", at(1_500));
+        store.mark_left("tern", at(3_000));
+        assert_eq!(
+            store.left_at("tern"),
+            Some(at(1_500)),
+            "the earliest stands"
+        );
+        assert_eq!(
+            leaves(&store),
+            Some(at(1_500)),
+            "tern reads left, whatever its record says"
+        );
+
+        store.forget_left("tern");
+        assert_eq!(store.left_at("tern"), None, "made again, it hasn't left");
+        assert_eq!(leaves(&store), None, "and its record's word stands");
+        store.mark_left("tern", at(3_000));
+        let again = Folders::open(&dir.path().join("mesh"), &dir.path().join("claims"))
+            .expect("the store opens again");
+        assert_eq!(
+            again.left_at("tern"),
+            None,
+            "a node opening again heard none"
+        );
+    }
+
     // A session may take away the record a link put, but the room gate asks
     // the link's mark, which stays.
     #[test]
@@ -2666,6 +2798,131 @@ mod tests {
             store.is_worker("tern"),
             "a worker its link put stays one, its record taken away"
         );
+        // Followup 542(e): with nothing it said to read, it isn't listed,
+        // as no machine is whose record is gone; its link puts it back.
+        assert!(
+            !store.machines().iter().any(|one| one.name == "tern"),
+            "a machine whose record is gone isn't listed, worker or not"
+        );
+    }
+
+    // Followup 542(a): a link's drop and its machine's leaving put its
+    // record back as they read it, so a worker stays one through both,
+    // by its mark alone, since the record doesn't say it.
+    #[test]
+    fn a_worker_stays_one_through_its_drop_and_its_leaving() {
+        let (dir, store) = store();
+        let mut tern = crate::placement::tests::machine("tern", "linux", 32, &[]);
+        tern.worker = true;
+        store.put_machine(&tern).expect("its link keeps it");
+        let worker = |store: &Folders| {
+            let machines = store.machines();
+            machines
+                .iter()
+                .find(|one| one.name == "tern")
+                .map(|one| one.worker)
+        };
+        crate::store::out_of_reach(&store, "tern", 1_793_305_804_647, None);
+        assert_eq!(worker(&store), Some(true), "its link's drop keeps it one");
+        crate::store::left(&store, "tern", jiff::Timestamp::UNIX_EPOCH);
+        assert_eq!(worker(&store), Some(true), "and so does its leaving");
+        let record: Value = serde_json::from_slice(
+            &fs::read(dir.path().join("claims").join(format!("tern{SAID}")))
+                .expect("its record is kept"),
+        )
+        .expect("JSON");
+        assert_eq!(
+            record.get("worker"),
+            None,
+            "the record doesn't say it, the mark does"
+        );
+    }
+
+    // Followup 544(6): a worker its admission alone made was told to no
+    // watch, which the file's watch can't see, being in memory alone.
+    // Followup 551(a): made and unmade each, and a repeat of each.
+    #[tokio::test]
+    async fn a_worker_mark_that_moves_is_told_and_one_that_doesnt_isnt() {
+        // Waits for `tern`'s change, passing over any other the watch tells.
+        async fn told(changes: &mut Changes, tern: &Change) -> bool {
+            let waited = tokio::time::timeout(PATIENCE, async {
+                loop {
+                    match changes.changes.recv().await {
+                        Some(change) if change == *tern => return,
+                        Some(_) => {}
+                        None => panic!("the store stopped telling"),
+                    }
+                }
+            });
+            waited.await.is_ok()
+        }
+        // The mark is told as it moves, so one a repeat told would be
+        // waiting already.
+        fn waiting(changes: &mut Changes) -> Vec<Change> {
+            let mut after = Vec::new();
+            while let Ok(change) = changes.changes.try_recv() {
+                after.push(change);
+            }
+            after
+        }
+        let (_dir, store) = store();
+        let mut changes = store.changes().expect("the store tells its changes");
+        let tern = Change::Machine("tern".to_owned());
+        for (worker, moved) in [(true, "made"), (false, "unmade")] {
+            store.mark_worker("tern", worker);
+            assert!(
+                told(&mut changes, &tern).await,
+                "the mark {moved} was told within {PATIENCE:?}"
+            );
+            store.mark_worker("tern", worker);
+            let after = waiting(&mut changes);
+            assert!(
+                !after.contains(&tern),
+                "a mark {moved} again moves nothing and tells nothing: {after:?}"
+            );
+        }
+    }
+
+    // Followup 570: the fake puts under one lock, so only the folders can
+    // show a put that moves the mark is told once its record is written.
+    #[tokio::test]
+    async fn a_put_that_moves_the_mark_is_told_only_once_its_record_is_written() {
+        let (_dir, store) = store();
+        let mut changes = store.changes().expect("the store tells its changes");
+        // A machine new each time, so a change told late of the one before
+        // is never taken for this one's.
+        for name in ["kestrel", "osprey", "skiff", "tern", "wren"] {
+            let mut machine = crate::placement::tests::machine(name, "linux", 32, &[]);
+            machine.worker = true;
+            let told = Change::Machine(name.to_owned());
+            let read = std::thread::scope(|scope| {
+                scope.spawn(|| store.put_machine(&machine).expect("its link keeps it"));
+                // Asked without pause rather than awaited, so the machines
+                // are read the moment the change is told, before a write
+                // still under way could end.
+                let patience = Instant::now() + PATIENCE;
+                loop {
+                    match changes.changes.try_recv() {
+                        Ok(change) if change == told => break store.machines(),
+                        Ok(_) | Err(mpsc::error::TryRecvError::Empty) => {
+                            assert!(
+                                Instant::now() < patience,
+                                "{name}'s put was told within {PATIENCE:?}"
+                            );
+                            std::hint::spin_loop();
+                        }
+                        Err(mpsc::error::TryRecvError::Disconnected) => {
+                            panic!("the store stopped telling")
+                        }
+                    }
+                }
+            });
+            let kept: Vec<_> = read.iter().map(|one| (&*one.name, one.worker)).collect();
+            assert!(
+                kept.contains(&(name, true)),
+                "the change woke a reader that read {name}'s record and mark both: {kept:?}"
+            );
+        }
     }
 
     #[tokio::test]

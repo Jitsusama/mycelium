@@ -2005,11 +2005,18 @@ worker home does; and
 `agents`, by realm, the command an agent session starts with there, such
 as `{"personal": "pi-claude"}`, of which a realm hears only its own; and
 `leaves_at`, the time it leaves the realm, as a machine lent for a while
-does, in RFC 3339, after which it is no longer one of `"Machines"`; from
-ten minutes before then, its node puts a steer into the inbox of each
-session running there, once, saying when it leaves and to commit and
-push, to put what can't be pushed and a note of what's next where its
-work is shared, and to stop, with `from` `"machine"` and no `act`.
+does, in RFC 3339, after which it is no longer one of `"Machines"`, a
+leaving the node itself said standing whatever any link, its own or
+one the machine dialled in, says of the machine after, until the node
+makes a machine of that name again (kept in the node's memory alone
+and applied as it reads its machines, never read back from a record a
+session may write, so a node started again forgets it; the earliest
+such leaving stands, and a make's end says none where a make of the
+same name was booked since); from ten minutes
+before then, its node puts a steer into the inbox of each session
+running there, once, saying when it leaves and to commit and push, to
+put what can't be pushed and a note of what's next where its work is
+shared, and to stop, with `from` `"machine"` and no `act`.
 A machine on its battery below 20% is let sleep, so its node puts the
 same kind of steer, once while it stays below, saying to commit and push
 and put the rest where its work is shared, though not to stop, since a
@@ -2583,10 +2590,13 @@ where the variable is missing too, as it is from a node older than it,
 though `offers`, `link` and `release` never carry it. A machine made
 is booked, before it is dialled, for the asker its make was told: once
 it links, a start or run is placed there only when that asker asks, so
-another agent's work goes elsewhere or waits, and a machine whose book
-line names no asker takes only the person's. The person's own starts
-go only to a machine booked for the person or for no asker, never to
-one an agent's make booked, whose worker home that agent wrote. A
+another agent's work goes elsewhere or waits. A machine whose book
+line names no asker, as one written before makes told askers, is read
+as an agent's whose asker is unknown, as its worker mark reads it, so
+no asker's start or run goes there, nor is it named a room, below:
+releasing it and making another is what serves. The person's own
+starts go only to a machine booked for the person, never to one an
+agent's make booked, whose worker home that agent wrote. A
 preview is held to it as its run would be, and an ordered carry there
 of another's session is refused but to a room, below; only a start
 pinned to the machine
@@ -2628,14 +2638,16 @@ Every agent's start or run may be placed there, a granted session's
 and one from no one known included, whoever it is booked for, since
 its booking says who pays for it and may let it go,
 not who may use it; the person's own go there only where it is booked
-for the person or for no asker, never into a worker home an agent's
-make wrote. Any run the person asks naming one machine alone, a room
-not booked here for the person or for no asker (an agent's make booked
-it, or this node never booked it but its link reached it as a worker,
-since each node keeps its own bookings), runs there as an agent's, in
-the agent fence. So the person's safe word reaches every room though
-no session asks it, and the person's own login still never runs in a
-worker home an agent wrote. Such a run is placed as an agent's run is,
+for the person, never where its book line names no asker, nor into a
+worker home an agent's make wrote. Any run the person asks naming one
+machine alone, a room not booked here for the person (an agent's make
+booked it, or its book line names no asker, read as an agent's as its
+worker mark is, or this node never booked it but its link reached it
+as a worker, since each node keeps its own bookings), runs there as an
+agent's, in the agent fence. So the person's safe word reaches every
+room though no session asks it, and the person's own login still
+never runs in a worker home an agent wrote. Such a run is placed as
+an agent's run is,
 and a `"Place"` the person asks of it the same way, so where it is told
 the run would go is where it runs: the asking machine must declare the
 agent fence and the room must say it runs commands in it, or the run is
@@ -2651,17 +2663,28 @@ takes every folder of that home off its path, by name or by where it
 leads, before the kit's tools go first, so nothing the home holds
 shadows its command: one found only there isn't found, and for a name
 with no slash the run says so on its error output, naming the path it
-had, and ends 127, as the shell would. Each folder kept is named by
-where it leads, one that can't be entered goes, and a path left with
-nothing is `/usr/bin:/bin`, never empty. The node starts the run, and
-any fence launcher before its shell, without the variables that load
-code as a program starts, which the node's environment could name in
-the home: `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `GCONV_PATH`,
-the five `DYLD_` ones, `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `NODE_PATH`,
-`NODE_COMPILE_CACHE`, `OPENSSL_CONF`, `OPENSSL_MODULES`, `PYTHONPATH`,
-`PYTHONSTARTUP`, `PERL5LIB`, `PERL5OPT`, `RUBYLIB`, `RUBYOPT` and
-`LUA_INIT`. A program that needs one of them there sets it itself. The
-home is the one the node runs it in, and the `HOME` its launcher gives
+had, and ends 127, as the shell would. The agent runs as the run's own user,
+who can write folders outside the home too, so a folder that user owns or can
+write goes as well, and so does one under a folder it owns, or can write
+without the sticky bit, up to `/`, since it could rename the folder away and
+put its own in its place: `/tmp` goes, though a folder under it that another
+owns and the user can't write stays. On a Mac, Homebrew's `/opt/homebrew/bin`
+belongs to the user, so it goes too. Each folder kept is named by where it
+leads, one that can't be entered, which may not be there yet, goes, and a path
+left with nothing is `/usr/bin:/bin`, never empty. The node starts the run, and
+any fence launcher before its shell, without the variables that load code as a
+program starts, which the node's environment could name in the home:
+`LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `GCONV_PATH`, the five `DYLD_`
+ones, `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `NODE_PATH`, `NODE_COMPILE_CACHE`,
+`OPENSSL_CONF`, `OPENSSL_MODULES`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`,
+`PERL5LIB`, `PERLLIB`, `PERL5OPT`, `RUBYLIB`, `RUBYOPT`, `GEM_PATH`,
+`GEM_HOME`, `LUA_INIT`, `LUA_PATH` and `LUA_CPATH`, each of those three also as
+Lua 5.2, 5.3 and 5.4 name it, as `LUA_INIT_5_4`, which Lua reads before the
+plain one, and `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` and `_JAVA_OPTIONS`.
+Perl reads `PERLLIB` only where `PERL5LIB` is unset, so taking one away and not
+the other would wake it. The list is what the node takes away, not every way a
+program may come to load code. A program that needs one there sets it itself.
+The home is the one the node runs it in, and the `HOME` its launcher gives
 it too, so a launcher that takes `HOME` away or points it elsewhere
 leaves neither on the path. `HOME` still names that home, so a
 program the command runs that reads its own files from there reads
@@ -2679,8 +2702,8 @@ over a limit. The node marks each one `"held_for": "agents"` as it
 places, from its own file, and every other as booked, never from what
 the machine says, and a link keeps nothing a machine says of it. A
 session the person granted is booked as the person but isn't one: its
-starts go to a machine booked for the person or for no asker, and not
-named in the file, only where they name it, never to one an agent's
+starts go to a machine booked for the person, and not named in the
+file, only where they name it, never to one an agent's
 make booked, and even then that machine is full one session short of
 the most it holds, kept for the person, where it says or was promised
 a most. A start of its that no machine takes goes on to a make. A
@@ -3127,24 +3150,26 @@ ending comes back, and then the ask fails, saying so; the machine's
 never on one made for it, in `folder` as for `"Start"`, through the
 person's login shell there without a terminal (the person's run sent
 to a room as an agent's, through `/bin/sh -c`, reading no profile and
-with no folder of that home on its path),
-its kit's tools first on its path as for `"Start"`, and with nothing on
-its input. This machine runs it as the node's own; another, through the link
-reaching it, as A Link says. The node judges who asks, as `by`,
-`"Person"` or `{"Agent": kind}`: an agent, in the strictest fence the
-presences of its process and its forebears say, and in a strict one
-where it can't tell; an agent too where its process runs as one of
-the machine's agents, may gain no privileges the node may, or sees
-other mounts; else the person. A node started with `--unattended`, as
-one in a cell lent from a basin is, where the person reaches it only
-over a link, takes no asker for the person: one it would tell as the
-person is a strictly fenced agent there, since its node runs as fenced
-as the agents beside it and nothing else would tell them apart. That
-holds for every word the node takes only from the person, a steer
-claiming the person and their own login's acts too, and for a link's
-end run there, so a run another machine asked is refused, saying so,
-and so is a carry the person asks of it from another machine, since
-the link's end claims the person on their behalf.
+with no folder of that home, nor one its user could write, on its path,
+though only folders are judged, never the entries in one or where an
+entry's link leads), its kit's tools first on its path as for
+`"Start"`, and with nothing on its input. This machine runs it as the
+node's own; another, through the link reaching it, as A Link says.
+The node judges who asks, as `by`, `"Person"` or `{"Agent": kind}`:
+an agent, in the strictest fence the presences of its process and its
+forebears say, and in a strict one where it can't tell; an agent too
+where its process runs as one of the machine's agents, may gain no
+privileges the node may, or sees other mounts; else the person. A node
+started with `--unattended`, as one in a cell lent from a basin is,
+where the person reaches it only over a link, takes no asker for the
+person: one it would tell as the person is a strictly fenced agent
+there, since its node runs as fenced as the agents beside it and
+nothing else would tell them apart. That holds for every word the node
+takes only from the person, a steer claiming the person and their own
+login's acts too, and for a link's end run there, so a run another
+machine asked is refused, saying so, and so is a carry the person asks
+of it from another machine, since the link's end claims the person on
+their behalf.
 It is a flag on the node's command line rather than a word declared,
 since a file can fail to be read. A
 `by` the request says only makes it stricter, and an agent runs

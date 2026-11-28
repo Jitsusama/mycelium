@@ -162,7 +162,8 @@ pub enum Shell<'a> {
     /// The person's login shell, reading their profile.
     Login,
     /// A shell reading no profile, with no folder of `home`, the home the
-    /// run is in, on its path ([`crate::hold::start::plain_run`]).
+    /// run is in, nor one its user could write or replace, on its path
+    /// ([`crate::hold::start::plain_run`]).
     Plain {
         /// The home the node runs the command in.
         home: &'a Path,
@@ -174,7 +175,13 @@ pub enum Shell<'a> {
 /// preloaded or looked for first, a module path, a startup script or a
 /// tool's own options. A service's environment needn't name any, and one
 /// that does may name an agent-written home's own files, as its path may.
-pub const LOADS_CODE: [&str; 23] = [
+/// It holds each a pi host is refused for (`node::asker`'s own), and more,
+/// since a plain run may start any program, not node alone, with each
+/// sibling a program reads before one or once one is gone: perl reads
+/// `PERLLIB` only where `PERL5LIB` is unset, and Lua reads its version's
+/// own name before the plain one. It is what the node takes away, not
+/// every way a program may come to load code.
+pub const LOADS_CODE: [&str; 41] = [
     "LD_PRELOAD",
     "LD_AUDIT",
     "LD_LIBRARY_PATH",
@@ -192,12 +199,30 @@ pub const LOADS_CODE: [&str; 23] = [
     "OPENSSL_CONF",
     "OPENSSL_MODULES",
     "PYTHONPATH",
+    "PYTHONHOME",
     "PYTHONSTARTUP",
     "PERL5LIB",
+    "PERLLIB",
     "PERL5OPT",
     "RUBYLIB",
     "RUBYOPT",
+    "GEM_PATH",
+    "GEM_HOME",
     "LUA_INIT",
+    "LUA_INIT_5_2",
+    "LUA_INIT_5_3",
+    "LUA_INIT_5_4",
+    "LUA_PATH",
+    "LUA_PATH_5_2",
+    "LUA_PATH_5_3",
+    "LUA_PATH_5_4",
+    "LUA_CPATH",
+    "LUA_CPATH_5_2",
+    "LUA_CPATH_5_3",
+    "LUA_CPATH_5_4",
+    "JAVA_TOOL_OPTIONS",
+    "JDK_JAVA_OPTIONS",
+    "_JAVA_OPTIONS",
 ];
 
 impl Shell<'_> {

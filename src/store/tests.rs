@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// How long a test waits on a change it needs before failing. Each wait
+/// ends the moment the change is told, so this only bounds a lost one.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Changes waiting behind the next are taken with it, each once and
 /// in the order first seen, and the next waits for what comes after.
 #[tokio::test]
@@ -103,12 +107,14 @@ fn a_worker_stays_one_until_its_link_says_it_is_none() {
 }
 
 /// A machine let go while its link holds its claim, as a link let in
-/// already does, still leaves: its record is put back with its
-/// `leaves_at` all the same, and it stays a worker, as its link said.
-/// Said to leave again, it keeps the soonest.
+/// already does, or as one whose time is up while its link runs, still
+/// leaves: that link's claim holds no put back, so its record is put
+/// back with its `leaves_at` all the same, and it stays a worker, as its
+/// link said. Said to leave again, it keeps the soonest.
 #[test]
 fn a_machine_left_while_its_link_holds_its_claim_still_leaves() {
     // Followup 544(4): left can't take a claim its link holds, and must say it left anyway.
+    // Followup 556: one case, where two pinned the same.
     let store = memory::Memory::default();
     let said = |store: &memory::Memory| {
         store
@@ -120,12 +126,11 @@ fn a_machine_left_while_its_link_holds_its_claim_still_leaves() {
     let leaves = |store: &memory::Memory| said(store).declared.and_then(|one| one.leaves_at);
     let mut tern = crate::placement::tests::machine("tern", "linux", 32, &[]);
     tern.declared = Some(crate::declared::Declared::default());
+    // Its link says it is a worker as it puts it, which marks it one.
+    tern.worker = true;
     store.put_machine(&tern).expect("kept");
-    let claim = store
-        .claim("tern")
-        .expect("claimed")
-        .expect("no link holds it yet");
-    store.mark_worker("tern", true);
+    let claim = store.claim("tern").expect("the fake claims");
+    assert!(claim.is_some(), "its link holds it");
 
     let hour = jiff::SignedDuration::from_hours(1);
     let at = jiff::Timestamp::UNIX_EPOCH + hour * 498_140;
@@ -187,39 +192,48 @@ async fn a_worker_mark_that_moves_is_told() {
     store.mark_worker("tern", false);
     store.mark_worker("tern", false);
     let tern = Change::Machine("tern".to_owned());
-    assert_eq!(changes.changes.recv().await, Some(tern.clone()), "made");
-    assert_eq!(changes.changes.recv().await, Some(tern), "unmade");
+    for moved in ["made", "unmade"] {
+        let told = tokio::time::timeout(PATIENCE, changes.changes.recv()).await;
+        assert_eq!(
+            told.ok().flatten(),
+            Some(tern.clone()),
+            "the mark {moved} was told within {PATIENCE:?}"
+        );
+    }
     assert!(
         changes.changes.try_recv().is_err(),
         "a mark that moves nothing tells nothing"
     );
 }
 
-/// A machine let go while a link still holds its claim, as one whose
-/// time is up while its link runs, leaves all the same: that link's
-/// claim holds no put back.
-#[test]
-fn a_machine_let_go_while_its_link_holds_it_leaves() {
+/// A put that moves the mark tells its change once, the record kept by
+/// then, so no watch it wakes reads the new mark beside no record.
+#[tokio::test]
+async fn a_put_that_moves_the_mark_is_told_once_its_record_is_kept() {
     let store = memory::Memory::default();
+    let mut changes = store.changes().expect("the fake tells its changes");
     let mut tern = crate::placement::tests::machine("tern", "linux", 32, &[]);
-    tern.declared = Some(crate::declared::Declared::default());
     tern.worker = true;
-    store.put_machine(&tern).expect("kept");
-    let held = store.claim("tern").expect("the fake claims");
-    assert!(held.is_some(), "its link holds it");
-    left(&store, "tern", jiff::Timestamp::UNIX_EPOCH);
-    let kept = store
-        .machines()
-        .into_iter()
-        .find(|one| one.name == "tern")
-        .expect("still kept");
+    store.put_machine(&tern).expect("its link keeps it");
+    let told = tokio::time::timeout(PATIENCE, changes.changes.recv()).await;
     assert_eq!(
-        kept.declared.and_then(|declared| declared.leaves_at),
-        Some(jiff::Timestamp::UNIX_EPOCH),
-        "it leaves though its link holds it"
+        told.ok().flatten(),
+        Some(Change::Machine("tern".to_owned())),
+        "the put was told within {PATIENCE:?}"
     );
-    assert!(kept.worker, "and stays a worker as its link said");
-    drop(held);
+    assert_eq!(
+        store
+            .machines()
+            .iter()
+            .find(|one| one.name == "tern")
+            .map(|one| one.worker),
+        Some(true),
+        "the watch it woke reads the record and the mark both"
+    );
+    assert!(
+        changes.changes.try_recv().is_err(),
+        "the mark's move is told with the record, not before it"
+    );
 }
 
 /// A machine whose last link was let in after its mark, as a new one
