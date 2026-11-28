@@ -1731,6 +1731,10 @@ fn redial_standing(
                 made.machine
             );
             made.provider.clone_from(asked);
+            // Named again, as a make now is once its start lands: its
+            // start ended with the node that asked it, and one made before
+            // makes were named, or whose naming failed, is named now.
+            name_made_room(book, &made);
             // The loop that reads it hasn't started, so it holds the sender.
             // Nothing is told on this Notify: no start waits on a machine
             // made before the node did, so none finds it unwanted, and it is
@@ -2287,12 +2291,24 @@ fn name_room_for(book: &Book, machine: &str, who: &str) -> Result<bool, String> 
 /// 39 places free, since its booking kept it for that agent alone. One
 /// made for the person, or for no agent proven, stays as booked, as
 /// [`may_name_room`] judges, and is said on the log only where naming
-/// one fails for another reason.
+/// one fails for another reason. Its name is its provider's word, so it
+/// is held to what a rooms ask's is, [`room_named`]: a line's end or a
+/// `#` in it would write some other machine into `agent-rooms`.
 fn name_made_room(book: &Book, made: &Made) {
     let Some(asker) = made.asker.as_deref() else {
         return;
     };
     if asker == made::PERSON || asker == made::UNKNOWN {
+        return;
+    }
+    // Trimmed, it would be another machine's name than the one booked.
+    let plain = match room_named(Some(&made.machine)) {
+        Ok(name) if name == made.machine => Ok(()),
+        Ok(name) => Err(format!("\"{name}\" has spaces about it")),
+        Err(why) => Err(why),
+    };
+    if let Err(why) = plain {
+        eprintln!("a machine made for {asker} stays theirs alone: {why}");
         return;
     }
     match name_room_for(book, &made.machine, asker) {
@@ -9754,7 +9770,6 @@ impl<S: Store> Shared<S> {
                 made.machine
             );
         }
-        name_made_room(&self.book, &made);
         let unwanted = Arc::new(Notify::new());
         // The loop runs for as long as the node answers anything.
         let _ = self.to_dial.send((made.clone(), unwanted.clone()));
@@ -9767,7 +9782,9 @@ impl<S: Store> Shared<S> {
                 .iter()
                 .any(|one| one.machine == made.machine)
         };
-        if started.is_err() && !used() {
+        if started.is_ok() {
+            self.name_made_room_once_started(&made).await;
+        } else if !used() {
             if let_go_unstarted(&made) {
                 unwanted.notify_one();
             } else {
@@ -9779,6 +9796,20 @@ impl<S: Store> Shared<S> {
             }
         }
         started
+    }
+
+    /// Names `made` every agent's room, as [`name_made_room`] judges, once
+    /// the start it was made for has landed on it: named sooner, another
+    /// agent's work could take the places its asker's start was made for,
+    /// and a start that failed would let go a machine others sat on. The
+    /// rooms file is rewritten under a lock that waits, so off the node's
+    /// own threads.
+    async fn name_made_room_once_started(&self, made: &Made) {
+        let (book, made) = (self.book.clone(), made.clone());
+        let naming = tokio::task::spawn_blocking(move || name_made_room(&book, &made));
+        if let Err(error) = naming.await {
+            eprintln!("naming a machine made a room ended early: {error}");
+        }
     }
 
     /// Starts `asked` on `made` once it has linked and its own facts, not
@@ -26148,6 +26179,44 @@ esac
         assert!(
             !book.agent_rooms().contains("skiff"),
             "one the book holds no make of is never named"
+        );
+        // Its name is its provider's word, held to a rooms ask's.
+        for name in ["kestrel\nwren", "kestrel # wren", " kestrel"] {
+            let mut made = made_by("/usr/bin/lend", name, a_day_out());
+            made.asker = Some("ASKER1".to_owned());
+            book.made(&made).expect("the make is kept");
+            name_made_room(&book, &made);
+        }
+        assert_eq!(
+            book.agent_rooms(),
+            std::collections::BTreeSet::from(["tern".to_owned()]),
+            "a name that would write another machine into the file is never named"
+        );
+    }
+
+    #[test]
+    fn a_node_started_again_names_an_agents_standing_make_a_room() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let book = Book::at(dir.path().join("made.jsonl")).of_realm("work");
+        for (name, asker) in [("skiff", "ASKER1"), ("wren", made::PERSON)] {
+            let mut made = made_by("/usr/bin/lend", name, a_day_out());
+            made.asker = Some(asker.to_owned());
+            book.made(&made).expect("the make is kept");
+        }
+        let (to_dial, _dialled) = mpsc::unbounded_channel();
+
+        redial_standing(
+            &book,
+            &["/usr/bin/lend".to_owned()],
+            &Memory::default(),
+            &to_dial,
+        );
+
+        assert_eq!(
+            book.agent_rooms(),
+            std::collections::BTreeSet::from(["skiff".to_owned()]),
+            "the agent's make, whose start ended with the node, is every agent's room; \
+             the person's stays theirs"
         );
     }
 

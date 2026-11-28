@@ -2544,9 +2544,12 @@ only a name it wrote. Anyone may take one out, which only sends work
 back to the machines it would go to anyway; whoever asks, the node
 says on its log who. A file past the most read is never written again.
 The node names a machine it made for a proven agent a room itself, as
-that make's asker would, once the book holds the make, so every agent's
-work may take its free places rather than ask for another machine; one
-made for the person or for `unknown` stays as booked.
+that make's asker would, once the start it was made for lands there,
+and again for each such make standing when it starts, so every agent's
+work may take its free places rather than ask for another machine. One
+made for the person or for `unknown` stays as booked, as does one whose
+start failed, which is let go, and one whose name, its provider's word,
+isn't a name as above.
 Every agent's start or run may be placed there, a granted session's
 and one from no one known included, whoever it is booked for, since
 its booking says who pays for it and may let it go,
