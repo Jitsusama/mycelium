@@ -635,7 +635,9 @@ mod tests {
             tokio::time::sleep(BETWEEN_SENDS / 10).await;
         }
         for (seen, _when) in &mut running {
-            seen.wait_for(Option::is_some).await.expect("its first answer");
+            seen.wait_for(Option::is_some)
+                .await
+                .expect("its first answer");
         }
         assert_eq!(
             holds.builds(),
