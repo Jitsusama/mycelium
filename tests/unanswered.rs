@@ -97,7 +97,8 @@ fn a_pipe_reads_text_and_json_is_asked_for() {
             // The zone as each time drawn in ZONE says it.
             .map(|line| line.matches(&format!(" {STAMPED}")).count()),
         Some(2),
-        "into a pipe, when the hold was put and until when weren't both stamped:\n{text}"
+        "into a pipe, when the hold was put and until when weren't both stamped \
+         {STAMPED:?}:\n{text}"
     );
     assert_eq!(
         lines.get(2),

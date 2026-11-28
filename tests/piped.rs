@@ -104,11 +104,17 @@ fn into_a_pipe_a_machine_says_when_it_was_measured_with_its_day_and_zone() {
     };
     assert!(
         before.ends_with(STAMPED) && after.ends_with(STAMPED),
-        "the oracle didn't stamp its times in ZONE: {before:?} {after:?}"
+        "the oracle didn't stamp its times in ZONE as {STAMPED:?}: {before:?} {after:?}"
     );
     let said = line(&page, "measured").map(str::to_owned);
     assert!(said.is_some(), "the page didn't say when:\n{page}");
     let said = said.as_deref();
+    // Matching the oracle implies the zone too, but a page drawn in
+    // another zone should fail saying so, not as two times to compare.
+    assert!(
+        said.is_some_and(|said| said.ends_with(STAMPED)),
+        "into a pipe, the time kestrel was measured didn't end with {STAMPED:?}: {said:?}"
+    );
     assert!(
         said == Some(before.as_str()) || said == Some(after.as_str()),
         "into a pipe, the time kestrel was measured wasn't stamped as {before:?} or \
