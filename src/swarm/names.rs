@@ -135,16 +135,17 @@ fn typable(name: &str) -> bool {
             now.is_ascii_alphanumeric() || matches!(now, '-' | '_' | '.')
         } else if joiner(now) {
             on_a_letter
+        } else if on_what_is_before(now) {
+            // A mark Unicode counts a letter, as Thai's vowels above and
+            // Hindi's below are, still draws on the letter before it.
+            on_a_letter && marks < MOST_MARKS && !before.is_some_and(|before| before.is_ascii())
         } else if now.is_alphanumeric() {
             !long_dash(now)
                 || (before.is_some_and(cjk) && each.get(at + 1).is_none_or(|after| cjk(*after)))
         } else {
-            on_what_is_before(now)
-                && on_a_letter
-                && marks < MOST_MARKS
-                && !before.is_some_and(|before| before.is_ascii())
+            false
         };
-        marks = if !now.is_alphanumeric() && on_what_is_before(now) && !joiner(now) {
+        marks = if on_what_is_before(now) && !joiner(now) {
             marks + 1
         } else {
             0

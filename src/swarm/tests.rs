@@ -639,6 +639,7 @@ fn a_short_a_keyboard_types_is_kept_and_one_it_cannot_is_not() {
             "\u{939}\u{93F}\u{928}\u{94D}\u{926}\u{940}",
         ),
         ("\u{E44}\u{E21}\u{E48}", "\u{E44}\u{E21}\u{E48}"),
+        ("\u{E17}\u{E35}\u{E48}", "\u{E17}\u{E35}\u{E48}"),
         (
             "\u{91C}\u{93C}\u{94D}\u{92F}\u{93E}\u{926}\u{93E}",
             "\u{91C}\u{93C}\u{94D}\u{92F}\u{93E}\u{926}\u{93E}",
@@ -690,6 +691,9 @@ fn a_short_a_keyboard_types_is_kept_and_one_it_cannot_is_not() {
         "q\u{301}",
         "v2\u{20E3}",
         "g\u{259}\u{301}\u{302}\u{303}\u{304}",
+        // Vowel signs Unicode counts letters are marks all the same.
+        "\u{915}\u{941}\u{941}\u{941}\u{941}",
+        "\u{941}\u{915}",
         // A non-joiner after a digit joins nothing a word spells.
         "\u{663}\u{200C}\u{628}",
         // Drawn like a hyphen by many fonts, and no dash: a hyphen
