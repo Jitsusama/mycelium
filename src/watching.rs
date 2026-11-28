@@ -15,6 +15,7 @@
 //! every path a change names.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use notify::{
     Config, EventHandler, EventKindMask, PathOp, RecommendedWatcher, RecursiveMode,
@@ -80,6 +81,28 @@ pub fn answer_all(
     gone: &[PathBuf],
     new: &[(PathBuf, RecursiveMode)],
 ) -> Vec<Answer> {
+    answer_telling(watcher, gone, new, &REFUSAL_TOLD, &mut |line| {
+        eprintln!("{line}");
+    })
+}
+
+/// Whether this run has told why a watcher refused a watch.
+static REFUSAL_TOLD: AtomicBool = AtomicBool::new(false);
+
+/// As [`answer_all`], telling `say` why the watcher refused a path that
+/// was there, unless `told` says that was told already. A refused watch
+/// costs a walk at every look, and on Linux it is most often the
+/// machine's `fs.inotify.max_user_watches` spent, which nothing else
+/// would show; told once, not at each refusal, since a machine out of
+/// watches refuses at every look. A path not there isn't told, as it is
+/// a race with its removal, and telling it would spend the one telling.
+fn answer_telling(
+    watcher: &mut dyn Watcher,
+    gone: &[PathBuf],
+    new: &[(PathBuf, RecursiveMode)],
+    told: &AtomicBool,
+    say: &mut dyn FnMut(&str),
+) -> Vec<Answer> {
     let mut answers = vec![Answer::Watched; new.len()];
     let mut change: Vec<PathOp> = gone
         .iter()
@@ -95,6 +118,15 @@ pub fn answer_all(
         };
         match failed.origin {
             Some(PathOp::Watch(path, _)) => {
+                if !matches!(failed.source.kind, notify::ErrorKind::PathNotFound)
+                    && !told.swap(true, Ordering::Relaxed)
+                {
+                    say(&format!(
+                        "a watch was refused, so what it named is walked at each look \
+                         instead; later refusals go untold: {}",
+                        failed.source
+                    ));
+                }
                 // A refusal can leave a path held, so it is given back
                 // unless the watcher says it holds nothing of it.
                 let refused = if holds(watcher, &path) {
@@ -567,6 +599,53 @@ mod tests {
             [Answer::Watched, Answer::Held],
             "a path refused by a watcher that can't say what it holds was answered \
              as holding nothing"
+        );
+    }
+
+    #[test]
+    fn a_refusal_is_told_with_its_reason_once_however_often_it_comes() {
+        use std::sync::atomic::AtomicBool;
+
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        for folder in [&a, &b] {
+            fs::create_dir(folder).expect("made");
+        }
+        let (mut watcher, _) = Counting::refusing(b.clone());
+        let new = [
+            (a, RecursiveMode::NonRecursive),
+            (b, RecursiveMode::NonRecursive),
+        ];
+        let told = AtomicBool::new(false);
+        let mut said = Vec::new();
+        for _ in 0..3 {
+            answer_telling(&mut watcher, &[], &new, &told, &mut |line| {
+                said.push(line.to_owned());
+            });
+        }
+        assert_eq!(said.len(), 1, "three refusals weren't told once: {said:?}");
+        assert!(
+            said[0].contains("the watch was refused"),
+            "the refusal was told without its reason: {said:?}"
+        );
+    }
+
+    #[test]
+    fn a_path_not_there_is_never_told_as_a_refusal() {
+        use std::sync::atomic::AtomicBool;
+
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (mut watcher, _) = Counting::made();
+        let new = [(dir.path().join("not-yet"), RecursiveMode::NonRecursive)];
+        let told = AtomicBool::new(false);
+        let mut said = Vec::new();
+        answer_telling(&mut watcher, &[], &new, &told, &mut |line| {
+            said.push(line.to_owned());
+        });
+        assert!(said.is_empty(), "a path not there was told: {said:?}");
+        assert!(
+            !told.into_inner(),
+            "a path not there spent the run's one telling"
         );
     }
 
