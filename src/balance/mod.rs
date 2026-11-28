@@ -583,23 +583,39 @@ mod tests {
 
     #[test]
     fn a_load_is_over_exactly_when_past_a_limit_or_its_lively_ceiling() {
-        let mut hot = machine("tern", 16, 64, 40, 45.0, 20);
-        hot.declared
-            .get_or_insert_with(Default::default)
-            .kept_lively = Some(Lively {
-            cpu: 30,
-            memory_available: None,
-            memory_full: None,
-            io_full: None,
-            io_full_from: Vec::new(),
-        });
-        // What each is past: a limit of its queue's, and its ceiling.
+        let lively = |mut one: Machine| {
+            one.declared
+                .get_or_insert_with(Default::default)
+                .kept_lively = Some(Lively {
+                cpu: 30,
+                memory_available: None,
+                memory_full: None,
+                io_full: None,
+                io_full_from: Vec::new(),
+            });
+            one
+        };
+        // What each is past, a limit of its queue's and its ceiling, and
+        // whether it is over for it.
         let loads = [
-            (machine("osprey", 12, 48, 41, 86.0, 40), (true, false)),
-            (hot, (false, true)),
-            (machine("kestrel", 16, 64, 40, 4.6, 20), (false, false)),
+            (machine("osprey", 12, 48, 41, 86.0, 40), (true, false), true),
+            (
+                lively(machine("tern", 16, 64, 40, 45.0, 20)),
+                (false, true),
+                true,
+            ),
+            (
+                lively(machine("skiff", 12, 48, 41, 86.0, 40)),
+                (true, true),
+                true,
+            ),
+            (
+                machine("kestrel", 16, 64, 40, 4.6, 20),
+                (false, false),
+                false,
+            ),
         ];
-        for (one, past) in loads {
+        for (one, past, over) in loads {
             let load = load(&one, &[], now());
             assert_eq!(
                 (!load.past.is_empty(), load.lively.is_some()),
@@ -608,8 +624,7 @@ mod tests {
                 load.machine
             );
             assert_eq!(
-                load.over,
-                !load.past.is_empty() || load.lively.is_some(),
+                load.over, over,
                 "{} is over exactly when past a limit or its ceiling",
                 load.machine
             );
