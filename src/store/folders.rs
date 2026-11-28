@@ -430,7 +430,10 @@ impl Store for Folders {
 
     fn supersede(&self, machine: &str) -> io::Result<()> {
         let file = format!("{}.newer", safe(machine)?);
-        write_whole(&self.claims, &file, &Value::from(now()))
+        let at = self
+            .superseded(machine)
+            .map_or_else(now, |last| now().max(last + 1));
+        write_whole(&self.claims, &file, &Value::from(at))
     }
 
     fn superseded(&self, machine: &str) -> Option<i64> {
@@ -2430,6 +2433,18 @@ mod tests {
             std::thread::yield_now();
         };
         assert!(again.is_some(), "a dropped claim is free again");
+    }
+
+    #[test]
+    fn two_asks_for_a_claim_in_one_millisecond_are_told_apart() {
+        let (_dir, store) = store();
+        store.supersede("kestrel").expect("the first ask is kept");
+        let first = store.superseded("kestrel");
+        store.supersede("kestrel").expect("the second ask is kept");
+        assert!(
+            store.superseded("kestrel") > first,
+            "the second ask's mark is later than the first's"
+        );
     }
 
     #[test]
