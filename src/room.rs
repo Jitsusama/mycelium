@@ -76,8 +76,10 @@ pub struct Room {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_full_minute: Option<f64>,
     /// The share of the last minute in which all work at once waited on
-    /// its disks, machine-wide, in percent, as the machine's own kernel
-    /// says it ([`io_full_minute`]). Unknown as [`Room::cpu_minute`] is.
+    /// its disks, in percent: machine-wide, as the machine's own kernel
+    /// says it ([`io_full_minute`]), or the worst of the control groups
+    /// its ceiling names to read it from ([`io_full_minute_in`]) where
+    /// any of them says one. Unknown as [`Room::cpu_minute`] is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub io_full_minute: Option<f64>,
 }
@@ -266,29 +268,24 @@ pub fn io_full_minute(procs: &Path) -> Option<f64> {
     )
 }
 
-/// The share of the last minute in which every task at once of the worst
-/// of `groups` waited on its disks, each a control group named by its
-/// path below `cgroups` (Linux's `/sys/fs/cgroup`, or a stand-in for it),
-/// as its `io.pressure` says it; none where none of them says one. A path
-/// that would climb out of `cgroups` is none of them.
+/// The share of the last minute in which every task at once of `group`
+/// waited on its disks, a control group named by its path below
+/// `cgroups` (Linux's `/sys/fs/cgroup`, or a stand-in for it), as its
+/// `io.pressure` says it; none where it says none. A path with a leading
+/// slash is read below `cgroups` as it would be without; one that would
+/// climb out of `cgroups`, or names it alone, says none.
 #[must_use]
-pub fn io_full_minute_of(cgroups: &Path, groups: &[String]) -> Option<f64> {
-    groups
-        .iter()
-        .map(Path::new)
-        .filter(|group| {
-            group.components().next().is_some()
-                && group
-                    .components()
-                    .all(|part| matches!(part, Component::Normal(_)))
-        })
-        .filter_map(|group| {
-            stalled_all_over(
-                &fs::read_to_string(cgroups.join(group).join("io.pressure")).ok()?,
-                "avg60=",
-            )
-        })
-        .reduce(f64::max)
+pub fn io_full_minute_in(cgroups: &Path, group: &str) -> Option<f64> {
+    let group = Path::new(group);
+    let group = group.strip_prefix("/").unwrap_or(group);
+    let mut parts = group.components().peekable();
+    if parts.peek().is_none() || !parts.all(|part| matches!(part, Component::Normal(_))) {
+        return None;
+    }
+    stalled_all_over(
+        &fs::read_to_string(cgroups.join(group).join("io.pressure")).ok()?,
+        "avg60=",
+    )
 }
 
 /// This machine's room as its own kernel says it, read from `procs`
@@ -725,9 +722,9 @@ mod tests {
     }
 
     #[test]
-    fn disk_pressure_named_by_group_is_the_worst_of_the_groups_that_say_one() {
+    fn disk_pressure_named_by_group_is_its_own_below_the_root() {
         let cgroups = tempfile::tempdir().expect("a temporary folder");
-        for (group, full) in [("agents.slice", "2.20"), ("work/jobs.slice", "4.50")] {
+        for (group, full) in [("agents.slice", "2.20"), ("work/idle.slice", "0.00")] {
             let folder = cgroups.path().join(group);
             fs::create_dir_all(&folder).expect("its group");
             fs::write(
@@ -746,32 +743,44 @@ mod tests {
             "full avg10=9.00 avg60=9.40 avg300=9.00 total=1\n",
         )
         .expect("written");
-        let of = |groups: &[&str]| {
-            let groups: Vec<String> = groups.iter().map(ToString::to_string).collect();
-            io_full_minute_of(cgroups.path(), &groups)
-        };
+        let read = |group: &str| io_full_minute_in(cgroups.path(), group);
         assert_eq!(
-            of(&["agents.slice", "work/jobs.slice"]),
-            Some(4.5),
-            "the worst of the groups named, never one not named"
-        );
-        assert_eq!(
-            of(&["agents.slice", "gone.slice"]),
+            read("agents.slice"),
             Some(2.2),
-            "a group saying none is passed over"
+            "the group's own full minute"
         );
-        assert_eq!(of(&["gone.slice"]), None, "and none saying one says none");
-        assert_eq!(of(&[]), None, "as no group named does");
+        assert_eq!(
+            read("work/idle.slice"),
+            Some(0.0),
+            "a group below another, whose 0.00 is a minute, not none"
+        );
+        assert_eq!(read("gone.slice"), None, "a group not there says none");
+        assert_eq!(
+            read("/agents.slice"),
+            Some(2.2),
+            "a group written from the root is read below it"
+        );
+        // The root's own figure, near the machine's, which no path may reach.
+        fs::write(
+            cgroups.path().join("io.pressure"),
+            "full avg10=9.00 avg60=9.90 avg300=9.00 total=1\n",
+        )
+        .expect("written");
         fs::create_dir_all(cgroups.path().join("agents.slice").join("inner"))
             .expect("a group within");
-        assert_eq!(
-            of(&[
-                "agents.slice/inner/../../guard.service",
-                "/guard.service",
-                ""
-            ]),
-            None,
-            "a path climbing out, rooted elsewhere or empty is none of them"
-        );
+        for group in [
+            "agents.slice/inner/../../guard.service",
+            "agents.slice/..",
+            "/agents.slice/../..",
+            "",
+            ".",
+            "/",
+        ] {
+            assert_eq!(
+                read(group),
+                None,
+                "{group:?} climbs out or names the root, so it says none"
+            );
+        }
     }
 }

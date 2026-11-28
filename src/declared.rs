@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
@@ -146,7 +147,7 @@ pub struct Lively {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "whole_or_none"
+        deserialize_with = "memory_full_or_none"
     )]
     pub memory_full: Option<u32>,
     /// The disk pressure it stays at or under, in percent of the last
@@ -158,16 +159,21 @@ pub struct Lively {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "whole_or_none"
+        deserialize_with = "io_full_or_none"
     )]
     pub io_full: Option<u32>,
-    /// The control groups, each a path below the kernel's root of them,
-    /// as `agents.slice`, whose disk pressure its node reads in place of
-    /// the machine's, the worst of them over the last minute; none where
-    /// it reads the machine's. Machine-wide, a task held back by a cap of
-    /// its own counts as waiting on the disks, so a machine whose capped
-    /// survey of its disks stalls alone reads past a ceiling its work
-    /// never feels. A list in another shape is none, spoiling only itself.
+    /// The control groups, each a path below the kernel's root of them, a
+    /// leading slash read the same, as
+    /// `user.slice/user-1000.slice/user@1000.service/agents.slice`, whose
+    /// disk pressure its node reads in place of the machine's, the worst
+    /// of them over the last minute; none where it reads the
+    /// machine's. Machine-wide, a task held back by a cap of its own
+    /// counts as waiting on the disks, so a machine whose capped survey of
+    /// its disks stalls alone reads past a ceiling its work never feels.
+    /// A list in another shape is none, spoiling only itself. Where none
+    /// of the groups says a minute its node reads the machine's, and where
+    /// only some do, the worst of those; either is said on the node's log,
+    /// naming each group saying none.
     #[serde(
         default,
         skip_serializing_if = "Vec::is_empty",
@@ -275,20 +281,76 @@ fn lively_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Option<Li
 
 /// The groups a ceiling's disk pressure is read from as declared, or none
 /// where they aren't a list of names, so the ceiling's other parts stand
-/// and its disk pressure is read machine-wide.
+/// and its disk pressure is read machine-wide, said once on the node's log
+/// so the list is seen to be left out.
 fn groups_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Vec<String>, D::Error> {
     Ok(Option::<serde_json::Value>::deserialize(said)?
-        .and_then(|groups| serde_json::from_value(groups).ok())
+        .and_then(|groups| {
+            serde_json::from_value(groups)
+                .inspect_err(|error| {
+                    say_once(format!(
+                        "reading a declared ceiling, its io_full_from isn't a list of \
+                         groups, so its disks are read machine-wide: {error}"
+                    ));
+                })
+                .ok()
+        })
         .unwrap_or_default())
+}
+
+/// A ceiling's `memory_full` as declared, as [`whole_or_none`] reads it.
+fn memory_full_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Option<u32>, D::Error> {
+    whole_or_none(said, "memory_full")
+}
+
+/// A ceiling's `io_full` as declared, as [`whole_or_none`] reads it.
+fn io_full_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Option<u32>, D::Error> {
+    whole_or_none(said, "io_full")
 }
 
 /// A part of a ceiling as declared, or none where it isn't a whole
 /// percent, which spoils only that part: a fraction such as 0.5 is easy to
 /// write for a share the kernel says in hundredths, and dropping the whole
 /// ceiling for it would rank the machine as any machine, ahead of others.
-fn whole_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Option<u32>, D::Error> {
-    Ok(Option::<serde_json::Value>::deserialize(said)?
-        .and_then(|part| serde_json::from_value(part).ok()))
+/// Each left out is said once on the node's log by its `name`, so the
+/// part is seen not to hold.
+fn whole_or_none<'de, D: serde::Deserializer<'de>>(
+    said: D,
+    name: &str,
+) -> Result<Option<u32>, D::Error> {
+    let part = Option::<serde_json::Value>::deserialize(said)?;
+    Ok(part.and_then(|part| {
+        serde_json::from_value(part)
+            .inspect_err(|error| {
+                say_once(not_whole(name, error));
+            })
+            .ok()
+    }))
+}
+
+/// What a node says of a declared ceiling's part `name` that isn't a whole
+/// percent, as `error` says why. It reads the files its peers declared as
+/// well as its own, so it says it read a declared one.
+fn not_whole(name: &str, error: &serde_json::Error) -> String {
+    format!(
+        "reading a declared ceiling, its {name} isn't a whole percent, \
+         so that part is left out: {error}"
+    )
+}
+
+/// Says `line` on the node's log unless it has said it already, and
+/// whether it did. A declared file is read at every measure, every few
+/// seconds, so a part that doesn't hold is said once for each way it
+/// doesn't rather than at every read. What is said is kept while the node
+/// runs: a few lines, one for each shape its declared files took.
+pub fn say_once(line: String) -> bool {
+    static SAID: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+    let mut said = SAID.lock().unwrap_or_else(PoisonError::into_inner);
+    if said.contains(&line) {
+        return false;
+    }
+    eprintln!("{line}");
+    said.insert(line)
 }
 
 /// The rules of what work needs as declared, each one not in the shape
@@ -1581,8 +1643,26 @@ mod tests {
                     (28, Some(1024), None, Some(2)),
                     "a {name} of {part} holds it to the rest of its ceiling"
                 );
+                let written: serde_json::Value = serde_json::from_str(part).expect("json");
+                if let Err(error) = serde_json::from_value::<Option<u32>>(written) {
+                    assert!(
+                        !say_once(not_whole(name, &error)),
+                        "a {name} of {part} is said by its name, and said already"
+                    );
+                }
             }
         }
+    }
+
+    #[test]
+    fn a_line_is_said_once_however_often_it_comes() {
+        let line = "kestrel's ceiling, said for a test".to_owned();
+        assert!(say_once(line.clone()), "a line is said the first time");
+        assert!(!say_once(line), "and not again");
+        assert!(
+            say_once("osprey's ceiling, said for a test".to_owned()),
+            "while another line is said in its turn"
+        );
     }
 
     #[test]

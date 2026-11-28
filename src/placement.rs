@@ -2915,6 +2915,12 @@ pub(crate) mod tests {
              and is at 8.7 over a minute",
             "and says which it read"
         );
+        assert_eq!(
+            said_of(&stalled(Some(1), Some(1.1))),
+            "kestrel would rather not: it is kept lively, at disk pressure 1 at most, \
+             and is at 1.1 over a minute",
+            "a tenth the kernel said reads as itself, never a tenth high"
+        );
         for (most, full, why) in [
             (
                 Some(1),
