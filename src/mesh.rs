@@ -1201,6 +1201,7 @@ mod tests {
             " Tide\nturns \u{200D}\u{17D2}".to_owned(),
             "\u{1780}".repeat(LINE_MOST),
             " \u{17D2}".to_owned(),
+            "\u{1780}\u{17D2}\u{1780} \u{1F469}\u{200D}\u{1F469} done \u{17D2}".to_owned(),
         ];
         let read = titles_read(&titles);
         let cases = [
@@ -1221,6 +1222,10 @@ mod tests {
             (
                 String::new(),
                 "a title that ends as nothing reads as empty, its event kept",
+            ),
+            (
+                "\u{1780}\u{17D2}\u{1780} \u{1F469}\u{200D}\u{1F469} done".to_owned(),
+                "a coeng or joiner inside a title is kept, only one at its end goes",
             ),
         ];
         assert_eq!(read.len(), cases.len(), "every event is kept: {read:?}");
