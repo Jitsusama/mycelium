@@ -317,7 +317,11 @@ fn versioned(word: &Word) -> bool {
 /// The short name `title` goes by, where `shared` says whether a word is
 /// in another team's title too.
 fn short(title: &str, shared: &dyn Fn(&str) -> bool) -> Option<String> {
-    let own = |word: &&Word| !small(word) && !shared(&word.typed);
+    // Each word is judged typable before it's picked, not the short once
+    // it is, so a title whose first fitting word can't be typed, as
+    // `CI/CD` can't, offers the next that can, rather than none.
+    let own =
+        |word: &&Word| !small(word) && !shared(&word.typed) && typable(&typed_form(&word.typed));
     if let Some((name, _)) = title.split_once(':') {
         let named = words(name);
         let kept: Vec<&str> = named
@@ -659,6 +663,26 @@ mod tests {
             [("QUICKW", "harbour")],
             "the quest's own name, typed in lower case, over the one the other's title \
              would give; and an act given as a name goes to none"
+        );
+    }
+
+    #[test]
+    fn a_title_s_word_that_cannot_be_typed_gives_way_to_the_next_that_can() {
+        // Each slash word is in one title alone, since one in both would
+        // be passed over as shared, typable or not.
+        let teams = [
+            json!({"key": "team:ONE", "title": "CI/CD: Harbour pipelines"}),
+            json!({"key": "team:TWO", "title": "Migrate Blue/Green For Harbour"}),
+        ];
+        let named = short_names(&teams);
+        let said: Vec<(&str, &str)> = named
+            .iter()
+            .map(|(team, name)| (team.as_str(), name.as_str()))
+            .collect();
+        assert_eq!(
+            said,
+            [("ONE", "pipelines"), ("TWO", "migrate")],
+            "ci/cd, which a shell reads as a path, took the place of a word that could be typed"
         );
     }
 
