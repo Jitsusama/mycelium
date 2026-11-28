@@ -1936,11 +1936,15 @@ at once waited on memory, machine-wide, in percent (`full avg60` of
 `io_full_from`, control groups as paths below `/sys/fs/cgroup`, it is
 the worst of their `io.pressure` instead, left out where none says
 one, since machine-wide a task held back by its own cap, as a capped
-survey of the disks, counts as waiting on them. The room is
-`null` where
-no harness keeps a queue, or where the queue's record is of another
-shape or unwritten for two minutes. A machine keeps no reserve of
-mycelium's: its own slices keep its person's share.
+survey of the disks, counts as waiting on them. Where no harness keeps
+a queue, as on a room made in the cloud, or where the queue's record is
+of another shape or unwritten for two minutes, the room is the one its
+own kernel feels: `memory_available` from `MemAvailable` in
+`/proc/meminfo`, `pressure` from `/proc/pressure`, `takes` of none, and
+`over` judged by the node's own lines, `memory` from memory pressure 10
+and `cpu` from processor pressure 70. The room is `null` only where the
+kernel says neither, as a Mac's without a queue. A machine keeps no
+reserve of mycelium's: its own slices keep its person's share.
 
 Its `declared` is what its configuration says of it, which can't be
 measured: `reach`, the networks work there always reaches, such as

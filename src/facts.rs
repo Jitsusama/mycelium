@@ -384,6 +384,33 @@ pub fn measure_in(name: &str, realm: &str, sources: &Sources) -> Machine {
     machine
 }
 
+/// This machine's room as of `now`: its queue's where a harness keeps one
+/// here, and otherwise its kernel's own, [`room::felt`], so a machine no
+/// harness runs on, as a room made in the cloud, still says the memory
+/// it has free and the pressure it is under for work to be placed by.
+/// Only a machine whose kernel says neither, as a Mac without a queue,
+/// has no room known.
+fn room_of(declared: Option<&Declared>, sources: &Sources, now: jiff::Timestamp) -> Option<Room> {
+    // The queue says the last ten seconds' pressure; the last minute's is
+    // the kernel's own, which no queue's record carries.
+    let queued = sources
+        .queue
+        .as_deref()
+        .and_then(|queue| room::read(queue, now.as_second()))
+        .map(|room| Room {
+            cpu_minute: room::cpu_minute(&sources.procs),
+            memory_full_minute: room::memory_full_minute(&sources.procs),
+            io_full_minute: io_full_minute(declared, sources),
+            ..room
+        });
+    queued.or_else(|| {
+        room::felt(&sources.procs, &now.to_string()).map(|felt| Room {
+            io_full_minute: io_full_minute(declared, sources),
+            ..felt
+        })
+    })
+}
+
 /// The share of the last minute in which its disks held all its work at
 /// once, read from the groups its ceiling names where it names any, since
 /// machine-wide a task held back by a cap of its own counts, and from the
@@ -413,18 +440,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         busy: busy_now(),
         ..read.cpu
     };
-    // The queue says the last ten seconds' pressure; the last minute's is
-    // the kernel's own, which no queue's record carries.
-    let room = sources
-        .queue
-        .as_deref()
-        .and_then(|queue| room::read(queue, now.as_second()))
-        .map(|room| Room {
-            cpu_minute: room::cpu_minute(&sources.procs),
-            memory_full_minute: room::memory_full_minute(&sources.procs),
-            io_full_minute: io_full_minute(declared.as_ref(), sources),
-            ..room
-        });
+    let room = room_of(declared.as_ref(), sources, now);
     // A machine within another has its host's power and room while its
     // host's word stands, since it reads neither of its own truly.
     let host = declared
@@ -1562,6 +1578,55 @@ mod tests {
             "of its processors or its memory"
         );
         assert_eq!(unsaid.io_full_minute, None, "or its disks");
+    }
+
+    #[test]
+    fn a_machine_no_queue_is_kept_on_says_the_room_its_kernel_feels() {
+        let home = tempfile::tempdir().expect("a temporary folder");
+        let procs = home.path().join("proc");
+        std::fs::create_dir_all(procs.join("pressure")).expect("its pressure");
+        let pressure = |some: f64, full: f64| {
+            format!(
+                "some avg10={some:.2} avg60={some:.2} avg300=0.00 total=1\n\
+                 full avg10={full:.2} avg60={full:.2} avg300=0.00 total=1\n"
+            )
+        };
+        let write = |name: &str, said: &str| {
+            std::fs::write(procs.join(name), said).expect("its kernel says it");
+        };
+        write("pressure/cpu", &pressure(82.0, 0.0));
+        write("pressure/memory", &pressure(3.0, 1.5));
+        write("pressure/io", &pressure(6.0, 2.5));
+        write("meminfo", "MemTotal: 2048 kB\nMemAvailable: 1024 kB\n");
+        let sources = Sources {
+            procs: procs.clone(),
+            ..Sources::nowhere()
+        };
+        let room = measure("tern", &sources)
+            .room
+            .expect("a machine no harness runs on still feels its room");
+        assert_eq!(room.memory_available, 1024 * 1024, "the memory it has free");
+        assert!(
+            (room.pressure.cpu - 82.0).abs() < f64::EPSILON,
+            "and the pressure on its processors"
+        );
+        assert_eq!(
+            room.over,
+            Some(vec![room::Limit::Cpu]),
+            "judged over by the node's own lines, with no queue to judge it"
+        );
+        assert_eq!(room.io_full_minute, Some(2.5), "and its disks' last minute");
+        assert_eq!(
+            (room.takes.builds, room.takes.vm_tests),
+            (0, 0),
+            "a room no queue keeps starts no build or VM test"
+        );
+        std::fs::remove_file(procs.join("meminfo")).expect("removed");
+        assert_eq!(
+            measure("tern", &sources).room,
+            None,
+            "a kernel saying no memory free, as a Mac's, says no room"
+        );
     }
 
     #[test]
