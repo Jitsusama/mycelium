@@ -454,7 +454,11 @@ pub async fn run(
                 }
                 Some(said) = run_said.recv() => end.run_said(said, &mut writing).await,
                 Some(found) = learned.recv() => end.learned(found, &mut writing).await,
-                _ = looking.tick() => end.look(&mut writing).await,
+                _ = looking.tick() => {
+                    let looked = end.look(&mut writing).await;
+                    looked_now(&mut looking);
+                    looked
+                }
                 () = own_health::moved(&mut end.health.told) => {
                     end.send_machine(&mut writing).await
                 }
@@ -488,6 +492,15 @@ pub async fn run(
 fn paces() -> (tokio::time::Interval, tokio::time::Interval) {
     let keeping = tokio::time::interval_at(tokio::time::Instant::now() + KEEP_EVERY, KEEP_EVERY);
     (keeping, tokio::time::interval(LOOK_EVERY))
+}
+
+/// Sets the next look a whole [`LOOK_EVERY`] after the one just ended,
+/// so the frames that waited on it are heard before another begins. A
+/// look over hundreds of shared quests can outrun the interval, and its
+/// next tick, due while it ran, would else start another at once: each
+/// piece of a large file then waited behind a look or two at both ends.
+fn looked_now(looking: &mut tokio::time::Interval) {
+    looking.reset();
 }
 
 /// The next of what `asked` holds, or never when there is none.
@@ -4907,6 +4920,31 @@ mod tests {
         );
         naming.send(Naming::Named).expect("the node is let answer");
         until(&skiff, named).await;
+    }
+
+    // On 27 November 2026 a carried session's 28.8 MB log took 26 minutes
+    // to cross, at 3.5 s a piece: looks over some 280 shared quests
+    // outran the interval, so another began as soon as one ended, and each
+    // piece waited behind them at both ends.
+    #[tokio::test(start_paused = true)]
+    async fn a_look_that_outran_its_interval_lets_a_whole_one_pass_before_the_next() {
+        let (_, mut looking) = paces();
+        looking.tick().await;
+        tokio::time::advance(LOOK_EVERY * 3 + LOOK_EVERY / 2).await;
+        looked_now(&mut looking);
+        assert!(
+            tokio::time::timeout(Duration::ZERO, looking.tick())
+                .await
+                .is_err(),
+            "no look is due as soon as a long one ends"
+        );
+        tokio::time::advance(LOOK_EVERY).await;
+        assert!(
+            tokio::time::timeout(Duration::ZERO, looking.tick())
+                .await
+                .is_ok(),
+            "the next is due a whole interval on"
+        );
     }
 
     // A starter booked after the node's first answer is said by the next
