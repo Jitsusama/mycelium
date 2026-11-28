@@ -2350,6 +2350,47 @@ pub(super) mod tests {
         );
     }
 
+    /// A room its node names for agents, with the given processor
+    /// pressure.
+    fn a_room(name: &str, cpu: f64) -> Machine {
+        let mut room = machine(name, cpu);
+        room.worker = true;
+        room.held_for = facts::HeldFor::Agents;
+        room.declared.as_mut().expect("declared").costs_money = true;
+        room
+    }
+
+    // Easing moves load into the cloud to keep the person's own machines
+    // light, so a room goes first though one of theirs has more room.
+    #[test]
+    fn a_room_takes_a_session_before_the_persons_own_machine_with_more_room() {
+        let realm = vec![
+            machine("skiff", 86.0),
+            machine("osprey", 4.6),
+            a_room("tern", 20.0),
+        ];
+        assert_eq!(
+            carries(&chose(&realm, &[cell("s1")], &hot_for(&realm, 11))),
+            Some(("s1", "tern")),
+            "a room takes a session before osprey, which isn't in the cloud"
+        );
+    }
+
+    #[test]
+    fn the_persons_own_machine_takes_a_session_a_room_refuses() {
+        let mut realm = vec![
+            machine("skiff", 86.0),
+            machine("osprey", 20.0),
+            a_room("tern", 4.6),
+        ];
+        realm[2].declared.as_mut().expect("declared").leaves_at = Some(now() + PIN);
+        assert_eq!(
+            carries(&chose(&realm, &[cell("s1")], &hot_for(&realm, 11))),
+            Some(("s1", "osprey")),
+            "a room that leaves too soon for a carried session leaves it to osprey"
+        );
+    }
+
     #[test]
     fn the_best_worker_takes_a_session_none_of_the_persons_own_takes() {
         use crate::declared::{Effect, Taint};
