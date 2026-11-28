@@ -76,13 +76,15 @@ fn paused(session: &Value) -> bool {
 /// What a steer typed with `asked` does by address among the living
 /// sessions, as [`held`] judges: left to a team where every session
 /// holding it leads the team going by it, as an orchestrator's team goes
-/// by its lead's; taken by the first where none does; refused where they
-/// disagree. A team is keyed by what its members say orchestrates them,
-/// and a session record is a peer's presence, so a peer could key a team
-/// by a working session's address and lead it with a twin of that
-/// session, or put a twin that leads nothing beside a team's lead; were
-/// either side to win, the steer could reach the peer's session. Pages
-/// keep short names by the same rule, so what they draw steers as shown.
+/// by its lead's; taken by the one session holding it where it leads
+/// nothing; refused where they disagree, or several lead nothing. A team
+/// is keyed by what its members say orchestrates them, and a session
+/// record is a peer's presence, so a peer could key a team by a working
+/// session's address and lead it with a twin of that session, put a twin
+/// that leads nothing beside a team's lead, or beside a working session
+/// that leads nothing; were any to win, the steer could reach the peer's
+/// session. Pages keep short names by the same rule, so what they draw
+/// steers as shown.
 pub(super) fn session_by_address<'a>(swarm: &'a Swarm, asked: &str) -> Held<&'a Value> {
     let living: Vec<&Value> = swarm
         .sessions
@@ -99,9 +101,9 @@ pub(super) fn session_by_address<'a>(swarm: &'a Swarm, asked: &str) -> Held<&'a 
 }
 
 /// Why a steer to `asked` is refused where the living sessions holding
-/// it, `holders`, disagree on leading the team going by it: each is
-/// named by its title and its id, as twins may be titled alike, so a
-/// person can tell which is whose.
+/// it, `holders`, disagree on leading the team going by it, or several
+/// lead nothing, as [`held`] judges: each is named by its title and its
+/// id, as twins may be titled alike, so a person can tell which is whose.
 pub(super) fn refused(asked: &str, holders: &[&Value]) -> String {
     // Each is a peer's text, so each is held to one line.
     let named: Vec<String> = holders
@@ -115,8 +117,8 @@ pub(super) fn refused(asked: &str, holders: &[&Value]) -> String {
         })
         .collect();
     format!(
-        "a steer to {} is refused: {} each say that address, and only some lead the team \
-         going by it",
+        "a steer to {} is refused: {} each say that address, and nothing tells which is \
+         meant",
         unmarked(asked),
         listed(&named.iter().map(String::as_str).collect::<Vec<_>>())
     )

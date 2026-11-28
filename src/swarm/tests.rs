@@ -241,7 +241,7 @@ fn a_team_page_by_a_session_s_address_says_a_steer_reaches_that_session() {
         shown.lines().nth(2),
         Some(
             "a steer to BUSY is refused: Harbour's lead (s-lead) and Busy one (s-busy) each \
-             say that address, and only some lead the team going by it"
+             say that address, and nothing tells which is meant"
         ),
         "the page let a refused steer seem to reach the team or a session:\n{shown}"
     );

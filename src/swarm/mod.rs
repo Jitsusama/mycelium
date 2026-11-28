@@ -787,11 +787,12 @@ pub(crate) enum Held<T> {
     /// No living session holds it, or each that does leads the team going
     /// by it, so the steer is left to find a team.
     Left,
-    /// The first of the living sessions holding it takes the steer, as
-    /// none of them leads the team going by it.
+    /// The one living session holding it takes the steer, as it doesn't
+    /// lead the team going by it.
     One(T),
-    /// Each living session holding it, some leading the team going by it
-    /// and some not, so the steer is refused.
+    /// Each living session holding it, where some lead the team going by
+    /// it and some don't, or several lead nothing, so the steer is
+    /// refused.
     Split(Vec<T>),
 }
 
@@ -812,19 +813,26 @@ impl<T> Held<T> {
 /// none is, those holding it in another; the team going by it is found
 /// by the same rule, so `KELP01` and `kelp01` are steered apart. Where
 /// every holder leads that team, the team takes the steer, as an
-/// orchestrator's team goes by its lead's address; where none does, the
-/// first holder takes it. Where they disagree it is refused, naming
-/// each: a session record is a peer's presence, so a peer may publish a
-/// twin of a working session that leads a team keyed by its address, or
-/// a twin of a lead that leads nothing, and whichever side a rule picked,
-/// the steer could reach the peer's rather than the one the person meant.
+/// orchestrator's team goes by its lead's address; where one holder
+/// leads nothing, it takes the steer. Where they disagree, or several
+/// lead nothing, it is refused, naming each: a session record is a
+/// peer's presence, so a peer may publish a twin of a working session
+/// that leads a team keyed by its address, a twin of a lead that leads
+/// nothing, or a twin of a working session that leads nothing either,
+/// and whichever a rule picked, the steer could reach the peer's rather
+/// than the one the person meant. The node delivers a steer to an
+/// address's inbox, so the twin picked is the session the swarm says it
+/// reaches and judges it by, as whether it is paused. Records saying the
+/// same id are one session's, not twins, so each id is held once.
 pub(crate) fn held<'s, S>(
     teams: &[Value],
     living: &'s [S],
     said: impl Fn(&'s S) -> (&'s str, Option<&'s str>),
     asked: &str,
 ) -> Held<&'s S> {
-    let holders = own_case_first(living, asked, |each| said(each).0);
+    let mut ids = BTreeSet::new();
+    let mut holders = own_case_first(living, asked, |each| said(each).0);
+    holders.retain(|&holder| said(holder).1.is_none_or(|id| ids.insert(id)));
     let keyed = own_case_first(teams, asked, address);
     let leads = |holder: &'s S| {
         said(holder)
@@ -832,11 +840,11 @@ pub(crate) fn held<'s, S>(
             .is_some_and(|id| keyed.iter().any(|team| team["lead"].as_str() == Some(id)))
     };
     let leading = holders.iter().filter(|&&holder| leads(holder)).count();
-    match holders.first() {
-        None => Held::Left,
-        Some(_) if leading == holders.len() => Held::Left,
-        Some(first) if leading == 0 => Held::One(*first),
-        Some(_) => Held::Split(holders),
+    match holders.as_slice() {
+        [] => Held::Left,
+        _ if leading == holders.len() => Held::Left,
+        [one] => Held::One(*one),
+        _ => Held::Split(holders),
     }
 }
 
