@@ -474,7 +474,8 @@ pub fn refused(
     })
 }
 
-/// The errors of the refusals that couldn't be read, each said once,
+/// The errors of the refusals that couldn't be read, each said once
+/// until what it was about reads again ([`Unreadable::read_again`]),
 /// since the carries are judged again each time they're asked for.
 #[derive(Debug, Default)]
 pub struct Unreadable(Mutex<BTreeSet<String>>);
@@ -486,6 +487,16 @@ impl Unreadable {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(error.to_owned())
+    }
+
+    /// Forgets each error said that begins with `about`, once what it
+    /// was about reads again, so a later failure to read it is said
+    /// again, though its error be the same.
+    pub fn read_again(&self, about: &str) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|said| !said.starts_with(about));
     }
 }
 
@@ -1421,6 +1432,22 @@ mod tests {
         assert!(unreadable.first("one"), "a new error is said");
         assert!(!unreadable.first("one"), "the same error isn't said again");
         assert!(unreadable.first("another"), "another error is said");
+    }
+
+    #[test]
+    fn an_error_is_said_again_once_what_it_was_about_read_again() {
+        let unreadable = Unreadable::default();
+        assert!(unreadable.first("carries: denied"), "a new error is said");
+        assert!(unreadable.first("parks: denied"), "another is said");
+        unreadable.read_again("carries");
+        assert!(
+            unreadable.first("carries: denied"),
+            "the same error is said again once its record read"
+        );
+        assert!(
+            !unreadable.first("parks: denied"),
+            "one about another record isn't"
+        );
     }
 
     #[test]

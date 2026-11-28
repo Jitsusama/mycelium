@@ -830,7 +830,9 @@ impl Easing {
     /// it and what the node remembers is what counts against
     /// [`ease::DAILY`], so a record cut short lifts nothing. Where the
     /// carries on their way couldn't be read, as [`Easing::on_way`] was
-    /// told, that is why it can't be told, so the look carries none.
+    /// told, that is why it can't be told, though the record can't say
+    /// the day's count either, as a carry is held first for one on its
+    /// way; so the look carries none.
     pub fn look(
         &mut self,
         here: &Here,
@@ -842,9 +844,9 @@ impl Easing {
     ) -> Option<Value> {
         reading.held = Some(self.watch.take(&reading));
         self.history.read(here.name, &reading);
-        let kept_eases = match (&self.on_way_unread, kept_eases) {
-            (Some(why), Ok(_)) => Err(why.clone()),
-            (_, kept_eases) => kept_eases,
+        let kept_eases = match &self.on_way_unread {
+            Some(why) => Err(why.clone()),
+            None => kept_eases,
         };
         self.history.kept_eases(kept_eases);
         // A session in a turn is awake, whatever it would have been put
@@ -2535,6 +2537,19 @@ mod tests {
         cells: &[Cell],
         kept_eases: &Result<usize, String>,
     ) -> Vec<Value> {
+        looks_told(machines, easing, cells, kept_eases, |_| None)
+    }
+
+    /// As [`looks_in`], telling `easing` before each look what `on_way`
+    /// says of the carries on their way at its time, as the node does;
+    /// nothing where it says nothing.
+    fn looks_told(
+        machines: &[Machine],
+        easing: &mut Easing,
+        cells: &[Cell],
+        kept_eases: &Result<usize, String>,
+        on_way: impl Fn(Timestamp) -> Option<Result<Vec<Moved>, String>>,
+    ) -> Vec<Value> {
         let declared = declaring(&[Kind::Fence]);
         let here = Here {
             name: "skiff",
@@ -2554,6 +2569,9 @@ mod tests {
         (0..=20)
             .filter_map(|minute| {
                 let at = ago(20 - minute);
+                if let Some(on_way) = on_way(at) {
+                    easing.on_way(on_way, at);
+                }
                 let reading = balance::read(machines, &[], at);
                 easing.look(
                     &here,
@@ -2647,6 +2665,37 @@ mod tests {
             lines.last().expect("a line")["why"],
             json!(unread),
             "and it says why"
+        );
+    }
+
+    #[test]
+    fn a_look_carries_again_once_the_carries_on_their_way_read_again() {
+        let unread = "the carries in carries.jsonl can't be read (denied), so which of \
+                      skiff's carries are on their way can't be told";
+        let first = first_carry_ago();
+        let mut easing = Easing::after(&[], Vec::new());
+        // Unreadable up to the look that would have carried first, and
+        // read, with none on its way, from the next on, as the node tells
+        // it before each look.
+        let lines = looks_told(&short_realm(), &mut easing, &[cell("s1")], &Ok(0), |at| {
+            Some(if at <= ago(first) {
+                Err(unread.to_owned())
+            } else {
+                Ok(Vec::new())
+            })
+        });
+        let held = lines
+            .iter()
+            .position(|line| line["why"] == json!(unread))
+            .expect("a look held back while the carries can't be read");
+        assert!(
+            lines[..held].iter().all(|line| line["choice"] != "carry"),
+            "none carried before: {lines:?}"
+        );
+        assert_eq!(
+            first_carry(&lines),
+            Some(first - 1),
+            "the first look told they read carries: {lines:?}"
         );
     }
 
