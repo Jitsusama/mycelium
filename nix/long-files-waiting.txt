@@ -10,7 +10,6 @@ src/carry/mod.rs
 src/carry/ordered.rs
 src/carry/settle.rs
 src/carry/through.rs
-src/daemon/records.rs
 src/declared.rs
 src/facts.rs
 src/feed.rs
