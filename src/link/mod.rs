@@ -1699,6 +1699,14 @@ impl<S: Store> End<S> {
             Frame::Lent { ask, lent } => self.runs.lent(ask, lent),
             // Dropping it lets the lender's answer go.
             Frame::Unlend { ask } => drop(self.runs.lending.remove(&ask)),
+            // A lend carries a key, so it is taken only from a machine its
+            // key proved, never one whose hello merely names the machine
+            // this one borrows from.
+            Frame::Hands(_) if !self.proven => eprintln!(
+                "mycelium: {} handed this machine a lend over a link its key didn't prove, \
+                 which is dropped",
+                self.other
+            ),
             Frame::Hands(handed) => {
                 hands::take(self.node.clone(), &self.other, handed);
             }
@@ -7196,44 +7204,61 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_lend_a_worker_hands_this_machine_never_reaches_its_node() {
+    async fn a_lend_reaches_the_node_only_from_a_proven_peer_never_a_worker_or_a_hello() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let mut asked_of_node = asked_of_a_node(&dir.path().join("node.sock"));
-        for worker in [false, true] {
+        let proven = || Proven {
+            by: realm("skiff"),
+            far: "tern".to_owned(),
+        };
+        // A worker's lend over a link its key proved, then a peer's over
+        // one whose hello alone names it, each with a message after it,
+        // so the lend was weighed before the message was kept.
+        for (at, (worker, key)) in [(true, "worker"), (false, "hello")].into_iter().enumerate() {
             let skiff = Memory::default();
-            let message = recent(0, "SAK9FZ", usize::from(worker));
-            let _tern = tern_hands_skiff(&skiff, dir.path(), worker, &message).await;
-            if worker {
-                // Its message after the lend has been taken, so the lend
-                // was weighed before it.
-                until(&skiff, |store| store.message(&message).is_some()).await;
-                while let Ok(asked) = asked_of_node.try_recv() {
-                    assert!(!handed(&asked), "a worker's lend is dropped at its link");
-                }
+            let message = recent(0, "SAK9FZ", at);
+            let _tern = if worker {
+                tern_hands_skiff((&skiff, proven()), dir.path(), (worker, key), &message).await
             } else {
-                // A peer's lend reaches the node, which judges it, so the
-                // worker's would have too had its link let it through.
-                tokio::time::timeout(PATIENCE, async {
-                    while let Some(asked) = asked_of_node.recv().await {
-                        if handed(&asked) {
-                            return;
-                        }
-                    }
-                })
+                tern_hands_skiff(
+                    (&skiff, realm("skiff")),
+                    dir.path(),
+                    (worker, key),
+                    &message,
+                )
                 .await
-                .expect("a peer's lend reaches the node");
-            }
+            };
+            until(&skiff, |store| store.message(&message).is_some()).await;
         }
+        // Then a proven peer's, which reaches the node: every lend asked
+        // of it before that one is read, and none is the worker's or the
+        // hello's.
+        let skiff = Memory::default();
+        let message = recent(0, "SAK9FZ", 2);
+        let _tern =
+            tern_hands_skiff((&skiff, proven()), dir.path(), (false, "proven"), &message).await;
+        tokio::time::timeout(PATIENCE, async {
+            while let Some(asked) = asked_of_node.recv().await {
+                match handed_by(&asked) {
+                    Some("proven") => return,
+                    Some(which) => panic!("the {which} lend reached the node"),
+                    None => {}
+                }
+            }
+        })
+        .await
+        .expect("a proven peer's lend reaches the node");
     }
 
-    /// Has tern, linked to skiff as its worker or not, hand skiff a lend
-    /// and then, as a session it holds, say the message `message`, skiff's
-    /// node on `dir`'s `node.sock`; tern's end, which the test keeps while
-    /// skiff reads.
+    /// Has tern, linked to skiff as its worker or not and admitted by
+    /// `membership`, hand skiff a lend whose key names `which` and then,
+    /// as a session it holds, say the message `message`, skiff's node on
+    /// `dir`'s `node.sock`; tern's end, which the test keeps while skiff
+    /// reads.
     async fn tern_hands_skiff(
-        skiff: &Memory,
+        (skiff, membership): (&Memory, impl Membership + 'static),
         dir: &std::path::Path,
-        worker: bool,
+        (worker, which): (bool, &str),
         message: &str,
     ) -> (ReadHalf<DuplexStream>, WriteHalf<DuplexStream>) {
         let store = skiff.clone();
@@ -7245,12 +7270,12 @@ mod tests {
                 worker,
                 ..connection(reading, writing)
             };
-            run(store, &realm("skiff"), connection, None, Some(starting)).await
+            run(store, &membership, connection, None, Some(starting)).await
         });
         let (far_reading, mut far_writing) = tokio::io::split(far);
         let hands = Frame::Hands(Hands {
-            lend: json!({"vms": [], "budgets": {}}),
-            key: crate::lend::Key("Bearer worker-key".to_owned()),
+            lend: json!({"vms": [{"prefix": "skiff", "budget": "room"}], "budgets": {}}),
+            key: crate::lend::Key(format!("Bearer {which}")),
         });
         let said = Frame::Message {
             id: message.to_owned(),
@@ -7271,9 +7296,73 @@ mod tests {
         (far_reading, far_writing)
     }
 
-    /// Whether a node was asked to take a lend tern handed it.
-    fn handed(asked: &crate::wire::Request) -> bool {
-        matches!(asked, crate::wire::Request::Hands { from, .. } if from == "tern")
+    /// Which lend tern handed a node was asked to take, as its key names
+    /// it, if one was.
+    fn handed_by(asked: &crate::wire::Request) -> Option<&str> {
+        match asked {
+            crate::wire::Request::Hands { from, hands } if from == "tern" => {
+                hands.key.0.strip_prefix("Bearer ")
+            }
+            _ => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cut_or_hands_dropped_takes_back_what_was_handed_at_the_next_look() {
+        use crate::lend::lender::{Cut, cut, uncut};
+
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let lender = Arc::new(handing_tern(dir.path()));
+        let (cuts, tern) = (dir.path().join("lend"), Cut::Machine("tern".to_owned()));
+        cut(&cuts, &tern).expect("cut");
+        let (saying, mut said) = mpsc::unbounded_channel();
+        // Looked at every few milliseconds and handed again only hourly,
+        // so each frame after the first is a look's.
+        let paces = (Duration::from_millis(5), Duration::from_secs(3600));
+        let _handing = hands::Handing::start_paced(lender, "tern".to_owned(), saying, paces);
+        assert!(
+            handed_next(&mut said).await.is_taken_back(),
+            "a link coming up to a machine cut off takes back what an older one handed"
+        );
+        uncut(&cuts, &tern).expect("let back");
+        assert!(
+            !handed_next(&mut said).await.is_taken_back(),
+            "it is handed"
+        );
+        cut(&cuts, &tern).expect("cut");
+        assert!(
+            handed_next(&mut said).await.is_taken_back(),
+            "a cut takes it back"
+        );
+        uncut(&cuts, &tern).expect("let back");
+        assert!(
+            !handed_next(&mut said).await.is_taken_back(),
+            "let back, it is handed again"
+        );
+        let file = dir.path().join("lends.json");
+        let mut lend: Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).expect("the lend reads"))
+                .expect("a lend");
+        lend["vms"][0]
+            .as_object_mut()
+            .expect("a vm")
+            .remove("hands");
+        std::fs::write(&file, lend.to_string()).expect("the lend written");
+        assert!(
+            handed_next(&mut said).await.is_taken_back(),
+            "hands dropped from its lend takes it back"
+        );
+    }
+
+    /// The next lend a link's handing says.
+    async fn handed_next(said: &mut mpsc::UnboundedReceiver<RunSaid>) -> Hands {
+        let said = tokio::time::timeout(PATIENCE, said.recv())
+            .await
+            .expect("it is said in time");
+        let Some(RunSaid::Hands(hands)) = said else {
+            panic!("a handing says only a lend");
+        };
+        hands
     }
 
     /// A node on `node` telling the test each request it is asked,

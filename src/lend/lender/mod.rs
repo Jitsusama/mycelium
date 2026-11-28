@@ -190,14 +190,33 @@ pub enum Cut {
 struct Refusal {
     status: u16,
     why: String,
+    /// Whether another lender may lend what this one refused: a budget
+    /// asked that this one wasn't handed, or an upstream this one can't
+    /// reach. A lend handed here goes to the machine that handed it
+    /// only then ([`answer_handed`]).
+    elsewhere: bool,
 }
 
 fn refused(status: u16, why: impl Into<String>) -> Refusal {
     Refusal {
         status,
         why: why.into(),
+        elsewhere: false,
     }
 }
+
+/// A refusal another lender may lend past, as [`Refusal::elsewhere`] says.
+fn refused_elsewhere(status: u16, why: impl Into<String>) -> Refusal {
+    Refusal {
+        elsewhere: true,
+        ..refused(status, why)
+    }
+}
+
+/// How long a lend handed here stands after it was last handed: past two
+/// of the lender's [`crate::link::hands::EVERY`] and then some, so one a
+/// wedged lender can no longer take back still ends.
+pub const HANDED_LASTS: Duration = Duration::from_secs(25 * 60);
 
 /// How one lend ended.
 enum Ended {
@@ -262,8 +281,8 @@ enum Source {
     /// may seal it.
     File(PathBuf, Vec<u32>),
     /// What the machine that made this one handed it last, if it handed
-    /// anything yet, which it hands again as it changes.
-    Handed(Mutex<Option<Hands>>),
+    /// anything yet, which it hands again as it changes, and when.
+    Handed(Mutex<Option<(Hands, Instant)>>),
 }
 
 /// This machine's lend: what may be lent, and where it keeps its counts
@@ -280,6 +299,8 @@ pub struct Lender {
     /// The folder an upstream named within it is found in, if there is
     /// one.
     runtime: Option<PathBuf>,
+    /// How long what is handed it stands, unless handed again.
+    lasts: Duration,
     /// Held while a count is read and written, so two never count as one.
     counting: Mutex<()>,
 }
@@ -300,6 +321,7 @@ impl Lender {
             folder,
             cut_beside: None,
             runtime,
+            lasts: HANDED_LASTS,
             counting: Mutex::new(()),
         }
     }
@@ -315,8 +337,17 @@ impl Lender {
             folder,
             cut_beside: Some(cut_beside),
             runtime,
+            lasts: HANDED_LASTS,
             counting: Mutex::new(()),
         }
+    }
+
+    /// This lender, what is handed it standing `lasts` in place of
+    /// [`HANDED_LASTS`], so a test sees it end without waiting.
+    #[cfg(test)]
+    #[must_use]
+    pub fn lasting(self, lasts: Duration) -> Self {
+        Self { lasts, ..self }
     }
 
     /// A lender of what the machine that made this one hands it, keeping
@@ -335,7 +366,8 @@ impl Lender {
 
     /// Takes `hands` as what may be lent from now on, in place of all it
     /// was handed before, so a key and the budget it came with are never
-    /// mixed with another's; refused by a lender reading a file.
+    /// mixed with another's; a lend taken back ([`Hands::taken_back`])
+    /// leaves nothing handed. Refused by a lender reading a file.
     ///
     /// # Errors
     ///
@@ -346,23 +378,38 @@ impl Lender {
                 "this machine lends as its own file says, and is handed nothing".to_owned(),
             );
         };
-        handed_written(&hands)?;
+        let handed = if hands.is_taken_back() {
+            None
+        } else {
+            handed_written(&hands)?;
+            Some((hands, Instant::now()))
+        };
         *held
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hands);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = handed;
         Ok(())
     }
 
-    /// Whether it lends anything yet: one reading a file always may, and
-    /// one handed its lend once it was handed one.
+    /// What it was handed last, while that stands: none once it is taken
+    /// back or [`Self::lasts`] has passed since.
+    fn held(&self) -> Option<Hands> {
+        let Source::Handed(held) = &self.source else {
+            return None;
+        };
+        held.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|(_, at)| at.elapsed() < self.lasts)
+            .map(|(hands, _)| hands.clone())
+    }
+
+    /// Whether it lends anything now: one reading a file always may, and
+    /// one handed its lend while what it was handed last stands.
     #[must_use]
     pub fn lends(&self) -> bool {
         match &self.source {
             Source::File(..) => true,
-            Source::Handed(held) => held
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .is_some(),
+            Source::Handed(_) => self.held().is_some(),
         }
     }
 
@@ -389,15 +436,15 @@ impl Lender {
     fn written(&self) -> Result<Written, Refusal> {
         let (file, declarers) = match &self.source {
             Source::File(file, declarers) => (file, declarers),
-            Source::Handed(held) => {
-                let held = held
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let Some(hands) = held.as_ref() else {
-                    return Err(refused(503, "this machine was handed no lend yet"));
+            Source::Handed(_) => {
+                let Some(hands) = self.held() else {
+                    return Err(refused_elsewhere(
+                        503,
+                        "this machine holds no lend handed it now",
+                    ));
                 };
                 // Checked as it was handed, so this fails only as no lend.
-                return handed_written(hands).map_err(|why| refused(503, why));
+                return handed_written(&hands).map_err(|why| refused(503, why));
             }
         };
         raw(file, declarers)
@@ -421,13 +468,36 @@ impl Lender {
     /// spend as its lend here says, and the key that budget's command
     /// prints here. That budget is the machine's own, apart from what it
     /// borrows here, so its file names an upstream on that machine.
-    /// None where the file hands it nothing.
+    /// None where the file hands it nothing, or `machine` is cut off.
     ///
     /// # Errors
     ///
     /// When the file can't be read, names no one lend for `machine`, or
     /// the budget it hands is missing or its key can't be had.
     pub async fn handing(&self, machine: &str) -> Result<Option<Hands>, String> {
+        let Some((command, lend)) = self.to_hand(machine)? else {
+            return Ok(None);
+        };
+        let key = key(&command).await.map_err(|refusal| refusal.why)?;
+        Ok(Some(Hands {
+            lend,
+            key: Key(key),
+        }))
+    }
+
+    /// Whether this machine hands `machine` a budget now, as [`Self::handing`]
+    /// would, without having its key: cheap enough to ask each minute.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::handing`], but for the key.
+    pub fn hands_to(&self, machine: &str) -> Result<bool, String> {
+        self.to_hand(machine).map(|to_hand| to_hand.is_some())
+    }
+
+    /// The key command and the lend [`Self::handing`] hands `machine`,
+    /// before the key is had; none where it hands it nothing.
+    fn to_hand(&self, machine: &str) -> Result<Option<(Vec<String>, serde_json::Value)>, String> {
         let Source::File(file, declarers) = &self.source else {
             return Ok(None);
         };
@@ -444,6 +514,11 @@ impl Lender {
         let Some(name) = &vm.hands else {
             return Ok(None);
         };
+        // A machine cut off here is handed nothing, so what it was handed
+        // before is taken back.
+        if self.cut_off_why(machine).is_some() {
+            return Ok(None);
+        }
         let command = written
             .budgets
             .get(name)
@@ -451,7 +526,6 @@ impl Lender {
             .key
             .clone()
             .ok_or_else(|| format!("the budget {name} names no key to hand"))?;
-        let key = key(&command).await.map_err(|refusal| refusal.why)?;
         let mut budget = raw["budgets"][name].clone();
         if let Some(budget) = budget.as_object_mut() {
             budget.remove("key");
@@ -468,10 +542,7 @@ impl Lender {
             }],
             "budgets": {name.as_str(): budget},
         });
-        Ok(Some(Hands {
-            lend,
-            key: Key(key),
-        }))
+        Ok(Some((command, lend)))
     }
 
     /// Why `machine` is cut off, as the cuts say now, where it is: cuts
@@ -772,6 +843,28 @@ fn write_whole(folder: &Path, file: &Path, value: &impl serde::Serialize) -> io:
 /// the receiver lets the lend go.
 #[must_use]
 pub fn answer(lender: &Arc<Lender>, machine: &str, lend: Lend) -> mpsc::Receiver<Lent> {
+    answering(lender, machine, lend, false)
+}
+
+/// Answers `lend` as [`answer`] does, for this machine's own sessions
+/// from what its lender handed it; but where another lender may lend what
+/// this one refused, a budget it wasn't handed or an upstream it can't
+/// reach, the answers end with nothing said, so the lend is borrowed from
+/// the machine that handed it instead. Every other refusal, a cut's
+/// among them, is said and stands.
+#[must_use]
+pub fn answer_handed(lender: &Arc<Lender>, machine: &str, lend: Lend) -> mpsc::Receiver<Lent> {
+    answering(lender, machine, lend, true)
+}
+
+/// Answers `lend` as [`answer`] says, leaving a refusal another lender may
+/// lend past unsaid where `unsaid_elsewhere` says to.
+fn answering(
+    lender: &Arc<Lender>,
+    machine: &str,
+    lend: Lend,
+    unsaid_elsewhere: bool,
+) -> mpsc::Receiver<Lent> {
     let (sending, answers) = mpsc::channel(BACKLOG);
     let lender = lender.clone();
     let machine = machine.to_owned();
@@ -791,7 +884,13 @@ pub fn answer(lender: &Arc<Lender>, machine: &str, lend: Lend) -> mpsc::Receiver
         // may have stopped taking what it is sent, so a cut lend is in the
         // log however its borrower behaves.
         say(&machine, &used, began.elapsed(), &outcome);
-        if let Ended::Refused(Refusal { status, why }) = ended {
+        if let Ended::Refused(Refusal {
+            status,
+            why,
+            elsewhere,
+        }) = ended
+            && !(elsewhere && unsaid_elsewhere)
+        {
             // A borrower gone meanwhile has nothing to be told.
             let _ = sending.send(Lent::Refused { status, why }).await;
         }
@@ -1044,7 +1143,7 @@ fn allowed(
         }
         Some(asked) => {
             used.budget = Some(vm.budget.clone());
-            return Err(refused(
+            return Err(refused_elsewhere(
                 403,
                 format!("{machine} may not borrow through the budget {asked}"),
             ));
@@ -1252,15 +1351,18 @@ async fn reached(
             .runtime
             .as_ref()
             .ok_or_else(|| {
-                refused(
+                refused_elsewhere(
                     503,
                     "this machine has no runtime folder to find its relay in",
                 )
             })?
             .join(&budget.upstream)
     };
+    // A key handed here goes to a relay under the room login's own
+    // runtime folder, which an agent a worker runs can't write, so none
+    // can stand a socket there to read the key.
     let stream = UnixStream::connect(&upstream).await.map_err(|error| {
-        refused(
+        refused_elsewhere(
             503,
             format!("this machine's model relay isn't answering: {error}"),
         )

@@ -3,9 +3,12 @@
 //! with it, so the other machine's sessions call their model straight
 //! from there rather than through this machine. The handing end sends it
 //! as the link comes up and again every [`EVERY`], so a changed file or a
-//! new key reaches it within that; the handed end gives it to its node,
-//! which takes it only from the machine it borrows from
-//! ([`crate::wire::Request::Hands`]) and keeps it in memory alone.
+//! new key reaches it within that, and takes it back within
+//! [`LOOKED_EVERY`] of a cut or of `hands` leaving its lend file. The
+//! handed end takes one only over a link its far key proved, and gives
+//! it to its node, which takes it only from the machine it borrows from
+//! ([`crate::wire::Request::Hands`]) and keeps it in memory alone, for
+//! [`crate::lend::lender::HANDED_LASTS`] past the last it was handed.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,44 +28,100 @@ use crate::wire::{Request, Response};
 /// costs nothing worth counting.
 pub const EVERY: Duration = Duration::from_secs(10 * 60);
 
+/// How often the handing end reads whether it still hands the other end
+/// a budget, its cuts and its lend file both, without having the key: so
+/// a cut, or `hands` dropped from its lend, takes back what was handed
+/// within a minute rather than at the next [`EVERY`].
+pub const LOOKED_EVERY: Duration = Duration::from_secs(60);
+
 /// Handing a lend to the other end of one link, for as long as it is
 /// held: dropping it stops it, as the link ends.
 pub(super) struct Handing(tokio::task::JoinHandle<()>);
 
 impl Handing {
     /// Hands `machine` what `lender` says it hands it, through `saying`
-    /// to the link's loop, now and every [`EVERY`] after, until the loop
-    /// is gone or this is dropped. A file that hands it nothing sends
-    /// nothing, and one that can't be read is said in the log each time
-    /// why it can't changes, never once a turn.
+    /// to the link's loop, now and every [`EVERY`] after, looking every
+    /// [`LOOKED_EVERY`] whether it still does, until the loop is gone or
+    /// this is dropped.
     pub(super) fn start(
         lender: Arc<Lender>,
         machine: String,
         saying: mpsc::UnboundedSender<RunSaid>,
     ) -> Self {
+        Self::start_paced(lender, machine, saying, (LOOKED_EVERY, EVERY))
+    }
+
+    /// Hands as [`Self::start`] does, looking and handing again at the
+    /// paces `(looked, every)`. Where the lender hands `machine` nothing
+    /// now, as a cut or its file says, it takes back what it handed, once;
+    /// a file that can't be read takes it back too, since what it would
+    /// hand can't be known, and why is said in the log each time it
+    /// changes, never once a turn.
+    pub(super) fn start_paced(
+        lender: Arc<Lender>,
+        machine: String,
+        saying: mpsc::UnboundedSender<RunSaid>,
+        (looked, every): (Duration, Duration),
+    ) -> Self {
         Self(tokio::spawn(async move {
-            let mut every = tokio::time::interval(EVERY);
+            let mut looking = tokio::time::interval(looked);
             let mut said_why = None;
+            // When it last handed a budget that stands, and whether it
+            // has said anything yet, so a link that comes up with nothing
+            // to hand takes back what an older link handed.
+            let mut handed: Option<tokio::time::Instant> = None;
+            let mut said_any = false;
             loop {
-                every.tick().await;
-                match lender.handing(&machine).await {
-                    Ok(Some(handed)) => {
+                looking.tick().await;
+                let said = match lender.hands_to(&machine) {
+                    Ok(true) if handed.is_some_and(|at| at.elapsed() < every) => None,
+                    Ok(true) => match lender.handing(&machine).await {
+                        Ok(Some(hands)) => {
+                            said_why = None;
+                            handed = Some(tokio::time::Instant::now());
+                            Some(hands)
+                        }
+                        Ok(None) => taken_back(&mut handed, said_any),
+                        // A key not had leaves what was handed standing,
+                        // and is asked again at the next look.
+                        Err(why) => {
+                            note(&machine, &mut said_why, why);
+                            None
+                        }
+                    },
+                    Ok(false) => {
                         said_why = None;
-                        if saying.send(RunSaid::Hands(handed)).is_err() {
-                            return;
-                        }
+                        taken_back(&mut handed, said_any)
                     }
-                    Ok(None) => said_why = None,
                     Err(why) => {
-                        if said_why.as_ref() != Some(&why) {
-                            eprintln!("mycelium: {machine} is handed no lend: {why}");
-                        }
-                        said_why = Some(why);
+                        note(&machine, &mut said_why, why);
+                        taken_back(&mut handed, said_any)
+                    }
+                };
+                if let Some(said) = said {
+                    said_any = true;
+                    if saying.send(RunSaid::Hands(said)).is_err() {
+                        return;
                     }
                 }
             }
         }))
     }
+}
+
+/// What takes back a budget `handed` at some time, once, or at the first
+/// look where nothing was `said_any` yet; none where nothing stands.
+fn taken_back(handed: &mut Option<tokio::time::Instant>, said_any: bool) -> Option<Hands> {
+    (handed.take().is_some() || !said_any).then(Hands::taken_back)
+}
+
+/// Says in the log why `machine` is handed nothing, where it differs from
+/// what was `said_why` last.
+fn note(machine: &str, said_why: &mut Option<String>, why: String) {
+    if said_why.as_ref() != Some(&why) {
+        eprintln!("mycelium: {machine} is handed no lend: {why}");
+    }
+    *said_why = Some(why);
 }
 
 impl Drop for Handing {

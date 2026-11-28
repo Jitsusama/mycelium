@@ -1138,3 +1138,70 @@ async fn a_handed_lend_is_cut_off_by_this_machines_own_cuts() {
         "nothing cut off reaches the relay"
     );
 }
+
+#[tokio::test]
+async fn a_lend_taken_back_or_standing_too_long_lends_nothing_here() {
+    let folder = tempfile::tempdir().expect("a folder");
+    let relay = folder.path().join("relay.sock");
+    let handed = Arc::new(Lender::handed_in(
+        folder.path().join("handed"),
+        folder.path().to_owned(),
+        None,
+    ));
+    handed
+        .hand(hands(&relay, "Bearer handed-key"))
+        .expect("the lend is taken");
+    assert!(handed.lends(), "what is handed is lent");
+    handed
+        .hand(Hands::taken_back())
+        .expect("a take-back is taken");
+    assert!(!handed.lends(), "what is taken back is lent no more");
+    let mut answers = answer_handed(&handed, "skiff-1", lend("/v1/messages"));
+    assert_eq!(
+        next(&mut answers).await,
+        None,
+        "it is borrowed from the lender instead, unsaid here"
+    );
+
+    let stale = Lender::handed_in(folder.path().join("stale"), folder.path().to_owned(), None)
+        .lasting(Duration::ZERO);
+    stale
+        .hand(hands(&relay, "Bearer handed-key"))
+        .expect("the lend is taken");
+    assert!(!stale.lends(), "a lend not handed again in time ends");
+}
+
+#[tokio::test]
+async fn a_handed_lend_says_its_cuts_but_leaves_unsaid_what_its_lender_may_lend() {
+    let folder = tempfile::tempdir().expect("a folder");
+    let own = folder.path().join("own");
+    let handed = Arc::new(Lender::handed_in(own.join("handed"), own.clone(), None));
+    // No relay answers there, so its upstream can't be reached.
+    let relay = folder.path().join("relay.sock");
+    handed
+        .hand(hands(&relay, "Bearer handed-key"))
+        .expect("the lend is taken");
+
+    let mut answers = answer_handed(&handed, "skiff-1", lend("/v1/messages"));
+    assert_eq!(next(&mut answers).await, None, "an upstream not reached");
+    let elsewhere = Lend {
+        budget: Some("models".to_owned()),
+        ..lend("/v1/messages")
+    };
+    let mut answers = answer_handed(&handed, "skiff-1", elsewhere.clone());
+    assert_eq!(next(&mut answers).await, None, "a budget not handed");
+    let mut answers = answer(&handed, "skiff-1", elsewhere);
+    assert_eq!(
+        refusal(&mut answers).await,
+        403,
+        "a lend asked over a link is told either"
+    );
+
+    cut(&own, &Cut::Machine("skiff-1".to_owned())).expect("cut");
+    let mut answers = answer_handed(&handed, "skiff-1", lend("/v1/messages"));
+    assert_eq!(
+        refusal(&mut answers).await,
+        403,
+        "a cut is said, and stands"
+    );
+}

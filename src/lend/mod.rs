@@ -32,6 +32,25 @@ pub struct Hands {
     pub key: Key,
 }
 
+impl Hands {
+    /// What a lender hands a machine it no longer hands a budget, as a
+    /// cut or its lend file says: a lend naming nothing, and no key, which
+    /// replaces what it was handed before whole.
+    #[must_use]
+    pub fn taken_back() -> Self {
+        Self {
+            lend: serde_json::json!({"vms": [], "budgets": {}}),
+            key: Key(String::new()),
+        }
+    }
+
+    /// Whether this takes back what was handed before, naming no machine.
+    #[must_use]
+    pub fn is_taken_back(&self) -> bool {
+        self.lend["vms"].as_array().is_some_and(Vec::is_empty)
+    }
+}
+
 /// A key, which says itself on the wire alone: never in a log, an error
 /// or a debug line.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]

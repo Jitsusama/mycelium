@@ -5770,6 +5770,11 @@ impl<S: Store> Shared<S> {
     /// said back, so none can read or spend a key it didn't hand.
     fn take_hands(&self, from: &str, hands: crate::lend::Hands) -> Result<Response, String> {
         if self.lends_from.as_deref() != Some(from) {
+            // A machine that hands nothing here takes nothing back, so its
+            // lender's end saying so as a link comes up is let pass unsaid.
+            if hands.is_taken_back() {
+                return Ok(Response::Handed);
+            }
             return Err(format!(
                 "{from} isn't the machine this one borrows from, so it hands nothing here"
             ));
@@ -11281,19 +11286,21 @@ const LENDER_ASKED_EVERY: Duration = Duration::from_millis(250);
 /// How a lend this machine lent itself, from what its lender handed it,
 /// ended.
 enum Here {
-    /// It ended as the lend here said, or its client hung up.
+    /// It ended as the lend here said, a refusal among them, or its
+    /// client hung up.
     Ended,
-    /// It was refused before anything of it was said, as one this
-    /// machine's own lend can't make: not yet handed one that stands, or
-    /// its upstream not answering, so it is borrowed instead.
-    Refused(u16, String),
+    /// It ended with nothing said, as one another lender may lend: not
+    /// handed one that stands, a budget it wasn't handed, or its upstream
+    /// not answering ([`crate::lend::lender::answer_handed`]), so it is
+    /// borrowed instead.
+    Elsewhere,
 }
 
 /// Writes what this machine's own lend `answers` a line each until it
-/// ends or its client at `lines` hangs up; but a refusal before anything
-/// else is said, 403 or 503, is handed back unsaid, to be borrowed
-/// instead. A refusal past a day's count stands, since the lender's own
-/// count would say the same.
+/// ends or its client at `lines` hangs up. Every refusal it says stands,
+/// a cut's or a day's count's among them, since borrowing past it would
+/// lend what this machine's lend refused; only answers that end unsaid
+/// are borrowed instead.
 async fn lent_here(
     mut answers: mpsc::Receiver<Lent>,
     lines: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
@@ -11304,14 +11311,8 @@ async fn lent_here(
         // Dropping what it answers lets the lend go.
         _ = lines.next_line() => return Here::Ended,
     };
-    let first = match first {
-        Some(Lent::Refused { status, why }) if matches!(status, 403 | 503) => {
-            return Here::Refused(status, why);
-        }
-        Some(first) => first,
-        None => {
-            return Here::Refused(503, "this machine's own lend ended unsaid".to_owned());
-        }
+    let Some(first) = first else {
+        return Here::Elsewhere;
     };
     if write(writing, &first).await.is_err() || first.ends() {
         return Here::Ended;
@@ -11361,12 +11362,14 @@ async fn hand_on_lend<S: Store>(
         return;
     };
     if shared.handed.lends() {
-        let answers = crate::lend::lender::answer(&shared.handed, &shared.machine, lend.clone());
+        let answers =
+            crate::lend::lender::answer_handed(&shared.handed, &shared.machine, lend.clone());
         match lent_here(answers, &mut lines, &mut writing).await {
             Here::Ended => return,
-            Here::Refused(status, why) => eprintln!(
-                "mycelium: this machine's own lend refused a lend {status}, so it borrows it from \
-                 {lender}: {why}"
+            // Why is in this machine's log, as its lend says each it ends.
+            Here::Elsewhere => eprintln!(
+                "mycelium: this machine's own lend can't lend a lend, so it borrows it from \
+                 {lender}"
             ),
         }
     }
@@ -20326,6 +20329,14 @@ esac
         assert!(!shared.handed.lends(), "so skiff lends nothing itself");
         assert_eq!(
             shared.answer(Request::Hands {
+                from: "kestrel".to_owned(),
+                hands: crate::lend::Hands::taken_back(),
+            }),
+            Ok(Response::Handed),
+            "what it takes back, it never handed, so it passes unsaid"
+        );
+        assert_eq!(
+            shared.answer(Request::Hands {
                 from: "osprey".to_owned(),
                 hands: hands(),
             }),
@@ -20334,6 +20345,121 @@ esac
         assert!(
             shared.handed.lends(),
             "what osprey hands skiff, skiff lends"
+        );
+    }
+
+    /// What `lent_here` makes of `answers`, this machine's own lend ending
+    /// after them, and what its client heard.
+    async fn lent_here_of(answers: Vec<Lent>) -> (Here, Vec<Lent>) {
+        let (near, far) = UnixStream::pair().expect("a pair of sockets");
+        let (reading, mut writing) = near.into_split();
+        let mut lines = BufReader::new(reading).lines();
+        let (saying, said) = mpsc::channel(answers.len() + 1);
+        for lent in answers {
+            saying.send(lent).await.expect("the answer is held");
+        }
+        drop(saying);
+        let here = lent_here(said, &mut lines, &mut writing).await;
+        drop(writing);
+        let mut heard = Vec::new();
+        let mut client = BufReader::new(far).lines();
+        while let Some(line) = client.next_line().await.expect("what was written reads") {
+            heard.push(serde_json::from_str(&line).expect("a lend's answer"));
+        }
+        (here, heard)
+    }
+
+    #[tokio::test]
+    async fn a_lend_lent_here_says_its_answer_or_refusal_and_is_borrowed_only_unsaid() {
+        let cut = Lent::Refused {
+            status: 403,
+            why: "skiff is cut off from this machine's lend".to_owned(),
+        };
+        let (here, heard) = lent_here_of(vec![cut.clone()]).await;
+        assert!(matches!(here, Here::Ended), "a refusal stands");
+        assert_eq!(heard, vec![cut], "and is said");
+
+        let (here, heard) = lent_here_of(Vec::new()).await;
+        assert!(matches!(here, Here::Elsewhere), "unsaid, it is borrowed");
+        assert!(heard.is_empty(), "pi hears nothing of it yet: {heard:?}");
+
+        let answered = vec![
+            Lent::Head {
+                status: 200,
+                headers: Vec::new(),
+            },
+            Lent::Done,
+        ];
+        let (here, heard) = lent_here_of(answered.clone()).await;
+        assert!(matches!(here, Here::Ended), "an answer ends it");
+        assert_eq!(heard, answered, "and is said whole");
+    }
+
+    /// What a client hears first of `lend`, handed on by skiff's node,
+    /// which holds what osprey handed it but has no link to osprey.
+    async fn handed_on(shared: &Shared<Memory>, lend: Lend) -> Lent {
+        let (near, far) = UnixStream::pair().expect("a pair of sockets");
+        let (reading, writing) = near.into_split();
+        hand_on_lend(shared, lend, BufReader::new(reading).lines(), writing).await;
+        let mut client = BufReader::new(far).lines();
+        let line = client.next_line().await.expect("it reads");
+        serde_json::from_str(&line.expect("a line")).expect("a lend's answer")
+    }
+
+    #[tokio::test]
+    async fn a_lend_handed_here_is_borrowed_for_a_budget_not_handed_but_a_cut_stands() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let given = Given {
+            lends_from: Some("osprey".to_owned()),
+            ..bare("/nowhere/steer".into(), None)
+        };
+        let (mut shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            given,
+            to_dial,
+        );
+        let own = dir.path().join("own");
+        shared.handed = Arc::new(crate::lend::lender::Lender::handed_in(
+            own.join("handed"),
+            own.clone(),
+            None,
+        ));
+        let hands = crate::lend::Hands {
+            lend: json!({
+                "vms": [{"prefix": "skiff", "budget": "room", "requests_a_day": 3}],
+                "budgets": {"room": {
+                    "upstream": dir.path().join("relay.sock"), "host": "models.example",
+                    "paths": ["/v1/messages"], "auth_header": "authorization",
+                }},
+            }),
+            key: crate::lend::Key("Bearer handed-key".to_owned()),
+        };
+        shared.handed.hand(hands).expect("the lend is taken");
+        let lend = |budget: Option<&str>| Lend {
+            budget: budget.map(str::to_owned),
+            method: "POST".to_owned(),
+            path: "/v1/messages".to_owned(),
+            headers: Vec::new(),
+            body: String::new(),
+        };
+
+        let borrowed = handed_on(&shared, lend(Some("models"))).await;
+        assert!(
+            matches!(&borrowed, Lent::Refused { status: 503, why } if why.contains("no link")),
+            "a budget not handed is borrowed from osprey, which no link reaches: {borrowed:?}"
+        );
+        crate::lend::lender::cut(&own, &crate::lend::lender::Cut::Machine("skiff".to_owned()))
+            .expect("cut");
+        let cut = handed_on(&shared, lend(None)).await;
+        assert!(
+            matches!(&cut, Lent::Refused { status: 403, why } if !why.contains("no link")),
+            "a cut stands, never borrowed past: {cut:?}"
         );
     }
 
