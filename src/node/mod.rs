@@ -77,6 +77,7 @@ mod formed;
 pub use formed::Formed;
 mod glyph;
 mod hub;
+mod link_end;
 mod network;
 mod once;
 pub use network::{Holding, Standing, records as network_records};
@@ -8695,8 +8696,17 @@ impl<S: Store> Shared<S> {
         // every declaration does, so a strict session sent here starts
         // strict, never in the agent fence alone. On a room that opens
         // nothing of the person's, over a link its key proved, the fence
-        // declared is kept (`relayed_to_a_room`).
-        let room = unattended && proven && self.opens_nothing();
+        // declared is kept (`relayed_to_a_room`). Only where the asker is
+        // a link's end, never a session or a fenced process, which could
+        // say `proven` of its own relay.
+        let speaks = link_end::speaks_for_a_link(self.client, &self.processes);
+        if proven && !speaks {
+            eprintln!(
+                "a start relayed from {from:?} says its link's key proved it, but its asker \
+                 isn't a link's end, so the fence it declares isn't kept: {judged}"
+            );
+        }
+        let room = unattended && proven && speaks && self.opens_nothing();
         let by = asker::relayed_to_a_room(by, asked.work.fence, room);
         let looser = room && by == By::Agent(crate::declared::Kind::Fence);
         let (program, once) = (asked.command.first().cloned(), asked.once.clone());
@@ -8740,8 +8750,10 @@ impl<S: Store> Shared<S> {
     /// account of their own, which can't open this node's socket to say
     /// a link proved what it didn't. Each such start goes through the
     /// launcher the machine declares, which alone drops it to that
-    /// account ([`Self::start_here`]). One that can't read what it declares,
-    /// or declares no agent fence, opens what it may.
+    /// account ([`Self::start_here`]), so one declaring no launcher for it
+    /// keeps its relays strict rather than refusing them. One that can't
+    /// read what it declares, or declares no agent fence, opens what it
+    /// may.
     fn opens_nothing(&self) -> bool {
         type Names = std::collections::BTreeSet<String>;
         let declared = crate::declared::read(&self.declared);
@@ -8751,6 +8763,7 @@ impl<S: Store> Shared<S> {
             .and_then(|fences| fences.get(&crate::declared::Kind::Fence));
         let shut = |forges: &Names, secrets: &Names| forges.is_empty() && secrets.is_empty();
         self.starts_apart
+            && self.launches(crate::declared::Kind::Fence)
             && fence.is_some_and(|doors| {
                 shut(&doors.forges, &doors.secrets)
                     && doors
@@ -8758,6 +8771,12 @@ impl<S: Store> Shared<S> {
                         .values()
                         .all(|more| shut(&more.forges, &more.secrets))
             })
+    }
+
+    /// Whether this machine declares a launcher for `kind` that it may
+    /// run, sealed and in the store ([`crate::declared::launcher`]).
+    fn launches(&self, kind: crate::declared::Kind) -> bool {
+        crate::declared::launcher(&self.declared, kind, &self.runs.declarers).is_ok()
     }
 
     /// Why the person's carry, taken as an agent's start where no person
@@ -10042,10 +10061,14 @@ impl<S: Store> Shared<S> {
         // itself runs as this node's account, which can open its socket.
         // So an agent fence there, the one a room loosens a relayed start
         // to, starts within that launcher, never by pi alone (D53A5A27).
+        // A machine declaring none for it starts it as before, since
+        // `opens_nothing` loosens nothing there.
         let pi_fences_itself = declared
             .as_ref()
             .is_some_and(|declared| declared.pi_fences_itself);
-        let dropped = self.starts_apart && fence == Some(crate::declared::Kind::Fence);
+        let dropped = self.starts_apart
+            && fence == Some(crate::declared::Kind::Fence)
+            && self.launches(crate::declared::Kind::Fence);
         let fences = (self.fences_held && !pi_fences_itself) || dropped;
         let within = held_within(fences, fence, (&asked.command, &agent), |kind| {
             crate::declared::launcher(&self.declared, kind, &self.runs.declarers)
@@ -28179,9 +28202,18 @@ esac
             "a room whose pi fences itself starts the agent fence in its launcher"
         );
         assert_eq!(
-            fenced_as(&link, &given, false, fenced).await,
+            fenced_as(&link, &given, false, fenced.clone()).await,
             Some("PI_SANDBOX=strict"),
             "and one no key proved strict, fenced by pi itself"
+        );
+        // A session pi fenced as the node's own account can open its
+        // socket and say its own relay was proven; the fence's mark on it
+        // keeps it strict.
+        link.client = Some(50);
+        assert_eq!(
+            fenced_as(&link, &given, true, fenced).await,
+            Some("PI_SANDBOX=strict"),
+            "a fenced process saying its relay was proven, strict"
         );
     }
 
@@ -28228,6 +28260,12 @@ esac
             Some("FENCED=strict"),
             "one whose agent fence accepts a forge opened elsewhere, strict"
         );
+        declares_agent_fence(&link.declared, |doors| doors.runs.clear());
+        assert_eq!(
+            fenced_as(&link, &given, true, fenced.clone()).await,
+            Some("FENCED=strict"),
+            "one declaring no launcher for its agent fence, strict rather than refused"
+        );
         declares_agent_fence(&link.declared, |_| {});
         link.processes = Arc::new(Processes::Folder("/nowhere/proc".into()));
         assert_eq!(
@@ -28242,14 +28280,27 @@ esac
     /// asked over a link a `mycelium link` SSH started; and a start for it
     /// declaring the agent fence.
     fn a_room_opening_nothing(dir: &Path) -> (Shared<Memory>, Start) {
-        let unattended = Processes::Folder("/nowhere/proc".into()).unattended();
+        // The link's end, which SSH started, and a session's process
+        // forked away from the pi that fenced it, still barred from
+        // gaining privileges.
+        let procs = dir.join("proc");
+        for (pid, status) in [
+            (30, "Name:\tsshd\nPPid:\t1\n"),
+            (31, "Name:\tmycelium\nPPid:\t30\n"),
+            (50, "Name:\tmycelium\nPPid:\t1\nNoNewPrivs:\t1\n"),
+        ] {
+            let process = procs.join(pid.to_string());
+            fs::create_dir_all(&process).expect("its folder is made");
+            fs::write(process.join("status"), status).expect("its status is written");
+        }
+        let unattended = Processes::Folder(procs).unattended();
         let mut link = holding_skiff(dir, Memory::default(), None, unattended);
         runs_commands(&mut link, dir);
         declares_agent_fence(&link.declared, |_| {});
         link.fences_held = true;
         link.starts_apart = true;
         // Never the node's own process.
-        link.client = Some(1);
+        link.client = Some(31);
         let fenced = Start {
             work: Work {
                 fence: Some(DeclaredFence {

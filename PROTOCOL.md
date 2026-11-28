@@ -301,14 +301,17 @@ same code, each line a JSON value:
    starts strict, whatever fence it declares, but for one: where the
    node's sessions run as a worker account of their own
    (`--worker-uid` naming another account than the node's), and its
-   agent fence declares no forge and no secret and accepts none from
-   another machine, a relay marked `proven` takes the fence it
-   declares, never looser than the agent fence. The node logs each it
-   so takes, with the machine that relayed it, what it runs, its name,
-   the session it holds, how it judged the link's end and the cell it
-   charged. Only the node's own account opens its socket, and no
-   session runs as it there, so only a link's end can mark a relay so;
-   where sessions run as the node's account, nothing is. Elsewhere, a
+   agent fence declares no forge and no secret, accepts none from
+   another machine and has a launcher, a relay marked `proven` takes
+   the fence it declares, never looser than the agent fence. The node
+   logs each it so takes, with the machine that relayed it, what it
+   runs, its name, the session it holds, how it judged the link's end
+   and the cell it charged. Only a link's end can mark a relay so: the
+   node keeps the mark only from an asker no pi, pi host or agent's
+   unit runs and no fence marks, by privileges it can't gain or mounts
+   of its own. So a strict session pi fenced as the node's account,
+   which can open its socket, can't, even forked away from its pi;
+   where sessions run as the node's account, nothing is kept. Elsewhere, a
    link's end an agent ran is taken so too, as is one whose owner the
    kernel can't tell, but one marked as the person's carry is refused,
    so the person hears the carry failed rather than finding its
