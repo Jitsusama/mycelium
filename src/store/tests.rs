@@ -455,7 +455,7 @@ fn each_stop_adds_its_run_to_what_earlier_runs_saw() {
         store
             .mark_unreachable("s1", "kestrel", 7, Some(seen))
             .expect("seen by this run");
-        put_away_out_of_reach(&store, at);
+        put_away_out_of_reach(&store, at, &mut BTreeMap::new());
         assert_eq!(
             field("s1", "unreachableSeenFor"),
             Some(serde_json::json!(all)),
@@ -489,7 +489,7 @@ fn each_stop_adds_its_run_to_what_earlier_runs_saw() {
         .claim("tern")
         .expect("claimed")
         .expect("by another link");
-    put_away_out_of_reach(&store, 90);
+    put_away_out_of_reach(&store, 90, &mut BTreeMap::new());
     assert_eq!(
         (
             field("s3", "unreachableSeen"),
@@ -558,5 +558,42 @@ fn a_stop_counts_a_drop_left_unseen_from_when_this_run_saw_it() {
         [seen_for("s1"), seen_for("s2")],
         [Some(serde_json::json!(60)), Some(serde_json::json!(90))],
         "from the drop at 40, and from the run's start at 10 for one gone at 5"
+    );
+}
+
+/// A machine the stop's sweep claimed is put away under that same claim,
+/// never claimed again: once let go, its lock can still be held a moment,
+/// by a child forked meanwhile until it runs its program, and the sight
+/// this run kept would be left for the next start to count.
+#[test]
+fn a_machine_the_sweep_claimed_is_put_away_under_its_claim() {
+    let store = memory::Memory::default();
+    store
+        .put_presence("s1", "tern", &serde_json::json!({"session": "s1"}))
+        .expect("carried");
+    store
+        .mark_unreachable("s1", "tern", 40, Some(60))
+        .expect("seen");
+    let claim = store.claim("tern").expect("claimed").expect("free");
+    assert!(
+        store.claim("tern").expect("asked").is_none(),
+        "tern can't be claimed again while the sweep's claim stands"
+    );
+    let mut held = BTreeMap::from([("tern".to_owned(), claim)]);
+
+    put_away_out_of_reach(&store, 90, &mut held);
+    let body = store
+        .presences()
+        .into_iter()
+        .find(|one| one.session == "s1")
+        .map(|one| one.body)
+        .expect("kept");
+    assert_eq!(
+        (
+            body["unreachableSeen"].clone(),
+            body["unreachableSeenFor"].clone()
+        ),
+        (Value::Null, serde_json::json!(30)),
+        "what this run saw, from 60 to the stop at 90, is put away"
     );
 }

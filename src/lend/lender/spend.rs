@@ -3,12 +3,11 @@
 //! sent, and what its answer says it used, read as it streams, to
 //! settle it by; and spend-watch's word on the budget it spends.
 
-use std::fs;
 use std::path::Path;
 
 use serde::Deserialize;
 
-use super::{Price, Refusal, refused, unparsed};
+use super::{Price, Refusal, plain_file, refused, unparsed};
 
 /// Where spend-watch says how each budget stands, within the account's
 /// runtime folder.
@@ -100,6 +99,22 @@ impl Price {
             (rates.output, usage.output),
         ])
     }
+
+    /// What an answer cut short can have cost, in millionths of a dollar:
+    /// the tokens its upstream said were `asked`, each at its own price,
+    /// and its `most` tokens answered, as no answer runs past its most. A
+    /// price that isn't one charges everything.
+    pub(super) fn cut_short(self, asked: Asked, most: u64) -> u64 {
+        let Some(rates) = self.rates() else {
+            return u64::MAX;
+        };
+        micros(&[
+            (rates.input, asked.input),
+            (rates.cache_write, asked.cache_write),
+            (rates.cache_read, asked.cache_read),
+            (rates.output, most),
+        ])
+    }
 }
 
 /// Dollars as whole millionths, where they are a price: finite, not
@@ -155,6 +170,16 @@ pub(super) struct Usage {
     cache_read: u64,
     /// Those answered.
     output: u64,
+}
+
+/// A model's tokens asked, as its upstream states them before it answers
+/// with any: those not from a cache, and those written to and read from
+/// its cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Asked {
+    input: u64,
+    cache_write: u64,
+    cache_read: u64,
 }
 
 /// A model's answer, read for the tokens it says it used as it streams:
@@ -270,6 +295,24 @@ impl Meter {
     pub(super) fn usage(&self) -> Option<&Usage> {
         (self.finished && self.counted).then_some(&self.usage)
     }
+
+    /// The tokens the answer said were asked, once it said how many came
+    /// from no cache, whether or not it was done: a stream's
+    /// `message_start` states them before any text, so an answer cut
+    /// short can be charged them rather than its whole reservation. An
+    /// upstream stating those from no cache states its cache's beside
+    /// them, as a `message_start` does, or counts them within them, as a
+    /// `prompt_tokens` does, so a cache's count left out is none.
+    pub(super) const fn asked(&self) -> Option<Asked> {
+        let Some(input) = self.usage.input else {
+            return None;
+        };
+        Some(Asked {
+            input,
+            cache_write: self.usage.cache_write,
+            cache_read: self.usage.cache_read,
+        })
+    }
 }
 
 /// Bytes kept up to `MOST`, and once more came, none: what ran past is
@@ -326,8 +369,10 @@ pub(super) fn spend_watch_allows(runtime: Option<&Path>, named: &str) -> Result<
     let file = runtime
         .ok_or_else(|| silent("this machine has no runtime folder to find it in".to_owned()))?
         .join(SPEND_WATCH);
-    let text =
-        fs::read(&file).map_err(|error| silent(format!("its word can't be read: {error}")))?;
+    // Read as a plain file alone, opened without waiting, so a pipe or a
+    // device put at its name never holds the lend's thread.
+    let text = plain_file::read(&file)
+        .map_err(|error| silent(format!("its word can't be read: {error}")))?;
     let said: Said = serde_json::from_slice(&text)
         .map_err(|error| silent(format!("its word {}", unparsed(&error))))?;
     let old = jiff::Timestamp::now().duration_since(said.at);

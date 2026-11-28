@@ -17,11 +17,13 @@
 //! sends all its needs to fewer cells than its holders could share them
 //! among.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::hash::BuildHasher;
 
 use serde_json::json;
 
-use crate::{daemon, networks};
+use crate::record::{Session, State};
+use crate::{daemon, forage, networks};
 
 /// The kind of a subject's hubs' record.
 pub const KIND: &str = "hub";
@@ -62,6 +64,35 @@ pub struct Holder {
     pub heard: f64,
 }
 
+/// The holders among `sessions`, as the node reads them: each running
+/// and named by an address, saying a subject, and heard as `heard` says
+/// of its address in upper case, as tie records are keyed. It takes the
+/// sessions whole, as the node clones them out of what it holds, so each
+/// address moves into its holder rather than being copied. The fold of
+/// the ties that makes `heard` is the caller's, outside it.
+#[must_use]
+pub fn holders<S: BuildHasher>(
+    sessions: Vec<Session>,
+    heard: &HashMap<String, f64, S>,
+) -> Vec<Holder> {
+    sessions
+        .into_iter()
+        // One ended, or out of reach, takes no need.
+        .filter(|session| matches!(session.state, State::Busy | State::Idle))
+        .filter(|session| forage::is_address(&session.address))
+        .map(|session| Holder {
+            // Tie records are keyed in upper case.
+            heard: heard
+                .get(&session.address.to_ascii_uppercase())
+                .copied()
+                .unwrap_or_default(),
+            subjects: networks::subjects(&session.presence["subjects"]),
+            address: session.address,
+        })
+        .filter(|holder| !holder.subjects.is_empty())
+        .collect()
+}
+
 /// Each declared subject's hubs, by key, a subject read by
 /// [`networks::subject_key`] so two cells saying it differently hold the
 /// same one, as the cap counts it. Each is held as its bytes as soon as
@@ -85,11 +116,9 @@ pub fn records(holders: &[Holder]) -> BTreeMap<String, daemon::Record> {
             (subject, at)
         })
         .collect();
-    // Compared in place, since a key cloned out would copy each subject
-    // at every comparison.
-    subjects.sort_by(|(one, at), (other, other_at)| {
-        at.len().cmp(&other_at.len()).then_with(|| one.cmp(other))
-    });
+    // Stable, and `held` gave the subjects in key order, so those held
+    // alike stay in key order with no subject compared.
+    subjects.sort_by_key(|(_, at)| at.len());
     let mut hubbing = vec![0_usize; holders.len()];
     subjects
         .into_iter()
@@ -257,6 +286,25 @@ mod tests {
             hubs(&made, "lonely"),
             ["SKIFFS"],
             "a subject whose every holder hubs another still has a hub"
+        );
+    }
+
+    #[test]
+    fn subjects_held_alike_are_hubbed_in_the_order_of_their_keys() {
+        // Said in the other order, so only the keys' order can put them.
+        let made = read_back(&[
+            holder("KESTRL", &["beta", "alpha"], 0.0),
+            holder("OSPREY", &["beta", "alpha"], 1.0),
+        ]);
+        assert_eq!(
+            hubs(&made, "alpha"),
+            ["KESTRL"],
+            "the first in key order takes the quietest holder"
+        );
+        assert_eq!(
+            hubs(&made, "beta"),
+            ["OSPREY"],
+            "the next takes who is free"
         );
     }
 

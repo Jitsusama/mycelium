@@ -336,7 +336,7 @@ pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Mycelium
 pub const MOST_SUBJECTS: usize = 24;
 
 /// The most characters one subject holds.
-const SUBJECT_MOST: usize = 120;
+pub const SUBJECT_MOST: usize = 120;
 
 /// What a cut [`asked_whole`] makes ends in, so it reads as cut.
 const ASKED_CUT: &str = " [...]";

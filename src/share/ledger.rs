@@ -9,6 +9,14 @@
 //! they can be trusted: a file's clock ticks coarsely, so one changed
 //! again within a tick of being hashed keeps its time, and a size and time
 //! that recent are hashed again rather than kept, as git does.
+//!
+//! A file deleted is kept as deleted only until every other machine sharing
+//! the quest is known to hold it deleted too, then forgotten, so a scratch
+//! whose files come and go doesn't leave a ledger of tombstones
+//! ([`super::forget`]).
+//!
+//! Long because its tests, over half of it, walk how a ledger is kept, read
+//! back and shared between holds.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -77,10 +85,24 @@ pub struct Ledger {
     pub clones: BTreeMap<String, Clone>,
     /// What each other machine last said it holds of the quest's files,
     /// or was seen to take, by machine and key: only those this machine
-    /// holds too, so a file deleted drops out. A machine named here has
-    /// said it shares the quest, even holding none of it.
+    /// holds too, and a file this machine holds deleted only while that
+    /// machine holds it deleted too, so a file deleted here drops out of
+    /// what a machine holding it says. A machine named here has said it
+    /// shares the quest, or asked for a file of it, even holding none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub theirs: BTreeMap<String, BTreeMap<String, State>>,
+    /// Each file deleted and forgotten, by its key, with every version it
+    /// was last known at here and on the other machines, joined: a file
+    /// seen here anew starts from its own key's, so one written again
+    /// after its deletion was forgotten is newer than that deletion,
+    /// wherever it is still kept, and a copy that old or older offered
+    /// later is refused ([`Self::forgotten_over`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub forgotten: BTreeMap<String, Version>,
+    /// The machines named in `theirs` whose link carries the quest's
+    /// README alone, so no deletion of another file waits on them.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub readme_alone: BTreeSet<String>,
     /// What each worker given the quest to read last said it holds of
     /// its files, by machine and key, only those it holds as this machine
     /// does: a worker that spoke and holds none yet is kept, holding
@@ -264,7 +286,11 @@ impl Ledger {
         now: Seen,
         machine: &str,
     ) -> io::Result<Sight> {
-        let entry = self.files.entry(key.to_owned()).or_default();
+        let forgotten = &mut self.forgotten;
+        let entry = self.files.entry(key.to_owned()).or_insert_with(|| Entry {
+            version: forgotten.remove(key).unwrap_or_default(),
+            ..Entry::default()
+        });
         if entry.seen == Some(now) && entry.hash.is_some() {
             return Ok(Sight::Same);
         }
@@ -288,15 +314,35 @@ impl Ledger {
     }
 
     /// Enters what `machine` said it holds of `files`, answering whether
-    /// that changed what the ledger holds of it.
+    /// that changed what the ledger holds of it. A file it holds deleted,
+    /// as this machine and every other sharing the quest do, is forgotten
+    /// ([`Self::deleted_everywhere`]).
     pub fn heard(&mut self, machine: &str, files: BTreeMap<String, State>) -> bool {
         let before = self.theirs.get(machine).cloned();
+        let deleted: Vec<String> = files
+            .iter()
+            .filter(|(_, state)| state.hash.is_none())
+            .map(|(key, _)| key.clone())
+            .collect();
         self.theirs
             .entry(machine.to_owned())
             .or_default()
             .extend(files);
         self.bound_theirs();
-        self.theirs.get(machine) != before.as_ref()
+        let forgot = self.forget_deleted(&deleted);
+        forgot || self.theirs.get(machine) != before.as_ref()
+    }
+
+    /// Names `machine` as sharing the quest, holding nothing yet if it
+    /// wasn't named, as one asking for a file of it does, so a deletion
+    /// waits for it even where it drops before saying it took the file.
+    /// Answers whether it wasn't named before.
+    pub fn asked_by(&mut self, machine: &str) -> bool {
+        if self.theirs.contains_key(machine) {
+            return false;
+        }
+        self.theirs.insert(machine.to_owned(), BTreeMap::new());
+        true
     }
 
     /// Enters what `worker`, given the quest to read, said it holds of
@@ -325,10 +371,20 @@ impl Ledger {
 
     /// Keeps what the other machines hold, and the workers given the quest
     /// read, to the files this one holds, answering whether any dropped
-    /// out.
+    /// out. Of a file this one holds deleted, another machine's deletion
+    /// is kept, so it is known when every machine holds it deleted.
     pub fn bound_theirs(&mut self) -> bool {
         let mut dropped = false;
-        for held in self.theirs.values_mut().chain(self.read.values_mut()) {
+        for held in self.theirs.values_mut() {
+            let before = held.len();
+            held.retain(|key, state| {
+                self.files
+                    .get(key)
+                    .is_some_and(|entry| entry.hash.is_some() == state.hash.is_some())
+            });
+            dropped |= held.len() != before;
+        }
+        for held in self.read.values_mut() {
             let before = held.len();
             held.retain(|key, state| {
                 state.hash.is_some()
@@ -362,6 +418,15 @@ fn gone(entry: &mut Entry, machine: &str) -> bool {
     entry.seen = None;
     entry.version = entry.version.changed_on(machine);
     true
+}
+
+/// What letting go of machines did across the ledgers.
+#[derive(Debug, Default)]
+pub struct LetGo {
+    /// The quests whose ledgers named one, and let it go.
+    pub quests: Vec<String>,
+    /// The quests whose ledgers couldn't be read or kept, with why.
+    pub failed: Vec<(String, io::Error)>,
 }
 
 /// Where this machine keeps its ledgers, one a shared quest.
@@ -577,6 +642,50 @@ impl Ledgers {
         }
         let path = self.folder.join(format!("{quest}.json"));
         Ok(read_ledger(&path)?.unwrap_or_default())
+    }
+
+    /// Lets go of `machines`, which the realm has let go of for good, in
+    /// each ledger naming one, as [`Ledger::let_go`] does, answering the
+    /// quests whose ledgers named one, and each quest whose ledger
+    /// couldn't be read or kept, with why. A ledger naming none is only
+    /// looked at, never held, so a round that finds nothing writes
+    /// nothing, and one that fails leaves the rest to be let go.
+    ///
+    /// # Errors
+    ///
+    /// When the quests shared can't be listed.
+    pub fn let_go(&self, machines: &BTreeSet<String>) -> io::Result<LetGo> {
+        let mut let_go = LetGo::default();
+        for quest in self.quests()? {
+            match self.let_go_of(&quest, machines) {
+                Ok(true) => let_go.quests.push(quest),
+                Ok(false) => {}
+                Err(error) => let_go.failed.push((quest, error)),
+            }
+        }
+        Ok(let_go)
+    }
+
+    /// Lets go of `machines` in `quest`'s ledger as [`Self::let_go`]
+    /// does, answering whether it named one.
+    fn let_go_of(&self, quest: &str, machines: &BTreeSet<String>) -> io::Result<bool> {
+        let names = |held: &BTreeMap<String, BTreeMap<String, State>>| {
+            held.keys().any(|machine| machines.contains(machine))
+        };
+        let looked = self.look(quest)?;
+        if !names(&looked.theirs) && !names(&looked.read) {
+            return Ok(false);
+        }
+        drop(looked);
+        // Held anew, so nothing kept since the look is lost; one stopped
+        // meanwhile holds an empty ledger, naming none, and is never kept
+        // again.
+        let mut held = self.hold(quest)?;
+        if !held.ledger.let_go(machines) {
+            return Ok(false);
+        }
+        held.keep()?;
+        Ok(true)
     }
 
     /// Whether this machine shares `quest`.

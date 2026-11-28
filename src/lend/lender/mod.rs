@@ -13,6 +13,8 @@
 //! borrower never sees, is added here. Each use is written as one line,
 //! with no prompt, answer, header or key in it.
 
+mod health;
+mod plain_file;
 mod spend;
 #[cfg(test)]
 mod tests;
@@ -42,6 +44,11 @@ use spend::{Meter, dollars, millionths, spend_watch_allows, usd};
 
 /// The most of an answer's body one [`Lent::Body`] carries.
 const PIECE: usize = 16 * 1024;
+
+/// What a relay answers when the one connection it was asked on was
+/// misdirected: pi's own relay says so to send pi straight to its proxy,
+/// which a borrower can't reach, so a lend asks it once more instead.
+const MISDIRECTED: u16 = 421;
 
 /// How often a lend streaming looks again at whether its machine was cut
 /// off, so a cut ends it within this.
@@ -210,6 +217,9 @@ struct Used {
     request_bytes: usize,
     response_bytes: usize,
     status: Option<u16>,
+    /// How many times it was asked whole of its relay: twice where the
+    /// first answered 421.
+    asked: u8,
     /// What its answer says it used, read as it streams, for a model's.
     meter: Option<Meter>,
     /// What it was charged, in millionths of a dollar, once settled.
@@ -228,6 +238,8 @@ struct Spending {
     price: Price,
     /// Its tokens asked at most, as its body's bytes.
     asked: u64,
+    /// Its tokens answered at most: its `max_tokens`.
+    answered: u64,
 }
 
 /// How many requests a lend's machine may make a day, and what a model's
@@ -296,26 +308,37 @@ impl Lender {
             file.display(),
             folder.join("cuts.json").display()
         );
-        Self::new(file, declarers, folder, crate::place::login_runtime())
+        let lender = Self::new(file, declarers, folder, crate::place::login_runtime());
+        // Read once at the start, so a lend that isn't taken says so in
+        // the log before any machine asks of it; health reads it afresh.
+        let _ = lender.written();
+        lender
     }
 
     /// What may be lent, as the file says now. Why it isn't taken goes to
     /// this machine's log alone, since the asker is another machine's
     /// agent, and says where it doesn't parse but never what it found.
     fn written(&self) -> Result<Written, Refusal> {
+        self.read().map_err(|why| {
+            eprintln!(
+                "mycelium: this machine's lend, {}, isn't taken: {why}",
+                self.file.display()
+            );
+            refused(
+                503,
+                "this machine's lend isn't taken; its node's log says why".to_owned(),
+            )
+        })
+    }
+
+    /// What may be lent, as the file says now, or why it isn't taken: where
+    /// it doesn't parse, only what kind of fault and where, never what it
+    /// found, so it may be said beyond the log. Only a plain file is
+    /// read, so a pipe put in its place can't hold the node's health.
+    fn read(&self) -> Result<Written, String> {
         crate::declared::sealed(&self.file, &self.declarers)
-            .and_then(|()| fs::read(&self.file).map_err(|error| error.to_string()))
+            .and_then(|()| plain_file::read(&self.file).map_err(|error| error.to_string()))
             .and_then(|text| serde_json::from_slice(&text).map_err(|error| unparsed(&error)))
-            .map_err(|why| {
-                eprintln!(
-                    "mycelium: this machine's lend, {}, isn't taken: {why}",
-                    self.file.display()
-                );
-                refused(
-                    503,
-                    "this machine's lend isn't taken; its node's log says why".to_owned(),
-                )
-            })
     }
 
     /// Why `machine` is cut off, as the cuts say now, where it is: cuts
@@ -477,7 +500,7 @@ impl Lender {
 /// file yet.
 fn kept(file: &Path) -> Result<BTreeMap<String, u64>, Refusal> {
     let unread = |why: String| refused(503, format!("the day's tally can't be read: {why}"));
-    match fs::read(file) {
+    match plain_file::read(file) {
         Ok(text) => serde_json::from_slice(&text).map_err(|error| unread(error.to_string())),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(BTreeMap::new()),
         Err(error) => Err(unread(error.to_string())),
@@ -514,10 +537,14 @@ pub fn folder() -> PathBuf {
 }
 
 /// The machines cut off, as `folder` keeps them; none where nothing was
-/// ever cut.
+/// ever cut. Where they don't parse, the error says only what kind of
+/// fault and where, as [`unparsed`] does, never what was found. Only a
+/// plain file is read, so a pipe put in its place can't hold a lend or
+/// the node's health.
 fn cuts(folder: &Path) -> io::Result<Vec<String>> {
-    match fs::read(folder.join("cuts.json")) {
-        Ok(text) => serde_json::from_slice(&text).map_err(io::Error::other),
+    match plain_file::read(&folder.join("cuts.json")) {
+        Ok(text) => serde_json::from_slice(&text)
+            .map_err(|error| io::Error::other(unparsed_as(&error, "a list of machines"))),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(error) => Err(error),
     }
@@ -657,6 +684,7 @@ fn say(machine: &str, used: &Used, took: Duration, outcome: &str) {
         "request_bytes": used.request_bytes,
         "response_bytes": used.response_bytes,
         "status": used.status,
+        "asked": used.asked,
         "charged_usd": used.charged.map(usd),
         "spent_usd_today": used.spent_today.map(usd),
         "duration_ms": u64::try_from(took.as_millis()).unwrap_or(u64::MAX),
@@ -706,12 +734,18 @@ async fn lent(
 
 /// What a model request that `spending` limits is charged, as it `ended`:
 /// what its answer said it used, once whole and done; nothing where the
-/// upstream refused it whole, saying it used nothing; and otherwise all it
-/// reserved, as an answer cut short or that didn't say, since it may have
-/// been made whole upstream.
+/// upstream refused it whole, saying it used nothing; for an answer not
+/// whole whose upstream stated its tokens asked, as a stream's
+/// `message_start` does, those at their own prices and its `max_tokens`
+/// answered, since it may have been made whole upstream but never runs
+/// past its most; and otherwise all it reserved, as an answer cut short
+/// before it stated them or whole but never saying what it used.
 fn charged(ended: &Ended, used: &Used, spending: Spending) -> u64 {
     let Ended::Whole = ended else {
-        return spending.reserved;
+        return match used.meter.as_ref().and_then(Meter::asked) {
+            Some(asked) => spending.price.cut_short(asked, spending.answered),
+            None => spending.reserved,
+        };
     };
     let refused_whole = used.status.is_some_and(|status| status >= 400);
     match used.meter.as_ref().and_then(Meter::usage) {
@@ -761,7 +795,7 @@ async fn carried(
     let sent = tokio::select! {
         sent = tokio::time::timeout(
             SENT_WITHIN,
-            asked(stream, key, asking, budget, machine),
+            asked(stream, key.as_deref(), asking, budget, machine),
         ) => sent,
         ended = watched(lender, machine, sending) => return give_back(ended),
     };
@@ -778,8 +812,17 @@ async fn carried(
             )));
         }
     };
+    used.asked = 1;
+    // Asked again with the same key on a fresh connection, and with the
+    // same bound on taking the request whole. None where the relay can't
+    // be reached or asked again, so the first answer is handed on.
+    let again = async || {
+        let stream = connected(lender, budget).await.ok()?;
+        let sent = asked(stream, key.as_deref(), asking, budget, machine);
+        tokio::time::timeout(SENT_WITHIN, sent).await.ok()?.ok()
+    };
     let ended = tokio::select! {
-        ended = answered(reading, sending, used) => ended,
+        ended = answered(reading, again, sending, used) => ended,
         ended = watched(lender, machine, sending) => ended,
     };
     (ended, true)
@@ -802,27 +845,36 @@ async fn watched(lender: &Lender, machine: &str, sending: &mpsc::Sender<Lent>) -
 }
 
 /// Streams the relay's answer to `sending` as it comes: its head, its
-/// body's pieces, then that it is done.
+/// body's pieces, then that it is done. A head of 421 is asked `again`
+/// once, before anything of it is sent on, and the second answer is
+/// streamed whatever it is; where it can't be asked again, the first is.
 async fn answered(
-    mut reading: BufReader<UnixStream>,
+    reading: BufReader<UnixStream>,
+    again: impl AsyncFnOnce() -> Option<BufReader<UnixStream>>,
     sending: &mpsc::Sender<Lent>,
     used: &mut Used,
 ) -> Ended {
-    let (status, headers, framing) = match tokio::time::timeout(HEAD_WITHIN, head(&mut reading))
-        .await
-    {
-        Ok(Ok(head)) => head,
-        Ok(Err(why)) => return Ended::Refused(refused(502, format!("the model's answer {why}"))),
-        Err(_) => {
-            return Ended::Refused(refused(
-                504,
-                format!(
-                    "the model's answer didn't begin within {} minutes",
-                    HEAD_WITHIN.as_secs() / 60
-                ),
-            ));
-        }
+    let mut answer = match headed(reading).await {
+        Ok(answer) => answer,
+        Err(ended) => return ended,
     };
+    // Only before the head is sent on, so the borrower never hears two
+    // answers to one request.
+    if answer.status == MISDIRECTED
+        && let Some(reading) = again().await
+    {
+        used.asked += 1;
+        answer = match headed(reading).await {
+            Ok(answer) => answer,
+            Err(ended) => return ended,
+        };
+    }
+    let Headed {
+        status,
+        headers,
+        framing,
+        mut reading,
+    } = answer;
     used.status = Some(status);
     if let Some(meter) = used.meter.as_mut() {
         meter.headed(&headers);
@@ -831,6 +883,39 @@ async fn answered(
         return Ended::Gone;
     }
     streamed(&mut reading, framing, sending, used).await
+}
+
+/// An answer whose head was read: its status, headers and framing, and
+/// its body still to read.
+struct Headed {
+    status: u16,
+    headers: Vec<(String, String)>,
+    framing: Framing,
+    reading: BufReader<UnixStream>,
+}
+
+/// The relay's answer on `reading`, its head read within
+/// [`HEAD_WITHIN`]; else how the lend ends.
+async fn headed(mut reading: BufReader<UnixStream>) -> Result<Headed, Ended> {
+    match tokio::time::timeout(HEAD_WITHIN, head(&mut reading)).await {
+        Ok(Ok((status, headers, framing))) => Ok(Headed {
+            status,
+            headers,
+            framing,
+            reading,
+        }),
+        Ok(Err(why)) => Err(Ended::Refused(refused(
+            502,
+            format!("the model's answer {why}"),
+        ))),
+        Err(_) => Err(Ended::Refused(refused(
+            504,
+            format!(
+                "the model's answer didn't begin within {} minutes",
+                HEAD_WITHIN.as_secs() / 60
+            ),
+        ))),
+    }
 }
 
 /// A lend as it is carried on: its method, path, headers and body.
@@ -1018,6 +1103,7 @@ fn spending(
         reserved: price.reserved(asked, most),
         price,
         asked,
+        answered: most,
     })
 }
 
@@ -1071,6 +1157,11 @@ async fn reached(
         Some(command) => Some(key(command).await?),
         None => None,
     };
+    Ok((connected(lender, budget).await?, key))
+}
+
+/// `budget`'s upstream, reached on a connection of its own; else why not.
+async fn connected(lender: &Lender, budget: &Budget) -> Result<UnixStream, Refusal> {
     let upstream = if budget.upstream.is_absolute() {
         budget.upstream.clone()
     } else {
@@ -1085,13 +1176,12 @@ async fn reached(
             })?
             .join(&budget.upstream)
     };
-    let stream = UnixStream::connect(&upstream).await.map_err(|error| {
+    UnixStream::connect(&upstream).await.map_err(|error| {
         refused(
             503,
             format!("this machine's model relay isn't answering: {error}"),
         )
-    })?;
-    Ok((stream, key))
+    })
 }
 
 /// Asks `asking` of `budget`'s upstream over `stream`, with its `key`
@@ -1099,7 +1189,7 @@ async fn reached(
 /// answer, to be read.
 async fn asked(
     mut stream: UnixStream,
-    key: Option<String>,
+    key: Option<&str>,
     asking: &Asking,
     budget: &Budget,
     machine: &str,
@@ -1345,11 +1435,16 @@ async fn unquiet<T>(reading: impl Future<Output = T>) -> Result<T, Ended> {
 /// fault and where, never the words found there, which may be a key
 /// pasted in the wrong place.
 fn unparsed(error: &serde_json::Error) -> String {
+    unparsed_as(error, "a lend")
+}
+
+/// Why a file meant to hold `what` doesn't parse, as [`unparsed`] says it.
+fn unparsed_as(error: &serde_json::Error, what: &str) -> String {
     let kind = match error.classify() {
-        serde_json::error::Category::Io => "couldn't be read",
-        serde_json::error::Category::Syntax => "isn't JSON",
-        serde_json::error::Category::Data => "isn't a lend",
-        serde_json::error::Category::Eof => "ends early",
+        serde_json::error::Category::Io => "couldn't be read".to_owned(),
+        serde_json::error::Category::Syntax => "isn't JSON".to_owned(),
+        serde_json::error::Category::Data => format!("isn't {what}"),
+        serde_json::error::Category::Eof => "ends early".to_owned(),
     };
     format!(
         "it {kind} at line {}, column {}",

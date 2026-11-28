@@ -1300,13 +1300,13 @@ pub fn taints(machine: &Machine) -> Vec<Taint> {
     if past(Limit::Memory) {
         taints.push(condition(
             MEMORY_PRESSURE,
-            "its queue starts no work for want of memory",
+            "it is past its memory limit, so it starts no work for want of memory",
         ));
     }
     if past(Limit::Cpu) {
         taints.push(condition(
             CPU_PRESSURE,
-            "its queue starts no build beside a VM test for want of a processor",
+            "it is past its processor limit, so it starts no build beside a VM test",
         ));
     }
     if let Some(lively) = machine

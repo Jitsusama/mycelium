@@ -6,8 +6,11 @@
 //! share its person's slices keep is never ours to set. A session, mostly
 //! memory and a little processor, is judged by the memory free and the
 //! pressure; what the queue would start now says only whether a build
-//! or VM test sent there would start at once. A machine whose queue
-//! nobody keeps, so on which no harness runs, has no room known.
+//! or VM test sent there would start at once. A machine with no queue's
+//! record at all, so on which no harness runs, as a room made in the
+//! cloud, says the room its kernel feels instead, [`felt`]; one whose
+//! record went stale, or whose kernel can't say it, as a Mac's, has no
+//! room known.
 //!
 //! Only the record's `v`, `at`, `heartbeat`, `machine` and `room` are
 //! read, which the harness keeps as a contract: a change to any of them

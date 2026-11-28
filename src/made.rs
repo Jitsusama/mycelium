@@ -378,6 +378,11 @@ pub struct Standing {
     /// The makes that name no realm, kept before makes named one, and not
     /// released by a line naming none either, oldest first.
     pub unnamed: Vec<Made>,
+    /// The machines a make of this realm's, or one naming no realm, made
+    /// and a release let go since, none made again under its name and
+    /// none a line passed over may have made: gone for good. A machine
+    /// never made, as the person's own, is never among them.
+    pub let_go: BTreeSet<String>,
 }
 
 impl Book {
@@ -603,13 +608,29 @@ impl Book {
                 continue;
             };
             if let Some(made) = kept.made {
+                standing.let_go.remove(&made.machine);
                 kept_by.push(made);
             } else if let Some(released) = kept.released {
+                let before = kept_by.len();
                 kept_by.retain(|made| {
                     made.machine != released.machine || made.place != released.place
                 });
+                if kept_by.len() != before {
+                    standing.let_go.insert(released.machine);
+                }
             }
         }
+        // A make of one let go may stand under another place.
+        let standing_now: BTreeSet<&String> = standing
+            .made
+            .iter()
+            .chain(&standing.unnamed)
+            .map(|made| &made.machine)
+            .collect();
+        let doubt = &standing.doubt;
+        standing
+            .let_go
+            .retain(|machine| !standing_now.contains(machine) && !doubt.of(machine));
         Ok(standing)
     }
 
@@ -1587,11 +1608,56 @@ mod tests {
                     "line 10 can't be read, nor which machine it may have made".to_owned()
                 ),
                 unnamed: vec![older],
+                let_go: BTreeSet::new(),
             },
             "each machine made and not released, oldest first, ended or not, \
              a release taking only the machine of its name at its place, \
              another realm's makes and releases left to it, those that name \
              no realm kept apart, and the line cut short counted"
+        );
+    }
+
+    #[test]
+    fn the_book_lets_go_for_good_only_a_machine_made_and_released() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("made.jsonl");
+        let book = Book::at(path.clone()).of_realm("work");
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let (tern, wren, osprey) = (
+            made_at("tern", "p1", later),
+            made_at("wren", "p2", later),
+            made_at("osprey", "p3", later),
+        );
+        for made in [&tern, &wren, &osprey] {
+            book.made(made).expect("a make is kept");
+        }
+        book.released(&tern, "its work handed over")
+            .expect("a release is kept");
+        book.released(&wren, "its time was up")
+            .expect("a release is kept");
+        book.made(&made_at("wren", "p4", later))
+            .expect("a make is kept");
+        book.released(&made_at("kestrel", "p5", later), "never made here")
+            .expect("a release is kept");
+        Book::at(path.clone())
+            .of_realm("home")
+            .released(&osprey, "another realm's")
+            .expect("a release is kept");
+        assert_eq!(
+            book.standing().expect("the book reads").let_go,
+            BTreeSet::from(["tern".to_owned()]),
+            "only a machine made and released, not made again, not one never \
+             made, as the person's own, and not one another realm released"
+        );
+
+        let whole = serde_json::to_string(&json!({ "at": later, "made": tern })).expect("a line");
+        let named = whole
+            .find(r#","place""#)
+            .expect("its place follows its name");
+        cut_short(&path, &whole[..named + 4]);
+        assert!(
+            book.standing().expect("the book reads").let_go.is_empty(),
+            "a line cut short that may have made it again keeps it"
         );
     }
 

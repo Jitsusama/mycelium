@@ -479,7 +479,7 @@ pub(crate) fn cut_ended(cut: &str, blank: fn(char) -> bool) -> &str {
 }
 
 /// The most characters a cell's address holds.
-const ADDRESS_MOST: usize = 32;
+pub const ADDRESS_MOST: usize = 32;
 
 /// Whether `said` could be a cell's address: letters and digits alone,
 /// at most [`ADDRESS_MOST`] of them, so a presence can put nothing else

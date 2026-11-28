@@ -264,8 +264,13 @@ impl Store for Memory {
     }
 
     fn supersede(&self, machine: &str) -> io::Result<()> {
-        let at = jiff::Timestamp::now().as_millisecond();
-        self.held().superseded.insert(machine.to_owned(), at);
+        let now = jiff::Timestamp::now().as_millisecond();
+        let mut held = self.held();
+        let at = held
+            .superseded
+            .get(machine)
+            .map_or(now, |last| now.max(last + 1));
+        held.superseded.insert(machine.to_owned(), at);
         Ok(())
     }
 
