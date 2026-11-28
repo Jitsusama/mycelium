@@ -93,9 +93,7 @@ impl Lent {
     #[must_use]
     pub fn at(machine: &Machine, now: jiff::Timestamp) -> Self {
         let declared = machine.declared.as_ref();
-        if !(machine.worker || declared.is_some_and(Declared::is_worker))
-            || declared
-                .is_some_and(|said| in_the_cloud(machine, said, now) || a_room(machine, said))
+        if !(machine.worker || declared.is_some_and(Declared::is_worker)) || in_cloud(machine, now)
         {
             Self::Not
         } else if declared.is_some_and(|said| said.takes_carries) {
@@ -109,6 +107,18 @@ impl Lent {
 /// How long a machine in the cloud must yet stay for a carry to take it
 /// as one of the person's own, since a carried session lasts.
 pub(crate) const STAYS_FOR: jiff::SignedDuration = jiff::SignedDuration::from_hours(24 * 30);
+
+/// Whether `machine` is cloud ground a carry takes as one of the person's
+/// own at `now`, as the realm last knew it: a room its node names for
+/// agents ([`a_room`]), or a machine a provider's link didn't lend that
+/// says it is paid for or leaves, and is one of the person's own in the
+/// cloud ([`in_the_cloud`]). Easing tries these before the person's other
+/// machines, since it is there to keep those light.
+pub(crate) fn in_cloud(machine: &Machine, now: jiff::Timestamp) -> bool {
+    machine.declared.as_ref().is_some_and(|said| {
+        a_room(machine, said) || (said.is_worker() && in_the_cloud(machine, said, now))
+    })
+}
 
 /// Whether `machine`, as it `said` itself, is one of the person's own in
 /// the cloud at `now`: paid for, perhaps, but linked as one of theirs
