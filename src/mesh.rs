@@ -509,18 +509,19 @@ fn doing(said: &Value) -> Option<Doing> {
 }
 
 /// The newest events a presence says, as it says them newest first,
-/// leaving out any it can't read. Each title is cleaned as a need is:
-/// made one line by [`crate::forage::one_line`], so a peer can't draw
-/// lines of its own, steer another's terminal or turn text around in it,
-/// then cut at `LINE_MOST` of the characters left, cleaned again, and its
-/// end cleaned so it ends on no space and nothing left holding nothing,
-/// as a share's title does; only its end, so a title keeps its start.
+/// leaving out any it can't read, or whose `where` can't be a place
+/// ([`is_place`]). Each title is cleaned as a need is: made one line by
+/// [`crate::forage::one_line`], so a peer can't draw lines of its own,
+/// steer another's terminal or turn text around in it, then cut at
+/// `LINE_MOST` of the characters left, cleaned again, and its end
+/// cleaned so it ends on no space and nothing left holding nothing, as a
+/// share's title does; only its end, so a title keeps its start.
 fn events(said: &Value) -> Vec<Event> {
     said.as_array()
         .into_iter()
         .flatten()
         .filter_map(|event| Event::deserialize(event).ok())
-        .filter(|event| !event.place.is_empty() && is_instant(&event.at))
+        .filter(|event| is_place(&event.place) && is_instant(&event.at))
         .map(|mut event| {
             let cut: String = crate::forage::one_line(&event.title)
                 .chars()
@@ -540,6 +541,18 @@ fn events(said: &Value) -> Vec<Event> {
         })
         .take(EVENTS_MOST)
         .collect()
+}
+
+/// Whether an event's `where` can be a repository's key or a quest's id:
+/// said, at most `LINE_MOST` characters, and already one clean line, as
+/// [`crate::forage::one_line`] would leave it, holding no control, break,
+/// direction mark or anything else drawn as nothing. It is served as
+/// said, so any of those in it would otherwise reach a reader's terminal
+/// whole; neither a key nor an id holds one.
+fn is_place(place: &str) -> bool {
+    !place.is_empty()
+        && place.chars().count() <= LINE_MOST
+        && crate::forage::one_line(place) == place
 }
 
 /// Whether a presence's time is an RFC 3339 instant.
@@ -1255,6 +1268,39 @@ mod tests {
             read[2].capacity() <= 4 * LINE_MOST,
             "and keeps no more room than its 120 characters can take: {}",
             read[2].capacity()
+        );
+    }
+
+    #[test]
+    fn a_session_leaves_out_an_event_whose_where_cant_be_a_place() {
+        let places = [
+            "k".repeat(LINE_MOST),
+            "k".repeat(LINE_MOST + 1),
+            "github:Jitsusama/\u{1B}[2Jmycelium".to_owned(),
+            "github:Jitsusama/mycelium\n".to_owned(),
+            "github:Jitsusama/\u{2028}mycelium".to_owned(),
+            "github:Jitsusama/\u{202E}mycelium".to_owned(),
+            "github:Jitsusama/\u{200B}mycelium".to_owned(),
+            "QEST-20261115-TERNS0".to_owned(),
+        ];
+        let said: Vec<Value> = places
+            .iter()
+            .enumerate()
+            .map(|(n, place)| {
+                let mut event = event_said(n, "push");
+                event["where"] = json!(place);
+                event
+            })
+            .collect();
+        let read = session(&saying_events(&json!(said)), "kestrel").expect("a presence reads");
+        assert_eq!(
+            read.events
+                .iter()
+                .map(|event| event.place.as_str())
+                .collect::<Vec<_>>(),
+            [places[0].as_str(), places[7].as_str()],
+            "a `where` past 120 characters, or holding a control, a break, \
+             a direction mark or what draws nothing, leaves its event out"
         );
     }
 
