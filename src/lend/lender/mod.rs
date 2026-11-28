@@ -14,6 +14,7 @@
 //! with no prompt, answer, header or key in it.
 
 mod spend;
+mod taken;
 #[cfg(test)]
 mod tests;
 
@@ -260,6 +261,8 @@ pub struct Lender {
     runtime: Option<PathBuf>,
     /// Held while a count is read and written, so two never count as one.
     counting: Mutex<()>,
+    /// Whether the file was taken when last read, for the node's health.
+    taken: taken::Taken,
 }
 
 impl Lender {
@@ -279,6 +282,7 @@ impl Lender {
             folder,
             runtime,
             counting: Mutex::new(()),
+            taken: taken::Taken::default(),
         }
     }
 
@@ -296,26 +300,39 @@ impl Lender {
             file.display(),
             folder.join("cuts.json").display()
         );
-        Self::new(file, declarers, folder, crate::place::login_runtime())
+        let lender = Self::new(file, declarers, folder, crate::place::login_runtime());
+        // Read once at the start, so a lend that isn't taken says so in
+        // the log and the node's health before any machine asks of it.
+        let _ = lender.written();
+        lender
+    }
+
+    /// How the lend stands, as the daemon interface's `health` names a
+    /// source: answering, or refused with why its file wasn't taken when
+    /// it was last read, at the start or by the last lend asked.
+    #[must_use]
+    pub fn health(&self) -> serde_json::Value {
+        self.taken.health(&self.file)
     }
 
     /// What may be lent, as the file says now. Why it isn't taken goes to
     /// this machine's log alone, since the asker is another machine's
     /// agent, and says where it doesn't parse but never what it found.
     fn written(&self) -> Result<Written, Refusal> {
-        crate::declared::sealed(&self.file, &self.declarers)
+        let read: Result<Written, String> = crate::declared::sealed(&self.file, &self.declarers)
             .and_then(|()| fs::read(&self.file).map_err(|error| error.to_string()))
-            .and_then(|text| serde_json::from_slice(&text).map_err(|error| unparsed(&error)))
-            .map_err(|why| {
-                eprintln!(
-                    "mycelium: this machine's lend, {}, isn't taken: {why}",
-                    self.file.display()
-                );
-                refused(
-                    503,
-                    "this machine's lend isn't taken; its node's log says why".to_owned(),
-                )
-            })
+            .and_then(|text| serde_json::from_slice(&text).map_err(|error| unparsed(&error)));
+        self.taken.read(read.as_ref().err().cloned());
+        read.map_err(|why| {
+            eprintln!(
+                "mycelium: this machine's lend, {}, isn't taken: {why}",
+                self.file.display()
+            );
+            refused(
+                503,
+                "this machine's lend isn't taken; its node's log says why".to_owned(),
+            )
+        })
     }
 
     /// Why `machine` is cut off, as the cuts say now, where it is: cuts

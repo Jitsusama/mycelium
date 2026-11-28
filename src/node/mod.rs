@@ -2948,6 +2948,9 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             .chain(self.served.health())
             .chain(self.builders.health())
             .chain(self.murmurs.health())
+            // A lend not taken refuses every machine it lends to, so it
+            // is said here, not only in the log.
+            .chain(self.lender.as_deref().map(crate::lend::lender::Lender::health))
             .collect();
         serde_json::Map::from_iter([
             ("version".to_owned(), daemon::VERSION.into()),
