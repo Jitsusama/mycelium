@@ -3432,9 +3432,11 @@ again on the 503 itself where an older node hands it on. Those in
 flight run on, for at most `--lends-drain-within SECS`, 60 unless said,
 which leaves the rest of the stop time within systemd's default stop
 timeout of 90 s. A lend counts as in flight until its link has written
-the last piece of its answer to the other end, not only until that
-piece is queued, and a whole answer still queued at the bound is cut
-as any other, its borrower hearing its link end partway through. The
+and flushed the last piece of its answer into its own connection, not
+only until that piece is queued; that is not proof the other end read
+it, which a connection ended at once after may still lose. A whole
+answer still queued at the bound is cut as any other, its borrower
+hearing its link end partway through. The
 node runs on as ever meanwhile, and its links, holds and watches end
 after, so its unit must send the terminate to the node alone, as
 systemd's `KillMode=mixed` does: one sent to its links' own processes

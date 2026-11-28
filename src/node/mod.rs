@@ -11432,9 +11432,16 @@ const LENDER_ASKED_EVERY: Duration = Duration::from_millis(250);
 #[cfg(not(test))]
 const LENDER_STOPPING_ASKED_EVERY: Duration = Duration::from_secs(5);
 
-/// Within [`LENDER_AWAITED_MOST`] in the node's tests, which ask again.
+/// Within [`LENDER_AWAITED_MOST`] in the node's tests, which ask again,
+/// and apart from [`LENDER_ASKED_EVERY`], so they tell the two apart.
 #[cfg(test)]
-const LENDER_STOPPING_ASKED_EVERY: Duration = Duration::from_millis(250);
+const LENDER_STOPPING_ASKED_EVERY: Duration = Duration::from_millis(400);
+
+#[cfg(test)]
+const _: () = assert!(
+    LENDER_STOPPING_ASKED_EVERY.as_millis() > LENDER_ASKED_EVERY.as_millis()
+        && LENDER_STOPPING_ASKED_EVERY.as_millis() < LENDER_AWAITED_MOST.as_millis()
+);
 
 /// How a lend handed to the link reaching its lender ended.
 #[derive(Debug)]
@@ -11481,16 +11488,7 @@ async fn hand_on_lend<S: Store>(
                 return;
             }
         };
-        let (every, why) = if why == STOPPING {
-            let why = format!(
-                "its lender's node was stopping, and took no new lend within \
-                 {LENDER_AWAITED_MOST:?}"
-            );
-            (LENDER_STOPPING_ASKED_EVERY, why)
-        } else {
-            let why = format!("{why}, and no link to it stood within {LENDER_AWAITED_MOST:?}");
-            (LENDER_ASKED_EVERY, why)
-        };
+        let (every, why) = asking_again(&why);
         if tokio::time::Instant::now() + every > until {
             let _ = write(&mut writing, &refused(503, why)).await;
             return;
@@ -11500,6 +11498,23 @@ async fn hand_on_lend<S: Store>(
             // A client that hung up waits for nothing.
             _ = lines.next_line() => return,
         }
+    }
+}
+
+/// How soon a lend that went unsaid for `why` is asked again, and what pi
+/// is told if the wait ends first. A lender refusing it as stopping
+/// takes none until its node is back, so it is asked far less often
+/// than one no link reaches.
+fn asking_again(why: &str) -> (Duration, String) {
+    if why == STOPPING {
+        let why = format!(
+            "its lender's node was stopping, and took no new lend within \
+             {LENDER_AWAITED_MOST:?}"
+        );
+        (LENDER_STOPPING_ASKED_EVERY, why)
+    } else {
+        let why = format!("{why}, and no link to it stood within {LENDER_AWAITED_MOST:?}");
+        (LENDER_ASKED_EVERY, why)
     }
 }
 
@@ -20470,6 +20485,31 @@ esac
             "it may be asked again, saying why: {outcome:?}"
         );
         assert!(heard.is_empty(), "pi hears nothing of it yet: {heard:?}");
+    }
+
+    #[test]
+    fn a_lend_its_lender_refused_as_stopping_is_asked_again_less_often() {
+        let stopping = "this machine's node is stopping, so it takes no new lend; ask again soon";
+        assert_eq!(
+            STOPPING, stopping,
+            "the wire's words, as PROTOCOL.md says them"
+        );
+        assert_eq!(
+            asking_again(stopping),
+            (
+                LENDER_STOPPING_ASKED_EVERY,
+                "its lender's node was stopping, and took no new lend within 1s".to_owned()
+            ),
+            "a stopping lender is asked again at its own pace, and pi hears why"
+        );
+        assert_eq!(
+            asking_again("no link reaches skiff"),
+            (
+                LENDER_ASKED_EVERY,
+                "no link reaches skiff, and no link to it stood within 1s".to_owned()
+            ),
+            "one no link reaches is asked again sooner"
+        );
     }
 
     #[tokio::test]
