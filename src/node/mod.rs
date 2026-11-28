@@ -1964,6 +1964,24 @@ fn leaving_as_made(
 /// to book, so it only leaves this realm's machines, once, and only
 /// within [`UNNAMED_LOOKED_FOR`] of its time. Answers the makes booked as
 /// let go.
+/// Of the machines `released`, those no link reaches, as
+/// [`let_go_ended`] judges one: one the realm doesn't list, or lists as
+/// unreachable. One of the same name a link reaches, made again
+/// elsewhere or whose release failed, isn't let go of yet.
+fn unreached(
+    released: std::collections::BTreeSet<String>,
+    store: &impl Store,
+) -> std::collections::BTreeSet<String> {
+    let machines = store.machines();
+    let unreached = |name: &String| {
+        machines
+            .iter()
+            .find(|one| one.name == *name)
+            .is_none_or(|one| one.state == Readiness::Unreachable)
+    };
+    released.into_iter().filter(unreached).collect()
+}
+
 fn let_go_ended(book: &Book, store: &impl Store, now: jiff::Timestamp) -> Vec<Made> {
     let standing = match book.standing() {
         Ok(standing) => standing,
@@ -5209,14 +5227,33 @@ impl<S: Store> Shared<S> {
         for made in let_go_ended(&self.book, &self.store, jiff::Timestamp::now()) {
             self.unbook(&made);
         }
-        self.forget_let_go();
+        self.forget_let_go_apart();
         power
     }
 
+    /// Lets go of machines released for good as [`Self::forget_let_go`]
+    /// does, off the node's one thread where there is a runtime to run
+    /// it on: it holds and writes ledgers of megabytes, which the node's
+    /// loop never waits on.
+    fn forget_let_go_apart(&self) {
+        if self.shares.is_none() {
+            return;
+        }
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                let shared = self.clone();
+                drop(runtime.spawn_blocking(move || shared.forget_let_go()));
+            }
+            Err(_) => self.forget_let_go(),
+        }
+    }
+
     /// Lets go, in every shared quest's ledger, of each machine this
-    /// node made and its book shows released for good, so no deletion
-    /// waits on a machine that will never link again. The person's own
-    /// machines, never made, and one merely unlinked stay.
+    /// node made and its book shows released for good, and that no link
+    /// reaches, so no deletion waits on a machine that will never link
+    /// again. The person's own machines, never made, one merely unlinked,
+    /// and one of the same name a link reaches, as one made again
+    /// elsewhere or whose release failed, stay.
     fn forget_let_go(&self) {
         let Some(shares) = self.shares.as_deref() else {
             return;
@@ -5230,16 +5267,25 @@ impl<S: Store> Shared<S> {
                 return;
             }
         };
+        let let_go = unreached(let_go, &self.store);
         if let_go.is_empty() {
             return;
         }
-        match shares.ledgers().let_go(&let_go) {
-            Ok(quests) if quests.is_empty() => {}
-            Ok(quests) => eprintln!(
+        let done = match shares.ledgers().let_go(&let_go) {
+            Ok(done) => done,
+            Err(error) => {
+                eprintln!("the ledgers couldn't let go of machines released: {error}");
+                return;
+            }
+        };
+        if !done.quests.is_empty() {
+            eprintln!(
                 "{} let go of the machines released for good",
-                quests.join(", ")
-            ),
-            Err(error) => eprintln!("the ledgers couldn't let go of machines released: {error}"),
+                done.quests.join(", ")
+            );
+        }
+        for (quest, error) in done.failed {
+            eprintln!("{quest}'s ledger couldn't let go of machines released: {error}");
         }
     }
 
@@ -27927,6 +27973,28 @@ esac
             .collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn a_machine_released_is_let_go_of_only_while_no_link_reaches_it() {
+        let store = Memory::default();
+        for (name, state) in [
+            ("tern", Readiness::Ready),
+            ("kestrel", Readiness::Unreachable),
+        ] {
+            store
+                .put_machine(&facts::Machine {
+                    state,
+                    ..facts::measure(name, &facts::Sources::nowhere())
+                })
+                .expect("what it said is kept");
+        }
+        let released = ["tern", "kestrel", "wren"].map(str::to_owned);
+        assert_eq!(
+            unreached(released.into(), &store),
+            std::collections::BTreeSet::from(["kestrel".to_owned(), "wren".to_owned()]),
+            "one unreachable or unlisted is let go of; tern, linked, stays"
+        );
     }
 
     #[test]

@@ -672,19 +672,33 @@ to hold that file deleted at the same state or newer, so a scratch whose
 files come and go keeps no deletion of each. An end that takes a
 deletion, or hears one of a file it holds deleted at another state or
 never held, says `Holds` of it back at the state the two now share, so
-the other end learns it. Until then the deletion is kept: a machine that
-held the file and was away is still told of it when it links again, and
-a deleted file never comes back because its deletion was forgotten. A
+the other end learns it. An end hearing a deletion at the state it
+holds says it back once, where it hadn't heard that of the other, so
+the end that told it learns it too, and an end that forgot a deletion
+at that state or newer answers one with nothing, so two ends holding
+no entry of it stop. Until then the deletion is kept: a machine that held
+the file and was away is still told of it when it links again. A
 machine that asks for a file is named in `theirs` from then on, so one
-that took it and dropped before saying so is waited for too. A file
-written again after its deletion was forgotten starts from every version
-forgotten, so it is newer than any deletion still kept elsewhere.
+that took it and dropped before saying so is waited for too. A machine
+whose link carries the README alone is waited on for the README's
+deletion alone.
 
-Once a minute, a machine this node made that its book shows released,
-made again under no place since and doubted by no line it can't read, is
-let go of in every ledger, from `theirs` and from what workers read. A
-person's machine, never made, and one merely unlinked stay. Only the
-maker's book shows a release, so other nodes still wait on that machine.
+Of a deletion forgotten, the ledger keeps the file's key and every
+version it was last known at, joined, as `forgotten`. A copy offered
+later whose version that holds, from a machine sharing through another
+node that this ledger never waited on, is refused, and its end is told
+the deletion back, so it deletes the file and forgets it in turn. A
+file written again after its deletion was forgotten starts from its own
+key's versions, so it is newer than any deletion still kept elsewhere
+and never newer than a write of the same path made apart.
+
+Once a minute, off the node's loop, a machine this node made that its
+book shows released, made again under no place since, doubted by no
+line it can't read and reached by no link, is let go of in every
+ledger, from `theirs` and from what workers read. A person's machine,
+never made, and one merely unlinked stay. Only the maker's book shows a
+release, so other nodes still wait on that machine. A ledger that can't
+be read is named in the log and leaves the rest to be let go.
 
 What a worker says it holds of a quest it was given is kept apart, as
 `read`, since nothing a worker says is taken: `theirs` would let its
