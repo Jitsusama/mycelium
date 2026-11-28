@@ -42,10 +42,10 @@ use crate::lend::forge::BORROWER;
 use crate::lend::serve::{HANDED_ON, MOST_BODY, MOST_HEAD};
 use crate::lend::{BACKLOG, Lend, Lent};
 
-use drain::{CUT, CUT_WHY, InFlight, Lends, STOPPING};
+use drain::{CUT, CUT_WHY, InFlight, Lends};
 use spend::{Meter, dollars, millionths, spend_watch_allows, usd};
 
-pub use drain::LENDS_DRAIN_WITHIN;
+pub use drain::{LENDS_DRAIN_WITHIN, STOPPING};
 
 /// The most of an answer's body one [`Lent::Body`] carries.
 const PIECE: usize = 16 * 1024;
@@ -699,15 +699,33 @@ async fn carry(
     }
     // Said before the refusal is sent, which waits on a borrower that
     // may have stopped taking what it is sent, so a cut lend is in the
-    // log however its borrower behaves; and the stop waits no longer for
-    // it once it is.
+    // log however its borrower behaves.
     say(machine, &used, began.elapsed(), &outcome);
-    drop(in_flight);
     if let Some(Refusal { status, why }) = told {
-        // A borrower gone meanwhile has nothing to be told.
-        let _ = sending.send(Lent::Refused { status, why }).await;
+        // A borrower gone meanwhile has nothing to be told, and one that
+        // stopped taking what it is sent holds the stop no longer than
+        // its cut.
+        tokio::select! {
+            biased;
+            _ = sending.send(Lent::Refused { status, why }) => {}
+            () = lender.lends.cut() => {}
+        }
     }
+    delivered(lender, sending).await;
+    drop(in_flight);
     (outcome, used)
+}
+
+/// Once the link has taken the last piece of a lend's answer, which it
+/// shows by letting the answer go, or the node's stop cut what is left.
+/// The stop counts a lend in flight until then, so it never ends with a
+/// whole answer, already charged, still queued for a link it then closes.
+async fn delivered(lender: &Lender, sending: &mpsc::Sender<Lent>) {
+    tokio::select! {
+        biased;
+        () = sending.closed() => {}
+        () = lender.lends.cut() => {}
+    }
 }
 
 /// Writes one line of what a lend was, as the node's own output, so the

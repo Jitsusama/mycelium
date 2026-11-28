@@ -16,9 +16,17 @@ use tokio::sync::watch;
 /// service manager kills the node.
 pub const LENDS_DRAIN_WITHIN: Duration = Duration::from_secs(60);
 
-/// Why a lend asked once the node is stopping is refused, with a 503,
-/// which pi asks again on, as it does for a lender no link reaches.
-pub(super) const STOPPING: &str =
+/// How long a stop waits, once it has cut the lends left, for each to
+/// write its line. A cut lend ends at its next turn, so this is only a
+/// guard against one that never takes it, which would otherwise hold the
+/// stop until the service manager kills the node.
+pub(super) const CUT_LINES_WITHIN: Duration = Duration::from_secs(5);
+
+/// Why a lend asked once the node is stopping is refused, with a 503.
+/// A borrowing node that hears it asks again, as it does a lender no
+/// link reaches, rather than handing it to pi, since nothing of it went
+/// upstream; pi asks again on it too, from a node too old to.
+pub const STOPPING: &str =
     "this machine's node is stopping, so it takes no new lend; ask again soon";
 
 /// What a lend's line says of one the node's stop cut, so a reader can
@@ -85,10 +93,10 @@ impl Lends {
     }
 
     /// Takes no lend from now, then waits for those in flight to end: at
-    /// most `within`, past which those left are cut and waited for as
-    /// they write their lines, or until `again`, a second stop, which
-    /// cuts them and ends the wait at once. With none in flight it ends
-    /// at once.
+    /// most `within`, past which those left are cut, or until `again`, a
+    /// second stop, which cuts them at once. Either way it then waits as
+    /// long as [`CUT_LINES_WITHIN`] for each cut lend to write its line.
+    /// With none in flight it ends at once.
     pub(super) async fn drain(&self, within: Duration, again: impl Future<Output = ()>) {
         let mut standing = self.0.subscribe();
         self.0.send_modify(|standing| standing.stopping = true);
@@ -96,6 +104,8 @@ impl Lends {
         if taken == 0 {
             return;
         }
+        let bound = within.as_secs();
+        eprintln!("stopping: waiting as long as {bound} s for its {taken} lends in flight");
         let began = tokio::time::Instant::now();
         tokio::pin!(again);
         let ended = |standing: &Standing| standing.in_flight == 0;
@@ -109,18 +119,25 @@ impl Lends {
             () = &mut again => false,
         };
         let left = self.cut_left();
-        if !cut {
-            eprintln!("stopping: stopped again, so its {left} lends in flight left were cut");
-            return;
-        }
-        // A cut lend ends at its next turn, so this waits only for each to
-        // write its line, unless the node is stopped again meanwhile.
-        tokio::select! {
-            _ = standing.wait_for(ended) => {}
-            () = again => {}
-        }
-        let bound = within.as_secs();
-        eprintln!("stopping: {left} of its {taken} lends in flight were cut at {bound} s");
+        // Waited for after a second stop too, so a cut lend's line and its
+        // settlement are kept however the stop ended.
+        let written = tokio::select! {
+            written = tokio::time::timeout(CUT_LINES_WITHIN, standing.wait_for(ended)) => {
+                written.is_ok()
+            }
+            () = &mut again, if cut => false,
+        };
+        let how = if cut {
+            format!("at {bound} s")
+        } else {
+            "as it was stopped again".to_owned()
+        };
+        let unwritten = if written {
+            ""
+        } else {
+            ", not all of them writing their lines in time"
+        };
+        eprintln!("stopping: {left} of its {taken} lends in flight were cut {how}{unwritten}");
     }
 
     /// Cuts the lends left, answering how many there are.

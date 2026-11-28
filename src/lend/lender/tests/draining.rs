@@ -82,6 +82,8 @@ async fn a_lend_in_flight_at_the_stop_runs_to_its_end_and_is_charged_whole() {
         "{lent:?}"
     );
     assert_eq!(lent.last(), Some(&Lent::Done), "{lent:?}");
+    // As the link lets an answer go once it has taken its last piece.
+    drop(answers);
     let took = drained.await.expect("the drain ends");
     assert!(
         (answered_after..LENDS_DRAIN_WITHIN).contains(&took),
@@ -92,6 +94,52 @@ async fn a_lend_in_flight_at_the_stop_runs_to_its_end_and_is_charged_whole() {
         USED,
         "it is charged what its answer says it used"
     );
+}
+
+#[tokio::test]
+async fn the_stop_waits_for_a_whole_answer_to_leave_not_only_to_be_queued() {
+    let mut lending = keyless();
+    let mut answers = answer(&lending.lender, "agents-harbour", lend("/v1/messages"));
+    let asked = lending.relay.asked().await;
+    asked.answer.send(used_whole()).expect("the relay answers");
+    let (lent, _) = whole(&mut answers).await;
+    assert_eq!(lent.last(), Some(&Lent::Done), "{lent:?}");
+    tokio::time::pause();
+    // Its last piece is queued, but the link hasn't let the answer go.
+    let drained = draining(&lending.lender, pending());
+    stopping(&lending.lender).await;
+    let taken_after = Duration::from_secs(2);
+    tokio::time::advance(taken_after).await;
+    assert!(!drained.is_finished(), "the stop still counts it in flight");
+    drop(answers);
+    let took = drained.await.expect("the drain ends");
+    assert!(
+        (taken_after..LENDS_DRAIN_WITHIN).contains(&took),
+        "the stop ends once the link took it, before the bound: {took:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_lend_asked_while_another_drains_is_refused_as_one_to_ask_again() {
+    let mut lending = keyless();
+    let (carrying, _held) = carried_for(&lending.lender, "agents-wren");
+    // Held, so the relay answers nothing and the first lend stays in flight.
+    let _asked = lending.relay.asked().await;
+    tokio::time::pause();
+    let drained = draining(&lending.lender, pending());
+    stopping(&lending.lender).await;
+    let mut answers = answer(&lending.lender, "agents-tern", lend("/v1/messages"));
+    let (status, why) = refusal_and_why(&mut answers).await;
+    assert_eq!(
+        (status, why.as_str()),
+        (503, STOPPING),
+        "refused as stopping while the stop still waits on another"
+    );
+    assert!(!drained.is_finished(), "and the drain still waits");
+    assert_eq!(lending.spent("agents-tern"), 0, "it spends nothing");
+    drained.await.expect("the drain ends at its bound");
+    let (outcome, _) = carrying.await.expect("it was carried");
+    assert_eq!(outcome, CUT);
 }
 
 #[tokio::test(start_paused = true)]
