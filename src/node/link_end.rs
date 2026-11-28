@@ -66,14 +66,26 @@ mod tests {
         let kernel = Processes::Folder(procs.path().to_owned());
         let unattended = Processes::Folder(procs.path().to_owned()).unattended();
         for processes in [&kernel, &unattended] {
-            assert!(speaks_for_a_link(Some(31), processes), "the link's end, under sshd");
-            assert!(!speaks_for_a_link(Some(41), processes), "a session below pi");
+            assert!(
+                speaks_for_a_link(Some(31), processes),
+                "the link's end, under sshd"
+            );
+            assert!(
+                !speaks_for_a_link(Some(41), processes),
+                "a session below pi"
+            );
             assert!(
                 !speaks_for_a_link(Some(50), processes),
                 "one a fence barred from gaining privileges, though pi is gone"
             );
-            assert!(!speaks_for_a_link(None, processes), "one the kernel doesn't name");
-            assert!(!speaks_for_a_link(Some(60), processes), "one nothing can be read of");
+            assert!(
+                !speaks_for_a_link(None, processes),
+                "one the kernel doesn't name"
+            );
+            assert!(
+                !speaks_for_a_link(Some(60), processes),
+                "one nothing can be read of"
+            );
         }
     }
 }
