@@ -58,7 +58,7 @@ pub const WORLD: &str = "world";
 pub struct Demand {
     /// Each `--via` machine's name, once its hello says it, with the marks
     /// its `--via-marks` gave it.
-    via: Vec<(Arc<OnceLock<String>>, Marks)>,
+    via: ViaMarks,
     /// What changes as machines are made and let go.
     kept: Mutex<Kept>,
     /// The budget makes are held to.
@@ -75,12 +75,16 @@ struct Kept {
     world_tainted: BTreeSet<String>,
 }
 
+/// Each `--via` machine's name, as its dial learns it once linked, with
+/// the marks its `--via-marks` gave it.
+pub type ViaMarks = Vec<(Arc<OnceLock<String>>, Marks)>;
+
 /// What a node is given of its makes' demand: each `--via` machine's
 /// marks, by the name its dial learns, and the budget file, if any.
 #[derive(Default)]
 pub struct Given {
     /// Each `--via` machine's name, as its dial learns it, and its marks.
-    pub via_marks: Vec<(Arc<OnceLock<String>>, Marks)>,
+    pub via_marks: ViaMarks,
     /// The file `--makes-within` names.
     pub makes_within: Option<PathBuf>,
 }
@@ -92,10 +96,7 @@ pub struct Given {
 ///
 /// When one names a place no `--via` of `programs` dials, as a mistyped
 /// place would leave the machine it meant unmarked.
-pub fn via_marks(
-    programs: &[Program],
-    marks: Vec<(String, Marks)>,
-) -> Result<Vec<(Arc<OnceLock<String>>, Marks)>, String> {
+pub fn via_marks(programs: &[Program], marks: Vec<(String, Marks)>) -> Result<ViaMarks, String> {
     marks
         .into_iter()
         .map(|(place, marks)| {
@@ -493,13 +494,13 @@ impl Makes {
     /// nothing is made past a budget the person meant to write.
     fn budget(&self) -> Result<Option<Budget>, String> {
         let Some(file) = &self.file else {
-            self.say_unbounded(Some("no --makes-within names a budget".to_owned()));
+            self.say_unbounded(Some("no --makes-within names a budget"));
             return Ok(None);
         };
         let text = match std::fs::read(file) {
             Ok(text) => text,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                self.say_unbounded(Some(format!("{} isn't there", file.display())));
+                self.say_unbounded(Some(&format!("{} isn't there", file.display())));
                 return Ok(None);
             }
             Err(error) => {
@@ -517,24 +518,23 @@ impl Makes {
                 )
             })?;
         let budget = budgets.remove(&self.realm);
-        self.say_unbounded(
-            budget
-                .is_none()
-                .then(|| format!("{} names no budget for {}", file.display(), self.realm)),
-        );
+        let unnamed = budget
+            .is_none()
+            .then(|| format!("{} names no budget for {}", file.display(), self.realm));
+        self.say_unbounded(unnamed.as_deref());
         Ok(budget)
     }
 
     /// Says once, each time it changes, why makes are unbounded, or that
     /// they are bounded again.
-    fn say_unbounded(&self, why: Option<String>) {
+    fn say_unbounded(&self, why: Option<&str>) {
         let mut said = self.said.lock().unwrap_or_else(PoisonError::into_inner);
-        if *said != why {
-            match &why {
+        if said.as_deref() != why {
+            match why {
                 Some(why) => eprintln!("machines are made without bound, as {why}"),
                 None => eprintln!("machines made are held to a budget again"),
             }
-            said.clone_from(&why);
+            *said = why.map(str::to_owned);
         }
     }
 

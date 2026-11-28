@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use super::super::{Given, bind, run};
+use super::super::{Given, bind, demand, run};
 use crate::awake::Awake;
 use crate::client::Client;
 use crate::flow::{Code, Flows};
@@ -59,6 +59,7 @@ fn node(dir: &Path, realm: &str, to: &[&str], from: &[&str], heard: &[&str]) -> 
         serves: BTreeMap::new(),
         providers: Vec::new(),
         book: Book::at("/nowhere/made.jsonl".into()),
+        demand: demand::Given::default(),
         flows: Flows {
             to: realms(to),
             from: realms(from),
