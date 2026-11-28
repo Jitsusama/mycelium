@@ -147,6 +147,15 @@ impl Memory {
         self.held().tell(&Change::Rescan);
     }
 
+    /// Takes `machine`'s record away, as a session may take its file
+    /// away over the folders store, keeping its worker mark, which only
+    /// the store's own put moves.
+    pub fn take_away_machine(&self, machine: &str) {
+        let mut held = self.held();
+        held.machines.remove(machine);
+        held.tell(&Change::Machine(machine.to_owned()));
+    }
+
     fn held(&self) -> MutexGuard<'_, Held> {
         // A test that panicked holding the lock has failed already.
         self.0.lock().unwrap_or_else(PoisonError::into_inner)

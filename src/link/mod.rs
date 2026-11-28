@@ -53,6 +53,7 @@ pub mod dial;
 pub mod discovery;
 pub mod membership;
 pub mod refused;
+mod runs;
 mod started;
 pub mod starts;
 pub mod steers;
@@ -93,7 +94,8 @@ use crate::store::{self, Change, Claim, Store};
 use crate::wire::{Ran, Reply, Response, Run, Start, Started};
 use dial::Connection;
 use membership::{Hello, Membership};
-use starts::{Ask, Asked, Asking, RunSaid, RunningHere, Starting};
+use runs::{RunSaid, RunningHere};
+use starts::{Ask, Asked, Asking, Starting};
 use steers::{Following, Replies};
 
 /// How far back a link reaches for messages at most: the mesh's own week,
@@ -1098,14 +1100,21 @@ async fn greet(
 }
 
 /// What an end that said `said` in its hello is too old to do of what is
-/// `asked`, if it is: it carries only what it said it carries, and a
-/// reopening only where its node judges one too.
+/// `asked`, if it is: it carries only what it said it carries, a
+/// reopening only where its node judges one too, and a run saying who
+/// asked it (`asked_by`) only where its node runs that through a shell
+/// reading no profile, since an older one drops who asked and runs it as
+/// any agent's, through the login shell.
 fn cannot_carry(asked: &Asked, said: &Hello) -> Option<&'static str> {
     let (carries, cannot) = match asked {
         Asked::Start(_) => (said.starts, "start sessions"),
         Asked::Reopen(_) => (said.starts && said.reopens, "judge a reopening"),
         Asked::Steer(_) => (said.steers, "carry steers"),
         Asked::Update => (said.updates, "be asked to update"),
+        Asked::Run(run, _) if run.asked_by.is_some() => (
+            said.runs && said.plain_runs,
+            "run the person's command without its home's profile and tools",
+        ),
         Asked::Run(..) => (said.runs, "run commands"),
         Asked::Lend(..) => (said.lends, "lend model calls"),
         Asked::Carry { .. } => (said.carries, "carry sessions"),
@@ -1982,7 +1991,7 @@ impl<S: Store> End<S> {
                 return;
             }
         };
-        let window = Arc::new(tokio::sync::Semaphore::new(starts::RUN_WINDOW));
+        let window = Arc::new(tokio::sync::Semaphore::new(runs::RUN_WINDOW));
         let (stop, stopped) = oneshot::channel();
         self.runs.here.insert(
             ask,
@@ -1992,7 +2001,7 @@ impl<S: Store> End<S> {
             },
         );
         self.handover.ran = true;
-        tokio::spawn(starts::run(
+        tokio::spawn(runs::run(
             (node, self.here.clone()),
             run,
             (ask, self.runs.saying.clone()),
@@ -4383,7 +4392,11 @@ mod tests {
             .expect("the link calls its node in time")
             .expect("the node takes the call");
         let mut node = BufReader::new(called).lines();
-        let first = node.next_line().await.expect("it asks").expect("a line");
+        let first = tokio::time::timeout(PATIENCE, node.next_line())
+            .await
+            .expect("the link asks its node in time")
+            .expect("it asks")
+            .expect("a line");
         assert!(first.contains("Carry"), "the link asks to carry: {first}");
         assert!(
             kestrel.is_worker("skiff"),
@@ -4560,6 +4573,57 @@ mod tests {
             )
             .is_ok_and(|said| !said.reopens),
             "an end whose hello doesn't say it judges none"
+        );
+    }
+
+    // Followups 506 and 532: an end older than `asked_by` drops it and
+    // runs the person's run through the login shell, profile and all, as
+    // an agent's, so the person's run sent as an agent's is asked only of
+    // an end whose node reads it.
+    #[test]
+    fn the_persons_run_sent_as_an_agents_is_asked_only_of_an_end_that_reads_who_asked() {
+        let run = |asked_by| {
+            let (ran, _) = mpsc::channel(1);
+            let said: Run = serde_json::from_value(json!({
+                "work": {"needs": [], "prefers": [], "tolerates": [], "may_wait": false},
+                "command": ["true"],
+                "by": {"Agent": "fence"}
+            }))
+            .expect("a run as a node says it");
+            Asked::Run(Run { asked_by, ..said }, ran)
+        };
+        let older = Hello {
+            plain_runs: false,
+            ..realm("kestrel").hello()
+        };
+        let person = Some(By::Person);
+        assert_eq!(cannot_carry(&run(person), &realm("kestrel").hello()), None);
+        assert_eq!(
+            cannot_carry(&run(person), &older),
+            Some("run the person's command without its home's profile and tools"),
+            "an end that doesn't say it reads who asked is asked none, so the person's \
+             command never runs there as an agent's unsaid"
+        );
+        assert_eq!(
+            cannot_carry(&run(None), &older),
+            None,
+            "it is still asked any other run"
+        );
+        let runless = Hello {
+            runs: false,
+            ..realm("kestrel").hello()
+        };
+        assert_eq!(
+            cannot_carry(&run(person), &runless),
+            Some("run the person's command without its home's profile and tools"),
+            "nor of an end that runs nothing, whatever it reads"
+        );
+        assert!(
+            serde_json::from_value::<Hello>(
+                json!({"machine": "tern", "realm": "work", "version": VERSION})
+            )
+            .is_ok_and(|said| !said.plain_runs),
+            "an end whose hello doesn't say it reads who asked"
         );
     }
 
@@ -5290,6 +5354,9 @@ mod tests {
         until(&skiff, |store| !store.presences().is_empty()).await;
 
         let _second = linked(&skiff, &kestrel, 1 << 16);
+        // Asked to let go, the older end ends within a look, so one still
+        // running past the patience never was, and fails here rather than
+        // holding the run.
         let ended = tokio::time::timeout(PATIENCE, first)
             .await
             .expect("the first link's end lets its claim go in time")
@@ -5351,6 +5418,7 @@ mod tests {
             reopens: true,
             lends: true,
             parks: true,
+            plain_runs: true,
         };
         send(&mut far_writing, &Frame::Hello(personal))
             .await

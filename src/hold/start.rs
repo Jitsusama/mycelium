@@ -401,19 +401,31 @@ const IN_ITS_REALM: &str = r#"export MYCELIUM_REALM="$1"; if [ -n "$2" ]; then P
 /// takes `HOME` away or points it elsewhere leaves none of either on the
 /// path. It shifts that word off. With no home, or `/` for one, only the
 /// relative, the missing and the ones its user could write or replace go.
-const OUT_OF_ITS_HOME: &str = r#"homes=; for at in "$1" "${HOME-}"; do case $at in /?*) at=${at%/}; homes=$homes$at:; led=$(cd -P "$at" 2>/dev/null && pwd -P) && homes=$homes$led:;; esac; done; shift; kept=; set -f; IFS=:; for dir in ${PATH-}; do case $dir in /*) ;; *) continue;; esac; led=$(cd -P "$dir" 2>/dev/null && pwd -P) || continue; for at in $homes; do case $dir/ in "$at"/*) led=;; esac; case $led/ in "$at"/*) led=;; esac; done; if [ -O "$led" ] || [ -w "$led" ]; then led=; fi; up=$led; while [ -n "$up" ]; do up=${up%/*}; if [ -O "${up:-/}" ] || { [ -w "${up:-/}" ] && [ ! -k "${up:-/}" ]; }; then led=; up=; fi; done; [ -z "$led" ] || kept=${kept:+$kept:}$led; done; unset IFS; set +f; PATH=${kept:-/usr/bin:/bin}; export PATH; "#;
+const OUT_OF_ITS_HOME: &str = r#"homes=; for at in "$1" "${HOME-}"; do case $at in /?*) at=${at%/}; homes=$homes$at:; led=$(cd -P "$at" 2>/dev/null && pwd -P) && homes=$homes$led:;; esac; done; shift; kept=; dropped=; set -f; IFS=:; for dir in ${PATH-}; do case $dir in /*) ;; '') continue;; *) dropped=${dropped:+$dropped:}$dir; continue;; esac; led=$(cd -P "$dir" 2>/dev/null && pwd -P) || { dropped=${dropped:+$dropped:}$dir; continue; }; for at in $homes; do case $dir/ in "$at"/*) led=;; esac; case $led/ in "$at"/*) led=;; esac; done; if [ -O "$led" ] || [ -w "$led" ]; then led=; fi; up=$led; while [ -n "$up" ]; do up=${up%/*}; if [ -O "${up:-/}" ] || { [ -w "${up:-/}" ] && [ ! -k "${up:-/}" ]; }; then led=; up=; fi; done; if [ -n "$led" ]; then kept=${kept:+$kept:}$led; else dropped=${dropped:+$dropped:}$dir; fi; done; unset IFS; set +f; PATH=${kept:-/usr/bin:/bin}; export PATH; "#;
 
 /// How [`IN_ITS_REALM`] ends: by running the program it was given.
 const RUNS: &str = r#"exec "$@""#;
+
+/// How a plain run ends, in place of [`RUNS`]: by running the program it
+/// was given, as [`RUNS`] does where [`OUT_OF_ITS_HOME`] dropped nothing.
+/// Where it dropped a folder, the shell waits on the program instead, and
+/// where that ends with 127, as a shell does for a command it doesn't
+/// find, it says the path the program ran with and the folders dropped
+/// from it, since what the program ran may have been a tool only those
+/// held. It ends as the program did. The program still stops with the
+/// shell, since a run is stopped by its process group.
+const PLAIN_RUNS: &str = r#"if [ -z "$dropped" ]; then exec "$@"; fi; "$@"; ended=$?; if [ "$ended" -eq 127 ]; then printf 'mycelium: %s ended 127, as a program not found does, on this run'\''s path, %s, which holds no folder its user could write; it dropped %s\n' "$1" "$PATH" "$dropped" >&2; fi; exit "$ended""#;
 
 /// The shell's script that, before a plain run's program runs, says
 /// where a program named bare wasn't found, rather than the shell's bare
 /// `not found`: on a path holding no folder of its home
 /// ([`OUT_OF_ITS_HOME`]), so a tool there alone isn't one it finds. It
 /// says only that, since a name mistyped or missing everywhere isn't
-/// found either, and ends as the shell would, with 127. A name with a
-/// slash is looked for by no path, so the shell says its own.
-const FOUND_OR_SAID: &str = r#"case $1 in */*) ;; *) command -v "$1" >/dev/null 2>&1 || { printf 'mycelium: %s is not found on this run'\''s path, %s, which holds no folder its user could write\n' "$1" "$PATH" >&2; exit 127; };; esac; "#;
+/// found either, and ends as the shell would, with 127, naming the
+/// folders [`OUT_OF_ITS_HOME`] dropped, as they were on the path it was
+/// given, where it dropped any. A name with a slash is looked for by no
+/// path, so the shell says its own.
+const FOUND_OR_SAID: &str = r#"case $1 in */*) ;; *) command -v "$1" >/dev/null 2>&1 || { printf 'mycelium: %s is not found on this run'\''s path, %s, which holds no folder its user could write%s\n' "$1" "$PATH" "${dropped:+; it dropped $dropped}" >&2; exit 127; };; esac; "#;
 
 /// The words that run a program held in `realm` through the person's
 /// login shell, as a terminal would run it, so it has their environment
@@ -487,7 +499,7 @@ pub fn plain_run(realm: &str, kit: Option<&Path>, home: &Path) -> Vec<String> {
     let realmed = IN_ITS_REALM
         .strip_suffix(RUNS)
         .expect("the realm's script ends by running the program");
-    let script = format!("{OUT_OF_ITS_HOME}{realmed}{FOUND_OR_SAID}{RUNS}");
+    let script = format!("{OUT_OF_ITS_HOME}{realmed}{FOUND_OR_SAID}{PLAIN_RUNS}");
     let mut words = in_its_realm("/bin/sh".to_owned(), "-c", script, realm, kit).to_vec();
     // After the shell's own name, as the script's first word.
     words.insert(4, home.display().to_string());
@@ -1218,20 +1230,23 @@ mod tests {
     }
 
     /// A plain run's program found only in its home isn't found, and the
-    /// run says where it looked, rather than the shell's bare `not
-    /// found`; one its kit holds, named bare, runs as before.
+    /// run says where it looked and what it dropped, rather than the
+    /// shell's bare `not found`; one its kit holds, named bare, runs as
+    /// before, and one that ends as a program not found does is told of
+    /// what was dropped too (followup 536).
     #[test]
     fn a_plain_run_says_why_a_program_only_its_home_holds_isnt_found() {
         let made = tempfile::tempdir().expect("a temporary folder");
         let home = fs::canonicalize(made.path()).expect("the folder's place");
-        let tool = |folder: &Path| {
+        let tool_ending = |folder: &Path, ended: u8| {
             fs::create_dir_all(folder).expect("a folder of tools");
             let tool = folder.join("tide-gauge");
-            let script = format!("#!{}\nexit 0\n", the_shell().display());
+            let script = format!("#!{}\nexit {ended}\n", the_shell().display());
             fs::write(&tool, script).expect("a tool");
             fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755))
                 .expect("a tool that runs");
         };
+        let tool = |folder: &Path| tool_ending(folder, 0);
         let tools = home.join(".local/bin");
         tool(&tools);
         let run = |kit: Option<&Path>, program: &str| {
@@ -1254,9 +1269,12 @@ mod tests {
         );
         assert_eq!(
             String::from_utf8_lossy(&said.stderr),
-            "mycelium: tide-gauge is not found on this run's path, /usr/bin:/bin, \
-             which holds no folder its user could write\n",
-            "it says where it looked"
+            format!(
+                "mycelium: tide-gauge is not found on this run's path, /usr/bin:/bin, \
+                 which holds no folder its user could write; it dropped {}\n",
+                tools.display()
+            ),
+            "it says where it looked, and what it took off the path it was given"
         );
         // A kit outside the home, holding the tool, goes first on the path,
         // so the tool named bare is found there and runs.
@@ -1266,6 +1284,36 @@ mod tests {
         assert!(
             said.status.success() && said.stderr.is_empty(),
             "a tool the kit holds runs: {}",
+            String::from_utf8_lossy(&said.stderr)
+        );
+        // A tool found that ends with 127, as one running a program it
+        // doesn't find does, may have looked for one only the home held.
+        let missing = tempfile::tempdir().expect("a kit");
+        tool_ending(&missing.path().join("bin"), 127);
+        let said = run(Some(missing.path()), "tide-gauge");
+        let path = format!("{}/bin:/usr/bin:/bin", missing.path().display());
+        assert_eq!(
+            (
+                said.status.code(),
+                String::from_utf8_lossy(&said.stderr).into_owned()
+            ),
+            (
+                Some(127),
+                format!(
+                    "mycelium: tide-gauge ended 127, as a program not found does, on this \
+                     run's path, {path}, which holds no folder its user could write; \
+                     it dropped {}\n",
+                    tools.display()
+                )
+            ),
+            "it ends as the tool did, saying what was taken off the path"
+        );
+        let ending = tempfile::tempdir().expect("a kit");
+        tool_ending(&ending.path().join("bin"), 3);
+        let said = run(Some(ending.path()), "tide-gauge");
+        assert!(
+            said.status.code() == Some(3) && said.stderr.is_empty(),
+            "any other end is the tool's own, said as it ended: {}",
             String::from_utf8_lossy(&said.stderr)
         );
         // A name with a slash is looked for by no path, so the run says

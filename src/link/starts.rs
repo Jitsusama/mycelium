@@ -13,8 +13,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{Semaphore, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::client::Client;
 use crate::hold::end::Asker;
@@ -431,6 +430,31 @@ impl Asks {
         (asked, reaching)
     }
 
+    /// Stands in, for a test, for a link reaching `machine`: what this
+    /// answers is the first run asked of it, answered as begun and ended
+    /// at once, as what the room's end would be sent. The link goes once
+    /// it takes one.
+    #[cfg(test)]
+    pub(crate) fn taking_a_run(&self, machine: &str) -> oneshot::Receiver<Run> {
+        let there: There = Arc::new(|_: &str, words: &[String]| words.to_vec());
+        let (mut asked, reaching) = self.reach(machine, there);
+        let (took, taken) = oneshot::channel();
+        let machine = machine.to_owned();
+        tokio::spawn(async move {
+            while let Some(Ask { asked, answer }) = asked.recv().await {
+                let Asked::Run(run, _) = asked else {
+                    let _ = answer.send(Err("only a run is taken here".to_owned()));
+                    continue;
+                };
+                let _ = answer.send(Ok(Response::Running { machine }));
+                let _ = took.send(run);
+                break;
+            }
+            drop(reaching);
+        });
+        taken
+    }
+
     fn lock(&self) -> MutexGuard<'_, Links> {
         // A panic while holding the lock leaves the links as they were
         // before it, so carrying on with them is sound.
@@ -488,102 +512,6 @@ pub(super) async fn end_start(node: PathBuf, from: String, held: String, cell: S
         Ok(Err(error)) => Err(format!("its node didn't answer: {error}")),
         Err(error) => Err(format!("its end stopped: {error}")),
     }
-}
-
-/// How many pieces of a run's output the end running it sends before the
-/// asking end says it has taken one, so a run writing faster than its
-/// asker reads waits rather than filling the link.
-pub(super) const RUN_WINDOW: usize = 8;
-
-/// What a link's runs tell its loop, to be sent to the other end.
-pub(super) enum RunSaid {
-    /// What a run asked of this machine says.
-    Ran(u64, Ran),
-    /// A piece of a run or a lend asked of the other machine has been
-    /// taken.
-    Taken(u64),
-    /// A run asked of the other machine has been let go.
-    Unrun(u64),
-    /// What this machine's lender answers a lend the other end asked.
-    Lent(u64, Lent),
-    /// A lend asked of the other machine has been let go.
-    Unlend(u64),
-}
-
-/// A run the other end asked of this machine, while it runs.
-pub(super) struct RunningHere {
-    /// How many more pieces of its output may be sent before the other
-    /// end takes one.
-    pub(super) window: Arc<Semaphore>,
-    /// Dropped to stop it.
-    pub(super) _stop: oneshot::Sender<()>,
-}
-
-/// Hands a run the other end asks of `here` to this machine's node at
-/// `node`, pinned to this machine, and sends what it says to `back` as
-/// `ask`'s, a piece of output only once `window` lets it, until it ends or
-/// `stop` is dropped, which hangs up on the node and so stops it.
-pub(super) async fn run(
-    (node, here): (PathBuf, String),
-    mut run: Run,
-    (ask, back): (u64, mpsc::UnboundedSender<RunSaid>),
-    window: Arc<Semaphore>,
-    mut stop: oneshot::Receiver<()>,
-) {
-    run.work.needs.push(Need::Machine(here));
-    let running = async {
-        let (reading, mut writing) = tokio::net::UnixStream::connect(&node)
-            .await
-            .map_err(|error| format!("its node didn't answer: {error}"))?
-            .into_split();
-        let mut line =
-            serde_json::to_string(&Request::Run(run)).map_err(|error| error.to_string())?;
-        line.push('\n');
-        writing
-            .write_all(line.as_bytes())
-            .await
-            .map_err(|error| format!("its node didn't answer: {error}"))?;
-        let mut lines = BufReader::new(reading).lines();
-        match serde_json::from_str::<Reply>(&said(&mut lines).await?) {
-            Ok(Ok(Response::Running { .. })) => {}
-            Ok(Err(why)) => return Err(why),
-            other => return Err(format!("its node answered {other:?}")),
-        }
-        loop {
-            let ran = serde_json::from_str::<Ran>(&said(&mut lines).await?)
-                .map_err(|error| format!("its node said what isn't a run's: {error}"))?;
-            if !ran.ends() {
-                // The window is never closed while the run holds it.
-                if let Ok(piece) = window.acquire().await {
-                    piece.forget();
-                }
-            }
-            let ends = ran.ends();
-            if back.send(RunSaid::Ran(ask, ran)).is_err() || ends {
-                return Ok(());
-            }
-        }
-    };
-    tokio::select! {
-        ran = running => if let Err(why) = ran {
-            // A link that dropped meanwhile has nobody to tell.
-            let _ = back.send(RunSaid::Ran(ask, Ran::Failed(why)));
-        },
-        // Hanging up on the node stops the run.
-        _ = &mut stop => {}
-    }
-}
-
-/// The next line a node says, or that it stopped answering.
-async fn said(
-    lines: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
-) -> Result<String, String> {
-    lines
-        .next_line()
-        .await
-        .ok()
-        .flatten()
-        .ok_or_else(|| "its node stopped answering".to_owned())
 }
 
 /// Carries `quest`'s sessions from `here` to `to`, as the other end asks

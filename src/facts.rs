@@ -43,6 +43,50 @@ impl HeldFor {
     }
 }
 
+/// Whether a link has spoken of a machine since the node answering
+/// began, as that node alone says it. It crosses as `true` or `false`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub enum Heard {
+    /// Not since that node began, as after its restart, or by a node too
+    /// old to say: what it is can't be told.
+    #[default]
+    Unheard,
+    /// By a link let in with it, or standing linked with it, this run, so
+    /// the node holds its worker mark.
+    ThisRun,
+}
+
+impl Heard {
+    /// Whether a link spoke of it this run.
+    #[must_use]
+    pub fn is_this_run(&self) -> bool {
+        *self == Self::ThisRun
+    }
+
+    /// Whether no link spoke of it this run, as a machine measured is.
+    #[must_use]
+    pub fn is_unheard(&self) -> bool {
+        *self == Self::Unheard
+    }
+}
+
+impl From<bool> for Heard {
+    fn from(this_run: bool) -> Self {
+        if this_run {
+            Self::ThisRun
+        } else {
+            Self::Unheard
+        }
+    }
+}
+
+impl From<Heard> for bool {
+    fn from(heard: Heard) -> Self {
+        heard.is_this_run()
+    }
+}
+
 /// This machine, as measured when asked.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Machine {
@@ -145,6 +189,21 @@ pub struct Machine {
     /// unset.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub worker: bool,
+    /// Whether a link has spoken of it since the node answering started,
+    /// one that node keeps or one another machine dialled: let in with it,
+    /// or standing linked with it, this run ([`crate::store::last_linked`]).
+    /// Only that node's answer to `"Machines"` says it, set both ways,
+    /// never taken from what the machine says nor from its record; unset
+    /// from a node too old to say, which reads as never spoken of, and
+    /// measuring leaves it unset. A machine a link spoke of this run is
+    /// one whose worker mark the node holds, so a carry to it out of reach
+    /// waits for its link to come back rather than being refused.
+    #[serde(
+        default,
+        rename = "heard_this_run",
+        skip_serializing_if = "Heard::is_unheard"
+    )]
+    pub heard: Heard,
     /// Whom the node deciding where work goes holds it for. Set by that
     /// node alone as it places, never taken from what the machine says;
     /// measuring leaves it [`HeldFor::AsBooked`].
@@ -464,6 +523,8 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         health: None,
         kit: None,
         worker: false,
+        // Only a node's answer for its links says it.
+        heard: Heard::Unheard,
         held_for: HeldFor::AsBooked,
         fences_held: FENCES_HELD,
         holds: None,
@@ -1126,6 +1187,30 @@ mod tests {
         if cfg!(any(target_os = "linux", target_os = "macos")) {
             assert!(boot_id().is_some(), "this boot is named");
         }
+    }
+
+    #[test]
+    fn a_machine_heard_this_run_says_so_as_true_and_one_unheard_leaves_it_out() {
+        let heard = Machine {
+            heard: Heard::ThisRun,
+            ..measure("osprey", &Sources::nowhere())
+        };
+        let said = serde_json::to_value(&heard).expect("a machine says itself");
+        assert_eq!(
+            said["heard_this_run"], true,
+            "heard this run is said as true"
+        );
+        let back: Machine = serde_json::from_value(said).expect("and is heard back");
+        assert_eq!(back.heard, Heard::ThisRun, "as heard this run");
+        let mut said = serde_json::to_value(measure("osprey", &Sources::nowhere()))
+            .expect("a machine says itself");
+        assert!(
+            said.get("heard_this_run").is_none(),
+            "one unheard leaves it out, as a node too old to say does"
+        );
+        said["heard_this_run"] = false.into();
+        let back: Machine = serde_json::from_value(said).expect("heard");
+        assert_eq!(back.heard, Heard::Unheard, "and false reads as unheard");
     }
 
     #[test]

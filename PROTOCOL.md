@@ -116,11 +116,14 @@ goes over a session of this machine's or of a third machine's.
 One link at a time carries a machine's sessions into a store: it claims
 that machine first, by a lock in `~/.local/state/mycelium/claims/`. A
 second link to the same machine asks the first to let it go, by writing
-the time in that machine's `.newer` file there; the first, looking each
-second, ends, and the second is refused only when it isn't let go within
-ten seconds. A newer link from a machine means the older one's other end
-is gone, though it may not have heard so, as when that machine's node
-restarted while its end of the link waited on a write. The link
+in that machine's `.newer` file there the time, or a millisecond past
+the last written where that is as late, so no two asks share one. The
+first, looking each second, ends at an ask later than the last it read
+before it claimed, not by its clock, so an ask in the claim's own
+millisecond counts too; the second is refused only when it isn't let go
+within ten seconds. A newer link from a machine means the older one's
+other end is gone, though it may not have heard so, as when that
+machine's node restarted while its end of the link waited on a write. The link
 lets go of what it carried when the session ends. When the link drops,
 it keeps what it carried but marks each `unreachableSince` the drop, in
 milliseconds since the epoch, since a dropped link says nothing of
@@ -164,7 +167,8 @@ same code, each line a JSON value:
 
 1. `{"Hello": {"machine", "realm", "version", "facts", "starts",
    "steers", "releases", "updates", "runs", "carries", "shows",
-   "ends", "ends_starts", "lends", "reopens", "parks"}}`, first,
+   "ends", "ends_starts", "lends", "reopens", "parks",
+   "plain_runs"}}`, first,
    from each end. Each end's
    membership admits the other or refuses it, and nothing else crosses
    until it has. `facts` says the end hears and says what a machine is; an end
@@ -187,7 +191,10 @@ same code, each line a JSON value:
    keeps a session parked on the other machine as parked, its process
    gone and its address there to send to, which wakes it; only such an
    end is told of one, since an end older than it would take it as
-   running.
+   running. `plain_runs` says its node runs the person's run sent to it
+   as an agent's (`asked_by`) through a shell that reads no profile of
+   its home; an end older than it would drop `asked_by` and run it
+   through the login shell, so none is asked of it.
    `machine` is the name the end's machine goes by, one name for every
    command there: the node's `--machine`, else the system's name up to
    its first dot, which the node records in its folder's `machine` file
@@ -357,10 +364,13 @@ same code, each line a JSON value:
     membership proved which machine asked, as for an update, and hands
     it to its own node's socket pinned to its machine, its `from` the
     asking machine and, where it says no `by`, as a strictly fenced
-    agent's; otherwise it refuses. Only the end that dialled asks a
+    agent's; otherwise it refuses. A run saying `asked_by` is asked
+    only of an end saying `plain_runs`. Only the end that dialled asks a
     run: the dialled end refuses one its node asks, since its link runs
     outside the node. Either way it answers `{"Ran": {"ask", "ran"}}` a line for
-    each `Ran` the run says, the last its `Exited` or `Failed`. It sends
+    each `Ran` the run says, the last its `Exited` or `Failed`; a
+    `Failed` for what its node refused names its machine first, as
+    `"osprey refused the run: "` and the node's why. It sends
     at most eight pieces of output ahead of `{"Taken": {"ask"}}`, which
     the asking end sends as its asker takes each, so a run writing
     faster than its asker reads waits rather than filling the link.
@@ -877,9 +887,15 @@ in order and says each step:
    that isn't a bundle, patch, log or done file. One that is refuses
    the carry, naming it. What a bundle or a log holds isn't read. The
    node logs each carried session started on a worker, naming it, its
-   quest and the worker. A machine gone out of reach since the find, or
-   whose node restarted and hasn't heard it since, is refused as the
-   find refuses it, so nothing is shared unscreened.
+   quest and the worker. A machine out of reach that no link has spoken
+   of since its node began (`heard_this_run`), as after a restart, is
+   refused, saying its sessions wait in the handover here; one whose
+   link dropped after it spoke this run is shared as its link said, and
+   its start waits for the link's redial, as any start does. A node too
+   old to say `heard_this_run` refuses every machine out of reach. One
+   gone from the node's machines since the find is shared as one of the
+   person's own, unscreened, but given nothing; a worker's link serves
+   only the quests given to it, so a worker there is served none of it.
 4. `start`: each carried session starts again on the machine, held:
    those told to carry first, then the quest's own, then those the find
    couldn't ask of, so a refusal the ask couldn't foresee meets no
@@ -1811,7 +1827,9 @@ anything in its presence.
 A machine is what its node measures of it when asked, the facts work is
 placed by: its `name`, `measured_at`, `state` (`ready` for a node answering
 for itself or a machine a link carries, `unreachable` for one no link
-reaches now, as of when one last did), `os`, `system` (`linux` or
+reaches now, as of when one last did, and in a node's `"Machines"`
+answer for one no link has spoken of since that node began, whatever
+its record says), `os`, `system` (`linux` or
 `macos`, `null` from a node too old to say it), `arch`, `model` (a
 Mac's is its identifier, such as `Mac14,2`), `model_name`, its kind in
 words (`MacBook Air`, absent from a node too old to say it), `cpu`
@@ -1887,6 +1905,15 @@ promised) is weighed against the larger of `holds` and the live
 sessions known there, rather than their sum, since a held session that
 says it is one is in both. It is absent from a node too old to say,
 which counts only the sessions known.
+
+Its `heard_this_run` is `true`, in a node's answer to `"Machines"`
+alone, where a link was let in with the machine, or stood linked with
+it, since that node began, a link it keeps or one the machine dialled;
+it is absent otherwise, and from a node too old to say, and nothing
+the machine or its record says sets it. The marks it is read from lie
+in the node's state folder, where a session on the node's own machine
+could write one, so it keeps out a stale record, not a session set on
+faking a link.
 
 Its `fences_held` is `true` where its node starts an agent's held
 session through the launcher the session's fence declares there, as a
@@ -2293,7 +2320,9 @@ long ago), `{"full": most}` (it holds the `sessions_at_most` its own
 made of promised, judged under the same lock as the starts it counts so
 a burst can't overfill it; never a run's, since a run starts no session
 and takes no worker home, so a full machine still takes one as its
-load allows) or, for an offer, `{"lives_only": duration}`.
+load allows, though a `"Place"` is refused it as a start is, since a
+spawn starts where `"Place"` tells it; so a run may go to a machine
+`"Place"` said was full) or, for an offer, `{"lives_only": duration}`.
 Placement only
 chooses: a machine says whether work starts there when asked, by its
 own queue and taints, so nothing fits work against its room, which only
@@ -2644,8 +2673,17 @@ the run would go is where it runs: the asking machine must declare the
 agent fence and the room must say it runs commands in it, or the run is
 refused, its refusal saying the person asked it and it was sent as an
 agent's, and, where no booking on this node names the room, that none
-does: a node holds a booking again after a restart only once its make
-redials. A refusal the room itself sends back reads as an agent's. The
+does, and why none will come: a node books its own makes again as it
+starts, before it dials them, so the room was made by another node, or
+by this one in a line of its book that can't be read, names no realm
+or names a provider it no longer asks. A refusal the room itself sends
+back reads as an agent's, and names the room, so it isn't taken as the
+asking node's own: `osprey refused the run:` and its why. A room
+whose hello doesn't say `plain_runs` would drop who asked and run the
+person's command through its login shell, profile and all, so the run
+is never sent there: it is refused before it goes, saying the room's
+mycelium is too old to run the person's command without its home's
+profile and tools. The
 run says `"asked_by": "Person"`, which only a node says: one an asker
 puts there without naming a machine it comes from is cleared. The room
 runs it through `/bin/sh -c`, never the login
@@ -2654,9 +2692,14 @@ takes every folder of that home off its path, by name or by where it
 leads, before the kit's tools go first, so nothing the home holds
 shadows its command: one found only there isn't found, and for a name
 with no slash the run says so on its error output, naming the path it
-had, and ends 127, as the shell would. The agent runs as the run's own user,
-who can write folders outside the home too, so a folder that user owns or can
-write goes as well, and so does one under a folder it owns, or can write
+had and the folders it took off the path it was given, and ends 127, as
+the shell would. A program found that ends 127, as one does that runs a
+program it doesn't find, may have looked for a tool only those folders
+held, so where any were taken off, the run says the path and those
+folders after it ends, and ends as the program did. The agent runs as
+the run's own user, who can write folders outside the home too, so a
+folder that user owns or can write goes as well, and so does one under
+a folder it owns, or can write
 without the sticky bit, up to `/`, since it could rename the folder away and
 put its own in its place: `/tmp` goes, though a folder under it that another
 owns and the user can't write stays. On a Mac, Homebrew's `/opt/homebrew/bin`

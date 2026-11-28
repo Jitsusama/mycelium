@@ -132,17 +132,32 @@ impl Through {
     }
 
     /// Machine `to` as [`Through::linked`] knows it, refused where it is
-    /// out of reach: whether it is a worker is its link's word, which a
-    /// node opened again hasn't heard until it is in reach again, as an
-    /// eased carry's ground holds ([`ground::firm`]).
+    /// out of reach and no link has spoken of it since the node began:
+    /// whether it is a worker is its link's word, which a node opened
+    /// again hasn't heard until it is in reach again, as an eased carry's
+    /// ground holds ([`ground::firm`]). One whose link dropped after it
+    /// spoke this run is known as it was, so the carry goes on, and its
+    /// start waits for the node to dial it again. A node too old to say
+    /// what it heard refuses every machine out of reach, as before.
     fn reached(&self, to: &str) -> Result<Option<crate::facts::Machine>, String> {
-        match self.linked(to)? {
-            Some(one) if one.state == crate::facts::Readiness::Unreachable => Err(format!(
+        let linked = self.linked(to)?;
+        if out_of_reach(linked.as_ref()) {
+            return Err(format!(
                 "{to} is out of reach, so nothing is carried there now"
-            )),
-            linked => Ok(linked),
+            ));
         }
+        Ok(linked)
     }
+}
+
+/// Whether `linked`, as [`Through::linked`] gives it, is out of reach with
+/// no link having spoken of it since its node began, so what it is can't
+/// be told; one whose link dropped after it spoke this run is known as it
+/// was.
+fn out_of_reach(linked: Option<&crate::facts::Machine>) -> bool {
+    linked.is_some_and(|one| {
+        one.state == crate::facts::Readiness::Unreachable && one.heard.is_unheard()
+    })
 }
 
 impl Hands for Through {
@@ -258,7 +273,16 @@ impl Hands for Through {
         let scratch = ["handover".to_owned()];
         // Asked again, since the node may have opened again since the
         // carry found `to` in reach, and knows no worker till it is back.
-        let linked = self.reached(to)?;
+        // Refused in words of its own, since by now the sessions have
+        // carried into the handover, so it says where they wait.
+        let linked = self.linked(to)?;
+        if out_of_reach(linked.as_ref()) {
+            return Err(format!(
+                "{to} went out of reach once the carry found it, so {quest} isn't shared \
+                 there; its sessions wait in the handover here, so carry again once {to} is \
+                 back, or carry to another machine"
+            ));
+        }
         let shared = match linked.as_ref().map_or(Lent::Not, Lent::of) {
             // A room is one of the person's own to a carry, but its link is
             // a worker's, which serves only what it was given.
@@ -1221,15 +1245,126 @@ mod tests {
             Err("tern is out of reach, so nothing is carried there now".to_owned()),
             "whether it is a worker can't be told until its link is back"
         );
+        // Followup 554: by the share the sessions have carried into the
+        // handover, so its refusal says where they wait.
         assert_eq!(
             hands.share("QEST-20261115-HARBOR", "tern"),
-            Err("tern is out of reach, so nothing is carried there now".to_owned()),
-            "nor is it shared, as one of the person's own, after the carry found it"
+            Err(
+                "tern went out of reach once the carry found it, so QEST-20261115-HARBOR \
+                 isn't shared there; its sessions wait in the handover here, so carry again \
+                 once tern is back, or carry to another machine"
+                    .to_owned()
+            ),
+            "nor is it shared, as one of the person's own, after the carry found it, and \
+             the refusal says where its sessions wait"
         );
         assert_eq!(
             hands.lent("wren"),
             Ok(super::Lent::Not),
             "one in reach is what it said"
+        );
+    }
+
+    /// Followup 554: a machine gone from the node's machines between the
+    /// find and the share is shared as one of the person's own, screened
+    /// for no secret, but given nothing, so a worker's link there, which
+    /// serves only the quests given to it, is served none of it.
+    #[test]
+    fn a_machine_gone_since_the_find_is_given_nothing() {
+        use super::{Hands, Places, Through};
+        use crate::facts;
+        let dir = tempfile::tempdir().expect("places");
+        let places = Places {
+            quests: dir.path().join("quests"),
+            scratch: dir.path().join("scratch"),
+            home: dir.path().join("home"),
+            state: dir.path().join("state"),
+        };
+        let quest = "QEST-20261115-HARBOR";
+        fs::create_dir_all(places.record(quest)).expect("its record");
+        let notes = places.scratch.join(quest).join("handover").join("skiff");
+        fs::create_dir_all(notes.join("cells")).expect("a handover");
+        fs::write(notes.join("s-busy01.done.json"), "{}").expect("a done file");
+        fs::write(notes.join("cells").join("auth.json"), "{}").expect("a login");
+        let machines = vec![facts::measure("skiff", &facts::Sources::nowhere())];
+        let mut hands = Through::new(
+            dir.path().join("work.sock"),
+            places.clone(),
+            quest,
+            Duration::from_secs(1),
+        )
+        .asking(Box::new(move |request| match request {
+            Request::Machines => Ok(Response::Machines(machines.clone())),
+            other => Err(format!("asked {other:?}")),
+        }));
+        hands
+            .share(quest, "tern")
+            .expect("shared with this machine's links, as one of the person's own");
+        assert!(
+            !places.given("tern", quest),
+            "but given nothing, so a worker's link there is served none of it"
+        );
+    }
+
+    /// Followup 544(1): a machine whose link dropped after it spoke this
+    /// run is known as it was, worker or not, so a carry to it waits for
+    /// the node to dial it again rather than being refused.
+    #[test]
+    fn a_machine_out_of_reach_a_link_spoke_of_this_run_is_carried_as_known() {
+        use super::{Hands, Lent, Places, Through};
+        use crate::declared::Declared;
+        use crate::facts;
+        let dir = tempfile::tempdir().expect("places");
+        let places = Places {
+            quests: dir.path().join("quests"),
+            scratch: dir.path().join("scratch"),
+            home: dir.path().join("home"),
+            state: dir.path().join("state"),
+        };
+        let quest = "QEST-20261115-HARBOR";
+        fs::create_dir_all(places.record(quest)).expect("its record");
+        let notes = places.scratch.join(quest).join("handover").join("skiff");
+        fs::create_dir_all(&notes).expect("a handover");
+        fs::write(notes.join("s-busy01.done.json"), "{}").expect("a done file");
+        let dropped = |name: &str, worker: bool| facts::Machine {
+            state: facts::Readiness::Unreachable,
+            heard: facts::Heard::ThisRun,
+            worker,
+            declared: worker.then(|| Declared {
+                takes_carries: true,
+                ..Declared::default()
+            }),
+            ..facts::measure(name, &facts::Sources::nowhere())
+        };
+        let machines = vec![
+            facts::measure("skiff", &facts::Sources::nowhere()),
+            dropped("osprey", false),
+            dropped("tern", true),
+        ];
+        let mut hands = Through::new(
+            dir.path().join("work.sock"),
+            places.clone(),
+            quest,
+            Duration::from_secs(1),
+        )
+        .asking(Box::new(move |request| match request {
+            Request::Machines => Ok(Response::Machines(machines.clone())),
+            other => Err(format!("asked {other:?}")),
+        }));
+        assert_eq!(
+            (hands.lent("osprey"), hands.lent("tern")),
+            (Ok(Lent::Not), Ok(Lent::TakesCarries)),
+            "each is what its link said before it dropped"
+        );
+        hands.share(quest, "tern").expect("given");
+        assert!(
+            places.given("tern", quest),
+            "a worker is given the quest as a worker, though out of reach"
+        );
+        hands.share(quest, "osprey").expect("shared");
+        assert!(
+            !places.given("osprey", quest),
+            "and one of the person's own is shared as theirs"
         );
     }
 
