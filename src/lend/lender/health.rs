@@ -16,9 +16,9 @@ impl Lender {
     pub fn health(&self) -> serde_json::Value {
         let why = match (self.read(), cuts(&self.folder)) {
             (Err(why), _) => Some(format!("its file isn't taken: {why}")),
-            (Ok(_), Err(error)) => {
-                Some(format!("its cuts can't be read, so it lends nothing: {error}"))
-            }
+            (Ok(_), Err(error)) => Some(format!(
+                "its cuts can't be read, so it lends nothing: {error}"
+            )),
             (Ok(_), Ok(cut)) if cut.iter().any(|cut| cut == EVERY) => {
                 Some("every machine is cut off from it".to_owned())
             }
@@ -87,10 +87,17 @@ mod tests {
         assert_eq!(health["state"], "refused", "{health}");
         let why = health["why"].as_str().expect("why");
         assert!(why.contains("isn't taken"), "{why}");
-        assert!(!why.contains("sk-pasted"), "it never says the words found: {why}");
+        assert!(
+            !why.contains("sk-pasted"),
+            "it never says the words found: {why}"
+        );
 
         fs::write(&file, taken().to_string()).expect("the lend is fixed");
-        assert_eq!(state(&lender), "answering", "fixed, it answers with nothing asked");
+        assert_eq!(
+            state(&lender),
+            "answering",
+            "fixed, it answers with nothing asked"
+        );
 
         fs::remove_file(&file).expect("the lend is taken away");
         let made = std::process::Command::new("mkfifo")
@@ -102,9 +109,7 @@ mod tests {
         // hanging it.
         let (said, heard) = mpsc::channel();
         thread::spawn(move || said.send(state(&lender)));
-        let stood = heard
-            .recv_timeout(PATIENCE)
-            .expect("a pipe is never read");
+        let stood = heard.recv_timeout(PATIENCE).expect("a pipe is never read");
         assert_eq!(stood, "refused", "a pipe is refused, not read");
     }
 
@@ -122,14 +127,23 @@ mod tests {
             Some(folder.path().to_owned()),
         );
         cut(&cuts, &Cut::Machine("agents-one".to_owned())).expect("one is cut");
-        assert_eq!(state(&lender), "answering", "one machine cut leaves the rest");
+        assert_eq!(
+            state(&lender),
+            "answering",
+            "one machine cut leaves the rest"
+        );
         cut(&cuts, &Cut::All).expect("all are cut");
         assert_eq!(state(&lender), "refused");
-        fs::write(cuts.join("cuts.json"), "\"sk-pasted-key\"")
-            .expect("the cuts are broken");
+        fs::write(cuts.join("cuts.json"), "\"sk-pasted-key\"").expect("the cuts are broken");
         let health = lender.health();
-        assert_eq!(health["state"], "refused", "cuts that can't be read lend nothing");
+        assert_eq!(
+            health["state"], "refused",
+            "cuts that can't be read lend nothing"
+        );
         let why = health["why"].as_str().expect("why");
-        assert!(!why.contains("sk-pasted"), "it never says the words found: {why}");
+        assert!(
+            !why.contains("sk-pasted"),
+            "it never says the words found: {why}"
+        );
     }
 }
