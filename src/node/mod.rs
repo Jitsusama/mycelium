@@ -11425,6 +11425,17 @@ const LENDER_AWAITED_MOST: Duration = Duration::from_secs(1);
 
 const LENDER_ASKED_EVERY: Duration = Duration::from_millis(250);
 
+/// How often a lend its lender refused as stopping is asked again. Each
+/// ask sends the lend whole over the link its lender's stop is draining,
+/// and that lender takes none until it is back, a minute or more on, so
+/// it is asked again far less often than one no link reaches.
+#[cfg(not(test))]
+const LENDER_STOPPING_ASKED_EVERY: Duration = Duration::from_secs(5);
+
+/// Within [`LENDER_AWAITED_MOST`] in the node's tests, which ask again.
+#[cfg(test)]
+const LENDER_STOPPING_ASKED_EVERY: Duration = Duration::from_millis(250);
+
 /// How a lend handed to the link reaching its lender ended.
 #[derive(Debug)]
 enum Handed {
@@ -11470,13 +11481,22 @@ async fn hand_on_lend<S: Store>(
                 return;
             }
         };
-        if tokio::time::Instant::now() + LENDER_ASKED_EVERY > until {
+        let (every, why) = if why == STOPPING {
+            let why = format!(
+                "its lender's node was stopping, and took no new lend within \
+                 {LENDER_AWAITED_MOST:?}"
+            );
+            (LENDER_STOPPING_ASKED_EVERY, why)
+        } else {
             let why = format!("{why}, and no link to it stood within {LENDER_AWAITED_MOST:?}");
+            (LENDER_ASKED_EVERY, why)
+        };
+        if tokio::time::Instant::now() + every > until {
             let _ = write(&mut writing, &refused(503, why)).await;
             return;
         }
         tokio::select! {
-            () = tokio::time::sleep(LENDER_ASKED_EVERY) => {}
+            () = tokio::time::sleep(every) => {}
             // A client that hung up waits for nothing.
             _ = lines.next_line() => return,
         }

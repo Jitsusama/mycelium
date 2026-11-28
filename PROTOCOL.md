@@ -3422,15 +3422,19 @@ it is settled.
 
 A lending node asked to stop, by its service manager's terminate or
 Ctrl-C, lets the lends it is answering end first. From the stop it
-takes no new lend: each is refused 503 at once, its `why` saying the
-node is stopping, before anything of it goes upstream. A borrowing
-node that hears that as the first word of a lend asks it again, as it
-does a lender no link reaches, for as long as it waits on one; pi asks
+takes no new lend: each is refused 503 at once, before anything of it
+goes upstream, its `why` exactly
+`this machine's node is stopping, so it takes no new lend; ask again soon`.
+A borrowing node that hears that as the first word of a lend asks it
+again every 5 s, for as long as it waits on a lender no link reaches,
+and then tells pi 503 that its lender's node was stopping; pi asks
 again on the 503 itself where an older node hands it on. Those in
 flight run on, for at most `--lends-drain-within SECS`, 60 unless said,
 which leaves the rest of the stop time within systemd's default stop
-timeout of 90 s. A lend counts as in flight until its link has taken
-the last piece of its answer, not only until that piece is queued. The
+timeout of 90 s. A lend counts as in flight until its link has written
+the last piece of its answer to the other end, not only until that
+piece is queued, and a whole answer still queued at the bound is cut
+as any other, its borrower hearing its link end partway through. The
 node runs on as ever meanwhile, and its links, holds and watches end
 after, so its unit must send the terminate to the node alone, as
 systemd's `KillMode=mixed` does: one sent to its links' own processes
