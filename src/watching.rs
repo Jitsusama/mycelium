@@ -143,7 +143,8 @@ fn holds(watcher: &dyn Watcher, path: &Path) -> bool {
 /// refuses it before holding it, and refuses to give back a path it
 /// doesn't hold before stopping anything. Made to, it holds a path it
 /// refuses, as that version's Linux watcher keeps a folder and those under
-/// it it took before it ran out of watches.
+/// it it took before it ran out of watches, and counts a start for what it
+/// took, as a stream started again for it would.
 ///
 /// That watcher starts a batch's stream again only when a root's path,
 /// device or inode changes. It starts a single watch's again only when no
@@ -234,12 +235,13 @@ pub mod counting {
             self.unlisted = true;
         }
 
-        /// Applies `op`, answering whether it altered what's watched.
-        fn apply(&mut self, op: &PathOp) -> notify::Result<bool> {
-            match op {
+        /// Applies `op`, marking `altered` if it altered what's watched,
+        /// as a path taken partway does though it then fails.
+        fn apply(&mut self, op: &PathOp, altered: &mut bool) -> notify::Result<()> {
+            let this = match op {
                 PathOp::Watch(path, config) if self.refused.as_ref() == Some(path) => {
                     if self.partway {
-                        self.take(path, config.recursive_mode())?;
+                        *altered |= self.take(path, config.recursive_mode())?;
                     }
                     Err(notify::Error::generic("the watch was refused").add_path(path.clone()))
                 }
@@ -249,7 +251,9 @@ pub mod counting {
                     .remove(path)
                     .map(|_| true)
                     .ok_or_else(notify::Error::watch_not_found),
-            }
+            }?;
+            *altered |= this;
+            Ok(())
         }
 
         /// Holds `path` watched `mode`, answering whether that altered
@@ -281,23 +285,25 @@ pub mod counting {
                 RecursiveMode::Recursive => PathOp::watch_recursive(path),
                 RecursiveMode::NonRecursive => PathOp::watch_non_recursive(path),
             };
-            let altered = self.apply(&op)?;
+            let mut altered = false;
+            let applied = self.apply(&op, &mut altered);
             self.start(altered);
-            Ok(())
+            applied
         }
 
         fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
-            let altered = self.apply(&PathOp::unwatch(path))?;
+            let mut altered = false;
+            let applied = self.apply(&PathOp::unwatch(path), &mut altered);
             self.start(altered);
-            Ok(())
+            applied
         }
 
         fn update_paths(&mut self, ops: Vec<PathOp>) -> Result<(), UpdatePathsError> {
             let mut altered = false;
             let mut ops = ops.into_iter();
             while let Some(op) = ops.next() {
-                match self.apply(&op) {
-                    Ok(this) => altered |= this,
+                match self.apply(&op, &mut altered) {
+                    Ok(()) => {}
                     Err(source) => {
                         self.start(altered);
                         return Err(UpdatePathsError {

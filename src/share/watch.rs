@@ -810,6 +810,23 @@ mod tests {
             BTreeSet::from([(QUEST.to_owned(), named("bench"))]),
             "a folder refused but held didn't go stale"
         );
+        // `bench` comes first, so taking it partway alters what's watched
+        // before the refusal stops the batch, and the rest starts again.
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            2,
+            "a folder taken partway, then the rest, didn't each start the stream"
+        );
+        assert_eq!(
+            watch.to_look_at(QUEST, &both),
+            (BTreeSet::from([named("bench")]), false),
+            "the folder refused partway is walked again at a later look, and only it"
+        );
+        assert_eq!(
+            watch.stale,
+            BTreeSet::from([(QUEST.to_owned(), named("bench"))]),
+            "refused partway again, the folder held didn't stay stale"
+        );
 
         let before = starts.load(Ordering::SeqCst);
         watch.forget(QUEST);
@@ -822,6 +839,12 @@ mod tests {
             starts.load(Ordering::SeqCst) - before,
             1,
             "forget gave its paths back in more than one batch"
+        );
+        assert!(
+            watch.stale.is_empty() && watch.records_stale.is_empty(),
+            "forget kept the quest stale: {:?} {:?}",
+            watch.stale,
+            watch.records_stale
         );
     }
 }
