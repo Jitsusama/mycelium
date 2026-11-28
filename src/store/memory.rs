@@ -41,8 +41,8 @@ struct Held {
     /// The machines a link last said it reached as a worker, by its
     /// admission or its puts, which alone make one, as over folders.
     workers: BTreeSet<String>,
-    /// When the node said each machine left, the earliest kept, as over
-    /// folders.
+    /// When the node said each machine left, until it made one of that
+    /// name again, the earliest kept, as over folders.
     left: BTreeMap<String, jiff::Timestamp>,
     /// The carries each machine's node told of.
     carries: BTreeMap<String, Vec<Value>>,
@@ -556,9 +556,13 @@ impl Store for Memory {
         let held = self.held();
         held.machines
             .values()
-            .map(|machine| Machine {
-                worker: held.workers.contains(&machine.name),
-                ..machine.clone()
+            .map(|machine| {
+                let mut machine = Machine {
+                    worker: held.workers.contains(&machine.name),
+                    ..machine.clone()
+                };
+                super::held_left(&mut machine, held.left.get(&machine.name).copied());
+                machine
             })
             .collect()
     }
@@ -588,11 +592,20 @@ impl Store for Memory {
     }
 
     fn mark_left(&self, machine: &str, at: jiff::Timestamp) {
-        self.held()
-            .left
-            .entry(machine.to_owned())
-            .and_modify(|kept| *kept = (*kept).max(at))
-            .or_insert(at);
+        let mut held = self.held();
+        // As the folders store does: the earliest stands, and a new one is
+        // told.
+        if held.left.get(machine).is_none_or(|kept| at < *kept) {
+            held.left.insert(machine.to_owned(), at);
+            held.tell(&Change::Machine(machine.to_owned()));
+        }
+    }
+
+    fn forget_left(&self, machine: &str) {
+        let mut held = self.held();
+        if held.left.remove(machine).is_some() {
+            held.tell(&Change::Machine(machine.to_owned()));
+        }
     }
 
     fn left_at(&self, machine: &str) -> Option<jiff::Timestamp> {

@@ -1997,12 +1997,13 @@ worker home does; and
 as `{"personal": "pi-claude"}`, of which a realm hears only its own; and
 `leaves_at`, the time it leaves the realm, as a machine lent for a while
 does, in RFC 3339, after which it is no longer one of `"Machines"`, a
-leaving the node itself said while a link ran standing whatever that
-link says of the machine after (kept in the node's memory alone, never
-read back from a record a session may write, so a node started again
-forgets it, and a link the machine dialled in, a process of its own,
-never hears it; the latest such leaving stands, so a machine made again
-under a left one's name and let go in turn stays left); from ten minutes
+leaving the node itself said standing whatever any link, its own or
+one the machine dialled in, says of the machine after, until the node
+makes a machine of that name again (kept in the node's memory alone
+and applied as it reads its machines, never read back from a record a
+session may write, so a node started again forgets it; the earliest
+such leaving stands, and a make's end says none where a make of the
+same name was booked since); from ten minutes
 before then, its node puts a steer into the inbox of each session
 running there, once, saying when it leaves and to commit and push, to
 put what can't be pushed and a note of what's next where its work is

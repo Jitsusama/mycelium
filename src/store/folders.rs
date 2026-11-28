@@ -128,9 +128,9 @@ pub struct Folders {
     /// by its file, which any session running as this account could
     /// write.
     workers: Arc<Mutex<BTreeSet<String>>>,
-    /// When this store's node said each machine left, since it opened,
-    /// the earliest kept: the node's word alone, never a file's, as the
-    /// workers are.
+    /// When this store's node said each machine left, since it opened and
+    /// until it made one of that name again, the earliest kept: the
+    /// node's word alone, never a file's, as the workers are.
     left: Arc<Mutex<BTreeMap<String, jiff::Timestamp>>>,
 }
 
@@ -792,9 +792,12 @@ impl Store for Folders {
             .filter_map(|entry| read(&entry.path()))
             .collect();
         let workers = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
+        let left = self.left.lock().unwrap_or_else(PoisonError::into_inner);
         for machine in &mut machines {
             machine.worker = workers.contains(&machine.name);
+            super::held_left(machine, left.get(&machine.name).copied());
         }
+        drop(left);
         drop(workers);
         machines.sort_by(|a, b| a.name.cmp(&b.name));
         machines
@@ -845,12 +848,30 @@ impl Store for Folders {
     }
 
     fn mark_left(&self, machine: &str, at: jiff::Timestamp) {
-        self.left
+        let new = {
+            let mut left = self.left.lock().unwrap_or_else(PoisonError::into_inner);
+            let new = left.get(machine).is_none_or(|kept| at < *kept);
+            if new {
+                left.insert(machine.to_owned(), at);
+            }
+            new
+        };
+        // As a worker's mark: in memory alone, so no file's watch tells it.
+        if new {
+            self.tell_machine(machine);
+        }
+    }
+
+    fn forget_left(&self, machine: &str) {
+        let forgot = self
+            .left
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .entry(machine.to_owned())
-            .and_modify(|kept| *kept = (*kept).max(at))
-            .or_insert(at);
+            .remove(machine)
+            .is_some();
+        if forgot {
+            self.tell_machine(machine);
+        }
     }
 
     fn left_at(&self, machine: &str) -> Option<jiff::Timestamp> {
@@ -2705,13 +2726,22 @@ mod tests {
         );
     }
 
-    // A leaving is the node's word kept in memory: the latest it said
-    // stands, a record a session wrote says none, and a node opening again
+    // A leaving is the node's word kept in memory: the earliest it said
+    // stands over what any record says after, until it makes the machine
+    // again, a record a session wrote says none, and a node opening again
     // has heard none.
     #[test]
     fn a_leaving_is_kept_only_as_this_stores_node_said_it() {
         let (dir, store) = store();
         let at = |second| jiff::Timestamp::from_second(second).expect("a time");
+        let leaves = |store: &Folders| {
+            store
+                .machines()
+                .into_iter()
+                .find(|machine| machine.name == "tern")
+                .and_then(|machine| machine.declared)
+                .and_then(|declared| declared.leaves_at)
+        };
         let mut tern = crate::placement::tests::machine("tern", "linux", 32, &[]);
         tern.declared = Some(crate::declared::Declared {
             leaves_at: Some(at(1_000)),
@@ -2720,15 +2750,29 @@ mod tests {
         let record = dir.path().join("claims").join(format!("tern{SAID}"));
         fs::write(&record, serde_json::to_vec(&tern).expect("JSON")).expect("a session writes");
         assert_eq!(store.left_at("tern"), None, "a record says no leaving");
+
+        // Its link, or one tern dialled in, puts it back saying it never
+        // leaves.
+        tern.declared = Some(crate::declared::Declared::default());
+        fs::write(&record, serde_json::to_vec(&tern).expect("JSON")).expect("a link writes");
         store.mark_left("tern", at(2_000));
         store.mark_left("tern", at(1_500));
-        assert_eq!(store.left_at("tern"), Some(at(2_000)), "the latest stands");
         store.mark_left("tern", at(3_000));
         assert_eq!(
             store.left_at("tern"),
-            Some(at(3_000)),
-            "a later one moves it"
+            Some(at(1_500)),
+            "the earliest stands"
         );
+        assert_eq!(
+            leaves(&store),
+            Some(at(1_500)),
+            "tern reads left, whatever its record says"
+        );
+
+        store.forget_left("tern");
+        assert_eq!(store.left_at("tern"), None, "made again, it hasn't left");
+        assert_eq!(leaves(&store), None, "and its record's word stands");
+        store.mark_left("tern", at(3_000));
         let again = Folders::open(&dir.path().join("mesh"), &dir.path().join("claims"))
             .expect("the store opens again");
         assert_eq!(

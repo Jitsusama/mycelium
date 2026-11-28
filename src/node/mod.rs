@@ -1685,6 +1685,9 @@ async fn keep_linked(
 struct Keeping<S> {
     book: Book,
     store: S,
+    /// Keeps that the machine left at the time given, unless a make of
+    /// its name was booked since, and says which.
+    leaves: Box<dyn FnOnce(jiff::Timestamp) -> bool + Send>,
     unbook: Box<dyn FnOnce() + Send>,
 }
 
@@ -1843,6 +1846,7 @@ async fn keep_made(
     Keeping {
         book,
         store,
+        leaves,
         unbook,
     }: Keeping<impl Store>,
     unwanted: Arc<Notify>,
@@ -1862,7 +1866,12 @@ async fn keep_made(
             (Some("its time was up".to_owned()), false)
         }
     };
-    store::left(&store, &made.machine, jiff::Timestamp::now());
+    // A make of the same name since stands, so its sessions and its
+    // record are its own.
+    let now = jiff::Timestamp::now();
+    if leaves(now) {
+        store::left(&store, &made.machine, now);
+    }
     unbook();
     let why = match release {
         None => "its work handed over".to_owned(),
@@ -10518,11 +10527,31 @@ impl<S: Store> Shared<S> {
     /// booking, let go with it.
     fn keeping(&self, made: &Made) -> Keeping<S> {
         let (shared, made) = (self.clone(), made.clone());
+        let (leaving, left) = (self.clone(), made.clone());
         Keeping {
             book: self.book.clone(),
             store: self.store.clone(),
+            leaves: Box::new(move |at| leaving.leaves(&left, at)),
             unbook: Box::new(move || shared.unbook(&made)),
         }
+    }
+
+    /// Keeps that `made` left `at` ([`Store::mark_left`]) and says so,
+    /// unless a make of the same name was booked at another place since,
+    /// whose machine stands: the leaving is then the old one's alone, and
+    /// saying it by name would hold the new one left. Asked under the
+    /// bookings' lock, so a make booked meanwhile ([`Shared::book_for`])
+    /// forgets the mark after it rather than before.
+    fn leaves(&self, made: &Made, at: jiff::Timestamp) -> bool {
+        let inner = self.lock();
+        let ours = !inner
+            .booked
+            .get(&made.machine)
+            .is_some_and(|(place, _)| *place != made.place);
+        if ours {
+            self.store.mark_left(&made.machine, at);
+        }
+        ours
     }
 
     /// Takes away `made`'s booking, where the machine of its name is still
@@ -10556,6 +10585,11 @@ impl<S: Store> Shared<S> {
         };
         inner.ends.insert(made.machine.clone(), made.until);
         drop(inner);
+        // A machine made again under a left one's name is a new machine,
+        // whose own word of itself stands. Forgotten once it is booked, so
+        // the old make's end, which asks the booking first, says no leaving
+        // after ([`Shared::leaves`]).
+        self.store.forget_left(&made.machine);
         Arc::new(Program {
             program: made.provider.clone(),
             place: made.place.clone(),
@@ -28252,6 +28286,44 @@ esac
     /// has left.
     fn a_day_out() -> jiff::Timestamp {
         jiff::Timestamp::now() + jiff::SignedDuration::from_hours(24)
+    }
+
+    /// A make's end says its machine left only where no make of the same
+    /// name was booked at another place since, and booking a make again
+    /// lets go of the old one's leaving, so the new machine's word stands.
+    #[test]
+    fn a_makes_end_holds_no_newer_make_of_its_name_left() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let shared = made_for(dir.path(), &[]);
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let old = made_by("/usr/bin/lend", "tern", soon);
+        let mut new = made_by("/usr/bin/lend", "tern", soon);
+        new.place = "tern-elsewhere".to_owned();
+        let at = jiff::Timestamp::now();
+        shared.book_for(&old);
+        assert!(shared.leaves(&old, at), "alone, a make's end leaves");
+        assert_eq!(
+            shared.store.left_at("tern"),
+            Some(at),
+            "and its leaving is kept"
+        );
+
+        shared.book_for(&new);
+        assert_eq!(
+            shared.store.left_at("tern"),
+            None,
+            "made again, tern hasn't left"
+        );
+        assert!(
+            !shared.leaves(&old, at),
+            "the old make's end, once a newer one is booked, leaves nothing"
+        );
+        assert_eq!(
+            shared.store.left_at("tern"),
+            None,
+            "so the new machine isn't held left"
+        );
+        assert!(shared.leaves(&new, at), "the new make's own end leaves");
     }
 
     fn made_by(provider: &str, machine: &str, until: jiff::Timestamp) -> Made {

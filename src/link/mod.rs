@@ -15,8 +15,9 @@
 //! when the link starts and again each minute, and keeps what the other
 //! end says of its own machine, which turns out of reach when the link
 //! drops. Only an end whose hello says it knows of this hears it. A
-//! leaving (`leaves_at`) that came while the link ran stands, whatever the
-//! other end says of its machine after.
+//! leaving its node said ([`store::left`]) stands, whatever the other end
+//! says of its machine after, since the store reads the machine left
+//! ([`store::held_left`]).
 //!
 //! Each end also carries starts ([`starts`]): its node asks the other
 //! machine to start a session held, and the other end hands it to its own
@@ -367,10 +368,6 @@ pub async fn run(
     .await?;
     pinned(&store, named.as_deref(), &other.machine)?;
     know_how_it_runs(starting.as_ref(), &other.machine);
-    // Taken before the claim is waited on, so a leaving said while this
-    // link already held it, or waited to admit and ask, reads as this
-    // link's, never another's.
-    let linked_at = jiff::Timestamp::now();
     let (claim, asked_before) = takeover::claimed(&store, &other.machine).await?;
     let reach = reach_start(&store, &other.machine);
     // As it stood before admission, which marks a machine never linked
@@ -423,7 +420,6 @@ pub async fn run(
         asks: HashMap::new(),
         runs,
         next_ask: 0,
-        linked_at,
         exchange: shares.map(|places| {
             let exchange = exchange_with(places, &membership.hello(), &other, worker);
             if worker {
@@ -1292,9 +1288,6 @@ struct End<S> {
     /// What the other machine last declared, kept through a short silence
     /// about it.
     heard_declared: declared_heard::DeclaredHeard,
-    /// When this link was let in, before which a leaving was another
-    /// link's, as of a machine since made again under its name.
-    linked_at: jiff::Timestamp,
     _claim: Claim,
 }
 
@@ -2477,36 +2470,6 @@ impl<S: Store> End<S> {
                 said.declared.as_ref(),
                 self.heard_declared.standing_in(),
             ));
-        }
-        // `store::left` may have said the machine left while this link held
-        // its claim, and a leaving already come stands: its end saying it
-        // again, leaving later or never, mustn't put it back among the
-        // machines. One still to come is the machine's own to move, and one
-        // from before this link was let in is another link's, as of a
-        // machine since made again under its name. Whether it left is read
-        // only from the node's own word, kept in memory, never the record a
-        // session may write, which would hold a machine out for the link's
-        // life; the record lends only what the machine declared, where its
-        // end declares nothing now.
-        let now = jiff::Timestamp::now();
-        if let Some(leaves) = self.store.left_at(&self.other)
-            && leaves <= now
-            && leaves >= self.linked_at
-        {
-            if said.declared.is_none() {
-                said.declared = self
-                    .store
-                    .machines()
-                    .into_iter()
-                    .find(|one| one.name == self.other)
-                    .and_then(|kept| kept.declared);
-            }
-            let Some(declared) = said.declared.as_mut() else {
-                // Nothing it or its record declares can say it left, so it
-                // isn't put back among the machines at all.
-                return;
-            };
-            declared.leaves_at = Some(declared.leaves_at.map_or(leaves, |own| own.min(leaves)));
         }
         self.kept(&said.name, self.store.put_machine(&said));
     }
@@ -6748,14 +6711,15 @@ mod tests {
         assert!(!staying, "tern is no longer among the machines");
     }
 
-    /// A leaving from before a link was let in is another link's, as of a
-    /// machine made again under its name, so the new link's word of it
-    /// stands.
+    /// A leaving the node let go of as it made a machine of that name
+    /// again is the old machine's, so the new one's word of itself stands.
     #[tokio::test]
     async fn a_machine_made_again_under_a_left_ones_name_is_among_the_machines() {
         let skiff = Memory::default();
         let old = jiff::Timestamp::from_second(1_000_000_000).expect("a time");
         store::left(&skiff, "tern", old);
+        // As the node does as it books the make again.
+        skiff.forget_left("tern");
         let (_skiff_end, _far_reading, mut far_writing) =
             skiff_over(skiff.clone(), |connection| connection, None);
         let mut tern = tern_undeclared();
@@ -6789,7 +6753,7 @@ mod tests {
             kept.and_then(|machine| machine.declared)
                 .and_then(|declared| declared.leaves_at),
             None,
-            "a leaving from before the link was let in isn't the new machine's"
+            "a leaving from before tern was made again isn't the new machine's"
         );
 
         // #570 round F25: the new machine let go in turn stands left by its

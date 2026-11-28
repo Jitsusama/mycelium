@@ -270,17 +270,26 @@ pub trait Store: Clone + Send + Sync + 'static {
     fn is_worker(&self, machine: &str) -> bool;
 
     /// Keeps that this store's node said `machine` left at `at`
-    /// ([`left`]), the latest such kept, so a machine made again under a
-    /// left one's name and let go in turn is held left by its own leaving.
-    /// Kept in memory alone, as a worker's mark is, so a leaving only the
-    /// node said stands against what the machine's link says after, never
-    /// one a session wrote in its record. A link another machine dialled
-    /// in runs as a process of its own with a store of its own, so it
-    /// reads none of these, as it reads no worker's mark.
+    /// ([`left`]), the earliest such kept, until its node makes a machine
+    /// of that name again ([`Store::forget_left`]). Until then the store's
+    /// machines read it left ([`held_left`]), whatever its record says
+    /// after: a link, the node's own or one the machine dialled in, which
+    /// runs as a process of its own, puts the record as its far end
+    /// describes itself, but only this store's reading answers the node.
+    /// Kept in memory alone, as a worker's mark is, so only the node's
+    /// word counts, never a record a session wrote, and a node restart
+    /// forgets it. A mark that is new is told as a change of that
+    /// machine, so a watch of the machines sees it.
     fn mark_left(&self, machine: &str, at: jiff::Timestamp);
 
-    /// When this store's node last said, since the store opened, that
-    /// `machine` left ([`Store::mark_left`]).
+    /// Lets go of this store's node's word that `machine` left
+    /// ([`Store::mark_left`]), as it books a machine made again under its
+    /// name, so the new machine's own word of itself stands. One let go is
+    /// told as a change of that machine.
+    fn forget_left(&self, machine: &str);
+
+    /// When this store's node said, since the store opened, that `machine`
+    /// left and hasn't made it again since ([`Store::mark_left`]).
     fn left_at(&self, machine: &str) -> Option<jiff::Timestamp>;
 
     /// The carries each machine's node last told of, by machine: this
@@ -294,6 +303,16 @@ pub trait Store: Clone + Send + Sync + 'static {
 
     /// Starts telling of each change.
     fn changes(&self) -> io::Result<Changes>;
+}
+
+/// Has `machine` read as left at `left`, where its node said so
+/// ([`Store::mark_left`]): its `leaves_at` is then no later than that,
+/// whatever its record says. One that declared nothing has no `leaves_at`
+/// to say it by, so it reads as its record says, as [`left`] leaves it.
+pub(crate) fn held_left(machine: &mut Machine, left: Option<jiff::Timestamp>) {
+    if let (Some(at), Some(declared)) = (left, machine.declared.as_mut()) {
+        declared.leaves_at = Some(declared.leaves_at.map_or(at, |own| own.min(at)));
+    }
 }
 
 /// Lets go of every session `machine` carried here but those `kept`.
@@ -322,8 +341,8 @@ pub fn left(store: &impl Store, machine: &str, at: jiff::Timestamp) {
         eprintln!("couldn't claim {machine} while saying it has left: {error}");
         None
     });
-    // Kept before the record is put, so a link describing the machine
-    // meanwhile reads it left rather than putting it back present.
+    // Kept before the record is read, so the machines read it left from
+    // now, whatever a link describing it puts meanwhile or after.
     store.mark_left(machine, at);
     if let Some(mut said) = store.machines().into_iter().find(|one| one.name == machine)
         && let Some(declared) = said.declared.as_mut()
