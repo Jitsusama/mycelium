@@ -180,7 +180,7 @@ pub fn named(option: &str) -> String {
 }
 
 /// `word` as a shell reads it back whole.
-fn quoted(word: &str) -> String {
+pub(crate) fn quoted(word: &str) -> String {
     let plain = |byte: u8| byte.is_ascii_alphanumeric() || b"-_./=:@%+,".contains(&byte);
     if !word.is_empty() && word.bytes().all(plain) {
         word.to_owned()

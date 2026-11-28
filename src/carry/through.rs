@@ -31,8 +31,17 @@ const LOOK_EVERY: Duration = Duration::from_secs(2);
 const TIES_WITHIN: Duration = Duration::from_secs(30);
 
 /// How long a carry waits, all told, for the sessions to carry and then
-/// to end: time for a busy one to finish its turn and push.
+/// to end: time for a busy one to finish its turn and push. It then
+/// waits `ANSWERED_WITHIN` of its own for each to run there.
 pub const PATIENCE: Duration = Duration::from_secs(15 * 60);
+
+/// How long a carry waits, once the sessions here have ended, for each
+/// started there to run: its own, whatever the waits before it spent,
+/// since a turn that ended late leaves its start no less to do. Time
+/// for each arrival to fetch its trees over a slow link and for pi to
+/// take its session up, while one whose arrival failed is said within
+/// minutes rather than after another quarter of an hour.
+const ANSWERED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// How a carry's hands put a request to the node from within it, rather
 /// than over its socket: answered as the asker the node vouched for.
@@ -61,7 +70,9 @@ pub struct Through {
 
 impl Through {
     /// Hands for carrying `quest` through the node at `socket`, with the
-    /// quest's share in `shares`, waiting no longer than `patience`.
+    /// quest's share in `shares`, waiting no longer than `patience` for
+    /// the sessions to carry and then to end, and `ANSWERED_WITHIN` more
+    /// for each to run there.
     #[must_use]
     pub fn new(socket: PathBuf, shares: Places, quest: &str, patience: Duration) -> Self {
         // The hostname, not the name the machine goes by in the realm:
@@ -325,6 +336,10 @@ impl Hands for Through {
         }
         thread::sleep(LOOK_EVERY);
         true
+    }
+
+    fn wait_afresh(&mut self) {
+        self.until = Instant::now() + ANSWERED_WITHIN;
     }
 }
 
@@ -645,7 +660,8 @@ pub(crate) fn short_host(host: &str) -> &str {
 /// Why `pi-carry` failed: what its `{"kind": "failed", "why"}` lines said
 /// on its output, since it says everything there, else what it wrote to
 /// its errors, else how it `ended` and the last line it printed, so a
-/// failure is never said with no why.
+/// failure is never said with no why. Whichever it quotes goes through
+/// [`escaped_and_cut`], since the node's log is where it goes.
 fn failed_why(output: &[u8], errors: &[u8], ended: ExitStatus) -> String {
     let output = String::from_utf8_lossy(output);
     let said: Vec<String> = output
@@ -655,11 +671,14 @@ fn failed_why(output: &[u8], errors: &[u8], ended: ExitStatus) -> String {
         .filter_map(|line| line["why"].as_str().map(str::to_owned))
         .collect();
     if !said.is_empty() {
-        return said.join("; ");
+        // Joined as they came and escaped whole, which escapes each line
+        // alike, since "; " holds nothing to escape.
+        return escaped_and_cut(&said.join("; "), WHY_SAID);
     }
-    let errors = String::from_utf8_lossy(errors).trim().to_owned();
+    let errors = String::from_utf8_lossy(errors);
+    let errors = errors.trim();
     if !errors.is_empty() {
-        return errors;
+        return escaped_and_cut(errors, ERRORS_SAID);
     }
     let how = match (ended.code(), ended.signal()) {
         (Some(code), _) => format!("it exited {code}"),
@@ -669,7 +688,7 @@ fn failed_why(output: &[u8], errors: &[u8], ended: ExitStatus) -> String {
     match output.lines().map(str::trim).rfind(|line| !line.is_empty()) {
         Some(last) => format!(
             "{how}, saying nothing of why; its last line was {}",
-            last_said(last)
+            escaped_and_cut(last, LAST_SAID)
         ),
         None => format!("{how}, saying nothing"),
     }
@@ -679,15 +698,30 @@ fn failed_why(output: &[u8], errors: &[u8], ended: ExitStatus) -> String {
 /// one of its JSON lines, short of one swamping the node's log.
 const LAST_SAID: usize = 200;
 
-/// `last`, the last line `pi-carry` printed, as [`failed_why`] quotes
-/// it: its control characters escaped, so it can't pass as the node's
-/// own words or break the log's one line, and cut to [`LAST_SAID`].
-fn last_said(last: &str) -> String {
-    let escaped = crate::declared::controls_escaped(last);
-    if escaped.chars().count() <= LAST_SAID {
+/// The most of `pi-carry`'s failed lines, joined, that [`failed_why`]
+/// quotes: a why is one of its sentences, and a carry held back by a
+/// few trees says one for each, so room for three of [`LAST_SAID`]'s
+/// size, short of a run of them swamping the node's log.
+const WHY_SAID: usize = 600;
+
+/// The most of `pi-carry`'s errors [`failed_why`] quotes: more than one
+/// line's worth, since what fails before it can say why, a shell or the
+/// runtime under it, says so over several lines with the cause rarely
+/// in the first, yet short of a whole trace swamping the node's log.
+const ERRORS_SAID: usize = 1000;
+
+/// `text`, something `pi-carry` said, as [`failed_why`] quotes it: its
+/// control characters escaped, its newlines among them, so it can't pass
+/// as the node's own words or break the log's one line, then cut to
+/// `most` characters, so it can't swamp the log. Escaped before it is
+/// cut, so the cut counts what the log is given; a cut through an
+/// escape leaves part of it, never the character it stood for.
+fn escaped_and_cut(text: &str, most: usize) -> String {
+    let escaped = crate::declared::controls_escaped(text);
+    if escaped.chars().count() <= most {
         return escaped;
     }
-    let cut: String = escaped.chars().take(LAST_SAID).collect();
+    let cut: String = escaped.chars().take(most).collect();
     format!("{cut}...")
 }
 
@@ -723,8 +757,9 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        UNREADABLE_REFUSAL, Unreadable, failed_why, forget_stale, handover, left, mark_started,
-        put_brought, refusals, refused, short_host, unstarted, untaken,
+        ERRORS_SAID, LAST_SAID, UNREADABLE_REFUSAL, Unreadable, WHY_SAID, failed_why, forget_stale,
+        handover, left, mark_started, put_brought, refusals, refused, short_host, unstarted,
+        untaken,
     };
     use crate::carry::cell::Brought;
     use crate::carry::{Refused, Untaken, ground};
@@ -1424,6 +1459,44 @@ mod tests {
     }
 
     #[test]
+    fn the_answer_waits_afresh_whatever_the_close_spent() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Instant;
+
+        use super::{ANSWERED_WITHIN, Hands, Places, Through};
+        let dir = tempfile::tempdir().expect("places");
+        let places = Places {
+            quests: dir.path().join("quests"),
+            scratch: dir.path().join("scratch"),
+            home: dir.path().join("home"),
+            state: dir.path().join("state"),
+        };
+        let stopped = Arc::new(AtomicBool::new(false));
+        // Hands whose close waited out all their patience.
+        let mut hands = Through::new(
+            dir.path().join("work.sock"),
+            places,
+            "QEST-20261115-HARBOR",
+            Duration::ZERO,
+        )
+        .stopping(Arc::clone(&stopped));
+        assert!(!hands.wait(), "the close has no look left");
+        let before = Instant::now();
+        hands.wait_afresh();
+        let after = Instant::now();
+        assert!(
+            hands.until >= before + ANSWERED_WITHIN && hands.until <= after + ANSWERED_WITHIN,
+            "the answer waits its own span from when it begins"
+        );
+        stopped.store(true, Ordering::Relaxed);
+        assert!(
+            !hands.wait(),
+            "and no longer once whoever carries has stopped"
+        );
+    }
+
+    #[test]
     fn a_quests_handover_is_its_machines_folder_in_the_scratch() {
         assert_eq!(
             handover(
@@ -1483,6 +1556,10 @@ mod tests {
         );
     }
 
+    /// What [`failed_why`] says before the last line it quotes, where
+    /// `pi-carry` exited 1 saying no why.
+    const QUOTING: &str = "it exited 1, saying nothing of why; its last line was ";
+
     #[test]
     fn pi_carry_failing_silently_quotes_its_last_line_escaped_and_cut() {
         let last = format!("\u{1b}[2J{}", "x".repeat(4000));
@@ -1492,13 +1569,77 @@ mod tests {
             "what it printed can't pass as the node's own words: {why:?}"
         );
         assert!(
-            why.starts_with("it exited 1, saying nothing of why; its last line was \\u{1b}[2J"),
+            why.starts_with(&format!("{QUOTING}\\u{{1b}}[2J")),
             "escaped, not dropped: {why:?}"
         );
+        assert_eq!(
+            why.chars().count(),
+            QUOTING.len() + LAST_SAID + "...".len(),
+            "and cut, so one line can't swamp the node's log"
+        );
         assert!(
-            why.ends_with("...") && why.chars().count() < 400,
-            "and cut, so one line can't swamp the node's log: {} characters",
+            why.chars().count() <= 300,
+            "short of a log line's worth: {} characters",
             why.chars().count()
+        );
+        let quoted = |last: &str| {
+            failed_why(last.as_bytes(), b"", ExitStatus::from_raw(1 << 8))
+                .strip_prefix(QUOTING)
+                .map(str::to_owned)
+        };
+        let whole = "x".repeat(LAST_SAID);
+        assert_eq!(
+            quoted(&whole),
+            Some(whole.clone()),
+            "a line of exactly {LAST_SAID} is kept whole"
+        );
+        assert_eq!(
+            quoted(&format!("{whole}x")),
+            Some(format!("{whole}...")),
+            "and one a character longer is cut"
+        );
+    }
+
+    #[test]
+    fn pi_carry_failing_quotes_its_why_lines_escaped_and_cut() {
+        let line = |why: &str| json!({"kind": "failed", "why": why}).to_string();
+        let output = format!(
+            "{}\n{}\n",
+            line("~/src/harbour has changes\n\u{1b}]0;node: carried\u{7}"),
+            line(&"y".repeat(4000)),
+        );
+        let why = failed_why(output.as_bytes(), b"", ExitStatus::from_raw(1 << 8));
+        assert!(
+            !why.contains(['\n', '\u{1b}', '\u{7}']),
+            "what it said can't break the log's line or pass as the node's own: {why:?}"
+        );
+        assert!(
+            why.starts_with("~/src/harbour has changes\\n\\u{1b}]0;node: carried\\u{7}; yyy"),
+            "escaped, not dropped, and joined: {why:?}"
+        );
+        assert_eq!(
+            why.strip_suffix("...").map(|cut| cut.chars().count()),
+            Some(WHY_SAID),
+            "and cut, so its lines can't swamp the node's log"
+        );
+    }
+
+    #[test]
+    fn pi_carry_failing_quotes_its_errors_escaped_and_cut() {
+        let errors = format!("node: not found\n\u{1b}[2J{}\n", "z".repeat(4000));
+        let why = failed_why(b"", errors.as_bytes(), ExitStatus::from_raw(1 << 8));
+        assert!(
+            !why.contains(['\n', '\u{1b}']),
+            "what it wrote can't break the log's line or pass as the node's own: {why:?}"
+        );
+        assert!(
+            why.starts_with("node: not found\\n\\u{1b}[2Jzzz"),
+            "escaped, its newlines too, not dropped: {why:?}"
+        );
+        assert_eq!(
+            why.strip_suffix("...").map(|cut| cut.chars().count()),
+            Some(ERRORS_SAID),
+            "and cut, so its errors can't swamp the node's log"
         );
     }
 }

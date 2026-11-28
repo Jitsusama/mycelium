@@ -429,6 +429,7 @@ pub async fn run(
         has: HashSet::new(),
         sent: BTreeMap::new(),
         carried: HashSet::new(),
+        unkept: BTreeMap::new(),
         _claim: claim,
     };
 
@@ -1272,6 +1273,12 @@ struct End<S> {
     /// says which hold its sessions.
     held: Option<PathBuf>,
     carried: HashSet<String>,
+    /// The presences the other end sent that the store refused, each
+    /// with its leases, by session: one that still lives here, carried
+    /// there before it ended here. The other end says a presence only
+    /// as it changes, so each is put again as this machine's sessions
+    /// move, and stands once the one here has ended.
+    unkept: BTreeMap<String, (Value, Option<Vec<Value>>)>,
     exchange: Option<Exchange>,
     /// This machine's own health, as its node keeps it, which a word
     /// moving has said again at once rather than with the next minute's
@@ -1454,7 +1461,10 @@ impl<S: Store> End<S> {
     ) -> io::Result<()> {
         match change {
             Change::Message(id) => self.send_messages(vec![id], writing).await,
-            Change::Presence => self.send_presence(writing).await,
+            Change::Presence => {
+                self.put_unkept();
+                self.send_presence(writing).await
+            }
             Change::Rescan => self.catch_up(writing).await,
             // A machine's facts and carries cross only from that machine
             // itself, and this end measures its own facts as it sends them.
@@ -1610,6 +1620,7 @@ impl<S: Store> End<S> {
             } => self.hear_presence(&session, body, leases, held, started_by),
             Frame::Ended { session } => {
                 self.carried.remove(&session);
+                self.unkept.remove(&session);
                 self.store.remove_presence(&session, &self.other)?;
             }
             Frame::Share(say) => {
@@ -1800,13 +1811,22 @@ impl<S: Store> End<S> {
     /// let it send as that session, and only the label on its words would
     /// tell them apart; a parked one is woken by what is sent it, so its
     /// name is as taken.
+    ///
+    /// A session still living here under the same id is one carried onto
+    /// the worker, come up there before it ends here, so it isn't taken:
+    /// the store holds the worker's presence back until it ends here, and
+    /// an idle one says it only once, so dropping it would lose it.
     fn taken_name(&self, session: &str, body: &Value) -> Option<String> {
         let its = names(session, body);
         self.store
             .presences()
             .into_iter()
             .filter(|presence| {
-                stands(presence) && presence.elsewhere.as_deref() != Some(self.other.as_str())
+                stands(presence)
+                    && presence.elsewhere.as_deref() != Some(self.other.as_str())
+                    && !(presence.session == session
+                        && presence.lives
+                        && presence.elsewhere.is_none())
             })
             .flat_map(|presence| names(&presence.session, &presence.body))
             .find(|name| its.iter().any(|said| said.eq_ignore_ascii_case(name)))
@@ -2067,17 +2087,66 @@ impl<S: Store> End<S> {
                 fields.insert(mesh::STARTED_BY_AS.to_owned(), Value::String(started_by));
             }
         }
+        let put = self.keep_presence(session, body, leases);
+        self.kept(session, put);
+    }
+
+    /// Keeps `body`, the presence the other end sent of `session`, with
+    /// `leases`, or holds it among the unkept to put again when the store
+    /// refuses it for a session that is another machine's.
+    fn keep_presence(
+        &mut self,
+        session: &str,
+        body: Value,
+        leases: Option<Vec<Value>>,
+    ) -> io::Result<()> {
         let put = self.store.put_presence(session, &self.other, &body);
-        if put.is_ok() {
-            self.carried.insert(session.to_owned());
-            if let Some(leases) = leases {
-                self.kept(
-                    session,
-                    self.store.put_leases(session, &self.other, &leases),
-                );
+        match &put {
+            Ok(()) => {
+                self.unkept.remove(session);
+                self.carried.insert(session.to_owned());
+                if let Some(leases) = leases {
+                    self.kept(
+                        session,
+                        self.store.put_leases(session, &self.other, &leases),
+                    );
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                self.unkept.insert(session.to_owned(), (body, leases));
+            }
+            Err(_) => {
+                self.unkept.remove(session);
             }
         }
-        self.kept(session, put);
+        put
+    }
+
+    /// Puts each unkept presence again, since this machine's sessions
+    /// moved and one of them may have ended here. One still refused was
+    /// said in the log when it first came, so it isn't said again.
+    ///
+    /// A worker's is judged again first, as one it said while its session
+    /// lived here may since have parked here rather than ended, whose name
+    /// stays taken.
+    fn put_unkept(&mut self) {
+        for (session, (body, leases)) in std::mem::take(&mut self.unkept) {
+            if self.worker
+                && let Some(name) = self.taken_name(&session, &body)
+            {
+                eprintln!(
+                    "{} spoke for {session} as {name}, which a session parked here or \
+                     living elsewhere answers to, so a worker can't, and it isn't taken",
+                    self.other
+                );
+                continue;
+            }
+            if let Err(error) = self.keep_presence(&session, body, leases)
+                && error.kind() != io::ErrorKind::PermissionDenied
+            {
+                self.kept(&session, Err(error));
+            }
+        }
     }
 
     /// Tells an end that carries steers which talks this end follows, so
@@ -3924,6 +3993,32 @@ mod tests {
             matches!(mac.as_slice(), [one] if one.elsewhere.is_none() && one.lives),
             "the Mac keeps its own, its end on skiff never carried back: {mac:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_session_heard_running_there_while_it_lives_here_stands_there_once_it_ends_here() {
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
+        // Carried from skiff, it came up on the Mac before it ended here,
+        // and the Mac says it only once, as nothing of it changes after.
+        skiff.start_here("moved", json!({"session": "moved"}), true);
+        kestrel.start_here("moved", json!({"session": "moved"}), true);
+        kestrel.start_here("zz-after", json!({"session": "zz-after"}), true);
+
+        let _link = linked(&skiff, &kestrel, 1 << 16);
+        // The Mac's sessions go in order, so once the later one is here,
+        // skiff has heard the moved one and kept its own.
+        until(&skiff, |store| {
+            store.presences().iter().any(|p| p.session == "zz-after")
+        })
+        .await;
+        skiff.start_here("moved", json!({"session": "moved"}), false);
+        until(&skiff, |store| {
+            store.presences().iter().any(|p| {
+                p.session == "moved" && p.elsewhere.as_deref() == Some("kestrel") && p.lives
+            })
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -6487,6 +6582,77 @@ mod tests {
                 .and_then(|body| body["text"].as_str().map(str::to_owned)),
             Some("ours".to_owned()),
             "nor is a message skiff holds written over"
+        );
+    }
+
+    // Our stack round on #559 (2026-11-28, F30): a session carried onto a
+    // worker comes up there before it ends here, and an idle one says its
+    // presence only once, so a worker's word of it dropped then was never
+    // heard again and the carry's answer step failed a session that ran.
+    #[tokio::test]
+    async fn a_session_carried_onto_a_worker_stands_there_once_it_ends_here_unless_it_parked() {
+        let skiff = Memory::default();
+        let session = |id: &str, address: &str| json!({"session": id, "addresses": [address]});
+        skiff.start_here("moved", session("moved", "MOVED1"), true);
+        skiff.start_here("dozing", session("dozing", "DOZING"), true);
+        let (_skiff_end, _far_reading, mut far_writing) = skiff_over(
+            skiff.clone(),
+            |connection| Connection {
+                worker: true,
+                ..connection
+            },
+            None,
+        );
+        let said = |id: &str, address: &str| Frame::Presence {
+            session: id.to_owned(),
+            body: session(id, address),
+            leases: None,
+            held: None,
+            started_by: None,
+        };
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("tern").hello()),
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(Vec::new()),
+                },
+                said("moved", "MOVED1"),
+                said("dozing", "DOZING"),
+                said("zz-after", "ZZAFTR"),
+            ],
+        )
+        .await;
+        // Tern's sessions go in order, so once the later one is here, skiff
+        // has heard both and kept its own.
+        until(&skiff, |store| {
+            store.presences().iter().any(|p| p.session == "zz-after")
+        })
+        .await;
+        let on_tern = |store: &Memory, id: &str| {
+            store
+                .presences()
+                .iter()
+                .any(|p| p.session == id && p.elsewhere.as_deref() == Some("tern") && p.lives)
+        };
+        assert!(
+            !on_tern(&skiff, "moved") && !on_tern(&skiff, "dozing"),
+            "neither is tern's while it lives here"
+        );
+
+        // One parks, which its holder starts again here, and then the other
+        // ends, its carry done.
+        skiff.start_here(
+            "dozing",
+            json!({"session": "dozing", "addresses": ["DOZING"], "state": "parked"}),
+            false,
+        );
+        skiff.start_here("moved", session("moved", "MOVED1"), false);
+        until(&skiff, |store| on_tern(store, "moved")).await;
+        assert!(
+            !on_tern(&skiff, "dozing"),
+            "a worker takes no name of a session parked here, whenever it said it"
         );
     }
 

@@ -248,7 +248,8 @@ const _: () = assert!(
 /// How long a carry the node carries on itself waits, all told, for its
 /// session to carry and then to end. Longer than a command's, since no
 /// one waits on it, and a session in a long turn took 18 minutes to carry
-/// on 23 November.
+/// on 23 November. Its answer, each session seen to run there, then
+/// waits the few minutes of its own every carry's does.
 const CARRIED_ON_WITHIN: Duration = Duration::from_secs(60 * 60);
 
 /// How many events a watch may fall behind by before the node lets it go;
@@ -11708,6 +11709,67 @@ mod tests {
         .expect("written");
         let continues = continuing(dir.path(), &Arc::default()).expect("logs that read are read");
         assert_eq!(continues(session), Ok(Some("s-steward".to_owned())));
+    }
+
+    #[test]
+    fn logs_that_disagree_are_named_once_by_their_paths_escaped() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let session = "01a1667f-f5bc-7ba6-9290-033e899fff34";
+        let log = format!("2026-11-24T10-00-00-000Z_{session}.jsonl");
+        // Its own log, and a copy planted under a folder whose name would
+        // move the terminal and forge a line of the node's log.
+        for (folder, continues) in [
+            ("--home-kestrel--", "s-steward"),
+            ("--home-\u{1b}[2J\nforged--", "s-elder"),
+        ] {
+            let folder = dir.path().join(folder);
+            fs::create_dir_all(&folder).expect("made");
+            fs::write(
+                folder.join(&log),
+                format!("{{\"id\":\"{session}\",\"parentSession\":\"{continues}\"}}\n"),
+            )
+            .expect("written");
+        }
+        let unreadable = Arc::new(through::Unreadable::default());
+        let continues = continuing(dir.path(), &unreadable).expect("logs that read are read");
+        assert!(
+            continues(session).is_err(),
+            "its logs disagree, so what it continues can't be told"
+        );
+        let said = format!("{unreadable:?}");
+        let why = chain::Logs::scan(dir.path())
+            .expect("logs that read are read")
+            .disagreeing(session)
+            .expect("its logs disagree");
+        assert!(
+            !unreadable.first(&why),
+            "the first look says which logs disagree: {why}"
+        );
+        assert!(
+            why.starts_with(&format!(
+                "the 2 logs named for {session} don't all say what it continues"
+            )),
+            "{why}"
+        );
+        let root = dir.path().display();
+        assert!(
+            why.contains(&format!("{root}/--home-kestrel--/{log}")),
+            "each log named by its path, so the copy that isn't its own can be found: {why}"
+        );
+        assert!(
+            !why.contains(['\u{1b}', '\n'])
+                && why.contains(&format!("{root}/--home-\\u{{1b}}[2J\\nforged--/{log}")),
+            "a path's control characters escaped, so it can't move the terminal or forge a \
+             line: {why}"
+        );
+        assert!(continues(session).is_err(), "looked at again");
+        let later = continuing(dir.path(), &unreadable).expect("logs that read are read");
+        assert!(later(session).is_err(), "and at a later lapse");
+        assert_eq!(
+            format!("{unreadable:?}"),
+            said,
+            "a second look, and a later lapse's, say nothing more"
+        );
     }
 
     /// A holder in `dir` that says it holds at once, writing down in the
