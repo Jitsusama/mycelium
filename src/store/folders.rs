@@ -43,6 +43,22 @@ use super::folder::{Folder, Kind, Stamp};
 use super::{Change, Changes, Claim, Presence, Store};
 use crate::facts::Machine;
 
+/// A machine's claim, held as a lock on its file and let go when dropped.
+///
+/// A lock is the open file's, so a process this one starts meanwhile
+/// holds it too from its fork until its exec closes its copy, and under
+/// load that can be long after the claim is dropped. Unlocking as it is
+/// dropped lets go through every copy at once, so a claim let go is free
+/// the moment it is, and no link or put-away takes it for another's.
+struct Held(fs::File);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        // Closing the file lets go anyway once every copy is closed.
+        let _ = rustix::fs::flock(&self.0, FlockOperation::Unlock);
+    }
+}
+
 /// How what another machine says it is ends, beside its claim.
 const SAID: &str = ".machine";
 
@@ -162,6 +178,16 @@ impl Folders {
             judged: Arc::default(),
             workers: Arc::default(),
         })
+    }
+
+    /// `machine`'s claim, taken, or `None` while another holds it.
+    fn held(&self, machine: &str) -> io::Result<Option<Held>> {
+        let lock = fs::File::create(self.claims.join(format!("{}.lock", safe(machine)?)))?;
+        match rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => Ok(Some(Held(lock))),
+            Err(rustix::io::Errno::WOULDBLOCK) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Keeps `body`, the presence of `session` that `machine` ran, among
@@ -420,17 +446,15 @@ impl Store for Folders {
     }
 
     fn claim(&self, machine: &str) -> io::Result<Option<Claim>> {
-        let lock = fs::File::create(self.claims.join(format!("{}.lock", safe(machine)?)))?;
-        match rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
-            Ok(()) => Ok(Some(Box::new(lock))),
-            Err(rustix::io::Errno::WOULDBLOCK) => Ok(None),
-            Err(error) => Err(error.into()),
-        }
+        Ok(self.held(machine)?.map(|held| Box::new(held) as Claim))
     }
 
     fn supersede(&self, machine: &str) -> io::Result<()> {
         let file = format!("{}.newer", safe(machine)?);
-        write_whole(&self.claims, &file, &Value::from(now()))
+        let at = self
+            .superseded(machine)
+            .map_or_else(now, |last| now().max(last + 1));
+        write_whole(&self.claims, &file, &Value::from(at))
     }
 
     fn superseded(&self, machine: &str) -> Option<i64> {
@@ -869,7 +893,20 @@ impl Store for Folders {
                         if !is_record(path) {
                             return None;
                         }
+                        // A message gone from the top, as the mesh moves
+                        // one six hours old into its day's folder, is no
+                        // new one: told as one, every link would send the
+                        // hour's moved messages again, as on 27 November,
+                        // when each of a room's hourly moves sent about
+                        // 1,100 to the node that already held them. Only
+                        // one gone is, so a message a failing read can't
+                        // judge is still told.
                         if path.parent() == Some(messages.as_path()) {
+                            if fs::symlink_metadata(path)
+                                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+                            {
+                                return None;
+                            }
                             Some(Change::Message(path.file_stem()?.to_str()?.to_owned()))
                         } else if path.parent() == Some(presence.as_path())
                             || path.parent() == Some(leases.as_path())
@@ -2163,6 +2200,24 @@ mod tests {
         );
     }
 
+    /// A claim let go is free at once, though a process started while it
+    /// was held still has its file open, as one another test's thread
+    /// forks keeps it until its exec. Else a stop's put-away, claiming
+    /// wren just after its sweep let it go, judges a link to hold it.
+    #[test]
+    fn a_claim_let_go_is_free_though_a_process_started_meanwhile_holds_its_file() {
+        let (_dir, store) = store();
+        let held = store.held("wren").expect("claimed").expect("free");
+        // The copy a fork takes of each file open.
+        let forked = held.0.try_clone().expect("copied");
+        drop(held);
+        assert!(
+            store.claim("wren").expect("claimed").is_some(),
+            "wren, let go, is free while the fork's copy is still open"
+        );
+        drop(forked);
+    }
+
     /// A link running apart from the node marks only when the link went,
     /// keeping an older mark's time and the file's; a sight is never before
     /// the drop it kept.
@@ -2417,6 +2472,18 @@ mod tests {
             std::thread::yield_now();
         };
         assert!(again.is_some(), "a dropped claim is free again");
+    }
+
+    #[test]
+    fn two_asks_for_a_claim_in_one_millisecond_are_told_apart() {
+        let (_dir, store) = store();
+        store.supersede("kestrel").expect("the first ask is kept");
+        let first = store.superseded("kestrel");
+        store.supersede("kestrel").expect("the second ask is kept");
+        assert!(
+            store.superseded("kestrel") > first,
+            "the second ask's mark is later than the first's"
+        );
     }
 
     #[test]
@@ -2712,5 +2779,57 @@ mod tests {
             first = next_message().await;
         }
         assert_eq!(first, new, "only the message written was told");
+    }
+
+    #[tokio::test]
+    async fn a_message_moved_into_its_day_is_no_change() {
+        let (_dir, store) = store();
+        let old = "1792655652402-5GV2AH-4236-9d2030dd";
+        let ready = "1793046600000-MYCTST-1-0a1b2c3d";
+        let new = "1793046604647-0FX11G-875563-952d5879";
+        store
+            .put_message(old, &json!({"id": old}))
+            .expect("the message is kept");
+        let mut changes = store.changes().expect("the store tells its changes");
+        let mut next_message = async || {
+            tokio::time::timeout(PATIENCE, async {
+                loop {
+                    match changes.changes.recv().await {
+                        Some(Change::Message(told)) => return told,
+                        Some(_) => {}
+                        None => panic!("the store stopped telling"),
+                    }
+                }
+            })
+            .await
+            .expect("a message was told")
+        };
+
+        // As in reading_a_message_is_no_change, a marker puts the old
+        // message's own write behind us first.
+        store
+            .put_message(ready, &json!({"id": ready}))
+            .expect("the message is kept");
+        while next_message().await != ready {}
+
+        // The mesh moves a message six hours old as this does.
+        let day = store.messages().join("2026-10-22");
+        fs::create_dir(&day).expect("its day's folder");
+        let name = format!("{old}.json");
+        let top = store.messages().join(&name);
+        fs::rename(top, day.join(&name)).expect("moved into its day");
+        store
+            .put_message(new, &json!({"id": new}))
+            .expect("the message is kept");
+
+        let mut first = next_message().await;
+        while first == ready {
+            first = next_message().await;
+        }
+        assert_eq!(first, new, "the moved message wasn't told again");
+        assert!(
+            store.message(old).is_some(),
+            "the moved message is still read from its day"
+        );
     }
 }

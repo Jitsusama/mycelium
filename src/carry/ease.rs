@@ -1025,6 +1025,7 @@ pub(super) mod tests {
             saturated: None,
             cpu_minute: None,
             memory_full_minute: None,
+            io_full_minute: None,
         });
         machine
     }
@@ -1581,6 +1582,8 @@ pub(super) mod tests {
                 cpu: 30,
                 memory_available: None,
                 memory_full: None,
+                io_full: None,
+                io_full_from: Vec::new(),
             },
         );
         let realm = [skiff, machine("tern", 4.6)];
@@ -1615,6 +1618,8 @@ pub(super) mod tests {
                 cpu: 30,
                 memory_available: Some(48 << 30),
                 memory_full: None,
+                io_full: None,
+                io_full_from: Vec::new(),
             },
         );
         let within = [machine("skiff", 86.0), roomy];

@@ -1518,7 +1518,11 @@ impl Exchange {
         }
         let wants = self.held(id, files.clone())?;
         let heard = self.places.ledgers().hold(id).and_then(|mut held| {
-            if held.ledger.heard(&self.other, files.clone()) {
+            // A link carrying the README alone never says it holds another
+            // file, so no deletion of one waits on it.
+            let alone = self.quest(id, &held.ledger).readme_alone;
+            let named = held.ledger.carries_readme_alone(&self.other, alone);
+            if held.ledger.heard(&self.other, files.clone()) || named {
                 held.keep()?;
             }
             Ok(())
@@ -1878,6 +1882,10 @@ impl Exchange {
         quest: &Quest,
         changed: &mut bool,
     ) -> io::Result<()> {
+        // Each deletion this end takes or holds as the other end does, at
+        // the state the two now share, said back so that end knows when
+        // every machine holds it deleted and it can be forgotten.
+        let mut deleted = BTreeMap::new();
         for (key, theirs) in files {
             let Some(shared) = shared_of(&key).filter(|shared| quest.carries(shared)) else {
                 continue;
@@ -1901,13 +1909,24 @@ impl Exchange {
             if let Some(queued) = self.to_want.get_mut(id) {
                 queued.remove(&key);
             }
-            let ours = held
-                .ledger
-                .files
-                .get(&key)
-                .map(Entry::state)
-                .unwrap_or_default();
+            // A copy of a file whose deletion was forgotten here, as old
+            // as that deletion or older, comes from a machine this ledger
+            // never waited on: it is refused, and told the deletion.
+            if let Some(forgot) = held.ledger.forgotten_over(&key, &theirs) {
+                if theirs.hash.is_some() {
+                    deleted.insert(key, forgot);
+                }
+                continue;
+            }
+            let ours = held.ledger.state_of(&key);
             match settle(&shared, &ours, &theirs) {
+                Settled::Keep if ours.hash.is_none() && theirs.hash.is_none() => {
+                    let before = held.ledger.files.get(&key).cloned();
+                    if let Some(state) = held.ledger.deleted_there(&self.other, &key, &theirs) {
+                        *changed |= held.ledger.files.get(&key) != before.as_ref();
+                        deleted.insert(key, state);
+                    }
+                }
                 Settled::Keep => {}
                 Settled::Merge(_) | Settled::Beside if !self.settles() => {}
                 _ if theirs.hash.is_none() => {
@@ -1917,14 +1936,13 @@ impl Exchange {
                     if !(held.ledger.aside && shared.place == Place::Record) {
                         quest.write(&shared, None, None)?;
                     }
-                    held.ledger.files.insert(
-                        key,
-                        Entry {
-                            hash: None,
-                            version: ours.version.joined(&theirs.version),
-                            seen: None,
-                        },
-                    );
+                    let entry = Entry {
+                        hash: None,
+                        version: ours.version.joined(&theirs.version),
+                        seen: None,
+                    };
+                    deleted.insert(key.clone(), entry.state());
+                    held.ledger.enter(key, entry);
                     *changed = true;
                 }
                 _ => match asked {
@@ -1944,6 +1962,12 @@ impl Exchange {
                     }
                 },
             }
+        }
+        if !deleted.is_empty() {
+            wants.push(Say::Holds {
+                quest: id.to_owned(),
+                files: deleted,
+            });
         }
         Ok(())
     }
@@ -2044,7 +2068,15 @@ impl Exchange {
             return Ok(Vec::new());
         }
         let sight = held.ledger.scan_one(&quest, &shared, &self.machine)?;
-        if sight.is_new() {
+        // A machine asking holds the quest from now, so a deletion waits
+        // for it even if it drops before saying it took the file; a
+        // worker's word is kept apart and brings nothing back.
+        let asked = !self.worker
+            && (held.ledger.asked_by(&self.other)
+                | held
+                    .ledger
+                    .carries_readme_alone(&self.other, quest.readme_alone));
+        if sight.is_new() || asked {
             held.keep()?;
         }
         if sight == Sight::Changed {
@@ -2231,15 +2263,16 @@ impl Exchange {
         if sight == Sight::Changed {
             self.unsay(id, key);
         }
-        let ours = held
-            .ledger
-            .files
-            .get(key)
-            .map(Entry::state)
-            .unwrap_or_default();
+        let ours = held.ledger.state_of(key);
         let joined = ours.version.joined(&theirs.version);
         let mut says = Vec::new();
-        let entry = match settle(&shared, &ours, theirs) {
+        // A copy as old as a deletion forgotten here is never taken.
+        let settled = if held.ledger.forgotten_over(key, theirs).is_some() {
+            Settled::Keep
+        } else {
+            settle(&shared, &ours, theirs)
+        };
+        let entry = match settled {
             Settled::Keep => None,
             Settled::Merge(_) | Settled::Beside if !self.settles() => None,
             Settled::Take => {
@@ -2296,7 +2329,7 @@ impl Exchange {
         let taken = entry.is_some();
         if let Some(entry) = entry {
             let state = entry.state();
-            held.ledger.files.insert(key.to_owned(), entry);
+            held.ledger.enter(key.to_owned(), entry);
             // Said even when this end now holds just what was sent, so the
             // other end knows it was taken: a wait for the quest to reach
             // this machine counts on it.
@@ -2830,6 +2863,120 @@ mod tests {
             !ledger(&kestrel).theirs["skiff"].contains_key(&format!("record/{plan}")),
             "a file deleted drops out of what the other end holds"
         );
+    }
+
+    #[test]
+    fn a_machine_away_when_a_file_was_deleted_is_still_told_of_it() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let tern = Machine::new("tern");
+        let plan = "plans/PLAN-20261115-AAAAAA.md";
+        kestrel.write("README.md", "# Shared\n");
+        kestrel.write(plan, "plan\n");
+        share(&kestrel, QUEST);
+        let key = format!("record/{plan}");
+        let ledger = |machine: &Machine| machine.places.ledgers().hold(QUEST).expect("held").ledger;
+
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        talk(&mut near, &mut far);
+        {
+            let (mut near, mut far) = (kestrel.exchange(&tern), tern.exchange(&kestrel));
+            talk(&mut near, &mut far);
+        }
+        assert_eq!(
+            tern.read(plan).as_deref(),
+            Some("plan\n"),
+            "tern took the plan, then went away"
+        );
+
+        fs::remove_file(kestrel.places.quests.join(QUEST).join(plan)).expect("removed");
+        talk(&mut near, &mut far);
+        assert_eq!(skiff.read(plan), None, "the deletion reached skiff");
+        assert!(
+            ledger(&kestrel)
+                .files
+                .get(&key)
+                .is_some_and(|entry| entry.hash.is_none()),
+            "kestrel keeps the deletion while tern, which held the plan, hasn't said it \
+             holds it deleted"
+        );
+        assert!(
+            !ledger(&skiff).files.contains_key(&key),
+            "skiff, sharing with kestrel alone, forgets it"
+        );
+
+        let (mut near, mut far) = (kestrel.exchange(&tern), tern.exchange(&kestrel));
+        talk(&mut near, &mut far);
+        assert_eq!(tern.read(plan), None, "tern, back, is told of the deletion");
+        assert_eq!(
+            kestrel.read(plan),
+            None,
+            "and its old copy never comes back"
+        );
+        assert!(
+            !ledger(&kestrel).files.contains_key(&key),
+            "once every machine holds it deleted, kestrel forgets it"
+        );
+        assert!(!ledger(&tern).files.contains_key(&key), "and so does tern");
+    }
+
+    /// Tern holds the plan through skiff, a machine kestrel never waited
+    /// on, so kestrel forgets the plan's deletion before tern hears of
+    /// it. Tern's stale copy, offered when it links to kestrel, once came
+    /// back as new.
+    #[test]
+    fn every_machine_of_a_full_mesh_forgets_a_deletion_and_none_takes_it_back() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let tern = Machine::new("tern");
+        let plan = "plans/PLAN-20261115-AAAAAA.md";
+        kestrel.write("README.md", "# Shared\n");
+        kestrel.write(plan, "plan\n");
+        share(&kestrel, QUEST);
+        let key = format!("record/{plan}");
+        let ledger = |machine: &Machine| machine.places.ledgers().hold(QUEST).expect("held").ledger;
+
+        let mut kestrel_skiff = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        let mut skiff_tern = (skiff.exchange(&tern), tern.exchange(&skiff));
+        talk(&mut kestrel_skiff.0, &mut kestrel_skiff.1);
+        talk(&mut skiff_tern.0, &mut skiff_tern.1);
+        assert_eq!(
+            tern.read(plan).as_deref(),
+            Some("plan\n"),
+            "tern took the plan through skiff"
+        );
+
+        fs::remove_file(kestrel.places.quests.join(QUEST).join(plan)).expect("removed");
+        talk(&mut kestrel_skiff.0, &mut kestrel_skiff.1);
+        assert!(
+            !ledger(&kestrel).files.contains_key(&key),
+            "kestrel, sharing with skiff alone, forgets the deletion"
+        );
+
+        let mut kestrel_tern = (kestrel.exchange(&tern), tern.exchange(&kestrel));
+        talk(&mut kestrel_tern.0, &mut kestrel_tern.1);
+        assert_eq!(kestrel.read(plan), None, "tern's stale copy isn't taken");
+        assert_eq!(tern.read(plan), None, "and tern is told of the deletion");
+
+        for _ in 0..3 {
+            talk(&mut kestrel_skiff.0, &mut kestrel_skiff.1);
+            talk(&mut skiff_tern.0, &mut skiff_tern.1);
+            talk(&mut kestrel_tern.0, &mut kestrel_tern.1);
+        }
+        for machine in [&kestrel, &skiff, &tern] {
+            assert_eq!(machine.read(plan), None, "{} has no plan", machine.name);
+            let held = ledger(machine);
+            assert!(
+                !held.files.contains_key(&key),
+                "{} forgets the deletion",
+                machine.name
+            );
+            assert!(
+                held.forgotten.contains_key(&key),
+                "keeping its versions, {}",
+                machine.name
+            );
+        }
     }
 
     /// Writes `text` at `path` within `root`, making the folders it is in.

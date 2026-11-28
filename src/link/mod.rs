@@ -53,6 +53,7 @@ pub mod refused;
 mod started;
 pub mod starts;
 pub mod steers;
+mod takeover;
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -364,7 +365,7 @@ pub async fn run(
     .await?;
     pinned(&store, named.as_deref(), &other.machine)?;
     know_how_it_runs(starting.as_ref(), &other.machine);
-    let (claim, claimed_at) = claimed(&store, &other.machine).await?;
+    let (claim, asked_before) = takeover::claimed(&store, &other.machine).await?;
     let reach = reach_start(&store, &other.machine);
     // As it stood before admission, which marks a machine never linked
     // as of now.
@@ -476,7 +477,7 @@ pub async fn run(
     // still lets its claim go to a newer one at once.
     let result = tokio::select! {
         result = carrying => result,
-        () = superseded(&store, &other_machine, claimed_at) => Err(io::Error::new(
+        () = takeover::superseded(&store, &other_machine, asked_before) => Err(io::Error::new(
             io::ErrorKind::ConnectionAborted,
             format!("a newer link with {other_machine} took over"),
         )),
@@ -1029,53 +1030,6 @@ fn pinned(store: &impl Store, named: Option<&OnceLock<String>>, said: &str) -> i
         eprintln!("why {pinned} was refused isn't kept: {error}");
     }
     Err(refusal(why))
-}
-
-/// How long a newer link waits for the link holding its machine's claim
-/// to let it go: that one looks each [`LOOK_EVERY`], and lets go what it
-/// carried in under a second.
-const TAKEN_OVER_WITHIN: Duration = Duration::from_secs(10);
-
-/// This link's hold on `machine`, and when it took it. Where another link
-/// holds it, that one is asked to let it go ([`Store::supersede`]), since a
-/// newer link from the same machine means the older one's other end is
-/// gone though it hasn't heard so: a node restarted on 25 November had its
-/// new links to a cloud machine refused there while the old one's end
-/// went on for minutes. Refused when it isn't let go in time.
-async fn claimed(store: &impl Store, machine: &str) -> io::Result<(Claim, i64)> {
-    if let Some(claim) = store.claim(machine)? {
-        return Ok((claim, now()));
-    }
-    store.supersede(machine)?;
-    let taken = tokio::time::timeout(TAKEN_OVER_WITHIN, async {
-        loop {
-            tokio::time::sleep(LOOK_EVERY / 4).await;
-            if let Some(claim) = store.claim(machine)? {
-                return Ok::<_, io::Error>((claim, now()));
-            }
-        }
-    });
-    taken.await.unwrap_or_else(|_| {
-        Err(refusal(format!(
-            "a link to {machine} already carries it here, and didn't let it go \
-             within {TAKEN_OVER_WITHIN:?}"
-        )))
-    })
-}
-
-/// Waits until a newer link with `machine` asks for the claim this link
-/// took at `claimed_at`, looking each [`LOOK_EVERY`].
-async fn superseded(store: &impl Store, machine: &str, claimed_at: i64) {
-    let mut looking = tokio::time::interval(LOOK_EVERY);
-    loop {
-        looking.tick().await;
-        if store
-            .superseded(machine)
-            .is_some_and(|asked| asked > claimed_at)
-        {
-            return;
-        }
-    }
 }
 
 /// Keeps that this store is linked with `machine`, as of now where it
@@ -4211,6 +4165,7 @@ mod tests {
                 saturated,
                 cpu_minute: None,
                 memory_full_minute: None,
+                io_full_minute: None,
             };
             let said = crate::within::Said {
                 at: now,
@@ -5401,7 +5356,10 @@ mod tests {
         until(&skiff, |store| !store.presences().is_empty()).await;
 
         let _second = linked(&skiff, &kestrel, 1 << 16);
-        let ended = first.await.expect("the first link's end runs to its end");
+        let ended = tokio::time::timeout(PATIENCE, first)
+            .await
+            .expect("the first link's end lets its claim go in time")
+            .expect("the first link's end runs to its end");
         // Kestrel's older end is taken over too, and closes its stream,
         // so skiff's may hear it leave before it sees the newer claim.
         assert!(

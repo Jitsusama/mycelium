@@ -36,7 +36,6 @@ src/receptor.rs
 src/run.rs
 src/served/mod.rs
 src/share/exchange.rs
-src/share/ledger.rs
 src/sprout.rs
 src/steer.rs
 src/store/folders.rs

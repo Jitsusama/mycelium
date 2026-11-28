@@ -231,15 +231,14 @@ async fn a_machine_whose_lend_caps_nothing_is_lent_no_model() {
 }
 
 #[tokio::test]
-async fn a_stream_cut_short_is_charged_its_reservation() {
+async fn a_stream_cut_before_it_states_its_tokens_asked_is_charged_its_reservation() {
     let mut lending = capped(10.0);
     let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
     let asked = lending.relay.asked().await;
     asked.answer.send(STREAMED.to_vec()).expect("the head");
-    let started = r#"data: {"type":"message_start","message":{"usage":{"input_tokens":10}}}"#;
     asked
         .answer
-        .send(chunk(&format!("{started}\n\n")))
+        .send(chunk("data: {\"type\":\"ping\"}\n\n"))
         .expect("an event");
     drop(asked.answer);
     let (lent, _) = whole(&mut answers).await;
@@ -250,8 +249,74 @@ async fn a_stream_cut_short_is_charged_its_reservation() {
     assert_eq!(
         lending.spent("agents-1"),
         RESERVED,
-        "it may have been made whole upstream"
+        "it may have been made whole upstream, at any of its tokens' prices"
     );
+}
+
+/// What a stream cut short after stating 1,000 tokens asked from no cache,
+/// none written to its cache and 2,000 read from it costs of a model at
+/// $3 a million tokens asked, $0.30 a million read from its cache and $15
+/// a million answered, with its 64 tokens answered: 3000, 600 and 960
+/// millionths of a dollar.
+const CUT: u64 = 4560;
+
+#[tokio::test]
+async fn a_stream_cut_after_it_states_its_tokens_asked_is_charged_those_and_its_most() {
+    let price = json!({"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.3,
+                       "most_output": 1000});
+    let mut lending = Lending::with(&json!({
+        "vms": [{"prefix": "agents-", "budget": "models", "requests_a_day": 100}],
+        "budgets": {"models": {
+            "upstream": "relay/agents.sock",
+            "host": "models.example",
+            "paths": ["/v1/messages"],
+            "auth_header": "authorization",
+            "prices": {"a-model": price},
+            "spend_watch": "proxy",
+        }},
+    }));
+    // A request with more bytes than tokens, as every one has, reserves
+    // each byte at a cache write's $3.75 a million and its 64 answered.
+    let body = json!({"model": "a-model", "max_tokens": 64,
+                      "messages": [{"role": "user", "content": "x".repeat(4000)}]});
+    let bytes = u64::try_from(body.to_string().len()).expect("a length");
+    let reserved = (bytes * 3_750_000 + 64 * 15_000_000).div_ceil(1_000_000);
+    let (sending, mut answers) = mpsc::channel(BACKLOG);
+    let carrying = {
+        let lender = lending.lender.clone();
+        tokio::spawn(async move {
+            let mut used = Used::default();
+            let ended = lent(&lender, "agents-1", asking(&body), &sending, &mut used).await;
+            (matches!(ended, Ended::Gone), used)
+        })
+    };
+    let asked = lending.relay.asked().await;
+    asked.answer.send(STREAMED.to_vec()).expect("the head");
+    let started = json!({"type": "message_start", "message": {"usage": {
+        "input_tokens": 1000, "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2000, "output_tokens": 1,
+    }}});
+    asked
+        .answer
+        .send(chunk(&format!("data: {started}\n\n")))
+        .expect("an event");
+    assert!(matches!(next(&mut answers).await, Some(Lent::Head { .. })));
+    assert!(matches!(next(&mut answers).await, Some(Lent::Body(_))));
+    // Its borrower stops reading, so the next piece lets its lend go, as
+    // the day's dearest cut lends were let go.
+    drop(answers);
+    asked
+        .answer
+        .send(chunk("data: {\"type\":\"ping\"}\n\n"))
+        .expect("an event");
+    let (gone, used) = carrying.await.expect("it was carried");
+    assert!(gone, "its borrower stopped reading");
+    assert_eq!(used.charged, Some(CUT), "its tokens asked and its most");
+    assert!(
+        CUT < reserved,
+        "{CUT} is less than its reservation, {reserved}"
+    );
+    assert_eq!(lending.spent("agents-1"), CUT);
 }
 
 #[tokio::test]

@@ -527,6 +527,9 @@ fn events(said: &Value) -> Vec<Event> {
                 .map_or(event.title.len(), |(cut, _)| cut);
             let ended = crate::forage::cut_ended(&event.title[..kept], char::is_whitespace);
             event.title.truncate(ended.len());
+            // A cut keeps what was read, so a long title held for as long
+            // as its session would still cost its whole length without this.
+            event.title.shrink_to_fit();
             event
         })
         .take(EVENTS_MOST)
@@ -1100,9 +1103,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_session_says_its_latest_events_leaving_out_what_cant_be_read() {
-        let presence = |events: Value| Presence {
+    /// A presence of a session elsewhere saying `events`.
+    fn saying_events(events: &Value) -> Presence {
+        Presence {
             session: "01a1".to_owned(),
             body: json!({
                 "session": "01a1", "addresses": ["KESTRL"], "at": "2026-11-15T15:30:00Z",
@@ -1112,13 +1115,19 @@ mod tests {
             elsewhere: Some("skiff".to_owned()),
             lives: true,
             unreachable_since: None,
-        };
-        let event = |n: usize, kind: &str| {
-            json!({"at": format!("2026-11-15T15:{:02}:00Z", 59 - n), "kind": kind,
-                "where": "github:Jitsusama/mycelium", "title": format!("event {n}")})
-        };
+        }
+    }
+
+    /// The `n`th newest event of `kind`, titled by its number.
+    fn event_said(n: usize, kind: &str) -> Value {
+        json!({"at": format!("2026-11-15T15:{:02}:00Z", 59 - n), "kind": kind,
+            "where": "github:Jitsusama/mycelium", "title": format!("event {n}")})
+    }
+
+    #[test]
+    fn a_session_says_its_latest_events_leaving_out_what_cant_be_read() {
         let mut said: Vec<Value> = (0..25)
-            .map(|n| event(n, ["commit", "push", "pr", "merge", "stage"][n % 5]))
+            .map(|n| event_said(n, ["commit", "push", "pr", "merge", "stage"][n % 5]))
             .collect();
         said.insert(
             1,
@@ -1126,11 +1135,7 @@ mod tests {
             "where": "QEST-20261115-IAHL3O", "title": "not a kind there is"}),
         );
         said.insert(2, json!({"kind": "push", "where": "x", "title": "no time"}));
-        said[3]["title"] = json!("é".repeat(130));
-        said[4]["title"] = json!(format!("{} \u{17D2}\u{1780}", "\u{1780}".repeat(118)));
-        said[5]["title"] = json!("Tide \u{17D2}");
-        said[6]["title"] = json!("\u{1780}".repeat(LINE_MOST));
-        let read = session(&presence(json!(said)), "kestrel").expect("a presence reads");
+        let read = session(&saying_events(&json!(said)), "kestrel").expect("a presence reads");
         assert_eq!(
             read.events
                 .iter()
@@ -1150,36 +1155,67 @@ mod tests {
             (EventKind::Commit, "github:Jitsusama/mycelium", "event 0"),
             "each says what happened, where, and its title"
         );
-        assert_eq!(
-            read.events[1].title,
-            "é".repeat(120),
-            "a long title is cut at 120 characters"
-        );
-        assert_eq!(
-            read.events[2].title,
-            "\u{1780}".repeat(118),
-            "a cut title ends on no coeng, nor the space it leaves last"
-        );
-        assert_eq!(
-            read.events[3].title, "Tide",
-            "an uncut title ends on no lone coeng either, nor its space"
-        );
-        assert_eq!(
-            read.events[4].title,
-            "\u{1780}".repeat(LINE_MOST),
-            "a title of 120 characters is kept whole"
-        );
         let serialized = serde_json::to_value(&read).expect("a session serializes");
         assert_eq!(
             serialized["events"][0],
-            event(0, "commit"),
+            event_said(0, "commit"),
             "a session's record says them as its presence did: {serialized}"
         );
         assert!(
-            session(&presence(json!("not a list")), "kestrel")
+            session(&saying_events(&json!("not a list")), "kestrel")
                 .is_some_and(|session| session.events.is_empty()),
             "events it can't read never cost the session itself"
         );
+    }
+
+    #[test]
+    fn a_session_ends_each_event_title_cut_or_not_and_only_at_its_end() {
+        let titles = [
+            "é".repeat(130),
+            format!("{} \u{17D2}\u{1780}", "\u{1780}".repeat(118)),
+            " Tide\nturns \u{200D}\u{17D2}".to_owned(),
+            "\u{1780}".repeat(LINE_MOST),
+            " \u{17D2}".to_owned(),
+        ];
+        let said: Vec<Value> = titles
+            .iter()
+            .enumerate()
+            .map(|(n, title)| {
+                let mut event = event_said(n, "commit");
+                event["title"] = json!(title);
+                event
+            })
+            .collect();
+        let read = session(&saying_events(&json!(said)), "kestrel").expect("a presence reads");
+        let read: Vec<&str> = read
+            .events
+            .iter()
+            .map(|event| event.title.as_str())
+            .collect();
+        let cases = [
+            ("é".repeat(120), "a long title is cut at 120 characters"),
+            (
+                "\u{1780}".repeat(118),
+                "a cut title ends on no coeng, nor the space it leaves last",
+            ),
+            (
+                " Tide\nturns".to_owned(),
+                "an uncut title ends on no joiner or lone coeng, nor its space, \
+                 and keeps its start and its inner break",
+            ),
+            (
+                "\u{1780}".repeat(LINE_MOST),
+                "a title of 120 characters is kept whole",
+            ),
+            (
+                String::new(),
+                "a title that ends as nothing reads as empty, its event kept",
+            ),
+        ];
+        assert_eq!(read.len(), cases.len(), "every event is kept: {read:?}");
+        for (title, (expected, what)) in read.iter().zip(&cases) {
+            assert_eq!(*title, expected.as_str(), "{what}");
+        }
     }
 
     #[test]

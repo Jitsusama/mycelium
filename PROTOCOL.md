@@ -665,7 +665,40 @@ Each end keeps, in the quest's ledger as `theirs`, what the other said
 it holds in its `Holds`, and what it sent and was seen to take: an end
 that takes a file says `Holds` of it even when it now holds just what
 was sent, so the sender knows. Only files an end holds itself are kept
-there, so a file deleted drops out.
+there, and of a file it holds deleted, only the other's deletion.
+
+A ledger forgets a deletion once every machine in its `theirs` is known
+to hold that file deleted at the same state or newer, so a scratch whose
+files come and go keeps no deletion of each. An end that takes a
+deletion, or hears one of a file it holds deleted at another state or
+never held, says `Holds` of it back at the state the two now share, so
+the other end learns it. An end hearing a deletion at the state it
+holds says it back once, where it hadn't heard that of the other, so
+the end that told it learns it too, and an end that forgot a deletion
+at that state or newer answers one with nothing, so two ends holding
+no entry of it stop. Until then the deletion is kept: a machine that held
+the file and was away is still told of it when it links again. A
+machine that asks for a file is named in `theirs` from then on, so one
+that took it and dropped before saying so is waited for too. A machine
+whose link carries the README alone is waited on for the README's
+deletion alone.
+
+Of a deletion forgotten, the ledger keeps the file's key and every
+version it was last known at, joined, as `forgotten`. A copy offered
+later whose version that holds, from a machine sharing through another
+node that this ledger never waited on, is refused, and its end is told
+the deletion back, so it deletes the file and forgets it in turn. A
+file written again after its deletion was forgotten starts from its own
+key's versions, so it is newer than any deletion still kept elsewhere
+and never newer than a write of the same path made apart.
+
+Once a minute, off the node's loop, a machine this node made that its
+book shows released, made again under no place since, doubted by no
+line it can't read and reached by no link, is let go of in every
+ledger, from `theirs` and from what workers read. A person's machine,
+never made, and one merely unlinked stay. Only the maker's book shows a
+release, so other nodes still wait on that machine. A ledger that can't
+be read is named in the log and leaves the rest to be let go.
 
 What a worker says it holds of a quest it was given is kept apart, as
 `read`, since nothing a worker says is taken: `theirs` would let its
@@ -810,7 +843,7 @@ in order and says each step:
    cell standing, naming the folder it read. On a
    machine nobody works at, every link's end is judged an agent's, so a
    person's carry there is started as an agent's start: counted among
-   the 8 an hour and 32 its asker and the node may start, arriving as
+   the 32 an hour and 128 its asker and the node may start, arriving as
    a new cell, and refused, where the limits or the person's stop
    refuse it, with no word of an orchestrator: it tells the person to
    carry to a machine a person works at, or, stopped, to resume starts
@@ -1728,7 +1761,10 @@ left out whole), its latest `events`, newest first and at most 20 (each
 as a repository's key or a quest's id, and a `title` cut to 120
 characters and then, cut or not, ending in no space, no joiner or
 non-joiner left joining nothing and no Khmer coeng with no letter to
-subscript; any it can't read is left out), and the `window` it
+subscript, so a title of those alone reads as empty, its event kept;
+each node cleans a title as it reads the presence, so two running
+different versions may say one event's title apart; any it can't read
+is left out), and the `window` it
 runs in (`terminal`, `id`, `within`, such as a kitty window's id and
 kitty's socket, and `app_id`, the app id its window was opened with,
 where its opener said so in `MYCELIUM_APP_ID`, which names the same
@@ -1938,7 +1974,13 @@ in percent, as its own kernel says it (`some avg60` of
 where the kernel says none, as a Mac's, or by a node too old to read
 it. Its `memory_full_minute` is the share of the last minute all work
 at once waited on memory, machine-wide, in percent (`full avg60` of
-`/proc/pressure/memory`), left out as `cpu_minute` is. The room is
+`/proc/pressure/memory`), left out as `cpu_minute` is, and its
+`io_full_minute` the same of its disks (`full avg60` of
+`/proc/pressure/io`), left out alike; where its `kept_lively` names
+`io_full_from`, control groups as paths below `/sys/fs/cgroup`, it is
+the worst of their `io.pressure` instead, left out where none says
+one, since machine-wide a task held back by its own cap, as a capped
+survey of the disks, counts as waiting on them. The room is
 `null` where
 no harness keeps a queue, or where the queue's record is of another
 shape or unwritten for two minutes. A machine keeps no reserve of
@@ -2183,13 +2225,17 @@ or memory headroom. Over, it carries a `memory-pressure` or
 at once, and still goes to the roomiest where every machine is
 saturated, never refused; an unheard room is never saturated, nor
 passed for it. A machine whose `declared` says `kept_lively`, as
-`{"cpu": 28, "memory_available": bytes, "memory_full": 3}` (the last
-two may be left out), is one the person works at that the others take
+`{"cpu": 28, "memory_available": bytes, "memory_full": 3,
+"io_full": 1, "io_full_from": ["agents.slice"]}` (all but `cpu` may
+be left out), is one the person
+works at that the others take
 new work from first: within its ceiling (processor pressure
 machine-wide at or under `cpu`, as its `cpu_minute` says it, or over
 ten seconds where its room says none; memory pressure at or under
 `memory_full`, as its `memory_full_minute` says it, where it says one;
-and as much memory available as it keeps) and its queue's
+disk pressure at or under `io_full`, as its `io_full_minute` says it,
+where it says one; and as much memory available as it keeps) and its
+queue's
 limits, it ranks after every other heard machine with room and before
 those over a limit, since a machine over is swamped while one within
 its ceiling is light by the ceiling's own measure; within its ceiling
@@ -2202,7 +2248,11 @@ still does, and a start placed on it heard is past room, as the cloud's
 paragraph below says, so the person's start goes to a cloud machine
 with room before it. Work tolerating `kept-lively` ranks it as any
 machine. A ceiling in another shape spoils only itself, and a node
-older than the field ranks it as any machine. Within a tier, the most
+older than the field ranks it as any machine. A `memory_full` or
+`io_full` not a whole percent spoils only itself, holding the machine
+to the rest of its ceiling; so does a node placing work that is older
+than the part, so in a realm of mixed builds each part holds only for
+work begun on a node that reads it. Within a tier, the most
 preferences met goes first,
 then the most headroom, then by name; of the first and each as good but
 for headroom within 0.05 of it (`NEAR_BEST`), one is chosen at random,
@@ -2359,8 +2409,23 @@ begins in its home as ever. `strict` is false where it
 isn't said and isn't written when false, so a node, or a link's end,
 from before it reads the start as ever, dropping `strict`, and it
 begins in that machine's home; a sprout's command then ends itself
-there ten seconds on, saying that machine has no such folder. The
-answer is the `machine`, the `held`
+there ten seconds on, saying that machine has no such folder.
+Where that machine's node is given a worker account other than its
+own (`--worker-uid`, The Worker Socket), the launcher of a start's
+fence runs it as that account, so one within that launcher is refused
+too, before anything starts, where that account can't enter its
+folder: each folder from `/` down to it must let the account search
+it, by its owner's bits where the account owns it, by its group's
+where its group is the account's primary group or one naming it in
+`/etc/group`, and else by everyone's. The refusal names the folder,
+the account and the first folder that stops it, as `` tern can't begin
+this in /home/kestrel/src, since its launcher runs it as account 1001
+(worker), which can't enter /home/kestrel; ask for `--folder /` or a
+folder that account owns ``. An account its machine's records don't
+hold is never judged so, since its groups are unknown, and a node
+given no worker account, or its own, judges no folder. An agent's
+`"Run"` there is held to the same.
+The answer is the `machine`, the `held`
 id, the `folder` it began in, and `attach`, the words that join it from
 a terminal on the asking machine, to be run as given. A start that
 isn't placed, or doesn't start, is an error saying why, such as
@@ -2554,6 +2619,13 @@ judged on, and an add whose second judgement refuses takes out
 only a name it wrote. Anyone may take one out, which only sends work
 back to the machines it would go to anyway; whoever asks, the node
 says on its log who. A file past the most read is never written again.
+The node names a machine it made for a proven agent a room itself, as
+that make's asker would, once the start it was made for lands there,
+and again for each such make standing when it starts, so every agent's
+work may take its free places rather than ask for another machine. One
+made for the person or for `unknown` stays as booked, as does one whose
+start failed, which is let go, and one whose name, its provider's word,
+isn't a name as above.
 Every agent's start or run may be placed there, a granted session's
 and one from no one known included, whoever it is booked for, since
 its booking says who pays for it and may let it go,
@@ -2659,10 +2731,10 @@ asker names in `PI_SESSION_ID`, if it is among them, and otherwise
 toward the agents of no known cell, who share one cell's number, as
 on a Mac, whose `ps` won't say it. An agent sets its own environment,
 so one on a host may name another of its sessions and charge that cell
-instead. In any hour a cell starts at most 8
-and every agent together at most 32, and one past either is refused,
-saying which. A claim proves nothing, so the 8 are a cell's fair
-share, and the 32, with the ended sessions below, the bound no agent
+instead. In any hour a cell starts at most 32
+and every agent together at most 128, and one past either is refused,
+saying which. A claim proves nothing, so the 32 are a cell's fair
+share, and the 128, with the ended sessions below, the bound no agent
 gets round. A start counts whether it started or failed, since a failed one may
 still have spent, and so does one still starting, so starts asked at
 once can't pass the limit; a refused one doesn't, nor one relayed to
@@ -2671,7 +2743,7 @@ not taken now, or not to be begun for want of a launcher, a starter,
 a home, its folder or leave to begin at home. The person's own
 starts are never counted or refused. An agent's first start in the
 hour that brings back a session the node knows has ended, on the
-machine it ran on, counts toward neither, up to 128 through the node
+machine it ran on, counts toward neither, up to 256 through the node
 in the hour, so every session a restarted machine held comes back at
 once; past that, each counts as new work. A node knows only its own
 machine's sessions as ended, since another's presence goes when it
@@ -2688,7 +2760,7 @@ word but `--session` and the session's id, so no prompt or flag gives
 it new work, nor a file an agent wrote; never `--session-id`, with
 which pi begins a new session under an id it finds none of. A bare
 `pi` is the one the login finds, so it fences habit alone, and each
-ended session once an hour through each node, and the 128, bound what
+ended session once an hour through each node, and the 256, bound what
 it hides. A second bringing back the same one within the hour counts
 as new work, unless the first failed, which brought nothing back. An
 agent's start bringing back a session on its own machine while
@@ -2757,7 +2829,7 @@ there as that agent's own start.
 A session an orchestrator's carry takes to another machine begins no
 new work there, so on the node that ordered the carry its start counts
 toward neither limit, once an hour
-for each session, sharing the 128 with the sessions brought back. The
+for each session, sharing the 256 with the sessions brought back. The
 node asked judges it so only for a start counted toward the very cell
 that ordered the carry, word for word the start the carry gives its
 session, and matching the newest carry of that session this node kept
@@ -3323,9 +3395,22 @@ only the headers the shim hands on and `key`'s command's output in
 never leave it, and the key never crosses to it. A lend file that
 can't be read, which says why only in the lender's log, and there
 only what kind of fault and where, never the words found, or an
-upstream not answering is 503, and a key that
+upstream not answering is 503. The node reads the file once as it
+starts too, so a lend not taken is in the log before any lend is
+asked, and its `health` names a source `lend`, read afresh at each
+ask: `refused` with that why while the file isn't taken, isn't a
+plain file, a machine it lends to names a budget it doesn't keep,
+its cuts can't be read or every machine is cut off, and `answering`
+otherwise. The lend file, its cuts, the day's tally and spend-watch's
+word are each read only as a plain file, opened without waiting, so
+a pipe or a device at one's name never holds the lender. A key that
 can't be had is 502. An interim head the upstream sends, 1xx but 101,
 is passed over for the one after it, and a 204 or 304 has no body.
+An upstream that answers 421, its connection misdirected, is asked
+once more on a fresh connection before anything of its answer goes to
+the borrower, and the second answer is handed on, 421 or not; one
+that can't be reached or asked again hands on the first. It is still
+one lend, counted and charged once.
 `mycelium lend cut MACHINE`, or `--all`, cuts a machine off at once,
 kept in `lend/cuts.json`, changed under a lock on `lend/cuts.lock` so
 cuts made at once all hold: each lend it asks is refused, and each being
@@ -3339,7 +3424,8 @@ until `--all` writes them anew. Each lend that reaches a lender,
 refused or not, is written to the node's log as one line,
 `mycelium-lend:`, a space and JSON of its `time`, `lender`, `vm`,
 `service`, `budget`, `model`, `upstream` host, `request_bytes`,
-`response_bytes`, `status`, `duration_ms` and `outcome`, and never its
+`response_bytes`, `status`, `asked`, the times it was asked whole of
+its upstream, `duration_ms` and `outcome`, and never its
 body, headers or key. `upstream` is null where the lend was refused
 before it was sent there, so a line naming one is one that was. A
 model's line says `charged_usd` and `spent_usd_today` besides, once
@@ -3373,8 +3459,13 @@ read only from `usage` at the top of the upstream's JSON or of its
 the most each count said, once the answer said it was done; never
 clamped to its reservation, so a cap is passed only by what was truly
 spent. One whose upstream refused it, 400 or more with no usage, is
-charged nothing. Any other, as a stream cut partway, is charged its
-reservation.
+charged nothing. One not answered whole, as a stream cut partway, whose
+upstream stated its tokens asked, as a stream's `message_start` does
+before any text, is charged those at their own prices and `max_tokens`
+answered, never under what it can have cost, since it may have been
+made whole upstream but never answers past its most. Any other, cut
+before it stated them or whole but never saying what it used, is
+charged its reservation.
 
 Before each, the lender reads spend-watch's word,
 `spend-watch/budgets.json` in the account's runtime folder. Where it
@@ -3699,7 +3790,7 @@ in milliseconds.
 | `list` with `kind`, and `limit` and `fields` | `records`, every one of the kind |
 | `watch` with `kind`, and `keys`, `when` and `deep` | `records` whole, then `changed` and `gone` |
 | `unwatch` | nothing; the watch with that `id` ends |
-| `health` | `state`, and each linked machine and served file as a source |
+| `health` | `state`, and each linked machine and served file, and the lend, as a source |
 | `steer` with `address` and `steer` | `steered` with the `machine` whose session's inbox has it |
 | `update` with `machine` | `updated`, the ending its updater said, as `Updated` gives it |
 | `carry` with `quest` and `to` | `carried`, where its sessions went, as `mycelium carry` says it |
@@ -3958,7 +4049,11 @@ the messages and sessions it holds, so two nodes may name different
 hubs for a while, and nodes of two versions may keep different
 subjects for one cell and name different hubs for one subject. The
 kind is told as the sessions change, so a busy hour of talk moves the
-hubs with the next change, not a message at a time.
+hubs with the next change, not a message at a time. Ten thousand cells
+as the networks are measured make their hub records within 11.75 MB,
+each made as the bytes it is sent as, but ten thousand each saying 24
+subjects of 120 characters outside ASCII spend about 525 MB, about
+2.2 KB a subject, since a record holds its subject in several copies.
 
 The `ended` kind holds each session of this machine's whose work
 stopped while its quest goes on, keyed `ended:<session>`, so whoever

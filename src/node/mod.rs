@@ -71,12 +71,14 @@ mod viewed;
 pub use cell::{KIND as CELL_KIND, records as cell_records};
 mod crossing;
 mod ended;
+mod enters;
 mod feeding;
 mod fences;
 mod formed;
 pub use formed::Formed;
 mod glyph;
 mod hub;
+pub use hub::{Holder as HubHolder, KIND as HUB_KIND, records as hub_records};
 mod network;
 mod once;
 pub use network::{Holding, Standing, records as network_records};
@@ -103,8 +105,8 @@ const STARTS_LISTED: usize = 100;
 const START_WAITS_MOST: i64 = 60_000;
 
 /// The most starts one `Takes` weighs, so one line can't ask the node to
-/// place, and log, without end: past all a cell's resumes in an hour.
-const TAKES_MOST: usize = starts::RESUMED_AN_HOUR;
+/// place, and log, without end: a carry of more asks in parts.
+const TAKES_MOST: usize = 128;
 
 /// How long a link waits before dialling again after it dropped, at first
 /// and at most; each failure in a row doubles the wait.
@@ -888,15 +890,17 @@ fn past_quoted(quoted: &str) -> Option<&str> {
 /// `folder`, was raised before anything began: placed elsewhere or not
 /// taken now ([`Shared::here`]), or unable to begin it, lacking a
 /// launcher for its fence, a starter, a home, its folder or leave to
-/// begin at home ([`start::begins_strictly`]), or a reopening of a
-/// session that never ended there ([`Shared::reopened_here`]), so has no
-/// log there. Each is matched whole from its start, so words a refusal
-/// only quotes never match.
+/// begin at home ([`start::begins_strictly`]) or in a folder its
+/// launcher's account can't enter ([`Shared::enterable`]), or a
+/// reopening of a session that never ended there
+/// ([`Shared::reopened_here`]), so has no log there. Each is matched
+/// whole from its start, so words a refusal only quotes never match.
 fn began_nothing_here(why: &str, machine: &str, folder: Option<&Path>) -> bool {
     let opens = [
         RELAYED_ELSEWHERE.to_owned(),
         format!("{machine}{DECLINED_NOW}"),
         format!("{machine}{LAUNCHER_REFUSED}"),
+        format!("{machine}{}", enters::CANT_BEGIN_IN),
     ];
     let whole = [
         format!("{machine}{STARTS_NO_SESSIONS}"),
@@ -1395,7 +1399,7 @@ where
     // is missing, costs only the workers' sessions, said as it fails: the
     // node runs on for its own, rather than leaving the machine with no
     // node at all.
-    let (serving, workers) = match serve_workers(given.worker.take()) {
+    let (serving, workers) = match serve_workers(given.worker.clone()) {
         Ok(served) => served.unzip(),
         Err(said) => {
             eprintln!("{said}");
@@ -1732,6 +1736,10 @@ fn redial_standing(
                 made.machine
             );
             made.provider.clone_from(asked);
+            // Named again, as a make now is once its start lands: its
+            // start ended with the node that asked it, and one made before
+            // makes were named, or whose naming failed, is named now.
+            name_made_room(book, &made);
             // The loop that reads it hasn't started, so it holds the sender.
             // Nothing is told on this Notify: no start waits on a machine
             // made before the node did, so none finds it unwanted, and it is
@@ -1748,18 +1756,47 @@ fn redial_standing(
 
 /// The one of `providers` that is `provider`, or else the only one that is
 /// it built again into the Nix store: the same path past the store's hash.
+/// Each is read through its links too, so a provider asked by a link into
+/// the store is still the one that made a machine by the path it names,
+/// and the other way round, and stays so once the link names a new build.
 fn still_asked<'a>(providers: &'a [String], provider: &str) -> Option<&'a String> {
+    asked_through(providers, provider, resolved)
+}
+
+/// [`still_asked`], with each path read through its links by `resolve`.
+fn asked_through<'a>(
+    providers: &'a [String],
+    provider: &str,
+    resolve: impl Fn(&str) -> String,
+) -> Option<&'a String> {
     if let Some(same) = providers.iter().find(|one| *one == provider) {
         return Some(same);
     }
-    let built = past_the_hash(provider)?;
-    let mut again = providers
+    let theirs = resolve(provider);
+    let ours = providers
         .iter()
-        .filter(|one| past_the_hash(one) == Some(built));
+        .map(|one| (one, resolve(one)))
+        .collect::<Vec<_>>();
+    if let Some(&(same, _)) = ours.iter().find(|(_, path)| *path == theirs) {
+        return Some(same);
+    }
+    let built = past_the_hash(&theirs)?;
+    let mut again = ours
+        .iter()
+        .filter(|(_, path)| past_the_hash(path) == Some(built));
     match (again.next(), again.next()) {
-        (Some(only), None) => Some(only),
+        (Some(&(only, _)), None) => Some(only),
         _ => None,
     }
+}
+
+/// `path` with every link in it followed, or as it is where that can't be
+/// done, as for a build the store has since let go.
+fn resolved(path: &str) -> String {
+    fs::canonicalize(path)
+        .ok()
+        .and_then(|real| real.into_os_string().into_string().ok())
+        .unwrap_or_else(|| path.to_owned())
 }
 
 /// What follows the hash in a path in the Nix store, such as
@@ -1919,6 +1956,24 @@ fn leaving_as_made(
         said.leaves_at = Some(said.leaves_at.map_or(*end, |leaves| leaves.min(*end)));
     }
     machine
+}
+
+/// Of the machines `released`, those no link reaches, as
+/// [`let_go_ended`] judges one: one the realm doesn't list, or lists as
+/// unreachable. One of the same name a link reaches, made again
+/// elsewhere or whose release failed, isn't let go of yet.
+fn unreached(
+    released: std::collections::BTreeSet<String>,
+    store: &impl Store,
+) -> std::collections::BTreeSet<String> {
+    let machines = store.machines();
+    let unreached = |name: &String| {
+        machines
+            .iter()
+            .find(|one| one.name == *name)
+            .is_none_or(|one| one.state == Readiness::Unreachable)
+    };
+    released.into_iter().filter(unreached).collect()
 }
 
 /// Lets go of each machine `book` says was made and stands, though its
@@ -2281,6 +2336,40 @@ fn name_room_for(book: &Book, machine: &str, who: &str) -> Result<bool, String> 
     Ok(named)
 }
 
+/// Names a machine `made` for a proven agent a room, as its asker would
+/// ask, so every agent's work may go to its places: on 27 November a
+/// start naming no room asked for a thirteenth machine past the
+/// provider's cap of twelve while a spot machine an agent had made held
+/// 39 places free, since its booking kept it for that agent alone. One
+/// made for the person, or for no agent proven, stays as booked, as
+/// [`may_name_room`] judges, and is said on the log only where naming
+/// one fails for another reason. Its name is its provider's word, so it
+/// is held to what a rooms ask's is, [`room_named`]: a line's end or a
+/// `#` in it would write some other machine into `agent-rooms`.
+fn name_made_room(book: &Book, made: &Made) {
+    let Some(asker) = made.asker.as_deref() else {
+        return;
+    };
+    if asker == made::PERSON || asker == made::UNKNOWN {
+        return;
+    }
+    // Trimmed, it would be another machine's name than the one booked.
+    let plain = match room_named(Some(&made.machine)) {
+        Ok(name) if name == made.machine => Ok(()),
+        Ok(name) => Err(format!("\"{name}\" has spaces about it")),
+        Err(why) => Err(why),
+    };
+    if let Err(why) = plain {
+        eprintln!("a machine made for {asker} stays theirs alone: {why}");
+        return;
+    }
+    match name_room_for(book, &made.machine, asker) {
+        Ok(true) => eprintln!("{} is named a room, made for {asker}", made.machine),
+        Ok(false) => {}
+        Err(why) => eprintln!("{} stays {asker}'s alone: {why}", made.machine),
+    }
+}
+
 /// Whether `who` may name `machine` a room, as `rooms_asked_by` says, by
 /// what `book` holds standing now, or why not.
 fn may_name_room(book: &Book, machine: &str, who: &str) -> Result<(), String> {
@@ -2487,6 +2576,10 @@ struct Shared<S> {
     lender: Option<Arc<crate::lend::lender::Lender>>,
     /// The gates this machine answers its workers, if it answers any.
     gates: Option<Arc<crate::gate::Gates>>,
+    /// The account its fences' launchers run what it starts as, where it
+    /// is another than the node's own, as a worker machine's is
+    /// (`worker`); none otherwise, and then no folder is judged for it.
+    launches_as: Option<u32>,
     /// The ids of the signals this node said as its receptors this run,
     /// the only messages from a receptor's name it takes (`signals`).
     spoken: Arc<Mutex<HashSet<String>>>,
@@ -2656,6 +2749,7 @@ impl<S: Clone> Clone for Shared<S> {
             lends_from: self.lends_from.clone(),
             lender: self.lender.clone(),
             gates: self.gates.clone(),
+            launches_as: self.launches_as,
             spoken: Arc::clone(&self.spoken),
             refused: Arc::clone(&self.refused),
             receptors_at: self.receptors_at.clone(),
@@ -2831,7 +2925,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             tie::KIND => return Some(self.tie_records()),
             ended::KIND => Some(self.ended_records()),
             feed::KIND => Some(self.fed_records()),
-            hub::KIND => Some(self.hub_records()),
+            hub::KIND => return Some(self.hub_records()),
             // Shown but any whose act is done; the node's own judgements
             // read every record.
             _ => self.served.shown(kind),
@@ -2920,6 +3014,13 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             .chain(self.served.health())
             .chain(self.builders.health())
             .chain(self.murmurs.health())
+            // A lend not taken refuses every machine it lends to, so it
+            // is said here, not only in the log.
+            .chain(
+                self.lender
+                    .as_deref()
+                    .map(crate::lend::lender::Lender::health),
+            )
             .collect();
         serde_json::Map::from_iter([
             ("version".to_owned(), daemon::VERSION.into()),
@@ -4043,8 +4144,8 @@ impl<S: Store> Shared<S> {
             settles,
             lends_from,
             lend,
-            // Bound and served by `run` alone.
-            worker: _,
+            // Bound and served by `run` alone; only its account is kept.
+            worker,
             gates,
         } = given;
         let lender = lend.map(|file| {
@@ -4125,6 +4226,9 @@ impl<S: Store> Shared<S> {
             lends_from: lends_from.map(Into::into),
             lender,
             gates,
+            launches_as: worker
+                .map(|worker| worker.uid)
+                .filter(|uid| *uid != rustix::process::geteuid().as_raw()),
             spoken: Arc::default(),
             refused: Arc::default(),
             receptors_at: receptors,
@@ -4843,7 +4947,7 @@ impl<S: Store> Shared<S> {
 
     /// Each subject the realm's running cells declare, and its hubs, the
     /// cells heard least lately first, by their own talk ([`hub::heard`]).
-    fn hub_records(&self) -> BTreeMap<String, serde_json::Value> {
+    fn hub_records(&self) -> BTreeMap<String, daemon::Record> {
         let heard: HashMap<String, f64> = self
             .tie_records()
             .into_values()
@@ -5181,7 +5285,66 @@ impl<S: Store> Shared<S> {
         for made in let_go_ended(&self.book, &self.store, jiff::Timestamp::now()) {
             self.unbook(&made);
         }
+        self.forget_let_go_apart();
         power
+    }
+
+    /// Lets go of machines released for good as [`Self::forget_let_go`]
+    /// does, off the node's one thread where there is a runtime to run
+    /// it on: it holds and writes ledgers of megabytes, which the node's
+    /// loop never waits on.
+    fn forget_let_go_apart(&self) {
+        if self.shares.is_none() {
+            return;
+        }
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                let shared = self.clone();
+                drop(runtime.spawn_blocking(move || shared.forget_let_go()));
+            }
+            Err(_) => self.forget_let_go(),
+        }
+    }
+
+    /// Lets go, in every shared quest's ledger, of each machine this
+    /// node made and its book shows released for good, and that no link
+    /// reaches, so no deletion waits on a machine that will never link
+    /// again. The person's own machines, never made, one merely unlinked,
+    /// and one of the same name a link reaches, as one made again
+    /// elsewhere or whose release failed, stay.
+    fn forget_let_go(&self) {
+        let Some(shares) = self.shares.as_deref() else {
+            return;
+        };
+        let let_go = match self.book.standing() {
+            Ok(standing) => standing.let_go,
+            Err(error) => {
+                eprintln!(
+                    "the book of machines made can't be read, so no ledger lets go of one: {error}"
+                );
+                return;
+            }
+        };
+        let let_go = unreached(let_go, &self.store);
+        if let_go.is_empty() {
+            return;
+        }
+        let done = match shares.ledgers().let_go(&let_go) {
+            Ok(done) => done,
+            Err(error) => {
+                eprintln!("the ledgers couldn't let go of machines released: {error}");
+                return;
+            }
+        };
+        if !done.quests.is_empty() {
+            eprintln!(
+                "{} let go of the machines released for good",
+                done.quests.join(", ")
+            );
+        }
+        for (quest, error) in done.failed {
+            eprintln!("{quest}'s ledger couldn't let go of machines released: {error}");
+        }
     }
 
     /// Reads the cell each session carried here arrived with, and tells
@@ -9745,7 +9908,9 @@ impl<S: Store> Shared<S> {
                 .iter()
                 .any(|one| one.machine == made.machine)
         };
-        if started.is_err() && !used() {
+        if started.is_ok() {
+            self.name_made_room_once_started(&made).await;
+        } else if !used() {
             if let_go_unstarted(&made) {
                 unwanted.notify_one();
             } else {
@@ -9757,6 +9922,20 @@ impl<S: Store> Shared<S> {
             }
         }
         started
+    }
+
+    /// Names `made` every agent's room, as [`name_made_room`] judges, once
+    /// the start it was made for has landed on it: named sooner, another
+    /// agent's work could take the places its asker's start was made for,
+    /// and a start that failed would let go a machine others sat on. The
+    /// rooms file is rewritten under a lock that waits, so off the node's
+    /// own threads.
+    async fn name_made_room_once_started(&self, made: &Made) {
+        let (book, made) = (self.book.clone(), made.clone());
+        let naming = tokio::task::spawn_blocking(move || name_made_room(&book, &made));
+        if let Err(error) = naming.await {
+            eprintln!("naming a machine made a room ended early: {error}");
+        }
     }
 
     /// Starts `asked` on `made` once it has linked and its own facts, not
@@ -9966,7 +10145,11 @@ impl<S: Store> Shared<S> {
             && !declared
                 .as_ref()
                 .is_some_and(|declared| declared.pi_fences_itself);
+        // Whether it runs within the launcher this machine declares, which
+        // may run it as another account than the node's.
+        let mut launched = false;
         let within = held_within(fences, fence, (&asked.command, &agent), |kind| {
+            launched = true;
             crate::declared::launcher(&self.declared, kind, &self.runs.declarers)
                 .map_err(|why| format!("{machine}{LAUNCHER_REFUSED}{kind}: {why}"))
         })?;
@@ -9982,6 +10165,9 @@ impl<S: Store> Shared<S> {
             &home,
             &machine,
         )?;
+        if launched {
+            self.enterable(&machine, &folder)?;
+        }
         let realm = self.realm.clone();
         let begins = folder.clone();
         let command = asked.command;
@@ -10006,13 +10192,19 @@ impl<S: Store> Shared<S> {
     /// run an agent asked from another machine stands in a work tree here
     /// only where that tree's quests are shared with it, as this node finds
     /// the folder, never as the ask says, and it enters the very folder
-    /// found.
+    /// found. An agent's run, which goes through its fence's launcher, is
+    /// refused a folder that launcher's account can't enter
+    /// ([`Self::enterable`]).
     async fn ground(
         &self,
         folder: PathBuf,
         by: By,
         far: Option<&str>,
     ) -> Result<(run::Folder, Option<spares::Ground>), String> {
+        if let By::Agent(_) = by {
+            self.enterable(&self.machine, &folder)
+                .inspect_err(|why| refused(why))?;
+        }
         let (By::Agent(_), Some(far)) = (by, far) else {
             return Ok((run::Folder::At(folder), None));
         };
@@ -10026,6 +10218,23 @@ impl<S: Store> Shared<S> {
         .inspect_err(|why| refused(why))?;
         let (folder, ground) = footing.entered();
         Ok((folder, Some(ground)))
+    }
+
+    /// Refuses what would begin in `folder` on `machine`, this one, through
+    /// a fence's launcher that runs it as an account other than the
+    /// node's (`launches_as`), where that account can't enter the folder
+    /// or one on its way there, naming the first that stops it, since
+    /// begun there it could only fail. Where the launcher runs it as the
+    /// node's own account, or that account's groups are unknown, any
+    /// folder passes, as before.
+    fn enterable(&self, machine: &str, folder: &Path) -> Result<(), String> {
+        let Some(account) = self.launches_as.and_then(enters::Account::of) else {
+            return Ok(());
+        };
+        match account.first_barred(folder) {
+            Some(barred) => Err(account.refusal(machine, folder, &barred)),
+            None => Ok(()),
+        }
     }
 
     /// Why the run `asked`, asking as `by`, goes nowhere, every machine
@@ -12633,6 +12842,7 @@ mod tests {
                 saturated: None,
                 cpu_minute: None,
                 memory_full_minute: None,
+                io_full_minute: None,
             }),
             ..kestrel_at("2026-10-29T06:00:00Z")
         };
@@ -20209,6 +20419,26 @@ esac
     }
 
     #[tokio::test]
+    async fn a_lend_not_taken_is_said_in_the_nodes_health() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let given = Given {
+            lend: Some(dir.path().join("lend.json")),
+            ..given_beside(&socket, None, None)
+        };
+        let (_stop, _node) = alone_with(&Memory::default(), &socket, given);
+        let (mut client, _hello) = Speaking::hello(&socket).await;
+        client.ask(json!({"id": 2, "ask": "health"})).await;
+        let health = client.next().await;
+        assert!(
+            health["sources"].as_array().is_some_and(|sources| sources
+                .iter()
+                .any(|source| source["name"] == "lend" && source["state"] == "refused")),
+            "a lend file that isn't there refuses every machine: {health}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_lend_whose_lender_no_link_reaches_is_refused_as_unavailable() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
@@ -20521,6 +20751,7 @@ esac
                 saturated: Some(false),
                 cpu_minute: None,
                 memory_full_minute: None,
+                io_full_minute: None,
             }),
             ..fenced("osprey", &["remote"])
         };
@@ -20684,7 +20915,7 @@ esac
         );
     }
 
-    // An orchestrator past its eight starts an hour still carries, since
+    // An orchestrator past its cell's starts an hour still carries, since
     // its ordered arrivals start uncounted, and the ask weighs a carry's
     // starts together, so one past the limit is refused before any
     // session ends.
@@ -20707,6 +20938,7 @@ esac
             once: None,
         };
         let unstarted = Err("skiff's node starts no sessions".to_owned());
+        let at_most = format!("a cell starts at most {} an hour", starts::CELL_AN_HOUR);
         for _ in 0..starts::CELL_AN_HOUR - 1 {
             assert_eq!(
                 ask(socket.clone(), Request::Start(new_work())).await,
@@ -20732,11 +20964,11 @@ esac
         let one = takes(vec![arrival("s-a")], false).await;
         assert!(
             matches!(&one, Ok(Response::Placement(Placement::Placed { machine, .. })) if machine == "skiff"),
-            "one more start fits the cell's eight: {one:?}"
+            "one more start fits the cell's number: {one:?}"
         );
         let two = takes(vec![arrival("s-a"), arrival("s-b")], false).await;
         assert!(
-            matches!(&two, Err(why) if why.contains("a cell starts at most 8 an hour")),
+            matches!(&two, Err(why) if why.contains(&at_most)),
             "two don't, weighed together: {two:?}"
         );
         assert_eq!(kept(), before, "neither ask kept anything in the book");
@@ -20747,8 +20979,8 @@ esac
         let before = kept();
         let full = takes(vec![arrival("s-a")], false).await;
         assert!(
-            matches!(&full, Err(why) if why.contains("a cell starts at most 8 an hour")),
-            "the cell's eight leave no room: {full:?}"
+            matches!(&full, Err(why) if why.contains(&at_most)),
+            "the cell's number leaves no room: {full:?}"
         );
         let ordered = takes(vec![arrival("s-a"), arrival("s-b"), arrival("s-c")], true).await;
         assert!(
@@ -20764,18 +20996,19 @@ esac
         };
         let not_from_here = takes(vec![elsewhere("s-a")], true).await;
         assert!(
-            matches!(&not_from_here, Err(why) if why.contains("a cell starts at most 8 an hour")),
+            matches!(&not_from_here, Err(why) if why.contains(&at_most)),
             "an arrival from another machine is no carry from here: {not_from_here:?}"
         );
         let fooled = takes(vec![new_work(), new_work()], true).await;
         assert!(
-            matches!(&fooled, Err(why) if why.contains("a cell starts at most 8 an hour")),
+            matches!(&fooled, Err(why) if why.contains(&at_most)),
             "but ordered frees only a carry's arrival, word for word: {fooled:?}"
         );
         assert_eq!(kept(), before, "no ask keeps anything in the book");
         let many = takes(vec![arrival("s-a"); TAKES_MOST + 1], true).await;
+        let bound = format!("past the {TAKES_MOST} an ask weighs");
         assert!(
-            matches!(&many, Err(why) if why.contains("past the 128 an ask weighs")),
+            matches!(&many, Err(why) if why.contains(&bound)),
             "an ask is bounded: {many:?}"
         );
     }
@@ -21539,11 +21772,12 @@ esac
         // Charged to WCJQSG, the nearest claim, rather than to agents of no
         // known cell, whose refusal ends the same way.
         assert!(
-            refused.starts_with(
-                "WCJQSG started 8 sessions in the last hour, and a cell starts at most 8 an hour; \
-                 there is room again in 60 minutes"
-            ) && refused.ends_with("tell your orchestrator, as a finding"),
-            "a failed start counts toward the nearest claim, so the ninth is refused: {refused}"
+            refused.starts_with(&format!(
+                "WCJQSG started {0} sessions in the last hour, and a cell starts at most {0} an \
+                 hour; there is room again in 60 minutes",
+                starts::CELL_AN_HOUR
+            )) && refused.ends_with("tell your orchestrator, as a finding"),
+            "a failed start counts toward the nearest claim, so one past it is refused: {refused}"
         );
         let book = fs::read_to_string(socket.with_file_name("starts.jsonl"))
             .expect("every start is written down");
@@ -21643,9 +21877,12 @@ esac
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let at = jiff::Timestamp::now().to_string();
-        // More sessions ended here than the node starts in an hour.
+        // More sessions ended here than the node starts in an hour. Each id
+        // is as long as the rest, since a resume of one that begins another
+        // counts as a start (pi may open the other), and s-gone-10 would
+        // begin s-gone-100.
         let wave = (0..=starts::NODE_AN_HOUR)
-            .map(|one| format!("s-gone-{one:02}"))
+            .map(|one| format!("s-gone-{one:03}"))
             .collect::<Vec<_>>();
         let project = |one: usize| dir.path().join(format!("project-{one}"));
         for (one, session) in wave.iter().enumerate() {
@@ -21702,13 +21939,16 @@ esac
             );
         }
         let newest = booked(socket).await;
-        let first = newest
+        // The newest before the last, since the starts listed reach back
+        // only so far, and the wave is longer.
+        let before_last = wave.len() - 2;
+        let earlier = newest
             .iter()
-            .find(|kept| kept["resumes"] == wave[0].as_str())
-            .expect("the first brought back is kept");
+            .find(|kept| kept["resumes"] == wave[before_last].as_str())
+            .expect("one brought back is kept");
         assert_eq!(
-            first["folder"],
-            project(0).to_str().expect("a plain path"),
+            earlier["folder"],
+            project(before_last).to_str().expect("a plain path"),
             "it begins in its own folder"
         );
         let last = newest
@@ -21719,8 +21959,12 @@ esac
             last["folder"], "src/project-last",
             "one said from home goes as a folder within it: {last}"
         );
-        assert_eq!(first["started_by"], "WCJQSG", "{first}");
-        assert_eq!(first["reopens"], wave[0].as_str(), "it reopens its session");
+        assert_eq!(earlier["started_by"], "WCJQSG", "{earlier}");
+        assert_eq!(
+            earlier["reopens"],
+            wave[before_last].as_str(),
+            "it reopens its session"
+        );
     }
 
     /// The starts the node on `socket` keeps, newest last, as the person
@@ -21870,7 +22114,8 @@ esac
         )
         .await
         .expect_err("in another folder it counts");
-        assert!(refused.starts_with("WCJQSG started 8"), "{refused}");
+        let full = format!("WCJQSG started {}", starts::CELL_AN_HOUR);
+        assert!(refused.starts_with(&full), "{refused}");
         // One whose start failed brought nothing back, so it may come back
         // at once, still uncounted.
         assert_eq!(
@@ -21886,7 +22131,8 @@ esac
         )
         .await
         .expect_err("on another machine it counts");
-        assert!(refused.starts_with("WCJQSG started 8"), "{refused}");
+        let full = format!("WCJQSG started {}", starts::CELL_AN_HOUR);
+        assert!(refused.starts_with(&full), "{refused}");
         let newest = booked(socket).await;
         let there = newest.last().expect("its start is kept");
         assert_eq!(there["refused"], refused.as_str(), "{there}");
@@ -26159,6 +26405,75 @@ esac
         );
     }
 
+    #[test]
+    fn a_machine_made_for_a_proven_agent_is_named_every_agents_room() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let book = Book::at(dir.path().join("made.jsonl")).of_realm("work");
+        for (name, asker) in [
+            ("tern", Some("ASKER1")),
+            ("wren", Some(made::PERSON)),
+            ("osprey", None),
+            ("harbour", Some(made::UNKNOWN)),
+        ] {
+            let mut made = made_by("/usr/bin/lend", name, a_day_out());
+            made.asker = asker.map(str::to_owned);
+            book.made(&made).expect("the make is kept");
+            name_made_room(&book, &made);
+            name_made_room(&book, &made);
+        }
+        assert_eq!(
+            book.agent_rooms(),
+            std::collections::BTreeSet::from(["tern".to_owned()]),
+            "only the agent's, once, though named twice: the person's stay theirs"
+        );
+        // A make the book couldn't keep is judged on what it holds.
+        let mut unkept = made_by("/usr/bin/lend", "skiff", a_day_out());
+        unkept.asker = Some("ASKER1".to_owned());
+        name_made_room(&book, &unkept);
+        assert!(
+            !book.agent_rooms().contains("skiff"),
+            "one the book holds no make of is never named"
+        );
+        // Its name is its provider's word, held to a rooms ask's.
+        for name in ["kestrel\nwren", "kestrel # wren", " kestrel"] {
+            let mut made = made_by("/usr/bin/lend", name, a_day_out());
+            made.asker = Some("ASKER1".to_owned());
+            book.made(&made).expect("the make is kept");
+            name_made_room(&book, &made);
+        }
+        assert_eq!(
+            book.agent_rooms(),
+            std::collections::BTreeSet::from(["tern".to_owned()]),
+            "a name that would write another machine into the file is never named"
+        );
+    }
+
+    #[test]
+    fn a_node_started_again_names_an_agents_standing_make_a_room() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let book = Book::at(dir.path().join("made.jsonl")).of_realm("work");
+        for (name, asker) in [("skiff", "ASKER1"), ("wren", made::PERSON)] {
+            let mut made = made_by("/usr/bin/lend", name, a_day_out());
+            made.asker = Some(asker.to_owned());
+            book.made(&made).expect("the make is kept");
+        }
+        let (to_dial, _dialled) = mpsc::unbounded_channel();
+
+        redial_standing(
+            &book,
+            &["/usr/bin/lend".to_owned()],
+            &Memory::default(),
+            &to_dial,
+        );
+
+        assert_eq!(
+            book.agent_rooms(),
+            std::collections::BTreeSet::from(["skiff".to_owned()]),
+            "the agent's make, whose start ended with the node, is every agent's room; \
+             the person's stays theirs"
+        );
+    }
+
     #[tokio::test]
     async fn a_room_released_is_a_room_no_longer() {
         use crate::wire::RoomsAct;
@@ -27761,6 +28076,66 @@ esac
         );
     }
 
+    // On a worker machine a fence's launcher runs a start as the worker's
+    // account, and pi-fence there couldn't begin in a folder that account
+    // can't enter, failing each minute with "spawn bash EACCES": the node
+    // refuses it first, saying why, and so as having begun nothing.
+    #[tokio::test]
+    async fn a_start_in_a_folder_its_launchers_account_cant_enter_is_refused_first() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let mut link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        runs_commands(&mut link, dir.path());
+        // The node's own process relays, as a linked node's does.
+        link.client = i32::try_from(std::process::id()).ok();
+        link.fences_held = true;
+        // Its own account, which no test can change, stands in for the
+        // worker's: a folder it can't search stops it as another would.
+        link.launches_as = Some(rustix::process::geteuid().as_raw());
+        let closed = dir.path().join("closed");
+        fs::create_dir(&closed).expect("made");
+        fs::set_permissions(&closed, fs::Permissions::from_mode(0o600)).expect("closed");
+        let asked = |folder: &Path| Start {
+            work: Work {
+                fence: Some(DeclaredFence {
+                    kind: FenceKind::Strict,
+                    from: FenceFrom::Default,
+                }),
+                ..work(vec![Need::Machine("skiff".to_owned())])
+            },
+            folder: Some(folder.to_owned()),
+            strict: false,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let Err(why) = link.relayed("tern", asked(&closed)).await else {
+            panic!("a start where its launcher's account can't enter is refused");
+        };
+        let resolved = closed.canonicalize().expect("it resolves");
+        assert!(
+            why.starts_with(&format!(
+                "skiff{}{}, since its launcher runs it as account ",
+                enters::CANT_BEGIN_IN,
+                closed.display()
+            )) && why.contains(&format!("can't enter {};", resolved.display()))
+                && why.ends_with("ask for `--folder /` or a folder that account owns"),
+            "naming the folder, the account and what stops it: {why}"
+        );
+        assert!(
+            began_nothing_here(&why, "skiff", Some(&closed)),
+            "and as having begun nothing: {why}"
+        );
+        link.relayed("tern", asked(dir.path()))
+            .await
+            .expect("a folder its account enters starts as ever");
+        link.launches_as = None;
+        link.relayed("tern", asked(&closed))
+            .await
+            .expect("and where the launcher runs it as the node's account, nothing is judged");
+    }
+
     #[test]
     fn a_start_sent_on_declares_at_least_the_fence_it_was_placed_in() {
         use crate::declared::Kind;
@@ -27930,6 +28305,28 @@ esac
     }
 
     #[test]
+    fn a_machine_released_is_let_go_of_only_while_no_link_reaches_it() {
+        let store = Memory::default();
+        for (name, state) in [
+            ("tern", Readiness::Ready),
+            ("kestrel", Readiness::Unreachable),
+        ] {
+            store
+                .put_machine(&facts::Machine {
+                    state,
+                    ..facts::measure(name, &facts::Sources::nowhere())
+                })
+                .expect("what it said is kept");
+        }
+        let released = ["tern", "kestrel", "wren"].map(str::to_owned);
+        assert_eq!(
+            unreached(released.into(), &store),
+            std::collections::BTreeSet::from(["kestrel".to_owned(), "wren".to_owned()]),
+            "one unreachable or unlisted is let go of; tern, linked, stays"
+        );
+    }
+
+    #[test]
     fn a_machine_made_whose_time_is_up_leaves_once_no_link_reaches_it() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let path = dir.path().join("made.jsonl");
@@ -28068,10 +28465,11 @@ esac
             .await
             .expect_err("and is counted here, as an agent's");
         assert!(
-            refused.starts_with(
+            refused.starts_with(&format!(
                 "no person works on skiff, so it takes a relayed start as an agent's, and \
-                 refused it: agents of no known cell started 8 sessions"
-            ),
+                 refused it: agents of no known cell started {} sessions",
+                starts::CELL_AN_HOUR
+            )),
             "and says it was judged an agent's: {refused}"
         );
         let refused = link
@@ -28080,7 +28478,10 @@ esac
             .expect_err("the person's carry is counted the same");
         assert!(
             refused.starts_with("no person works on skiff, so it takes the person's carry")
-                && refused.contains("agents of no known cell started 8 sessions")
+                && refused.contains(&format!(
+                    "agents of no known cell started {} sessions",
+                    starts::CELL_AN_HOUR
+                ))
                 && !refused.contains("orchestrator"),
             "the person reads why, and isn't sent to an orchestrator: {refused}"
         );
@@ -28410,7 +28811,10 @@ esac
             .await
             .expect_err("and is counted here, as an agent's");
         assert!(
-            refused.contains("and refused it: agents of no known cell started 8 sessions"),
+            refused.contains(&format!(
+                "and refused it: agents of no known cell started {} sessions",
+                starts::CELL_AN_HOUR
+            )),
             "{refused}"
         );
         assert!(
@@ -29154,6 +29558,17 @@ esac
                 None,
                 true,
                 "wren's node would place it elsewhere",
+            ),
+            (
+                said(format!(
+                    "wren{}{}, since its launcher runs it as account 1001, which can't enter \
+                     /home/kestrel; ask for `--folder /` or a folder that account owns",
+                    enters::CANT_BEGIN_IN,
+                    folder.display()
+                )),
+                None,
+                true,
+                "wren's launcher can't enter its folder",
             ),
             (
                 said("its program failed".to_owned()),
@@ -30491,6 +30906,59 @@ esac
             "another program of the same file name isn't it"
         );
         assert_eq!(still_asked(&providers, "/opt/bin/rent"), None);
+    }
+
+    #[test]
+    fn a_provider_is_still_asked_through_a_link_to_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let real = dir.path().join("lend");
+        fs::write(&real, "").expect("the provider is written");
+        let link = dir.path().join("lend-link");
+        std::os::unix::fs::symlink(&real, &link).expect("a link to it");
+        let path = |one: &Path| one.to_str().expect("a plain path").to_owned();
+        let (real, link) = (path(&real), path(&link));
+        // The folder may itself sit behind a link, as on a Mac.
+        let real = resolved(&real);
+
+        let by_link = [link.clone()];
+        assert_eq!(
+            still_asked(&by_link, &real),
+            Some(&by_link[0]),
+            "a machine made by the path a link names is still asked by the link"
+        );
+        let by_path = [real];
+        assert_eq!(
+            still_asked(&by_path, &link),
+            Some(&by_path[0]),
+            "and one made by the link is still asked by the path it names"
+        );
+    }
+
+    #[test]
+    fn a_link_to_a_new_build_still_asks_for_the_machines_the_old_made() {
+        let at =
+            |hash: char, rest: &str| format!("/nix/store/{}-{rest}", hash.to_string().repeat(32));
+        let link = "/state/lend".to_owned();
+        let new = at('b', "lend-1/bin/lend");
+        let old = at('a', "lend-1/bin/lend");
+        let resolve = |path: &str| {
+            if path == link {
+                new.clone()
+            } else {
+                path.to_owned()
+            }
+        };
+        let providers = [link.clone(), at('c', "hire-1/bin/hire")];
+        assert_eq!(
+            asked_through(&providers, &old, resolve),
+            Some(&providers[0]),
+            "the link names the same program built again"
+        );
+        assert_eq!(
+            asked_through(&providers, &at('a', "loan-1/bin/lend"), resolve),
+            None,
+            "another program isn't it, whatever the link names"
+        );
     }
 
     fn sprout_here(cwd: Option<&Path>) -> Sprout {

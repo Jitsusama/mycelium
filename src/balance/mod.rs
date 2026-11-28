@@ -269,7 +269,7 @@ fn load(machine: &Machine, sessions: &[Session], now: jiff::Timestamp) -> Load {
     let lively = machine
         .declared
         .as_ref()
-        .and_then(|declared| declared.kept_lively)
+        .and_then(|declared| declared.kept_lively.as_ref())
         .zip(room)
         .and_then(|(lively, room)| placement::past_lively(lively, room));
     let over = !past.is_empty() || lively.is_some();
@@ -471,6 +471,7 @@ mod tests {
             saturated: None,
             cpu_minute: None,
             memory_full_minute: None,
+            io_full_minute: None,
         });
         machine
     }
@@ -538,6 +539,8 @@ mod tests {
                 cpu: 30,
                 memory_available: None,
                 memory_full: None,
+                io_full: None,
+                io_full_from: Vec::new(),
             });
             one
         };
@@ -587,6 +590,8 @@ mod tests {
                 cpu: 30,
                 memory_available: None,
                 memory_full: None,
+                io_full: None,
+                io_full_from: Vec::new(),
             });
             one
         };

@@ -9,7 +9,7 @@ use std::process::{Child, Stdio};
 use std::time::Duration;
 
 use process::{made, mycelium};
-use zone::ZONE;
+use zone::{STAMPED, ZONE};
 
 mod process;
 mod zone;
@@ -102,6 +102,10 @@ fn into_a_pipe_a_machine_says_when_it_was_measured_with_its_day_and_zone() {
     let (Ok(before), Ok(after)) = (&before, &after) else {
         panic!("the JSON didn't say when kestrel was measured: {before:?} {after:?}");
     };
+    assert!(
+        before.ends_with(STAMPED) && after.ends_with(STAMPED),
+        "the oracle didn't stamp its times in ZONE: {before:?} {after:?}"
+    );
     let said = line(&page, "measured").map(str::to_owned);
     assert!(said.is_some(), "the page didn't say when:\n{page}");
     let said = said.as_deref();
