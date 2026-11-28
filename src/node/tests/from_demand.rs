@@ -104,7 +104,12 @@ async fn a_room_is_kept_past_its_handover_while_used_and_let_go_once_empty_a_whi
         "the book says why it was let go: {book}"
     );
     assert!(
-        shared.book.standing().expect("the book reads").made.is_empty(),
+        shared
+            .book
+            .standing()
+            .expect("the book reads")
+            .made
+            .is_empty(),
         "the book says it was let go"
     );
 }
@@ -114,10 +119,7 @@ async fn a_room_a_start_is_on_its_way_to_is_used() {
     let dir = tempfile::tempdir().expect("a temporary folder");
     let (shared, _) = room_made(dir.path(), "tern");
     assert_eq!(shared.used("tern"), Use::Empty, "nothing runs there yet");
-    shared
-        .lock()
-        .starts
-        .placed("tern", jiff::Timestamp::now());
+    shared.lock().starts.placed("tern", jiff::Timestamp::now());
     assert_eq!(
         shared.used("tern"),
         Use::Used,
@@ -380,11 +382,11 @@ fn a_made_machine_reaches_world_and_carries_its_taint_only_as_its_make_says() {
     let mut world_work = work(vec![Need::Reach(WORLD.to_owned())]);
     world_work.tolerates = vec![WORLD.to_owned()];
     let person = Admits::Asker(made::PERSON.to_owned());
-    let placed = |work: &Work| match shared.place(work, Counts::Never, None, Screen::Ground, &person)
-    {
-        Placement::Placed { machine, .. } => Some(machine),
-        _ => None,
-    };
+    let placed =
+        |work: &Work| match shared.place(work, Counts::Never, None, Screen::Ground, &person) {
+            Placement::Placed { machine, .. } => Some(machine),
+            _ => None,
+        };
     assert_eq!(
         placed(&world_work).as_deref(),
         Some("tern"),
@@ -452,7 +454,10 @@ fn a_machine_that_carried_the_world_taint_keeps_it_till_let_go() {
     demand.unbooked(&again);
     let mut tern = claiming("tern", &[]);
     demand.mark(&mut tern, &Doubt::None);
-    assert!(!world_tainted(&tern), "once let go, it carries it no longer");
+    assert!(
+        !world_tainted(&tern),
+        "once let go, it carries it no longer"
+    );
 }
 
 #[test]
@@ -502,11 +507,18 @@ fn a_via_machine_is_marked_only_by_its_via_marks() {
 
 #[test]
 fn via_marks_read_as_a_place_and_its_marks() {
-    let (place, marks) =
-        Marks::of_via(r#"wren-1={"reach":["world"],"taints":[{"key":"world","effect":"never","why":"a world machine"}]}"#)
-            .expect("they read");
+    let said = concat!(
+        r#"wren-1={"reach":["world"],"#,
+        r#""taints":[{"key":"world","effect":"never","why":"a world machine"}]}"#,
+    );
+    let (place, marks) = Marks::of_via(said).expect("they read");
     assert_eq!((place.as_str(), marks), ("wren-1", world_marks()));
-    for wrong in ["wren-1", r#"={"reach":[]}"#, "wren-1={", r#"wren-1={"reaches":[]}"#] {
+    for wrong in [
+        "wren-1",
+        r#"={"reach":[]}"#,
+        "wren-1={",
+        r#"wren-1={"reaches":[]}"#,
+    ] {
         assert!(Marks::of_via(wrong).is_err(), "{wrong} is refused");
     }
 }

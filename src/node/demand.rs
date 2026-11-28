@@ -152,7 +152,10 @@ impl Demand {
             .find(|(named, _)| named.get() == Some(&machine.name))
             .map(|(_, marks)| marks.clone());
         let mut kept = self.lock();
-        let made_here = kept.marks.get(&machine.name).map(|(_, marks)| marks.clone());
+        let made_here = kept
+            .marks
+            .get(&machine.name)
+            .map(|(_, marks)| marks.clone());
         let booked = made_here.is_some();
         let marks = made_here.or(via);
         // A booked machine's own line read, so only a doubt naming it, or
@@ -364,7 +367,11 @@ impl Makes {
     ///
     /// When it would still pass the budget then, saying which limit and
     /// the counts, or when the budget or the book can't be read.
-    pub async fn room_for(self: &Arc<Self>, book: &Book, costs: &Costs) -> Result<Reserved, String> {
+    pub async fn room_for(
+        self: &Arc<Self>,
+        book: &Book,
+        costs: &Costs,
+    ) -> Result<Reserved, String> {
         let waiting = tokio::time::Instant::now();
         loop {
             match self.judged(book, costs) {
@@ -502,16 +509,19 @@ impl Makes {
                 ));
             }
         };
-        let mut budgets: BTreeMap<String, Budget> = serde_json::from_slice(&text).map_err(|error| {
-            format!(
-                "the budget in {} doesn't read, so nothing is made: {error}",
-                file.display()
-            )
-        })?;
+        let mut budgets: BTreeMap<String, Budget> =
+            serde_json::from_slice(&text).map_err(|error| {
+                format!(
+                    "the budget in {} doesn't read, so nothing is made: {error}",
+                    file.display()
+                )
+            })?;
         let budget = budgets.remove(&self.realm);
-        self.say_unbounded(budget.is_none().then(|| {
-            format!("{} names no budget for {}", file.display(), self.realm)
-        }));
+        self.say_unbounded(
+            budget
+                .is_none()
+                .then(|| format!("{} names no budget for {}", file.display(), self.realm)),
+        );
         Ok(budget)
     }
 
@@ -542,7 +552,9 @@ fn nanos_an_hour(costs: &Costs) -> Option<u128> {
     if costs.free() {
         return Some(0);
     }
-    (costs.currency == "USD").then(|| nanos(&costs.hourly)).flatten()
+    (costs.currency == "USD")
+        .then(|| nanos(&costs.hourly))
+        .flatten()
 }
 
 /// A decimal amount, such as `0.12`, in billionths, without rounding;
@@ -557,7 +569,11 @@ fn nanos(amount: &str) -> Option<u128> {
     if part.len() > 9 {
         return None;
     }
-    let whole: u128 = if whole.is_empty() { 0 } else { whole.parse().ok()? };
+    let whole: u128 = if whole.is_empty() {
+        0
+    } else {
+        whole.parse().ok()?
+    };
     let part: u128 = format!("{part:0<9}").parse().ok()?;
     whole.checked_mul(1_000_000_000)?.checked_add(part)
 }

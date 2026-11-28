@@ -343,7 +343,9 @@ same code, each line a JSON value:
     sender first says all
     it holds of the quests it shares. Frames cross in order, so if the
     other end then waits on no file from it, it holds all of them: its
-    link ends, and its node releases the machine and dials it no more.
+    link ends, and its node releases the machine and dials it no more,
+    but for a room made for agents with more than ten minutes left,
+    which it dials again and keeps while cells run there.
     An end older than this never hands over, so it is never released.
 14. `{"Update": {"ask"}}`: update the other end's machine to its
     configuration's main, as an `"Update"` request says it, answered by
@@ -2694,12 +2696,20 @@ itself, and when its provider ends it whatever else happens. The node
 dials it as it would `--via PROGRAM:PLACE`, waits up to five minutes
 for it to link, places the work again by the machine's own facts, and
 starts it there. It lets the machine go, with `PROGRAM release PLACE`,
-once its work has handed over, at `until`, or at once when nothing
-started on it. Each make and release is kept as a JSON line in
-`made.jsonl` in mycelium's folder, `{"at", "made", "realm"}` with the
-machine, its place, shape, provider, `until`, hourly cost and the
-`sessions_at_most` its offer's `declared` promised, where it promised
-any, and
+at `until`, at once when nothing started on it, and once its work has
+handed over, but for a machine named in `agent-rooms`. A room is a
+shared machine cells are packed onto up to the most it holds, so its
+first work handing over before the last ten minutes of its time lets
+nothing go: its link is dialled again, and the room is let go once no
+session has run there for 20 minutes, as the sessions the node hears
+from it and the starts it placed there say, a while long enough that
+one cell's work following another's finds it still there. A start
+whose needs a room with room meets goes to it before any make. Each
+make and release is kept as a JSON line in `made.jsonl` in mycelium's
+folder, `{"at", "made", "realm"}` with the machine, its place, shape,
+provider, `until`, hourly cost, the `sessions_at_most` its offer's
+`declared` promised, where it promised any, and its `marks`, the
+`reach` and `taints` that `declared` named, and
 `{"at", "released", "realm"}` with why, so what was made and for how
 long can be summed. Every realm's node on the machine keeps the one
 book, so each line names the realm whose node kept it. A node started
@@ -2710,6 +2720,38 @@ books as let go each whose `until` passed while it was down. A line
 naming no realm, kept before lines named one, is never linked again.
 A start whose providers make nothing says why: each machine's and each
 offer's reasons, and each program that couldn't say what it offers.
+
+A machine made reaches `world` and carries its taints as its make's
+line marks it, from the node's own book, whatever the machine says
+later, since a machine may say anything of itself and only its maker
+knows it was made to reach world. No other machine reaches `world`,
+whatever it says, so only work naming world lands where the maker's
+world taint is, and world work lands only where the maker said world
+is. A machine whose make's line can't be read never reaches `world`
+and carries a world taint, so nothing unmarked lands on it either: it
+fails closed, and one that ever carried the world taint keeps it until it
+is let go. A machine given by `--via` is marked from the node's own
+command line, `--via-marks PLACE=MARKS`, MARKS in the shape of a make
+line's `marks`, such as `sandbox-1={"reach":["world"]}`, as the
+person's configuration wrote it; a `--via` with none is read as a
+machine not made here, and a `--via-marks` naming a place no `--via`
+dials stops the node starting.
+
+The node holds makes to a budget it reads from a plain JSON file named
+by `--makes-within FILE`, read again at each make, so it may change as
+the node runs,
+`{"REALM": {"machines_at_most": N, "usd_an_hour_at_most": "D"}}`,
+either limit left out for none. The machines counted are those the
+realm's lines say are made and not let go, with the makes under way,
+and their hourly costs summed in
+dollars. A make that would pass either limit is refused, saying which
+and the counts, and waits for room as a start short of room does, up
+to a minute, taking room a machine let go frees. A file that can't be
+read or doesn't read as a budget, a book that may hide a make, or a
+cost not in dollars against a limit in dollars refuses every make at
+once, so a budget can't fail open. With no `--makes-within`, no file
+there, or no budget for the realm, makes are unbounded, as before, said
+in the node's journal once each time that changes.
 
 An agent starts sessions within limits the node keeps, so a cell gone
 wrong can't start without end. Each start an agent asks counts toward
