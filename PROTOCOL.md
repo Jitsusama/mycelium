@@ -850,7 +850,17 @@ in order and says each step:
 4. `start`: each carried session starts again on the machine, held:
    those told to carry first, then the quest's own, then those the find
    couldn't ask of, so a refusal the ask couldn't foresee meets no
-   session this carry ended. Each starts as `mycelium start` starts one,
+   session this carry ended. Before each start the node runs, as a
+   plain `Run` with the start's `work`, `command -v pi-carry pi` there
+   (`pi-carry` alone for the quest's own). Where it ends with any code
+   but 0, that session doesn't start and its done file stays unmarked,
+   and the step fails saying the code and the command missing, as
+   `BUSY01 didn't start on tern: it would end at once with code 127, as
+   pi-carry isn't on tern's path`. A run that doesn't run at all, as on
+   a node that takes no runs from here, leaves the start to go as it
+   would. The run reads no login profile where a room recasts it, and
+   the start's login shell does, so the two can differ there.
+   Each starts as `mycelium start` starts one,
    running `pi-carry arrive QEST-... --from
    <this machine> --session <id>`, which waits for the handover, fetches
    or clones each tree at its path and places the session's file, and
@@ -869,7 +879,12 @@ in order and says each step:
    off, so it never waits to be woken. The quest's own done
    file, `<quest>.done.json`, holds the trees no session held; it
    arrives the same way, but no pi starts for it and it isn't among the
-   sessions said. Once each has started, `<session>.started` is written
+   sessions said. Once every session has started, the node waits up to
+   2 minutes in all for each one's presence to come from there, by its
+   session id, address or `held` id; one never seen still counts as
+   started, the step's line adding `NAPS02 started on tern, not yet
+   seen running`. Then, and for the quest's own at once,
+   `<session>.started` is written
    beside its done file, which stays for `pi-carry` there to read, and
    no carry takes a done file up again until it is written afresh, newer
    than its mark, so neither a later carry nor this one taken again

@@ -17,18 +17,27 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::cell::{self, Brought};
+use super::stood::Exit;
 use super::{Done, Hands, Lent, PI_CARRY, Refused, Told, Untaken, ground, secrets};
 use crate::client::Client;
 use crate::placement::Placement;
 use crate::record::Session;
 use crate::share::exchange::Places;
-use crate::wire::{Reply, Request, Response, Start, Started, Taking};
+use crate::wire::{Ran, Reply, Request, Response, Run, Start, Started, Taking};
 
 /// How long between looks at what a carry waits for.
 const LOOK_EVERY: Duration = Duration::from_secs(2);
 
 /// How long the node may take to list its ties.
 const TIES_WITHIN: Duration = Duration::from_secs(30);
+
+/// How long the node may go without a word of a run it relays: a check
+/// of a machine's path ends in a moment, once that machine has it.
+const RUN_WITHIN: Duration = Duration::from_secs(60);
+
+/// How much of a run's standard error is kept, its end, where a failure
+/// says why.
+const ERR_KEPT: usize = 64 * 1024;
 
 /// How long a carry waits, all told, for the sessions to carry and then
 /// to end: time for a busy one to finish its turn and push.
@@ -312,6 +321,39 @@ impl Hands for Through {
             .and_then(|mut client| client.ask(&Request::Takes(taking.clone())))
             .map_err(|error| Untaken::Unasked(format!("it didn't answer: {error}")))?;
         untaken(answer)
+    }
+
+    fn run(&mut self, run: Run) -> Result<Exit, String> {
+        // Over the socket even where the node asks from within itself,
+        // as its records are read, since a run's words stream back on
+        // their own connection, which an answer to one request can't.
+        let mut client = Client::connect_within(&self.socket, RUN_WITHIN)
+            .map_err(|error| format!("the node didn't answer: {error}"))?;
+        match client.ask(&Request::Run(run)) {
+            Ok(Ok(Response::Running { .. })) => {}
+            Ok(Ok(other)) => return Err(format!("the node answered {other:?} for a run")),
+            Ok(Err(why)) => return Err(why),
+            Err(error) => return Err(format!("the node didn't answer: {error}")),
+        }
+        let mut err = Vec::new();
+        loop {
+            match client.next_ran() {
+                Ok(Some(Ran::Err(said))) => {
+                    err.extend(crate::run::bytes(&said).unwrap_or_default());
+                    let over = err.len().saturating_sub(ERR_KEPT);
+                    err.drain(..over);
+                }
+                Ok(Some(Ran::Out(_))) => {}
+                Ok(Some(Ran::Exited(code))) => return Ok(Exit { code, err }),
+                Ok(Some(Ran::Failed(why))) => return Err(why),
+                Ok(None) => return Err("the node hung up before the run ended".to_owned()),
+                Err(error) => return Err(format!("the run's end wasn't heard: {error}")),
+            }
+        }
+    }
+
+    fn now(&self) -> Instant {
+        Instant::now()
     }
 
     fn wait(&mut self) -> bool {

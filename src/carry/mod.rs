@@ -10,8 +10,10 @@
 //! step as it goes: it tells the sessions, waits until each has carried,
 //! carries the rest, shares the quest with its handover, starts each
 //! carried session again on the other machine, held, once `pi-carry
-//! arrive` has its trees there, marking each started so no later carry
-//! starts it again, and waits until the sessions here have ended. A
+//! arrive` has its trees there, having checked that machine can run it,
+//! marking each started once it is seen running there, or the wait for
+//! it ([`stood`]) has ended, so no later carry starts it again, and waits
+//! until the sessions here have ended. A
 //! step that fails says why and nothing after it runs; what was
 //! done stays done, since each step can be taken again.
 //!
@@ -33,6 +35,7 @@ pub mod ordered;
 pub mod secrets;
 pub mod settle;
 pub mod sleep;
+pub mod stood;
 pub mod through;
 
 use std::collections::BTreeSet;
@@ -44,7 +47,7 @@ use serde_json::{Value, json};
 pub use self::ground::Lent;
 use crate::placement::{Need, Work};
 use crate::record::{Session, State};
-use crate::wire::{Start, Started, Taking};
+use crate::wire::{Run, Start, Started, Taking};
 
 /// The program the harness carries with and arrives with.
 pub const PI_CARRY: &str = "pi-carry";
@@ -352,9 +355,17 @@ pub trait Hands {
     /// When it wouldn't be, with the refusal its start would answer, or
     /// when this machine's node couldn't say.
     fn takes(&mut self, taking: &Taking) -> Result<(), Untaken>;
+    /// Runs `run` where it says, answering how it ended once it has.
+    ///
+    /// # Errors
+    ///
+    /// When it didn't run, or its end wasn't heard, with why.
+    fn run(&mut self, run: Run) -> Result<stood::Exit, String>;
     /// Waits a moment before what is waited for is looked at again, and
     /// says whether there is patience left for another look.
     fn wait(&mut self) -> bool;
+    /// Now, by the clock [`Hands::wait`] waits by.
+    fn now(&self) -> std::time::Instant;
 }
 
 /// Carries `quest` from `here` to the machine `to`, saying each step to
@@ -611,16 +622,21 @@ fn rest<F: FnMut(&Value)>(
         Stood::Doing,
         format!("starting each session on {to}"),
     );
-    let arrived = said.or_failed(
+    let Starting { arrived, unseen } = said.or_failed(
         Step::Start,
         start_each(hands, quest, here, to, &done, sessions, ordered),
     )?;
     let count = plural(arrived.len(), "session");
-    said.line(
-        Step::Start,
-        Stood::Done,
-        format!("{count} started on {to}, held"),
-    );
+    let mut started = format!("{count} started on {to}, held");
+    if !unseen.is_empty() {
+        // Writing to a string can't fail.
+        let _ = write!(
+            started,
+            "; {} started on {to}, not yet seen running",
+            unseen.join(", ")
+        );
+    }
+    said.line(Step::Start, Stood::Done, started);
 
     said.line(
         Step::Close,
@@ -688,18 +704,32 @@ impl<F: FnMut(&Value)> Saying<'_, F> {
     }
 }
 
+/// What starting a carry's sessions on the other machine came to.
+struct Starting {
+    /// Those started there.
+    arrived: Vec<Arrived>,
+    /// The addresses of those started there but not yet seen running
+    /// when the wait for them ended.
+    unseen: Vec<String>,
+}
+
 /// Starts each session `done` names again on `to`, by the address it went
-/// by here, or its id where no session here named it, marking each started
-/// as it goes, so neither a later carry nor this one taken again after a
-/// failure starts it twice. The quest's own
-/// done file, holding the trees no session held, arrives there too, but
-/// no session starts for it, so it isn't among those answered. Each
-/// arrives as `ordered` says, where an orchestrator ordered it. The
-/// sessions told to carry start first, then the quest's own, as the
-/// find asked of them, and only then those it couldn't ask of: a
-/// session that had ended, or one an earlier carry left. One refused or
-/// unanswered doesn't stop the rest, since each told has ended here;
-/// those it names fail the step once every one was asked.
+/// by here, or its id where no session here named it. Each start is
+/// checked first ([`stood::check`]), so one whose commands aren't on
+/// `to`'s path fails plainly rather than being held only to end at once.
+/// Each started is marked so once its presence is seen there, or the wait
+/// for it ([`stood::seen`]) has ended, so neither a later carry nor this
+/// one taken again after a failure starts it twice: taken again before
+/// the mark, its start is asked under the same name and joins the one
+/// held. The quest's own done file, holding the trees no session held,
+/// arrives there too, but no session starts for it, so it is marked at
+/// once and isn't among those answered. Each arrives as `ordered` says,
+/// where an orchestrator ordered it. The sessions told to carry start
+/// first, then the quest's own, as the find asked of them, and only then
+/// those it couldn't ask of: a session that had ended, or one an earlier
+/// carry left. One refused or unanswered doesn't stop the rest, since
+/// each told has ended here; those it names fail the step once every one
+/// was asked.
 fn start_each(
     hands: &mut impl Hands,
     quest: &str,
@@ -708,7 +738,7 @@ fn start_each(
     done: &[Done],
     sessions: &[Session],
     ordered: Option<&Ordered>,
-) -> Result<Vec<Arrived>, String> {
+) -> Result<Starting, String> {
     let told: BTreeSet<&str> = sessions.iter().filter_map(session_id).collect();
     let mut done: Vec<&Done> = done.iter().collect();
     done.sort_by_key(|one| {
@@ -723,7 +753,7 @@ fn start_each(
     // Each is asked whatever the ones before it answered, since a session
     // told has ended here, and one whose start went unanswered may still
     // land there: asked again, under its name, it joins that start.
-    let mut arrived = Vec::new();
+    let mut landed = Vec::new();
     let mut failed = Vec::new();
     // Started there, but left marked here as not yet started.
     let mut unmarked = Vec::new();
@@ -732,31 +762,52 @@ fn start_each(
             .iter()
             .find(|session| session_id(session) == Some(one.session.as_str()))
             .map_or_else(|| one.session.clone(), |session| session.address.clone());
-        let started = match hands.start(arriving(quest, here, to, one, ordered)) {
+        let start = arriving(quest, here, to, one, ordered);
+        // A check that didn't run at all, refused by a node that takes no
+        // runs from here or by one too old to, leaves the start to go as
+        // it always has. It runs as a plain run, which reads no login
+        // profile where a room recasts it, while the held start's login
+        // shell does, so a command only a profile puts on the path fails
+        // the check though the start would have found it.
+        if let Ok(exit) = hands.run(stood::check(quest, one, start.work.clone()))
+            && let Err(why) = stood::checked(&address, to, &exit)
+        {
+            failed.push(why);
+            continue;
+        }
+        let started = match hands.start(start) {
             Ok(started) => started,
             Err(why) => {
                 failed.push(format!("{address} didn't start on {to}: {why}"));
                 continue;
             }
         };
-        // Started, it arrived whatever its mark says, and only a later
-        // carry, which would start it again, needs telling.
-        if let Err(why) = hands.started(one) {
-            unmarked.push(format!(
-                "{address} started on {to}, but its done file here couldn't be marked \
-                 started, so move it out of the handover before carrying again: {why}"
-            ));
-        }
-        if one.session != quest {
-            arrived.push(Arrived {
+        if one.session == quest {
+            unmarked.extend(marked(hands, one, &address, to));
+        } else {
+            landed.push(stood::Landed {
                 address,
-                held: started.held,
-                attach: started.attach,
+                one: one.clone(),
+                started,
             });
         }
     }
+    let seen = stood::seen(hands, to, &landed);
+    let mut arrived = Vec::new();
+    let mut unseen = Vec::new();
+    for (landed, seen) in landed.into_iter().zip(seen) {
+        unmarked.extend(marked(hands, &landed.one, &landed.address, to));
+        if !seen {
+            unseen.push(landed.address.clone());
+        }
+        arrived.push(Arrived {
+            address: landed.address,
+            held: landed.started.held,
+            attach: landed.started.attach,
+        });
+    }
     if failed.is_empty() && unmarked.is_empty() {
-        return Ok(arrived);
+        return Ok(Starting { arrived, unseen });
     }
     let mut why = failed
         .iter()
@@ -773,6 +824,19 @@ fn start_each(
         why.push_str("; what didn't start stays in the handover, for the person's carry to start");
     }
     Err(why)
+}
+
+/// Marks `one`, which went by `address` here, started on `to`, answering
+/// why it couldn't be where it wasn't. Started, it arrived whatever its
+/// mark says, and only a later carry, which would start it again, needs
+/// telling.
+fn marked(hands: &mut impl Hands, one: &Done, address: &str, to: &str) -> Option<String> {
+    hands.started(one).err().map(|why| {
+        format!(
+            "{address} started on {to}, but its done file here couldn't be marked \
+             started, so move it out of the handover before carrying again: {why}"
+        )
+    })
 }
 
 /// The quest's sessions on `here` that can carry their own work: those
@@ -1420,19 +1484,30 @@ fn plural(count: usize, thing: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
+    use std::time::{Duration, Instant};
 
     use serde_json::{Value, json};
 
     use super::cell::Brought;
+    use super::stood::{self, Exit};
     use super::{
         Asked, Carried, Done, Failed, Hands, Lent, Ordered, PI_CARRY, Refused, Step, Told, Untaken,
         carry, carry_told, ground, runs_on, session_id, unordered_arrival,
     };
     use crate::placement::Need;
     use crate::record::{Session, State};
-    use crate::wire::{Start, Started, Taking};
+    use crate::wire::{Run, Start, Started, Taking};
 
     const QUEST: &str = "QEST-20261107-HARBOR";
+
+    /// When a fake realm's clock began.
+    struct Epoch(Instant);
+
+    impl Default for Epoch {
+        fn default() -> Self {
+            Self(Instant::now())
+        }
+    }
 
     /// A realm as a carry sees it: its machines, its sessions, and what
     /// each step did, kept to be looked at after.
@@ -1515,6 +1590,17 @@ mod tests {
         untaken: Option<Untaken>,
         /// Each start asked whether it would be taken.
         asked_takes: Vec<Taking>,
+        /// Each run asked of the node.
+        runs: Vec<Run>,
+        /// How each run ends, where it isn't at once and well, or why it
+        /// didn't run.
+        ran: Option<Result<Exit, String>>,
+        /// The sessions, by id, whose presence never comes from where
+        /// they were started; every other started is seen there at once.
+        unseen: BTreeSet<String>,
+        /// When its clock began, and how long it has waited since.
+        epoch: Epoch,
+        waited: Duration,
         /// Why an earlier carry's cells can't be taken away, where not.
         unforgotten: Option<String>,
         /// The sessions whose old cells were taken away, with how many
@@ -1550,6 +1636,28 @@ mod tests {
                 for one in &mut sessions {
                     one.state = State::Ended;
                 }
+            }
+            // Each session started there says it is, as pi does once it
+            // runs; the quest's own trees start none.
+            for start in &self.started {
+                let Some(id) = start.command.get(6) else {
+                    continue;
+                };
+                let machine = start.work.needs.iter().find_map(|need| match need {
+                    Need::Machine(machine) => Some(machine.clone()),
+                    _ => None,
+                });
+                if id == QUEST || self.unseen.contains(id) {
+                    continue;
+                }
+                sessions.push(
+                    serde_json::from_value(json!({
+                        "id": format!("r-{id}"), "address": id, "machine": machine,
+                        "groups": [], "state": "idle", "quest": QUEST,
+                        "at": "2026-11-07T21:00:00Z", "presence": {"session": id},
+                    }))
+                    .expect("a session"),
+                );
             }
             Ok(sessions)
         }
@@ -1731,10 +1839,21 @@ mod tests {
             self.asked_takes.push(taking.clone());
             self.untaken.clone().map_or(Ok(()), Err)
         }
+        fn run(&mut self, run: Run) -> Result<Exit, String> {
+            self.runs.push(run);
+            self.ran.clone().unwrap_or(Ok(Exit {
+                code: 0,
+                err: Vec::new(),
+            }))
+        }
         fn wait(&mut self) -> bool {
             let more = self.patience > 0;
             self.patience = self.patience.saturating_sub(1);
+            self.waited += Duration::from_secs(2);
             more
+        }
+        fn now(&self) -> Instant {
+            self.epoch.0 + self.waited
         }
     }
 
@@ -3460,6 +3579,134 @@ mod tests {
         assert!(
             !said.contains("for the person's carry to start"),
             "never sending the person to start it again: {said}"
+        );
+    }
+
+    /// What the carry said once its sessions had started, or why they
+    /// didn't.
+    fn start_said(lines: &[Value]) -> String {
+        lines
+            .iter()
+            .rfind(|line| line["step"] == "start" && line["state"] != "doing")
+            .and_then(|line| line["said"].as_str())
+            .unwrap_or("")
+            .to_owned()
+    }
+
+    // 27 November: a carry to a room said its session started, held,
+    // and marked its done file, though the start ended at once with 127,
+    // since the room's path had no pi-carry.
+    #[test]
+    fn a_start_whose_commands_are_missing_there_fails_unmarked() {
+        let mut realm = Realm {
+            ran: Some(Ok(Exit {
+                code: 127,
+                err: b"pi-carry\n".to_vec(),
+            })),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        assert_eq!(done, Err(Failed { step: Step::Start }), "{lines:?}");
+        let said = start_said(&lines);
+        assert!(
+            said.contains("BUSY01 didn't start on tern: it would end at once with code 127")
+                && said.contains("as pi-carry isn't on tern's path"),
+            "naming the code and what is missing: {said}"
+        );
+        assert!(
+            said.contains("stays in the handover"),
+            "and where its work waits: {said}"
+        );
+        assert!(realm.started.is_empty(), "nothing is held to end at once");
+        assert!(realm.marks.is_empty(), "and no done file is marked started");
+        assert!(
+            realm.handover.iter().all(|(_, started)| !started),
+            "so a later carry starts each: {:?}",
+            realm.handover
+        );
+    }
+
+    #[test]
+    fn a_start_is_checked_on_its_machine_for_what_it_runs() {
+        let mut realm = realm();
+        carried(&mut realm, "tern").0.expect("the carry");
+        let named = |run: &Run| run.command[4..].join(" ");
+        let asked: Vec<String> = realm.runs.iter().map(named).collect();
+        assert_eq!(
+            asked,
+            ["pi-carry pi", "pi-carry pi", "pi-carry", "pi-carry pi"],
+            "pi as well for each session, and pi-carry alone for the quest's trees"
+        );
+        assert!(
+            realm
+                .runs
+                .iter()
+                .all(|run| run.work.needs == [Need::Machine("tern".to_owned())]),
+            "each on the machine its start goes to"
+        );
+    }
+
+    #[test]
+    fn a_check_that_does_not_run_leaves_the_start_as_it_was() {
+        let mut realm = Realm {
+            ran: Some(Err("a run is answered by `run`".to_owned())),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        done.expect("it carries all the same");
+        assert_eq!(
+            arrivals(&realm.started),
+            ["s-busy01", "s-naps02", QUEST, "s-gone"],
+            "each started as before: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_session_seen_running_there_is_marked_started() {
+        let mut realm = realm();
+        let (done, lines) = carried(&mut realm, "tern");
+        let carried = done.expect("the carry");
+        let went: Vec<&str> = carried
+            .sessions
+            .iter()
+            .map(|one| one.address.as_str())
+            .collect();
+        assert_eq!(went, ["BUSY01", "NAPS02", "s-gone"]);
+        assert_eq!(
+            start_said(&lines),
+            "3 sessions started on tern, held",
+            "none waits unseen"
+        );
+        assert!(
+            realm.handover.iter().all(|(_, started)| *started),
+            "each is marked started: {:?}",
+            realm.handover
+        );
+    }
+
+    #[test]
+    fn a_session_not_seen_in_time_is_said_so_and_marked() {
+        let mut realm = Realm {
+            unseen: ["s-naps02".to_owned()].into(),
+            patience: 100,
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        let carried = done.expect("an unseen session fails nothing");
+        assert_eq!(carried.sessions.len(), 3, "it counts as started");
+        assert_eq!(
+            start_said(&lines),
+            "3 sessions started on tern, held; NAPS02 started on tern, not yet seen running"
+        );
+        assert!(
+            realm.waited >= stood::STANDS_WITHIN,
+            "having waited out the bound: {:?}",
+            realm.waited
+        );
+        assert_eq!(
+            realm.marks.get("s-naps02"),
+            Some(&1),
+            "marked, since its start is held there and may yet come up"
         );
     }
 }
