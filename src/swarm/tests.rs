@@ -169,7 +169,9 @@ fn into_a_pipe_a_team_says_when_it_landed_with_its_day_and_zone() {
 fn into_a_pipe_a_time_is_stamped_in_the_looks_zone_on_its_own_day() {
     // Five and a half hours ahead of UTC, 20:00 there is 01:30 the next
     // day here, so a stamp drawn in UTC, or dated by UTC's day, fails.
-    // Twin of tests/zone, apart on purpose: its spelled-out stamp is the format's sole oracle.
+    // Of the cases that stamp a time, this one alone proves a stamp takes
+    // its zone's own day, at an offset that is part of an hour. It keeps
+    // its own copy of tests/zone's rule, since src/ can't reach tests/.
     let zone = jiff::tz::TimeZone::posix("<+0530>-5:30").expect("a POSIX zone");
     let mut piped = whole();
     piped.now = piped.now.with_time_zone(zone);
