@@ -2000,11 +2000,13 @@ does, in RFC 3339, after which it is no longer one of `"Machines"`, a
 leaving the node itself said while a link ran standing whatever that
 link says of the machine after (kept in the node's memory alone, never
 read back from a record a session may write, so a node started again
-forgets it); from ten minutes before then, its node puts a steer
-into the inbox of each session running there, once, saying when it
-leaves and to commit and push, to put what can't be pushed and a note of
-what's next where its work is shared, and to stop, with `from`
-`"machine"` and no `act`.
+forgets it, and a link the machine dialled in, a process of its own,
+never hears it; the latest such leaving stands, so a machine made again
+under a left one's name and let go in turn stays left); from ten minutes
+before then, its node puts a steer into the inbox of each session
+running there, once, saying when it leaves and to commit and push, to
+put what can't be pushed and a note of what's next where its work is
+shared, and to stop, with `from` `"machine"` and no `act`.
 A machine on its battery below 20% is let sleep, so its node puts the
 same kind of steer, once while it stays below, saying to commit and push
 and put the rest where its work is shared, though not to stop, since a

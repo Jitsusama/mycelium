@@ -849,7 +849,7 @@ impl Store for Folders {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .entry(machine.to_owned())
-            .and_modify(|kept| *kept = (*kept).min(at))
+            .and_modify(|kept| *kept = (*kept).max(at))
             .or_insert(at);
     }
 
@@ -2702,6 +2702,39 @@ mod tests {
         assert!(
             again.is_worker("tern"),
             "a record taken away unmakes no worker either"
+        );
+    }
+
+    // A leaving is the node's word kept in memory: the latest it said
+    // stands, a record a session wrote says none, and a node opening again
+    // has heard none.
+    #[test]
+    fn a_leaving_is_kept_only_as_this_stores_node_said_it() {
+        let (dir, store) = store();
+        let at = |second| jiff::Timestamp::from_second(second).expect("a time");
+        let mut tern = crate::placement::tests::machine("tern", "linux", 32, &[]);
+        tern.declared = Some(crate::declared::Declared {
+            leaves_at: Some(at(1_000)),
+            ..crate::declared::Declared::default()
+        });
+        let record = dir.path().join("claims").join(format!("tern{SAID}"));
+        fs::write(&record, serde_json::to_vec(&tern).expect("JSON")).expect("a session writes");
+        assert_eq!(store.left_at("tern"), None, "a record says no leaving");
+        store.mark_left("tern", at(2_000));
+        store.mark_left("tern", at(1_500));
+        assert_eq!(store.left_at("tern"), Some(at(2_000)), "the latest stands");
+        store.mark_left("tern", at(3_000));
+        assert_eq!(
+            store.left_at("tern"),
+            Some(at(3_000)),
+            "a later one moves it"
+        );
+        let again = Folders::open(&dir.path().join("mesh"), &dir.path().join("claims"))
+            .expect("the store opens again");
+        assert_eq!(
+            again.left_at("tern"),
+            None,
+            "a node opening again heard none"
         );
     }
 

@@ -591,7 +591,7 @@ impl Store for Memory {
         self.held()
             .left
             .entry(machine.to_owned())
-            .and_modify(|kept| *kept = (*kept).min(at))
+            .and_modify(|kept| *kept = (*kept).max(at))
             .or_insert(at);
     }
 

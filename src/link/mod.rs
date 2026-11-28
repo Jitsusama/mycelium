@@ -2483,9 +2483,11 @@ impl<S: Store> End<S> {
         // again, leaving later or never, mustn't put it back among the
         // machines. One still to come is the machine's own to move, and one
         // from before this link was let in is another link's, as of a
-        // machine since made again under its name. Only the node's own
-        // word, kept in memory, is read, never the record a session may
-        // write, which would hold a machine out for the link's life.
+        // machine since made again under its name. Whether it left is read
+        // only from the node's own word, kept in memory, never the record a
+        // session may write, which would hold a machine out for the link's
+        // life; the record lends only what the machine declared, where its
+        // end declares nothing now.
         let now = jiff::Timestamp::now();
         if let Some(leaves) = self.store.left_at(&self.other)
             && leaves <= now
@@ -2499,9 +2501,12 @@ impl<S: Store> End<S> {
                     .find(|one| one.name == self.other)
                     .and_then(|kept| kept.declared);
             }
-            if let Some(declared) = said.declared.as_mut() {
-                declared.leaves_at = Some(declared.leaves_at.map_or(leaves, |own| own.min(leaves)));
-            }
+            let Some(declared) = said.declared.as_mut() else {
+                // Nothing it or its record declares can say it left, so it
+                // isn't put back among the machines at all.
+                return;
+            };
+            declared.leaves_at = Some(declared.leaves_at.map_or(leaves, |own| own.min(leaves)));
         }
         self.kept(&said.name, self.store.put_machine(&said));
     }
@@ -6786,6 +6791,30 @@ mod tests {
             None,
             "a leaving from before the link was let in isn't the new machine's"
         );
+
+        // #570 round F25: the new machine let go in turn stands left by its
+        // own leaving, never passed over for the old one's.
+        let now = jiff::Timestamp::now();
+        store::left(&skiff, "tern", now);
+        let mut tern = tern_undeclared();
+        tern.declared = Some(declares(false));
+        says(&mut far_writing, &[Frame::Machine(Box::new(tern))]).await;
+        until(&skiff, |store| {
+            store.machines().into_iter().any(|machine| {
+                machine.name == "tern"
+                    && machine
+                        .declared
+                        .is_some_and(|declared| !declared.costs_money)
+            })
+        })
+        .await;
+        let kept = skiff
+            .machines()
+            .into_iter()
+            .find(|machine| machine.name == "tern")
+            .and_then(|machine| machine.declared)
+            .and_then(|declared| declared.leaves_at);
+        assert_eq!(kept, Some(now), "once it too has left, it stays left");
     }
 
     /// A record a session wrote saying a machine left is no word of the
