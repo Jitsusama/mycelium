@@ -13,8 +13,8 @@
 //! borrower never sees, is added here. Each use is written as one line,
 //! with no prompt, answer, header or key in it.
 
+mod health;
 mod spend;
-mod taken;
 #[cfg(test)]
 mod tests;
 
@@ -261,8 +261,6 @@ pub struct Lender {
     runtime: Option<PathBuf>,
     /// Held while a count is read and written, so two never count as one.
     counting: Mutex<()>,
-    /// Whether the file was taken when last read, for the node's health.
-    taken: taken::Taken,
 }
 
 impl Lender {
@@ -282,7 +280,6 @@ impl Lender {
             folder,
             runtime,
             counting: Mutex::new(()),
-            taken: taken::Taken::default(),
         }
     }
 
@@ -302,28 +299,16 @@ impl Lender {
         );
         let lender = Self::new(file, declarers, folder, crate::place::login_runtime());
         // Read once at the start, so a lend that isn't taken says so in
-        // the log and the node's health before any machine asks of it.
+        // the log before any machine asks of it; health reads it afresh.
         let _ = lender.written();
         lender
-    }
-
-    /// How the lend stands, as the daemon interface's `health` names a
-    /// source: answering, or refused with why its file wasn't taken when
-    /// it was last read, at the start or by the last lend asked.
-    #[must_use]
-    pub fn health(&self) -> serde_json::Value {
-        self.taken.health(&self.file)
     }
 
     /// What may be lent, as the file says now. Why it isn't taken goes to
     /// this machine's log alone, since the asker is another machine's
     /// agent, and says where it doesn't parse but never what it found.
     fn written(&self) -> Result<Written, Refusal> {
-        let read: Result<Written, String> = crate::declared::sealed(&self.file, &self.declarers)
-            .and_then(|()| fs::read(&self.file).map_err(|error| error.to_string()))
-            .and_then(|text| serde_json::from_slice(&text).map_err(|error| unparsed(&error)));
-        self.taken.read(read.as_ref().err().cloned());
-        read.map_err(|why| {
+        self.read().map_err(|why| {
             eprintln!(
                 "mycelium: this machine's lend, {}, isn't taken: {why}",
                 self.file.display()
@@ -333,6 +318,17 @@ impl Lender {
                 "this machine's lend isn't taken; its node's log says why".to_owned(),
             )
         })
+    }
+
+    /// What may be lent, as the file says now, or why it isn't taken: where
+    /// it doesn't parse, only what kind of fault and where, never what it
+    /// found, so it may be said beyond the log. Only a plain file is
+    /// read, so a pipe put in its place can't hold the node's health.
+    fn read(&self) -> Result<Written, String> {
+        crate::declared::sealed(&self.file, &self.declarers)
+            .and_then(|()| plain(&self.file))
+            .and_then(|()| fs::read(&self.file).map_err(|error| error.to_string()))
+            .and_then(|text| serde_json::from_slice(&text).map_err(|error| unparsed(&error)))
     }
 
     /// Why `machine` is cut off, as the cuts say now, where it is: cuts
@@ -532,6 +528,16 @@ pub fn folder() -> PathBuf {
 
 /// The machines cut off, as `folder` keeps them; none where nothing was
 /// ever cut.
+/// Whether `file` is a plain file, past any links, so reading it ends.
+fn plain(file: &Path) -> Result<(), String> {
+    let said = fs::metadata(file).map_err(|error| error.to_string())?;
+    if said.is_file() {
+        Ok(())
+    } else {
+        Err("it isn't a plain file".to_owned())
+    }
+}
+
 fn cuts(folder: &Path) -> io::Result<Vec<String>> {
     match fs::read(folder.join("cuts.json")) {
         Ok(text) => serde_json::from_slice(&text).map_err(io::Error::other),
