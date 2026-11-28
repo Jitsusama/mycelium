@@ -1218,10 +1218,11 @@ pub struct Given {
     /// Named on the node's own command line; with none, a lend asked
     /// here is refused, so a lender's own node hands on no lend.
     pub lends_from: Option<String>,
-    /// The sealed file saying what this machine lends the machines it
-    /// made, if it lends any (`lend::lender`): their links' ends answer
-    /// each lend they ask by it, and refuse every one without it.
-    pub lend: Option<PathBuf>,
+    /// What this machine lends the machines it made, as its sealed file
+    /// says, if it lends any (`lend::lender`): their links' ends answer
+    /// each lend they ask by it, and refuse every one without it. Made
+    /// by whoever runs the node, so its stop can wait on its lends.
+    pub lend: Option<Arc<crate::lend::lender::Lender>>,
     /// Where this machine's sessions, running as another account, are
     /// present and speak on the mesh through the node, if they do, as a
     /// worker machine's do (`worker`).
@@ -4142,17 +4143,11 @@ impl<S: Store> Shared<S> {
             eases: _,
             settles,
             lends_from,
-            lend,
+            lend: lender,
             // Bound and served by `run` alone; only its account is kept.
             worker,
             gates,
         } = given;
-        let lender = lend.map(|file| {
-            Arc::new(crate::lend::lender::Lender::from_file(
-                file,
-                runs.declarers.clone(),
-            ))
-        });
         let said = Arc::<Said>::default();
         let inner = Arc::new(Mutex::new(Inner::after(&flows, &hello.realm)));
         let forages: forage::Held = Arc::new(Mutex::new(forage::Shelf::with_waits(waiting)));
@@ -20361,7 +20356,7 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let given = Given {
-            lend: Some(dir.path().join("lend.json")),
+            lend: crate::lend::lender::Lender::named(Some(dir.path().join("lend.json")), &[]),
             ..given_beside(&socket, None, None)
         };
         let (_stop, _node) = alone_with(&Memory::default(), &socket, given);

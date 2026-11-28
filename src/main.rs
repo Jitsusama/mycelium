@@ -26,6 +26,7 @@ use mycelium::group::{Group, Pattern};
 use mycelium::hold::environment::ServiceManager;
 use mycelium::hold::journal::SystemJournal;
 use mycelium::hold::start::{Scope, Starter, login_shell};
+use mycelium::lend::lender::{LENDS_DRAIN_WITHIN, Lender};
 use mycelium::link::dial::{Connection, Dial as _, Program, Ssh, Way};
 use mycelium::link::discovery::Listed;
 use mycelium::link::membership::{Membership, Proven, Realm};
@@ -891,6 +892,10 @@ struct Node {
     /// this machine is refused.
     #[arg(long)]
     lend: Option<PathBuf>,
+    /// How many seconds the node's stop waits for the lends in flight
+    /// before it cuts them, below its service manager's stop timeout.
+    #[arg(long, value_name = "SECS", default_value_t = LENDS_DRAIN_WITHIN.as_secs())]
+    lends_drain_within: u64,
     /// Where this machine's sessions, running as the account
     /// `--worker-uid` names, are present and speak on the mesh through
     /// the node, which judges what each says, as a worker machine's do.
@@ -2298,7 +2303,8 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
         eases: node.easing.given(&state),
         settles: Some(settles_kept(&state, &membership.name)),
         lends_from: node.lends_from,
-        lend: node.lend,
+        // Read below, sealed by the declarers its runs trust.
+        lend: None,
         worker: worker_given(node.worker_socket, node.worker_uid),
         gates: gates_given(node.answers_with, node.answers_for)?,
     };
@@ -2306,6 +2312,7 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
         "mycelium: {}",
         mycelium::declared::said_at_start(&declared, &given.runs.declarers)
     );
+    given.lend = Lender::named(node.lend, &given.runs.declarers);
     if let (Some(kit), Some(starter)) = (node.kit, given.starter.as_mut()) {
         let checked = mycelium::declared::kit_checked(&kit, &given.runs.declarers);
         tell!(
@@ -2319,12 +2326,13 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
         let bound = bound_where_it_serves(&socket, former.as_deref())?;
         // Probing ends with the process, when the node does.
         tokio::spawn(mycelium::reach::keep(declared, place::reached()));
-        node::run(store, membership, Listed(dials), given, bound, stopped()).await
+        let stop = mycelium::stop::lends_drained(given.lend.clone(), node.lends_drain_within);
+        node::run(store, membership, Listed(dials), given, bound, stop).await
     });
     // Once the node has stopped, its links ended and their sessions let go,
     // what its tasks still hold is left for the process's end to free.
     // Freed piece by piece, it is paged back in from swap first: the work
-    // node, with 93 watchers and 93 MB swapped, took 2 s of the 5 its
+    // node, with 93 watchers and 93 MB swapped, took 2 s of the 90 its
     // service manager allows. A helper still running is ended with the
     // service.
     std::mem::forget(runtime);
@@ -3262,7 +3270,7 @@ fn forge(act: ForgeAct, node: &Path) -> io::Result<ExitCode> {
                 tell!("mycelium: serving the forge at {}", listen.display());
                 tokio::select! {
                     served = forge::serve(bound, served) => served,
-                    () = stopped() => Ok(()),
+                    () = mycelium::stop::stopped() => Ok(()),
                 }
             })?;
             Ok(ExitCode::SUCCESS)
@@ -3328,7 +3336,7 @@ fn lend_serve(listen: &Path, node: PathBuf, budget: Option<String>) -> io::Resul
         tell!("mycelium: lending pi's model calls at {}", listen.display());
         tokio::select! {
             served = mycelium::lend::serve::serve(bound, node, budget) => served,
-            () = stopped() => Ok(()),
+            () = mycelium::stop::stopped() => Ok(()),
         }
     })
 }
@@ -3664,22 +3672,6 @@ fn runtime() -> io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-}
-
-/// Resolves when the node is asked to stop, by Ctrl-C or by its service
-/// manager's terminate signal.
-async fn stopped() {
-    let Ok(mut terminate) =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-    else {
-        // With no terminate signal to hear, Ctrl-C alone stops the node.
-        let _ = tokio::signal::ctrl_c().await;
-        return;
-    };
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = terminate.recv() => {}
-    }
 }
 
 fn print_reply(socket: &Path, request: &Request) -> io::Result<()> {

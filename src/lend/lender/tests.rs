@@ -13,6 +13,7 @@ use super::spend::SPEND_WATCH;
 use super::*;
 
 mod asked_again;
+mod draining;
 mod spending;
 
 /// Longer than any of these waits should take, so a test fails rather

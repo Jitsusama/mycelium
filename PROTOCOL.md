@@ -3420,6 +3420,20 @@ before it was sent there, so a line naming one is one that was. A
 model's line says `charged_usd` and `spent_usd_today` besides, once
 it is settled.
 
+A lending node asked to stop, by its service manager's terminate or
+Ctrl-C, lets the lends it is answering end first. From the stop it
+takes no new lend: each is refused 503 at once, which pi asks again on,
+as it does a lender no link reaches. Those in flight run on, for at
+most `--lends-drain-within SECS`, 60 unless said, which leaves the rest
+of the stop time within systemd's default stop timeout of 90 s. The
+node runs on as ever meanwhile, and its links, holds and watches end
+after. At the bound each lend still going is cut and refused 503, and
+its line's `outcome` says `cut by the node's stop`, never
+`let go: its borrower stopped reading`, its `response_bytes` what it
+had sent; it is charged as any answer cut short is. A second stop
+meanwhile cuts them and ends the wait at once. A node with no lend in
+flight stops at once.
+
 #### What a Model's Lend May Spend
 
 A model's lend spends money, so the lender, which alone sees the

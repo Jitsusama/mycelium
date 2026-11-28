@@ -68,6 +68,8 @@
 //! - [`open_files`]: raising its own limit on open files as far as it goes
 //! - [`install`]: whether the build a process runs is still installed
 //! - [`ssh`]: what another machine's link key may run on this one
+//! - [`stop`]: hearing it is asked to stop, and letting its lends end
+//!   first
 //! - [`update`]: its configuration's updater, asked to update it to main
 //! - [`murmur`]: what this machine's cells murmured in the quests' webs,
 //!   served as records
@@ -125,6 +127,7 @@ mod stand_in;
 pub mod state;
 pub mod steer;
 pub mod stimuli;
+pub mod stop;
 pub mod store;
 pub mod swarm;
 pub mod unanswered;

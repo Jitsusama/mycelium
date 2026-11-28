@@ -11,8 +11,10 @@
 //! the headers a model's answer turns on are carried on, so whatever
 //! credentials the borrower sent stay with it, and the key, which the
 //! borrower never sees, is added here. Each use is written as one line,
-//! with no prompt, answer, header or key in it.
+//! with no prompt, answer, header or key in it. The node's stop waits
+//! for the lends in flight, as [`drain`] says.
 
+mod drain;
 mod health;
 mod plain_file;
 mod spend;
@@ -40,7 +42,10 @@ use crate::lend::forge::BORROWER;
 use crate::lend::serve::{HANDED_ON, MOST_BODY, MOST_HEAD};
 use crate::lend::{BACKLOG, Lend, Lent};
 
+use drain::{CUT, CUT_WHY, InFlight, Lends, STOPPING};
 use spend::{Meter, dollars, millionths, spend_watch_allows, usd};
+
+pub use drain::LENDS_DRAIN_WITHIN;
 
 /// The most of an answer's body one [`Lent::Body`] carries.
 const PIECE: usize = 16 * 1024;
@@ -205,6 +210,8 @@ enum Ended {
     Refused(Refusal),
     /// Its borrower stopped reading.
     Gone,
+    /// The node's stop cut it, still going at the drain's bound.
+    Cut,
 }
 
 /// What one lend's line says of it, as it goes.
@@ -272,6 +279,8 @@ pub struct Lender {
     runtime: Option<PathBuf>,
     /// Held while a count is read and written, so two never count as one.
     counting: Mutex<()>,
+    /// The lends being answered, which the node's stop waits on.
+    lends: Lends,
 }
 
 impl Lender {
@@ -291,7 +300,16 @@ impl Lender {
             folder,
             runtime,
             counting: Mutex::new(()),
+            lends: Lends::default(),
         }
+    }
+
+    /// Takes no lend from now, each asked refused 503, and waits for
+    /// those in flight to end: at most `within`, past which those left
+    /// are cut, or until `again`, a second stop, which cuts them and ends
+    /// the wait at once. With none in flight it ends at once.
+    pub async fn drain(&self, within: Duration, again: impl Future<Output = ()>) {
+        self.lends.drain(within, again).await;
     }
 
     /// A lender reading `file`, sealed by `declarers`, keeping its counts
@@ -313,6 +331,13 @@ impl Lender {
         // the log before any machine asks of it; health reads it afresh.
         let _ = lender.written();
         lender
+    }
+
+    /// The lender `file` says, if one is named, as [`Lender::from_file`]
+    /// reads it: one, shared by the node's links and its stop.
+    #[must_use]
+    pub fn named(file: Option<PathBuf>, declarers: &[u32]) -> Option<Arc<Self>> {
+        file.map(|file| Arc::new(Self::from_file(file, declarers.to_vec())))
     }
 
     /// What may be lent, as the file says now. Why it isn't taken goes to
@@ -636,30 +661,53 @@ fn write_whole(folder: &Path, file: &Path, value: &impl serde::Serialize) -> io:
 #[must_use]
 pub fn answer(lender: &Arc<Lender>, machine: &str, lend: Lend) -> mpsc::Receiver<Lent> {
     let (sending, answers) = mpsc::channel(BACKLOG);
+    // Taken as it is asked, before its task first runs, so a stop begun
+    // meanwhile waits for it.
+    let in_flight = lender.lends.begun();
     let lender = lender.clone();
     let machine = machine.to_owned();
     tokio::spawn(async move {
-        let began = Instant::now();
-        let mut used = Used::default();
-        let ended = lent(&lender, &machine, lend, &sending, &mut used).await;
-        let outcome = match &ended {
-            Ended::Whole => "sent".to_owned(),
-            Ended::Refused(refusal) => format!("refused: {}", refusal.why),
-            Ended::Gone => "let go: its borrower stopped reading".to_owned(),
-        };
-        if let Ended::Refused(Refusal { status, .. }) = &ended {
-            used.status.get_or_insert(*status);
-        }
-        // Said before the refusal is sent, which waits on a borrower that
-        // may have stopped taking what it is sent, so a cut lend is in the
-        // log however its borrower behaves.
-        say(&machine, &used, began.elapsed(), &outcome);
-        if let Ended::Refused(Refusal { status, why }) = ended {
-            // A borrower gone meanwhile has nothing to be told.
-            let _ = sending.send(Lent::Refused { status, why }).await;
-        }
+        carry(&lender, &machine, lend, &sending, in_flight).await;
     });
     answers
+}
+
+/// Carries `lend` for `machine`, `in_flight` as the node's stop counts
+/// it, or refuses it 503 where none is, the stop having begun; then
+/// writes its line, answering the line's outcome and what it used.
+async fn carry(
+    lender: &Lender,
+    machine: &str,
+    lend: Lend,
+    sending: &mpsc::Sender<Lent>,
+    in_flight: Option<InFlight>,
+) -> (String, Used) {
+    let began = Instant::now();
+    let mut used = Used::default();
+    let ended = match &in_flight {
+        Some(_) => lent(lender, machine, lend, sending, &mut used).await,
+        None => Ended::Refused(refused(503, STOPPING)),
+    };
+    let (outcome, told) = match ended {
+        Ended::Whole => ("sent".to_owned(), None),
+        Ended::Refused(refusal) => (format!("refused: {}", refusal.why), Some(refusal)),
+        Ended::Gone => ("let go: its borrower stopped reading".to_owned(), None),
+        Ended::Cut => (CUT.to_owned(), Some(refused(503, CUT_WHY))),
+    };
+    if let Some(Refusal { status, .. }) = &told {
+        used.status.get_or_insert(*status);
+    }
+    // Said before the refusal is sent, which waits on a borrower that
+    // may have stopped taking what it is sent, so a cut lend is in the
+    // log however its borrower behaves; and the stop waits no longer for
+    // it once it is.
+    say(machine, &used, began.elapsed(), &outcome);
+    drop(in_flight);
+    if let Some(Refusal { status, why }) = told {
+        // A borrower gone meanwhile has nothing to be told.
+        let _ = sending.send(Lent::Refused { status, why }).await;
+    }
+    (outcome, used)
 }
 
 /// Writes one line of what a lend was, as the node's own output, so the
@@ -775,8 +823,13 @@ async fn carried(
     // reached or asked, so a lender's own outage spends nobody's day,
     // and where it was cut off or let go meanwhile: each before the whole
     // ask went upstream. Never after, since an answer that fails may
-    // still have been made.
-    let (stream, key) = match reached(lender, budget).await {
+    // still have been made. The node's stop cuts it here too, so a key
+    // slow to be had never holds the stop past its bound.
+    let reaching = tokio::select! {
+        reaching = reached(lender, budget) => reaching,
+        () = lender.lends.cut() => return give_back(Ended::Cut),
+    };
+    let (stream, key) = match reaching {
         Ok(reached) => reached,
         Err(refusal) => return give_back(Ended::Refused(refusal)),
     };
@@ -785,6 +838,9 @@ async fn carried(
     }
     if sending.is_closed() {
         return give_back(Ended::Gone);
+    }
+    if lender.lends.is_cut() {
+        return give_back(Ended::Cut);
     }
     // Named on the line only as it is sent, so a line refused before
     // then, by its count, a cut or anything else, names no upstream it
@@ -829,12 +885,14 @@ async fn carried(
 }
 
 /// How a lend being answered ends without its answer: its borrower
-/// stopped reading, or `machine` was cut off meanwhile, which a lend
-/// finds within [`CUTS_LOOKED_AT`]. Never, while neither is so.
+/// stopped reading, the node's stop cut it, or `machine` was cut off
+/// meanwhile, which a lend finds within [`CUTS_LOOKED_AT`]. Never, while
+/// none is so.
 async fn watched(lender: &Lender, machine: &str, sending: &mpsc::Sender<Lent>) -> Ended {
     loop {
         tokio::select! {
             () = sending.closed() => return Ended::Gone,
+            () = lender.lends.cut() => return Ended::Cut,
             () = tokio::time::sleep(CUTS_LOOKED_AT) => {
                 if let Some(why) = lender.cut_off_why(machine) {
                     return Ended::Refused(refused(403, why));
