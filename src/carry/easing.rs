@@ -830,7 +830,9 @@ impl Easing {
     /// it and what the node remembers is what counts against
     /// [`ease::DAILY`], so a record cut short lifts nothing. Where the
     /// carries on their way couldn't be read, as [`Easing::on_way`] was
-    /// told, that is why it can't be told, so the look carries none.
+    /// told, that is why it can't be told, though the record can't say
+    /// the day's count either, as a carry is held first for one on its
+    /// way; so the look carries none.
     pub fn look(
         &mut self,
         here: &Here,
@@ -842,9 +844,9 @@ impl Easing {
     ) -> Option<Value> {
         reading.held = Some(self.watch.take(&reading));
         self.history.read(here.name, &reading);
-        let kept_eases = match (&self.on_way_unread, kept_eases) {
-            (Some(why), Ok(_)) => Err(why.clone()),
-            (_, kept_eases) => kept_eases,
+        let kept_eases = match &self.on_way_unread {
+            Some(why) => Err(why.clone()),
+            None => kept_eases,
         };
         self.history.kept_eases(kept_eases);
         // A session in a turn is awake, whatever it would have been put
