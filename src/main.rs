@@ -212,9 +212,19 @@ enum Action {
     /// or into that turn when the words begin `now`; `pause` every
     /// session of a team and the teams within it, or one session, so each
     /// finishes its turn and waits; and `resume` them.
+    ///
+    /// A name is read, in order, as a team's address, its short name, then
+    /// words of its title; an act's name is first read as a living
+    /// session's address, and last as words of a living session's title.
+    /// Several that a name fits alike are each offered, and none is
+    /// steered. A name a team's quest gives it that is held back, as it
+    /// reads as more than one name or as other than a name, finds no team
+    /// by any title, and the refusal names the team's address to ask for
+    /// it by.
     #[command(after_help = "Example:\n  mycelium swarm say grow ship it")]
     Swarm {
-        /// The team, by its short name or any words of its title, such as
+        /// The team, by its address, its short name or any words of its
+        /// title, such as
         /// `part deux`, a leading `team` left out; or an act and its team,
         /// as `say harbour ship it`, `say harbour now stop that`,
         /// `pause harbour`, or the team's words first, as
