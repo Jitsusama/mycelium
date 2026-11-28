@@ -2689,7 +2689,11 @@ takes every folder of that home off its path, by name or by where it
 leads, before the kit's tools go first, so nothing the home holds
 shadows its command: one found only there isn't found, and for a name
 with no slash the run says so on its error output, naming the path it
-had, and ends 127, as the shell would. The agent runs as the run's own user,
+had and the folders it took off the path it was given, and ends 127, as
+the shell would. A program found that ends 127, as one does that runs a
+program it doesn't find, may have looked for a tool only those folders
+held, so where any were taken off, the run says the path and those
+folders after it ends, and ends as the program did. The agent runs as the run's own user,
 who can write folders outside the home too, so a folder that user owns or can
 write goes as well, and so does one under a folder it owns, or can write
 without the sticky bit, up to `/`, since it could rename the folder away and
