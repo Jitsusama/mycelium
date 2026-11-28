@@ -3965,10 +3965,16 @@ hubs for a while, and nodes of two versions may keep different
 subjects for one cell and name different hubs for one subject. The
 kind is told as the sessions change, so a busy hour of talk moves the
 hubs with the next change, not a message at a time. Ten thousand cells
-as the networks are measured make their hub records within 11.75 MB,
+as the networks are measured make their hub records within 18.56 MB,
 each made as the bytes it is sent as, but ten thousand each saying 24
-subjects of 120 characters outside ASCII spend about 525 MB, about
-2.2 KB a subject, since a record holds its subject in several copies.
+subjects of 120 characters outside ASCII, by addresses of 32
+characters, spend about 556 MB, about 2.3 KB a subject, since a record
+holds its subject in several copies. These figures are the making
+alone, from the sessions the node holds and the clone of them it reads:
+the fold of the ties that tells how much each cell was heard comes
+before, outside them. A rebuild holds the previous build's records
+while the next is made, beside these. The cost grows with the number
+of sessions a node holds, which nothing caps.
 
 The `ended` kind holds each session of this machine's whose work
 stopped while its quest goes on, keyed `ended:<session>`, so whoever
