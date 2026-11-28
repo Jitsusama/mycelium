@@ -4,25 +4,30 @@
 
 use serde_json::json;
 
-use super::{EVERY, Lender, cuts};
+use super::{EVERY, Lender, Written, cuts};
 
 impl Lender {
     /// How the lend stands, as the daemon interface's `health` names a
-    /// source: `refused` with why while its file isn't taken, its cuts
-    /// can't be read or every machine is cut off, and `answering`
-    /// otherwise. Read afresh at each ask and said nowhere else, since
-    /// health is asked often and the log already has each lend's why.
+    /// source: `refused` with why while its file isn't taken, a machine
+    /// it lends to names a budget it doesn't keep, its cuts can't be read
+    /// or every machine is cut off, and `answering` otherwise. Read
+    /// afresh at each ask and said nowhere else, since health is asked
+    /// often and the log already has each lend's why.
     #[must_use]
     pub fn health(&self) -> serde_json::Value {
-        let why = match (self.read(), cuts(&self.folder)) {
+        let why = match (
+            self.read().map(|written| unkept(&written)),
+            cuts(&self.folder),
+        ) {
             (Err(why), _) => Some(format!("its file isn't taken: {why}")),
-            (Ok(_), Err(error)) => Some(format!(
+            (Ok(Some(why)), _) => Some(why),
+            (Ok(None), Err(error)) => Some(format!(
                 "its cuts can't be read, so it lends nothing: {error}"
             )),
-            (Ok(_), Ok(cut)) if cut.iter().any(|cut| cut == EVERY) => {
+            (Ok(None), Ok(cut)) if cut.iter().any(|cut| cut == EVERY) => {
                 Some("every machine is cut off from it".to_owned())
             }
-            (Ok(_), Ok(_)) => None,
+            (Ok(None), Ok(_)) => None,
         };
         let file = self.file.display().to_string();
         match why {
@@ -30,6 +35,24 @@ impl Lender {
             None => json!({"name": "lend", "file": file, "state": "answering"}),
         }
     }
+}
+
+/// Why the lend refuses some machine every ask, where one it lends to
+/// names a budget, as its own or beside it, that the file doesn't keep:
+/// each of that machine's asks through it is refused, so a lend that
+/// read answering would hide it until a machine asked.
+fn unkept(written: &Written) -> Option<String> {
+    written.vms.iter().find_map(|vm| {
+        let mut named = std::iter::once(&vm.budget).chain(&vm.also);
+        named
+            .find(|budget| !written.budgets.contains_key(*budget))
+            .map(|budget| {
+                format!(
+                    "the machines {}* name the budget {budget}, which it doesn't keep",
+                    vm.prefix
+                )
+            })
+    })
 }
 
 #[cfg(test)]
@@ -111,6 +134,38 @@ mod tests {
         thread::spawn(move || said.send(state(&lender)));
         let stood = heard.recv_timeout(PATIENCE).expect("a pipe is never read");
         assert_eq!(stood, "refused", "a pipe is refused, not read");
+    }
+
+    #[test]
+    fn a_lend_naming_a_budget_it_doesnt_keep_says_which() {
+        let folder = tempfile::tempdir().expect("a folder");
+        let file = folder.path().join("lend.json");
+        let lender = Lender::new(
+            file.clone(),
+            vec![0, 65534, rustix::process::getuid().as_raw()],
+            folder.path().join("state"),
+            Some(folder.path().to_owned()),
+        );
+        let mut lend = taken();
+        lend["vms"][0]["also"] = json!(["forge"]);
+        fs::write(&file, lend.to_string()).expect("the lend is written");
+        let health = lender.health();
+        assert_eq!(health["state"], "refused", "{health}");
+        let why = health["why"].as_str().expect("why");
+        assert!(
+            why.contains("agents-*") && why.contains("forge"),
+            "it names the machines and the budget: {why}"
+        );
+
+        lend["vms"][0]["also"] = json!([]);
+        lend["vms"][0]["budget"] = json!("elsewhere");
+        fs::write(&file, lend.to_string()).expect("the lend is written");
+        let health = lender.health();
+        let why = health["why"].as_str().expect("why");
+        assert!(why.contains("elsewhere"), "its own budget too: {why}");
+
+        fs::write(&file, taken().to_string()).expect("the lend is fixed");
+        assert_eq!(state(&lender), "answering", "every budget named is kept");
     }
 
     #[test]

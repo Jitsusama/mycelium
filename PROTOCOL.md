@@ -3330,8 +3330,11 @@ upstream not answering is 503. The node reads the file once as it
 starts too, so a lend not taken is in the log before any lend is
 asked, and its `health` names a source `lend`, read afresh at each
 ask: `refused` with that why while the file isn't taken, isn't a
-plain file, its cuts can't be read or every machine is cut off, and
-`answering` otherwise. A key that
+plain file, a machine it lends to names a budget it doesn't keep,
+its cuts can't be read or every machine is cut off, and `answering`
+otherwise. The lend file, its cuts, the day's tally and spend-watch's
+word are each read only as a plain file, opened without waiting, so
+a pipe or a device at one's name never holds the lender. A key that
 can't be had is 502. An interim head the upstream sends, 1xx but 101,
 is passed over for the one after it, and a 204 or 304 has no body.
 `mycelium lend cut MACHINE`, or `--all`, cuts a machine off at once,

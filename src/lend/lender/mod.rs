@@ -14,6 +14,7 @@
 //! with no prompt, answer, header or key in it.
 
 mod health;
+mod plain_file;
 mod spend;
 #[cfg(test)]
 mod tests;
@@ -326,8 +327,7 @@ impl Lender {
     /// read, so a pipe put in its place can't hold the node's health.
     fn read(&self) -> Result<Written, String> {
         crate::declared::sealed(&self.file, &self.declarers)
-            .and_then(|()| plain(&self.file))
-            .and_then(|()| fs::read(&self.file).map_err(|error| error.to_string()))
+            .and_then(|()| plain_file::read(&self.file).map_err(|error| error.to_string()))
             .and_then(|text| serde_json::from_slice(&text).map_err(|error| unparsed(&error)))
     }
 
@@ -490,7 +490,7 @@ impl Lender {
 /// file yet.
 fn kept(file: &Path) -> Result<BTreeMap<String, u64>, Refusal> {
     let unread = |why: String| refused(503, format!("the day's tally can't be read: {why}"));
-    match fs::read(file) {
+    match plain_file::read(file) {
         Ok(text) => serde_json::from_slice(&text).map_err(|error| unread(error.to_string())),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(BTreeMap::new()),
         Err(error) => Err(unread(error.to_string())),
@@ -526,21 +526,13 @@ pub fn folder() -> PathBuf {
     crate::place::state().join("lend")
 }
 
-/// Whether `file` is a plain file, past any links, so reading it ends.
-fn plain(file: &Path) -> Result<(), String> {
-    let said = fs::metadata(file).map_err(|error| error.to_string())?;
-    if said.is_file() {
-        Ok(())
-    } else {
-        Err("it isn't a plain file".to_owned())
-    }
-}
-
 /// The machines cut off, as `folder` keeps them; none where nothing was
 /// ever cut. Where they don't parse, the error says only what kind of
-/// fault and where, as [`unparsed`] does, never what was found.
+/// fault and where, as [`unparsed`] does, never what was found. Only a
+/// plain file is read, so a pipe put in its place can't hold a lend or
+/// the node's health.
 fn cuts(folder: &Path) -> io::Result<Vec<String>> {
-    match fs::read(folder.join("cuts.json")) {
+    match plain_file::read(&folder.join("cuts.json")) {
         Ok(text) => serde_json::from_slice(&text)
             .map_err(|error| io::Error::other(unparsed_as(&error, "a list of machines"))),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
