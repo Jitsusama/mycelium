@@ -125,11 +125,12 @@ pub trait Store: Clone + Send + Sync + 'static {
     fn claim(&self, machine: &str) -> io::Result<Option<Claim>>;
 
     /// Asks the link holding `machine`'s claim to let it go, for a newer
-    /// link with it, as of now.
+    /// link with it, as of now, or a millisecond past the last ask where
+    /// that is as late, so each ask's mark is later than the one before.
     fn supersede(&self, machine: &str) -> io::Result<()>;
 
-    /// When a newer link last asked for `machine`'s claim, in milliseconds
-    /// since the epoch, if one ever did.
+    /// The mark of the last ask for `machine`'s claim, when a newer link
+    /// asked for it in milliseconds since the epoch, if one ever did.
     fn superseded(&self, machine: &str) -> Option<i64>;
 
     /// Until when this store was last linked with `machine`, in
