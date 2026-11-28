@@ -357,15 +357,19 @@ pub fn opens_an_unnamed_session(command: &[String]) -> bool {
     named_pi(program) && reopens(command).is_none() && words.iter().any(opens)
 }
 
-/// Whether the session `command` opens is told: it runs pi, by any path,
-/// opening a new session or one as [`reopens`] reads it, which is raised
-/// to the strictest it ran in. Anything else isn't, so its start keeps
-/// no looser fence than strict: a shell, `env` or another program, which
-/// may run pi itself, or pi opening a session as
-/// [`opens_an_unnamed_session`] reads.
+/// Whether the session `command` opens is told: it runs the person's pi,
+/// as [`persons_pi`] reads it, opening a new session or one as
+/// [`reopens`] reads it, which is raised to the strictest it ran in.
+/// Anything else isn't, so its start keeps no looser fence than strict:
+/// a shell, `env` or another program, which may run pi itself, a program
+/// named pi elsewhere, which an agent may have written, or pi opening a
+/// session as [`opens_an_unnamed_session`] reads. That reads every flag
+/// with which pi opens a session, since pi matches its flags whole. It
+/// tells only the session pi itself opens: one a session's own commands
+/// open runs within that session's fence, as all its commands do.
 #[must_use]
 pub fn tells_what_it_opens(command: &[String]) -> bool {
-    command.first().is_some_and(|program| named_pi(program)) && !opens_an_unnamed_session(command)
+    command.first().is_some_and(|program| persons_pi(program)) && !opens_an_unnamed_session(command)
 }
 
 /// A start let go ahead, held as counted till it is kept.
@@ -1089,7 +1093,7 @@ mod tests {
     }
 
     #[test]
-    fn only_pi_opening_a_new_session_or_a_reopening_tells_what_it_opens() {
+    fn only_the_persons_pi_opening_a_new_session_or_a_reopening_tells_what_it_opens() {
         let tells = |words: &[&str]| {
             let command: Vec<String> = words.iter().map(|&word| word.to_owned()).collect();
             tells_what_it_opens(&command)
@@ -1098,7 +1102,10 @@ mod tests {
             (&["pi", "--session", "s-gone_1"][..], "a reopening"),
             (&["pi", "go on"], "a new session"),
             (&["pi"], "a bare pi"),
-            (&["/opt/bin/pi", "go on"], "pi by a path"),
+            (
+                &["/run/current-system/sw/bin/pi", "go on"],
+                "the person's pi by its path",
+            ),
         ] {
             assert!(tells(words), "{why}: {words:?}");
         }
@@ -1110,6 +1117,8 @@ mod tests {
             ),
             (&["env", "pi", "--continue"], "env running pi"),
             (&["agent"], "another program"),
+            (&["/opt/bin/pi", "go on"], "a program named pi elsewhere"),
+            (&["/tmp/skiff/pi"], "a pi an agent may have written"),
             (&["pi", "-c"], "pi picking its session"),
             (&["pi", "--session=s-gone_1"], "a session named another way"),
             (&[], "nothing"),
