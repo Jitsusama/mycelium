@@ -611,12 +611,17 @@ hearing the other end is said at the next look:
   `~/.local/state/mycelium/before-share/<when>/<QUEST>/`. Where that
   folder is on another filesystem, as a scratch kept as a subvolume of
   its own is, the copy moves beside itself instead, under a name
-  starting with a dot that no end shares, and it is kept when the
-  node takes the rest of an ended quest's scratch away, though a
-  session concluding the quest on that machine takes the whole
-  scratch, the copy with it. A quest whose copy can't move aside is
-  refused alone, logged with its id, and the rest are still taken up;
-  it is taken up again a minute on.
+  starting with a dot that no end shares. A scratch folder's copy is
+  kept when the node takes the rest of an ended quest's scratch away,
+  though a session concluding the quest on that machine takes the whole
+  scratch, the copy with it; a record's copy lies beside the record in
+  the mesh's quests folder, which no sweep goes through, so it stays,
+  as copies in `before-share` do. A quest whose copy can't move aside
+  is refused, logged with its id, and the rest are still taken up; what
+  of it crossed before stays. The quests refused, a scratch refused
+  as a Holds brings an ended quest back included, are taken up again a
+  minute on, with what the other end last said it holds of them, and
+  each refused again waits twice as long as before, to half an hour.
   A quest's own record moves only once the first of the sharing end's
   files comes to be written in its place; until then it stays where it
   was, neither read nor said, so a link that drops first leaves it

@@ -504,9 +504,21 @@ pub struct Exchange {
     users: Box<dyn Users>,
     /// When each ended quest's scratch, found in use, is tried again.
     sweep_again: BTreeMap<String, Instant>,
-    /// When what the other end shares is taken up again, where a quest of
-    /// it was refused ([`Self::take_up_theirs`]).
+    /// When the quests of the other end's refused here are taken up again
+    /// ([`Self::take_up_refused_when_due`]).
     take_up_again: Option<Instant>,
+    /// How long the next refusal of a quest refused again waits, doubling
+    /// each time to [`TAKE_UP_AT_MOST`].
+    take_up_wait: Duration,
+    /// The quests of the other end's whose taking up, or whose scratch's
+    /// or clones', was refused here, tried again when [`Self::take_up_again`]
+    /// comes.
+    refused: BTreeSet<String>,
+    /// What the other end said it holds of each refused quest, heard again
+    /// once it is taken up ([`Self::hear_refused_holds`]): a Holds heard
+    /// while it was refused passed over what wasn't taken up, and isn't
+    /// said again until it changes.
+    refused_holds: BTreeMap<String, BTreeMap<String, State>>,
     /// Whether a README, what the other end shares, or which quests this
     /// end shares changed since the last look decided which quests shared
     /// only for those under them are spent, so an idle look reads no
@@ -560,6 +572,10 @@ const SWEEP_AGAIN: Duration = Duration::from_secs(60);
 /// briefly locked, may pass, while trying at every look would fill the
 /// log with the same refusal.
 const TAKE_UP_AGAIN: Duration = Duration::from_secs(60);
+
+/// The longest a quest refused again and again waits to be taken up again,
+/// so one that never passes is tried, and logged, only twice an hour.
+const TAKE_UP_AT_MOST: Duration = Duration::from_secs(30 * 60);
 
 /// How many files of one quest this end asks of the other at once. A link
 /// carries everything in the order it was said, and each file asked for
@@ -670,6 +686,9 @@ impl Exchange {
             users: Box::new(Processes),
             sweep_again: BTreeMap::new(),
             take_up_again: None,
+            take_up_wait: TAKE_UP_AGAIN,
+            refused: BTreeSet::new(),
+            refused_holds: BTreeMap::new(),
             above_again: true,
             worker: false,
             above: Above::Carried,
@@ -1181,22 +1200,85 @@ impl Exchange {
         Ok(Some((Arc::new(held.ledger), scan.changed)))
     }
 
-    /// Takes up again the other end's quests once a refusal's wait is
-    /// over ([`TAKE_UP_AGAIN`]).
-    fn take_up_theirs_when_due(&mut self) {
-        if self
+    /// Takes up again each quest of the other end's refused here, and its
+    /// scratch and clones, once the refusal's wait is over, returning what
+    /// this end asks for of those that pass. Those refused again wait twice
+    /// as long as before, to [`TAKE_UP_AT_MOST`].
+    fn take_up_refused_when_due(&mut self) -> Vec<Say> {
+        if !self
             .take_up_again
             .is_some_and(|again| again <= Instant::now())
         {
-            self.take_up_theirs();
+            return Vec::new();
         }
+        let named = self
+            .theirs
+            .as_ref()
+            .map(|theirs| theirs.quests.clone())
+            .unwrap_or_default();
+        for id in std::mem::take(&mut self.refused) {
+            let taken = if named.contains(&id) && !self.places.ended(&id) {
+                self.take_up(&id, &BTreeMap::new()).map(|_| ())
+            } else {
+                Ok(())
+            };
+            if let Err(error) = taken.and_then(|()| self.take_up_scratch(&id)) {
+                self.refuse(&id, &error);
+            }
+        }
+        let wants = self.hear_refused_holds();
+        let wait = self.take_up_wait.saturating_mul(2).min(TAKE_UP_AT_MOST);
+        self.wait_to_take_up(wait);
+        wants
+    }
+
+    /// Has the quests refused, if any, taken up again `wait` from now, and
+    /// the wait start over where none is.
+    fn wait_to_take_up(&mut self, wait: Duration) {
+        if self.refused.is_empty() {
+            self.take_up_again = None;
+            self.take_up_wait = TAKE_UP_AGAIN;
+        } else {
+            self.take_up_again = Some(Instant::now() + wait);
+            self.take_up_wait = wait;
+        }
+    }
+
+    /// Hears again what the other end said it holds of each quest refused
+    /// before and taken up since ([`Exchange::refused_holds`]), returning
+    /// what this end asks for of them.
+    fn hear_refused_holds(&mut self) -> Vec<Say> {
+        let passed: Vec<String> = self
+            .refused_holds
+            .keys()
+            .filter(|id| !self.refused.contains(*id))
+            .cloned()
+            .collect();
+        let mut wants = Vec::new();
+        for id in passed {
+            let Some(files) = self.refused_holds.remove(&id) else {
+                continue;
+            };
+            let heard = if self.takes(&id) {
+                self.take_holds(&id, &files)
+            } else {
+                Ok(None)
+            };
+            match heard {
+                Ok(said) => wants.extend(said.unwrap_or_default()),
+                Err(error) => {
+                    eprintln!("what {} holds of {id} isn't taken up: {error}", self.other)
+                }
+            }
+        }
+        wants
     }
 
     /// Looks at every shared quest as [`Self::look`] does, asking for no
     /// file in its turn.
     fn look_quests(&mut self) -> io::Result<Vec<Say>> {
         self.cloning.reap();
-        self.take_up_theirs_when_due();
+        let retaken = self.take_up_refused_when_due();
         let replay = (self.above == Above::Lifted).then(|| self.take_up_held_back());
         let ledgers = self.places.ledgers();
         let mut shares = BTreeMap::new();
@@ -1298,6 +1380,7 @@ impl Exchange {
             says.push(shares_said(&shares));
         }
         says.extend(holds);
+        says.extend(retaken);
         self.told = shares;
         self.whole = whole;
         self.passed_over = passed_over;
@@ -1342,6 +1425,8 @@ impl Exchange {
         ledgers.stop(id)?;
         self.unsaid.remove(id);
         self.held_back.remove(id);
+        self.refused.remove(id);
+        self.refused_holds.remove(id);
         self.to_want.remove(id);
         self.wanted.retain(|(quest, _), _| quest != id);
         self.unanswered.retain(|(quest, _)| quest != id);
@@ -1430,8 +1515,7 @@ impl Exchange {
             } => {
                 self.theirs = Some(self.taken_of(quests, scratch, clones, ended, above));
                 self.drop_unnamed();
-                self.take_up_theirs();
-                Ok(Vec::new())
+                Ok(self.take_up_theirs())
             }
             Say::Holds { quest, .. } | Say::Piece { quest, .. } | Say::File { quest, .. }
                 if !self.takes(&quest) =>
@@ -1474,6 +1558,13 @@ impl Exchange {
             }
             Say::Want { quest, .. } if self.withholds_quest(&quest)? => Ok(Vec::new()),
             Say::Holds { quest, files } => {
+                // Kept for when a refused quest is taken up again.
+                if self.refused.contains(&quest) {
+                    self.refused_holds
+                        .entry(quest.clone())
+                        .or_default()
+                        .extend(files.clone());
+                }
                 // What this says joins what was kept back of it first, so
                 // whatever fails below, no replay hears the older over it.
                 let files = match self.held_back.get_mut(&quest) {
@@ -1541,12 +1632,17 @@ impl Exchange {
             return Ok(None);
         }
         // A failure here costs only the scratch, never the record the
-        // Holds brings back: that Holds isn't said again.
+        // Holds brings back, and the scratch is taken up again as any
+        // refused quest's is, with what this Holds named of it.
         if brought && let Err(error) = self.take_up_scratch(id) {
-            eprintln!(
-                "{id}'s scratch named by {} isn't taken up: {error}; it's tried again when {} next says what it shares, or the link is dialled again",
-                self.other, self.other
-            );
+            self.refuse(id, &error);
+            self.refused_holds
+                .entry(id.to_owned())
+                .or_default()
+                .extend(files.clone());
+            if self.take_up_again.is_none() {
+                self.wait_to_take_up(self.take_up_wait);
+            }
         }
         let wants = self.held(id, files.clone())?;
         let heard = self.places.ledgers().hold(id).and_then(|mut held| {
@@ -1644,9 +1740,8 @@ impl Exchange {
     /// keep the replay going, and what the rest asked for still goes. A
     /// look that fails replays it all again at the next.
     fn take_up_held_back(&mut self) -> Vec<Say> {
-        self.take_up_theirs();
+        let mut wants = self.take_up_theirs();
         self.drop_unnamed();
-        let mut wants = Vec::new();
         for (quest, files) in self.held_back.clone() {
             let heard = if self.takes(&quest) {
                 self.take_holds(&quest, &files)
@@ -1674,6 +1769,8 @@ impl Exchange {
         // no ask of a quest it doesn't share, so each would lapse and the
         // next be asked, for as long as the link stands.
         if let Some(named) = named {
+            self.refused.retain(|quest| named.contains(quest));
+            self.refused_holds.retain(|quest, _| named.contains(quest));
             self.to_want.retain(|quest, _| named.contains(quest));
             self.wanted.retain(|(quest, _), _| named.contains(quest));
             self.unanswered.retain(|(quest, _)| named.contains(quest));
@@ -1684,19 +1781,22 @@ impl Exchange {
     /// the scratch folders and clones named of those this link carries
     /// whole ([`Self::carries_whole`]). A quest whose taking up fails is
     /// logged with its id and passed over while the rest are taken up, so
-    /// one quest's fault never keeps every other from crossing, and it is
-    /// all taken up again at the first look a minute on
-    /// ([`TAKE_UP_AGAIN`]), since the other end says again only what
-    /// changes.
-    fn take_up_theirs(&mut self) {
-        self.take_up_again = None;
+    /// one quest's fault never keeps every other from crossing, and it
+    /// alone is taken up again at the first look a minute on
+    /// ([`Self::take_up_refused_when_due`]), since the other end says again
+    /// only what changes. Returns what this end asks for of a quest refused
+    /// before that passes now ([`Self::hear_refused_holds`]). A scratch or
+    /// clone named under no quest's id is passed over unrefused, since no
+    /// quest of it could ever be taken up.
+    fn take_up_theirs(&mut self) -> Vec<Say> {
+        let before = std::mem::take(&mut self.refused);
         let Some(theirs) = self.theirs.as_ref() else {
-            return;
+            self.wait_to_take_up(TAKE_UP_AGAIN);
+            return Vec::new();
         };
         let quests = theirs.quests.clone();
         let scratch = theirs.scratch.clone();
         let clones = theirs.clones.clone();
-        let mut refused = BTreeSet::new();
         for id in &quests {
             // A quest ended here waits for what the other end holds of it,
             // since only that says whether taking it up brings a record
@@ -1704,11 +1804,11 @@ impl Exchange {
             if !self.places.ended(id)
                 && let Err(error) = self.take_up(id, &BTreeMap::new())
             {
-                self.refuse(id, &error, &mut refused);
+                self.refuse(id, &error);
             }
         }
         for (id, folders) in &scratch {
-            if refused.contains(id) || self.places.ended(id) {
+            if !is_quest(id) || self.refused.contains(id) || self.places.ended(id) {
                 continue;
             }
             let shared = match self.carries_whole(id) {
@@ -1717,11 +1817,11 @@ impl Exchange {
                 Err(error) => Err(error),
             };
             if let Err(error) = shared {
-                self.refuse(id, &error, &mut refused);
+                self.refuse(id, &error);
             }
         }
         for (id, clones) in &clones {
-            if refused.contains(id) || self.places.ended(id) {
+            if !is_quest(id) || self.refused.contains(id) || self.places.ended(id) {
                 continue;
             }
             let taken = match self.carries_whole(id) {
@@ -1730,23 +1830,34 @@ impl Exchange {
                 Err(error) => Err(error),
             };
             if let Err(error) = taken {
-                self.refuse(id, &error, &mut refused);
+                self.refuse(id, &error);
             }
         }
-        if !refused.is_empty() {
-            self.take_up_again = Some(Instant::now() + TAKE_UP_AGAIN);
+        // A quest ended here and brought back by a Holds is passed over
+        // above, so its scratch, refused before, is tried here.
+        let ended: Vec<String> = before
+            .into_iter()
+            .filter(|id| self.places.ended(id))
+            .collect();
+        for id in ended {
+            if let Err(error) = self.take_up_scratch(&id) {
+                self.refuse(&id, &error);
+            }
         }
+        let wants = self.hear_refused_holds();
+        self.wait_to_take_up(TAKE_UP_AGAIN);
+        wants
     }
 
     /// Logs that quest `id`, which the other end shares, isn't taken up
-    /// for `error`, and counts it among the `refused`, so nothing more of
+    /// for `error`, and counts it [`Exchange::refused`], so nothing more of
     /// it is taken up until it is tried again.
-    fn refuse(&self, id: &str, error: &io::Error, refused: &mut BTreeSet<String>) {
+    fn refuse(&mut self, id: &str, error: &io::Error) {
         eprintln!(
-            "{id}, which {} shares, isn't taken up: {error}; the rest are, and it's tried again a minute on",
+            "{id}, which {} shares, isn't taken up: {error}; the rest are, and it's tried again later",
             self.other
         );
-        refused.insert(id.to_owned());
+        self.refused.insert(id.to_owned());
     }
 
     /// Takes up the scratch folders and clones the other end's last Shares
@@ -1891,8 +2002,16 @@ impl Exchange {
                 moved.display()
             );
         } else {
+            // A record's copy lies in the mesh's quests folder, which no
+            // sweep goes through; a scratch folder's, in the scratch the
+            // sweep takes away keeping it.
+            let kept = if name == "record" {
+                "it stays there, as copies moved into mycelium's own folder do"
+            } else {
+                "it is kept when the quest ends and the rest of its scratch is taken away"
+            };
             eprintln!(
-                "moved this machine's copy of {id}'s {name} aside to {}, beside it, as mycelium's own folder is on another filesystem; it is kept when the quest ends and the rest of its scratch is taken away",
+                "moved this machine's copy of {id}'s {name} aside to {}, beside it, as mycelium's own folder is on another filesystem; {kept}",
                 moved.display()
             );
         }
@@ -3014,6 +3133,13 @@ mod tests {
             !scratch.join("notes/old.md").exists(),
             "with kestrel's own notes moved aside"
         );
+        assert_eq!(
+            fs::read_to_string(scratch.join("notes/plan.md"))
+                .ok()
+                .as_deref(),
+            Some("notes\n"),
+            "and skiff's notes, said while it was refused, cross"
+        );
         let aside = fs::read_dir(kestrel.places.state.join("before-share"))
             .expect("something moved aside")
             .map(|entry| entry.expect("an entry").path())
@@ -3045,7 +3171,9 @@ mod tests {
         fs::write(neighbour.join("README.md"), "# Other\n").expect("written");
         let across = |from: &std::path::Path, to: &std::path::Path| {
             if to.starts_with(&state) {
-                Err(io::Error::from(io::ErrorKind::CrossesDevices))
+                // As the kernel says it, so the mapping to the kind the
+                // move reads is pinned too.
+                Err(io::Error::from_raw_os_error(libc::EXDEV))
             } else {
                 fs::rename(from, to)
             }

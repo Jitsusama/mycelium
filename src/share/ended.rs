@@ -165,33 +165,51 @@ pub fn take_away_keeping_aside(folder: &Path, users: &dyn Users) -> Removal {
         return Removal::InUse;
     }
     for path in rest {
-        let gone = match fs::symlink_metadata(&path) {
-            Ok(meta) if meta.is_dir() => remove(&path),
-            Ok(_) => fs::remove_file(&path),
-            Err(error) => Err(error),
-        };
-        if let Err(error) = gone {
-            return Removal::Stuck(error);
+        let gone = remove(&path).or_else(|error| {
+            // A scratch made read-only keeps its entries, so it is made
+            // writable, itself alone, and they are tried again.
+            if error.kind() == io::ErrorKind::PermissionDenied {
+                owner_writable(folder).and_then(|()| remove(&path))
+            } else {
+                Err(error)
+            }
+        });
+        match gone {
+            // Another link sweeping the same scratch took it first.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Removal::Stuck(error),
+            Ok(()) => {}
         }
     }
     Removal::Kept(kept)
 }
 
-/// Removes `folder` and all in it, made writable where it must be.
-fn remove(folder: &Path) -> io::Result<()> {
-    if fs::remove_dir_all(folder).is_ok() {
+/// Removes `path`: a folder and all in it, made writable where it must be,
+/// or anything else, a link included, by its own name alone, so nothing a
+/// link leads to is opened or made writable.
+fn remove(path: &Path) -> io::Result<()> {
+    if !fs::symlink_metadata(path)?.is_dir() {
+        return fs::remove_file(path);
+    }
+    if fs::remove_dir_all(path).is_ok() {
         return Ok(());
     }
-    make_writable(folder).and_then(|()| fs::remove_dir_all(folder))
+    make_writable(path).and_then(|()| fs::remove_dir_all(path))
 }
 
-/// Every folder under `folder`, and `folder`, writable by its owner.
-fn make_writable(folder: &Path) -> io::Result<()> {
+/// `folder` itself writable by its owner, leaving what is in it be.
+fn owner_writable(folder: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(folder, fs::Permissions::from_mode(0o700))?;
     }
+    Ok(())
+}
+
+/// Every folder under `folder`, and `folder`, writable by its owner.
+fn make_writable(folder: &Path) -> io::Result<()> {
+    owner_writable(folder)?;
     for entry in fs::read_dir(folder)? {
         let entry = entry?;
         if entry.file_type()?.is_dir() {
@@ -369,6 +387,63 @@ mod tests {
             ),
             "a read-only folder goes too"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_scratch_keeping_a_copy_aside_is_made_writable_for_the_rest() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let scratch = dir.path().join("scratch");
+        let copy = scratch.join(beside("notes", "20261127T000000Z"));
+        fs::create_dir_all(&copy).expect("made");
+        fs::create_dir_all(scratch.join("bench")).expect("made");
+        fs::write(scratch.join("run.md"), "a run\n").expect("written");
+        fs::set_permissions(&scratch, fs::Permissions::from_mode(0o500)).expect("made read-only");
+
+        let removal = take_away_keeping_aside(&scratch, &Said(false));
+
+        assert!(matches!(removal, Removal::Kept(_)), "the rest goes");
+        assert!(copy.is_dir(), "and the copy aside stays");
+        assert!(
+            !scratch.join("bench").exists() && !scratch.join("run.md").exists(),
+            "with nothing else left"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_scratch_that_cant_be_unlinked_leaves_what_it_leads_to_as_it_was() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let elsewhere = dir.path().join("elsewhere");
+        fs::create_dir_all(elsewhere.join("inner")).expect("made");
+        fs::set_permissions(elsewhere.join("inner"), fs::Permissions::from_mode(0o500))
+            .expect("made read-only");
+        let scratches = dir.path().join("scratch");
+        fs::create_dir_all(&scratches).expect("made");
+        let scratch = scratches.join("QEST-20261026-TIZK53");
+        std::os::unix::fs::symlink(&elsewhere, &scratch).expect("linked");
+        fs::set_permissions(&scratches, fs::Permissions::from_mode(0o500)).expect("locked");
+        let unlocked = || {
+            fs::set_permissions(&scratches, fs::Permissions::from_mode(0o755)).expect("unlocked");
+            fs::set_permissions(elsewhere.join("inner"), fs::Permissions::from_mode(0o755))
+                .expect("unlocked");
+        };
+        if fs::create_dir(scratches.join(".probe")).is_ok() {
+            unlocked();
+            eprintln!("skipped: a folder locked 0o500 is writable here, as it is to root");
+            return;
+        }
+
+        let removal = take_away_keeping_aside(&scratch, &Said(false));
+        let mode = |path: &Path| fs::metadata(path).expect("there").permissions().mode() & 0o777;
+        let (outer, inner) = (mode(&elsewhere), mode(&elsewhere.join("inner")));
+        unlocked();
+
+        assert!(matches!(removal, Removal::Stuck(_)), "the link is stuck");
+        assert_eq!(inner, 0o500, "nothing it leads to is made writable");
+        assert_ne!(outer, 0o700, "not even where it leads");
     }
 
     #[cfg(target_os = "linux")]
