@@ -13,6 +13,7 @@ use super::spend::SPEND_WATCH;
 use super::*;
 
 mod asked_again;
+mod draining;
 mod spending;
 
 /// Longer than any of these waits should take, so a test fails rather
@@ -258,7 +259,8 @@ async fn refusal_and_why(answers: &mut mpsc::Receiver<Lent>) -> (u16, String) {
 }
 
 /// Every piece of a lend's answer until it ends, its body's pieces
-/// joined.
+/// joined. It stops at the last piece, as the link does, since the lender
+/// holds its answer open until the link lets it go.
 async fn whole(answers: &mut mpsc::Receiver<Lent>) -> (Vec<Lent>, Vec<u8>) {
     let mut lent = Vec::new();
     let mut body = Vec::new();
@@ -266,7 +268,11 @@ async fn whole(answers: &mut mpsc::Receiver<Lent>) -> (Vec<Lent>, Vec<u8>) {
         if let Lent::Body(piece) = &piece {
             body.extend(STANDARD.decode(piece).expect("base64"));
         }
+        let ends = piece.ends();
         lent.push(piece);
+        if ends {
+            break;
+        }
     }
     (lent, body)
 }

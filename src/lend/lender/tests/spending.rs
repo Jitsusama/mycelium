@@ -8,11 +8,11 @@ use super::*;
 /// bytes each a token at the dearest a token asked costs, a cache write's
 /// $3.75 a million, and its 64 tokens answered at $15 a million, rounded
 /// up.
-const RESERVED: u64 = 1144;
+pub(super) const RESERVED: u64 = 1144;
 
 /// What an answer saying it used 10 tokens asked and 20 answered costs of
 /// `a-model`: $3 a million times 10 and $15 a million times 20.
-const USED: u64 = 330;
+pub(super) const USED: u64 = 330;
 
 /// A lend of `agents-` machines through `models`, each capped at
 /// `usd_a_day` and allowed 100 requests a day.
@@ -39,7 +39,7 @@ fn asking(body: &serde_json::Value) -> Lend {
 
 /// An answer that isn't streamed, saying it used 10 tokens asked and 20
 /// answered.
-fn used_whole() -> Vec<u8> {
+pub(super) fn used_whole() -> Vec<u8> {
     let body = json!({"usage": {"input_tokens": 10, "output_tokens": 20}}).to_string();
     format!(
         "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",

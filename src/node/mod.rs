@@ -31,6 +31,7 @@ use crate::group::{Group, Pattern, Routes};
 use crate::handover::{self, Sleeping, Told};
 use crate::hold::{self, start, start::Starter};
 use crate::hosted_attach;
+use crate::lend::lender::STOPPING;
 use crate::lend::{Lend, Lent};
 use crate::link::dial::{Dial, Program};
 use crate::link::refused::{self, Refusals};
@@ -1220,10 +1221,11 @@ pub struct Given {
     /// Named on the node's own command line; with none, a lend asked
     /// here is refused, so a lender's own node hands on no lend.
     pub lends_from: Option<String>,
-    /// The sealed file saying what this machine lends the machines it
-    /// made, if it lends any (`lend::lender`): their links' ends answer
-    /// each lend they ask by it, and refuse every one without it.
-    pub lend: Option<PathBuf>,
+    /// What this machine lends the machines it made, as its sealed file
+    /// says, if it lends any (`lend::lender`): their links' ends answer
+    /// each lend they ask by it, and refuse every one without it. Made
+    /// by whoever runs the node, so its stop can wait on its lends.
+    pub lend: Option<Arc<crate::lend::lender::Lender>>,
     /// Where this machine's sessions, running as another account, are
     /// present and speak on the mesh through the node, if they do, as a
     /// worker machine's do (`worker`).
@@ -4144,17 +4146,11 @@ impl<S: Store> Shared<S> {
             eases: _,
             settles,
             lends_from,
-            lend,
+            lend: lender,
             // Bound and served by `run` alone; only its account is kept.
             worker,
             gates,
         } = given;
-        let lender = lend.map(|file| {
-            Arc::new(crate::lend::lender::Lender::from_file(
-                file,
-                runs.declarers.clone(),
-            ))
-        });
         let said = Arc::<Said>::default();
         let inner = Arc::new(Mutex::new(Inner::after(&flows, &hello.realm)));
         let forages: forage::Held = Arc::new(Mutex::new(forage::Shelf::with_waits(waiting)));
@@ -11415,13 +11411,33 @@ const LENDER_AWAITED_MOST: Duration = Duration::from_secs(1);
 
 const LENDER_ASKED_EVERY: Duration = Duration::from_millis(250);
 
+/// How often a lend its lender refused as stopping is asked again. Each
+/// ask sends the lend whole over the link its lender's stop is draining,
+/// and that lender takes none until it is back, a minute or more on, so
+/// it is asked again far less often than one no link reaches.
+#[cfg(not(test))]
+const LENDER_STOPPING_ASKED_EVERY: Duration = Duration::from_secs(5);
+
+/// Within [`LENDER_AWAITED_MOST`] in the node's tests, which ask again,
+/// and apart from [`LENDER_ASKED_EVERY`], so they tell the two apart.
+#[cfg(test)]
+const LENDER_STOPPING_ASKED_EVERY: Duration = Duration::from_millis(400);
+
+#[cfg(test)]
+const _: () = assert!(
+    LENDER_STOPPING_ASKED_EVERY.as_millis() > LENDER_ASKED_EVERY.as_millis()
+        && LENDER_STOPPING_ASKED_EVERY.as_millis() < LENDER_AWAITED_MOST.as_millis()
+);
+
 /// How a lend handed to the link reaching its lender ended.
+#[derive(Debug)]
 enum Handed {
     /// It ended as its lender said, or its client hung up.
     Ended,
-    /// The link ended before the lender said anything of it, so asking
-    /// again gives pi what this would have.
-    Unsaid,
+    /// The link ended before the lender said anything of it, or the
+    /// lender refused it as stopping, so asking again gives pi what this
+    /// would have: why it went unsaid.
+    Unsaid(String),
 }
 
 /// Hands a lend asked here to the link reaching the machine this one
@@ -11450,7 +11466,7 @@ async fn hand_on_lend<S: Store>(
         let why = match shared.asks.lend(&lender, lend.clone()).await {
             Ok(answers) => match lent_on(answers, &mut lines, &mut writing).await {
                 Handed::Ended => return,
-                Handed::Unsaid => format!("the link to {lender} ended before its lend did"),
+                Handed::Unsaid(why) => why,
             },
             Err(Unsent { why, sent: false }) => why,
             Err(Unsent { why, sent: true }) => {
@@ -11458,23 +11474,42 @@ async fn hand_on_lend<S: Store>(
                 return;
             }
         };
-        if tokio::time::Instant::now() + LENDER_ASKED_EVERY > until {
-            let why = format!("{why}, and no link to it stood within {LENDER_AWAITED_MOST:?}");
+        let (every, why) = asking_again(&why);
+        if tokio::time::Instant::now() + every > until {
             let _ = write(&mut writing, &refused(503, why)).await;
             return;
         }
         tokio::select! {
-            () = tokio::time::sleep(LENDER_ASKED_EVERY) => {}
+            () = tokio::time::sleep(every) => {}
             // A client that hung up waits for nothing.
             _ = lines.next_line() => return,
         }
     }
 }
 
+/// How soon a lend that went unsaid for `why` is asked again, and what pi
+/// is told if the wait ends first. A lender refusing it as stopping
+/// takes none until its node is back, so it is asked far less often
+/// than one no link reaches.
+fn asking_again(why: &str) -> (Duration, String) {
+    if why == STOPPING {
+        let why = format!(
+            "its lender's node was stopping, and took no new lend within \
+             {LENDER_AWAITED_MOST:?}"
+        );
+        (LENDER_STOPPING_ASKED_EVERY, why)
+    } else {
+        let why = format!("{why}, and no link to it stood within {LENDER_AWAITED_MOST:?}");
+        (LENDER_ASKED_EVERY, why)
+    }
+}
+
 /// Writes what a lend's lender `answers` a line each until it ends, its
 /// client at `lines` hangs up, or the link ends first. Where it ends
 /// after something was written, pi hears it refused, since asking again
-/// would start pi's answer over.
+/// would start pi's answer over. A lender whose first word refuses it as
+/// stopping took nothing of it upstream, so it goes unsaid, to be asked
+/// again as a lender no link reaches is, rather than reaching pi.
 async fn lent_on(
     mut answers: mpsc::Receiver<Lent>,
     lines: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
@@ -11486,13 +11521,21 @@ async fn lent_on(
             said = answers.recv() => {
                 let Some(said) = said else {
                     if !said_any {
-                        return Handed::Unsaid;
+                        return Handed::Unsaid(
+                            "the link to its lender ended before its lend did".to_owned(),
+                        );
                     }
                     let why = "the link to the lender ended partway through its answer";
                     let _ = write(writing, &Lent::Refused { status: 503, why: why.to_owned() })
                         .await;
                     return Handed::Ended;
                 };
+                if !said_any
+                    && let Lent::Refused { status: 503, why } = &said
+                    && why == STOPPING
+                {
+                    return Handed::Unsaid(why.clone());
+                }
                 said_any = true;
                 if write(writing, &said).await.is_err() || said.ends() {
                     return Handed::Ended;
@@ -20347,7 +20390,7 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let given = Given {
-            lend: Some(dir.path().join("lend.json")),
+            lend: crate::lend::lender::Lender::named(Some(dir.path().join("lend.json")), &[]),
             ..given_beside(&socket, None, None)
         };
         let (_stop, _node) = alone_with(&Memory::default(), &socket, given);
@@ -20409,8 +20452,61 @@ esac
     #[tokio::test]
     async fn a_lend_whose_link_ends_before_it_says_anything_may_be_asked_again() {
         let (outcome, heard) = handed(Vec::new()).await;
-        assert!(matches!(outcome, Handed::Unsaid), "it may be asked again");
+        assert!(
+            matches!(outcome, Handed::Unsaid(_)),
+            "it may be asked again"
+        );
         assert!(heard.is_empty(), "pi hears nothing of it yet: {heard:?}");
+    }
+
+    #[tokio::test]
+    async fn a_lend_its_stopping_lender_refuses_is_asked_again_rather_than_told_to_pi() {
+        let stopping = Lent::Refused {
+            status: 503,
+            why: STOPPING.to_owned(),
+        };
+        let (outcome, heard) = handed(vec![stopping]).await;
+        assert!(
+            matches!(&outcome, Handed::Unsaid(why) if why == STOPPING),
+            "it may be asked again, saying why: {outcome:?}"
+        );
+        assert!(heard.is_empty(), "pi hears nothing of it yet: {heard:?}");
+    }
+
+    #[test]
+    fn a_lend_its_lender_refused_as_stopping_is_asked_again_less_often() {
+        let stopping = "this machine's node is stopping, so it takes no new lend; ask again soon";
+        assert_eq!(
+            STOPPING, stopping,
+            "the wire's words, as PROTOCOL.md says them"
+        );
+        assert_eq!(
+            asking_again(stopping),
+            (
+                LENDER_STOPPING_ASKED_EVERY,
+                "its lender's node was stopping, and took no new lend within 1s".to_owned()
+            ),
+            "a stopping lender is asked again at its own pace, and pi hears why"
+        );
+        assert_eq!(
+            asking_again("no link reaches skiff"),
+            (
+                LENDER_ASKED_EVERY,
+                "no link reaches skiff, and no link to it stood within 1s".to_owned()
+            ),
+            "one no link reaches is asked again sooner"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lend_refused_unavailable_for_another_reason_reaches_pi() {
+        let busy = Lent::Refused {
+            status: 503,
+            why: "the model relay is busy".to_owned(),
+        };
+        let (outcome, heard) = handed(vec![busy.clone()]).await;
+        assert!(matches!(outcome, Handed::Ended), "{outcome:?}");
+        assert_eq!(heard, vec![busy], "pi hears it, as before");
     }
 
     #[tokio::test]
