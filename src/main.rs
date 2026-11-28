@@ -614,6 +614,20 @@ enum Action {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
+    /// Prints which folders of a plain run's path it keeps, then which it
+    /// drops, as the run's shell asks before its command runs.
+    #[command(hide = true)]
+    KeptPath {
+        /// The home the run is in.
+        #[arg(allow_hyphen_values = true)]
+        home: std::ffi::OsString,
+        /// The `HOME` the run is given.
+        #[arg(allow_hyphen_values = true)]
+        given_home: std::ffi::OsString,
+        /// The path to judge.
+        #[arg(allow_hyphen_values = true)]
+        path: std::ffi::OsString,
+    },
     /// Borrows model calls from another machine, or lends them.
     ///
     /// A machine borrowing serves pi's model requests and hands each
@@ -1704,6 +1718,16 @@ fn main() -> ExitCode {
         let _ = Command::command().print_help();
         return ExitCode::from(NO_COMMAND);
     };
+    // Before any realm is asked for, since a plain run asks it before
+    // saying its realm.
+    if let Action::KeptPath {
+        home,
+        given_home,
+        path,
+    } = &action
+    {
+        return kept_path([home, given_home].map(std::ffi::OsString::as_os_str), path);
+    }
     match run(realm, socket, action) {
         Ok(code) => code,
         Err(error) if reader_left(&error, io::stdout()) => ExitCode::SUCCESS,
@@ -1711,6 +1735,19 @@ fn main() -> ExitCode {
             // Said where nobody reads any more, as a caller's `2>&1 | head`
             // leaves it, the failure still ends as one rather than a panic.
             tell!("mycelium: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Says which folders of a plain run's `path` it keeps, and which it
+/// drops, with `homes` taken off it ([`hold::kept_path`]).
+fn kept_path(homes: [&std::ffi::OsStr; 2], path: &std::ffi::OsStr) -> ExitCode {
+    let said = hold::kept_path::here(homes, path).said();
+    match io::stdout().lock().write_all(&said) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            tell!("mycelium: the path's judgement isn't said: {error}");
             ExitCode::FAILURE
         }
     }
@@ -1893,6 +1930,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         | Action::Holds(_)
         | Action::Held
         | Action::Again { .. } => unreachable!("each is read as its tree above"),
+        Action::KeptPath { .. } => unreachable!("main judges a path before asking a realm"),
     };
     ran.map(|()| ExitCode::SUCCESS)
 }

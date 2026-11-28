@@ -23,6 +23,8 @@ The rest of the tests sit beside the code they prove, in `src/`.
   cells within 11.75 MB, in time that grows with them, and for ten
   thousand cells each saying 24 subjects of 120 characters outside
   ASCII within 577 MB, so one more copy of each subject fails it
+- `judged.rs`: a plain run's path judged by `mycelium kept-path`, its
+  words read as the run's shell gives them, an empty `HOME` among them
 - `made.rs`: a machine made for a start from a provider's offer, linked,
   started on and let go at its time or once it hands over, each node and
   link a process of its own; nothing of the asker's environment, or its
