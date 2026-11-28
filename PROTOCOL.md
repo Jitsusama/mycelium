@@ -810,7 +810,7 @@ in order and says each step:
    cell standing, naming the folder it read. On a
    machine nobody works at, every link's end is judged an agent's, so a
    person's carry there is started as an agent's start: counted among
-   the 8 an hour and 128 its asker and the node may start, arriving as
+   the 32 an hour and 128 its asker and the node may start, arriving as
    a new cell, and refused, where the limits or the person's stop
    refuse it, with no word of an orchestrator: it tells the person to
    carry to a machine a person works at, or, stopped, to resume starts
@@ -2665,9 +2665,9 @@ asker names in `PI_SESSION_ID`, if it is among them, and otherwise
 toward the agents of no known cell, who share one cell's number, as
 on a Mac, whose `ps` won't say it. An agent sets its own environment,
 so one on a host may name another of its sessions and charge that cell
-instead. In any hour a cell starts at most 8
+instead. In any hour a cell starts at most 32
 and every agent together at most 128, and one past either is refused,
-saying which. A claim proves nothing, so the 8 are a cell's fair
+saying which. A claim proves nothing, so the 32 are a cell's fair
 share, and the 128, with the ended sessions below, the bound no agent
 gets round. A start counts whether it started or failed, since a failed one may
 still have spent, and so does one still starting, so starts asked at
