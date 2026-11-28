@@ -1205,9 +1205,9 @@ impl Exchange {
     /// this end asks for of those that pass. Those refused again wait twice
     /// as long as before, to [`TAKE_UP_AT_MOST`].
     fn take_up_refused_when_due(&mut self) -> Vec<Say> {
-        if !self
+        if self
             .take_up_again
-            .is_some_and(|again| again <= Instant::now())
+            .is_none_or(|again| again > Instant::now())
         {
             return Vec::new();
         }
@@ -1267,7 +1267,7 @@ impl Exchange {
             match heard {
                 Ok(said) => wants.extend(said.unwrap_or_default()),
                 Err(error) => {
-                    eprintln!("what {} holds of {id} isn't taken up: {error}", self.other)
+                    eprintln!("what {} holds of {id} isn't taken up: {error}", self.other);
                 }
             }
         }
@@ -3173,7 +3173,9 @@ mod tests {
             if to.starts_with(&state) {
                 // As the kernel says it, so the mapping to the kind the
                 // move reads is pinned too.
-                Err(io::Error::from_raw_os_error(libc::EXDEV))
+                Err(io::Error::from_raw_os_error(
+                    rustix::io::Errno::XDEV.raw_os_error(),
+                ))
             } else {
                 fs::rename(from, to)
             }
