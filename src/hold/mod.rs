@@ -30,6 +30,7 @@
 //! - [`end`]: ending a held session for good, as its orchestrator or the
 //!   person asks
 //! - [`start`]: starting a holder in a process of its own
+//! - [`kept_path`]: which folders of a plain run's path it keeps
 //! - [`modes`]: what the program asked of its terminal, for one joining
 //! - [`title`]: the window title the program set last, for one joining
 //! - [`environment`]: the person's environment as it is now, which each
@@ -47,6 +48,7 @@ pub mod end;
 pub mod environment;
 pub mod holder;
 pub mod journal;
+pub mod kept_path;
 pub mod modes;
 pub mod start;
 pub mod steering;

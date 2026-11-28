@@ -378,30 +378,42 @@ const YIELDING_ON_A_MAC: [&str; 3] = ["/usr/sbin/taskpolicy", "-c", "utility"];
 const IN_ITS_REALM: &str = r#"export MYCELIUM_REALM="$1"; if [ -n "$2" ]; then PATH="$2/bin${PATH:+:$PATH}"; export PATH; fi; if [ "${MYCELIUM_AGENT+said}" = said ]; then if [ -n "$MYCELIUM_AGENT" ]; then SSH_AUTH_SOCK="$MYCELIUM_AGENT"; export SSH_AUTH_SOCK; else unset SSH_AUTH_SOCK; fi; unset SSH_TPM_AUTH_SOCK MYCELIUM_AGENT; fi; shift 2; exec "$@""#;
 
 /// The shell's script that takes off its path, before [`IN_ITS_REALM`],
-/// every folder in its home, by name or by where it leads, every one
-/// named relatively, which the run's folder in that home would hold, and
-/// every one the run's own user could write or replace: a service's path
-/// may name the home's own tools (`~/.local/bin`, a profile's `bin`),
-/// which whoever wrote the home could make shadow a command, and the
-/// agents that wrote it run as that same user, who can write folders
-/// outside it too (`/tmp`, `/run/user/UID`, one it made anywhere). So a
-/// folder goes that the user owns or can write, or that lies under one
-/// it owns, or can write without the sticky bit, up to `/`: the owner of
-/// a folder above could rename the one below away and put its own in its
-/// place, though a sticky one, as `/tmp` is, lets it rename only its own
-/// entries. Each folder it keeps it names by where it leads, so no link
-/// along the way can be pointed elsewhere before the command is looked
-/// up, and one it can't enter, which may not be there yet, goes too. A
-/// path left with nothing is `/usr/bin:/bin`, never empty, which a shell
-/// reads as the run's folder; that and the kit's bin, put first after,
-/// are trusted as given. Only folders are judged, never the entries in
-/// one, nor where a link among them leads, so a link in a kept folder
-/// that points into the home still finds what is there. The home is the one its first word names,
-/// the node's own, and the `HOME` it is given as well, so a launcher that
-/// takes `HOME` away or points it elsewhere leaves none of either on the
-/// path. It shifts that word off. With no home, or `/` for one, only the
-/// relative, the missing and the ones its user could write or replace go.
-const OUT_OF_ITS_HOME: &str = r#"homes=; for at in "$1" "${HOME-}"; do case $at in /?*) at=${at%/}; homes=$homes$at:; led=$(cd -P "$at" 2>/dev/null && pwd -P) && homes=$homes$led:;; esac; done; shift; kept=; dropped=; set -f; IFS=:; for dir in ${PATH-}; do case $dir in /*) ;; '') continue;; *) dropped=${dropped:+$dropped:}$dir; continue;; esac; led=$(cd -P "$dir" 2>/dev/null && pwd -P) || { dropped=${dropped:+$dropped:}$dir; continue; }; for at in $homes; do case $dir/ in "$at"/*) led=;; esac; case $led/ in "$at"/*) led=;; esac; done; if [ -O "$led" ] || [ -w "$led" ]; then led=; fi; up=$led; while [ -n "$up" ]; do up=${up%/*}; if [ -O "${up:-/}" ] || { [ -w "${up:-/}" ] && [ ! -k "${up:-/}" ]; }; then led=; up=; fi; done; if [ -n "$led" ]; then kept=${kept:+$kept:}$led; else dropped=${dropped:+$dropped:}$dir; fi; done; unset IFS; set +f; PATH=${kept:-/usr/bin:/bin}; export PATH; "#;
+/// every folder its user could plant a program in, as this machine's own
+/// mycelium judges it ([`super::kept_path`]): its first word names that
+/// program, by where it is, so the path it judges never finds it, and its
+/// second the home the run is in. A service's path may name the home's
+/// own tools (`~/.local/bin`, a profile's `bin`), which whoever wrote the
+/// home could make shadow a command, and the agents that wrote it run as
+/// that same user, who can write folders outside it too (`/tmp`,
+/// `/run/user/UID`, one it made anywhere). So a folder goes that is in
+/// the home, by name or by where it leads, or named relatively, which the
+/// run's folder in that home would hold, or that the user owns or could
+/// write, or that lies under one it owns, or could write without the
+/// sticky bit, up to `/`: the owner of a folder above could rename the
+/// one below away and put its own in its place, though a sticky one, as
+/// `/tmp` is, lets it rename only its own entries. Whether the user could
+/// write a folder is read from the folder's owner, group and mode, and
+/// from access(2) besides, never from access(2) alone, which a fence
+/// binding the folder read-only answers no though the same user writes
+/// it outside the fence: a fence can only ever take more off the path,
+/// never less. Each folder it keeps it names by where it leads, so no
+/// link along the way can be pointed elsewhere before the command is
+/// looked up, and one it can't enter, which may not be there yet, goes
+/// too. A path left with nothing is `/usr/bin:/bin`, never empty, which a
+/// shell reads as the run's folder; that and the kit's bin, put first
+/// after, are trusted as given. Only folders are judged, never the
+/// entries in one, nor where a link among them leads, so a link in a kept
+/// folder that points into the home still finds what is there. The home
+/// is the one its second word names, the node's own, and the `HOME` it is
+/// given as well, so a launcher that takes `HOME` away or points it
+/// elsewhere leaves none of either on the path. With no home, or `/` for
+/// one, only the relative, the missing and the ones its user could write
+/// or replace go. The judge answers two lines, the folders kept and those
+/// dropped, each joined by colons, which the script reads with no eval;
+/// where it can't run, fails, or answers anything else, the run doesn't
+/// start, ending 126 and saying so, rather than running on a path no one
+/// judged. It shifts both words off.
+const OUT_OF_ITS_HOME: &str = r#"nl=$(printf '\n.'); nl=${nl%.}; judged=$("$1" kept-path -- "$2" "${HOME-}" "${PATH-}" && printf .) && kept=${judged%%"$nl"*} && dropped=${judged#*"$nl"} && dropped=${dropped%"$nl".} && [ "$judged" = "$kept$nl$dropped$nl." ] && case $dropped in *"$nl"*) false;; esac || { printf 'mycelium: this run'\''s path went unjudged, as %s didn'\''t judge it, so it doesn'\''t run\n' "$1" >&2; exit 126; }; shift 2; PATH=${kept:-/usr/bin:/bin}; export PATH; "#;
 
 /// How [`IN_ITS_REALM`] ends: by running the program it was given.
 const RUNS: &str = r#"exec "$@""#;
@@ -486,23 +498,34 @@ fn in_its_realm(
 /// command or fake its end. It has the environment its launcher gives
 /// it, but with no folder of `home`, the home it runs in, nor of the
 /// `HOME` it is given, nor one its user could write or replace, on its
-/// path ([`OUT_OF_ITS_HOME`], which judges folders, not their entries),
-/// and the kit's tools first. A command
-/// found only in the home isn't found, rather than found as the home's
-/// writer left it, and the run says where it looked ([`FOUND_OR_SAID`]).
-/// The node starts it with no variable that loads code
-/// ([`crate::run::Shell::unsets`]). `HOME` still names the home, though,
-/// so a program that reads its own files from there, as an interpreter
-/// may, reads what that writer left.
+/// path, and the kit's tools first. This program judges that path, named
+/// by where it is ([`super::kept_path::judge`]), reading whether the user
+/// could write a folder from its owner, group and mode as well as from
+/// access(2), so a fence binding a folder read-only can't keep it there
+/// ([`OUT_OF_ITS_HOME`], which judges folders, not their entries); where
+/// this program can't say where it is, the run refuses to start. A
+/// command found only in the home isn't found, rather than found as the
+/// home's writer left it, and the run says where it looked
+/// ([`FOUND_OR_SAID`]). The node starts it with no variable that loads
+/// code ([`crate::run::Shell::unsets`]). `HOME` still names the home,
+/// though, so a program that reads its own files from there, as an
+/// interpreter may, reads what that writer left.
 #[must_use]
 pub fn plain_run(realm: &str, kit: Option<&Path>, home: &Path) -> Vec<String> {
+    // No program named is one the script can't run, so it refuses.
+    let judge = super::kept_path::judge().unwrap_or_default();
+    plain_run_judged_by(realm, kit, home, &judge)
+}
+
+/// The words of [`plain_run`], its path judged by the program `judge`.
+fn plain_run_judged_by(realm: &str, kit: Option<&Path>, home: &Path, judge: &Path) -> Vec<String> {
     let realmed = IN_ITS_REALM
         .strip_suffix(RUNS)
         .expect("the realm's script ends by running the program");
     let script = format!("{OUT_OF_ITS_HOME}{realmed}{FOUND_OR_SAID}{PLAIN_RUNS}");
     let mut words = in_its_realm("/bin/sh".to_owned(), "-c", script, realm, kit).to_vec();
-    // After the shell's own name, as the script's first word.
-    words.insert(4, home.display().to_string());
+    // After the shell's own name, as the script's first two words.
+    words.splice(4..4, [judge, home].map(|named| named.display().to_string()));
     words
 }
 
@@ -1326,6 +1349,57 @@ mod tests {
             "a missing ./tide-gauge is the shell's to say: {}",
             String::from_utf8_lossy(&said.stderr)
         );
+    }
+
+    // Followup 566: this machine's own mycelium judges the path, so where
+    // it can't run, or answers what isn't two lines, the run refuses to
+    // start rather than run on a path nobody judged.
+    #[test]
+    fn a_plain_run_whose_path_goes_unjudged_refuses_to_start() {
+        let made = tempfile::tempdir().expect("a temporary home");
+        let home = fs::canonicalize(made.path()).expect("the home's place");
+        let answering = |name: &str, answer: &str| {
+            let judge = home.join(name);
+            let script = format!("#!{}\nprintf '{answer}'\n", the_shell().display());
+            fs::write(&judge, script).expect("a judge");
+            fs::set_permissions(&judge, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .expect("a judge that runs");
+            judge
+        };
+        for judge in [
+            home.join("missing/mycelium"),
+            PathBuf::new(),
+            answering("one-line", r"/usr/bin\n"),
+            answering("three-lines", r"/usr/bin\n\n/bin\n"),
+        ] {
+            let words = plain_run_judged_by("harbour", None, &home, &judge);
+            let said = Command::new(the_shell())
+                .arg("-c")
+                .args(&words[2..])
+                .arg(the_shell())
+                .args(["-c", "printf ran"])
+                .env_remove("MYCELIUM_AGENT")
+                .env("HOME", &home)
+                .env("PATH", "/usr/bin:/bin")
+                .output()
+                .expect("the stand-in shell runs");
+            let refused = format!(
+                "mycelium: this run's path went unjudged, as {} didn't judge it, so it \
+                 doesn't run\n",
+                judge.display()
+            );
+            assert_eq!(
+                (said.status.code(), said.stdout.is_empty()),
+                (Some(126), true),
+                "judged by {judge:?}, the program never runs: {}",
+                String::from_utf8_lossy(&said.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&said.stderr).ends_with(&refused),
+                "it says why: {}",
+                String::from_utf8_lossy(&said.stderr)
+            );
+        }
     }
 
     #[test]

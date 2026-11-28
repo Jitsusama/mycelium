@@ -2699,12 +2699,24 @@ held, so where any were taken off, the run says the path and those
 folders after it ends, and ends as the program did. The agent runs as
 the run's own user, who can write folders outside the home too, so a
 folder that user owns or can write goes as well, and so does one under
-a folder it owns, or can write
-without the sticky bit, up to `/`, since it could rename the folder away and
-put its own in its place: `/tmp` goes, though a folder under it that another
-owns and the user can't write stays. On a Mac, Homebrew's `/opt/homebrew/bin`
-belongs to the user, so it goes too. Each folder kept is named by where it
-leads, one that can't be entered, which may not be there yet, goes, and a path
+a folder it owns, or can write without the sticky bit, up to `/`, since
+it could rename the folder away and put its own in its place: `/tmp`
+goes, though a folder under it that another owns and the user can't
+write stays. On a Mac, Homebrew's `/opt/homebrew/bin` belongs to the
+user, so it goes too. Whether the user can write a folder is read from
+the folder's owner, group and mode: it can where it owns the folder and
+the owner may write, where the folder's group is one it is in and the
+group may write, where any account may write, and where access(2) says
+it can, as an access list may grant, and root can write every folder.
+No answer of access(2) alone keeps a folder: a fence that binds a folder
+read-only makes access(2) say no, though the same user writes it
+outside the fence, so a fence can only ever take more folders off the
+path, never fewer. The node's own mycelium, named by where it is so the
+path it judges never finds it, judges the path before the command
+runs, as the hidden `mycelium kept-path`; where it can't run or answers
+nothing the shell can read, the run doesn't start, and ends 126 saying
+its path went unjudged. Each folder kept is named by where it leads,
+one that can't be entered, which may not be there yet, goes, and a path
 left with nothing is `/usr/bin:/bin`, never empty. The node starts the run, and
 any fence launcher before its shell, without the variables that load code as a
 program starts, which the node's environment could name in the home:
