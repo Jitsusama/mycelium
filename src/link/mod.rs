@@ -48,6 +48,7 @@ pub mod carried;
 mod declared_heard;
 pub mod dial;
 pub mod discovery;
+mod have;
 pub mod membership;
 pub mod refused;
 mod started;
@@ -119,6 +120,12 @@ pub enum Frame {
     Have {
         /// Their ids.
         messages: Vec<String>,
+        /// Where its reach begins, in milliseconds since the epoch: `messages`
+        /// lists every message this end holds that was sent then or since,
+        /// so the other end offers none sent before. An end older than this
+        /// says none, and is offered what lies within the other end's reach.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<i64>,
         /// The living sessions' ids; an end older than this names none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         living: Option<Vec<String>>,
@@ -425,7 +432,9 @@ pub async fn run(
         other: other.machine.clone(),
         said: other,
         reach,
+        listed_from: None,
         has: HashSet::new(),
+        held_again: have::HeldAgain::default(),
         sent: BTreeMap::new(),
         carried: HashSet::new(),
         _claim: claim,
@@ -1311,7 +1320,13 @@ struct End<S> {
     /// and carries.
     said: Hello,
     reach: i64,
+    /// Where the other end's Have said its list of messages begins, if it
+    /// said: it holds those it left out from before, or let them go.
+    listed_from: Option<i64>,
     has: HashSet<String>,
+    /// The messages the other end, a worker, said again just as this
+    /// machine holds them, not yet told in the log.
+    held_again: have::HeldAgain,
     /// Each living session's presence and leases, as last sent.
     sent: BTreeMap<String, Sent>,
     /// The realm's folder of held sessions on this machine, if this end
@@ -1445,7 +1460,8 @@ impl Handover {
 impl<S: Store> End<S> {
     /// Marks the link left as it ends, however it ended, and its machine
     /// out of reach, and gives back how it ended.
-    fn leave(&self, result: io::Result<Ending>) -> io::Result<Ending> {
+    fn leave(&mut self, result: io::Result<Ending>) -> io::Result<Ending> {
+        self.tell_held_again();
         let left = now();
         // Had the link died outright, the last minute's mark would stand.
         let _ = self
@@ -1465,13 +1481,30 @@ impl<S: Store> End<S> {
         result
     }
 
+    /// Tells the log of the messages the other end said again just as
+    /// this machine holds them, if it said any since last told.
+    fn tell_held_again(&mut self) {
+        if let Some(line) = self.held_again.told(&self.other) {
+            eprintln!("{line}");
+        }
+    }
+
     /// Says what opens a link, once the hellos are said: the Have, then
     /// this end's machine, the carries its node ordered, its sessions and
     /// the talks it follows.
     async fn open(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
         let messages = self.store.message_ids(self.reach);
         let living = Some(self.living().into_keys().collect());
-        send(writing, &Frame::Have { messages, living }).await?;
+        let since = Some(self.reach);
+        send(
+            writing,
+            &Frame::Have {
+                messages,
+                since,
+                living,
+            },
+        )
+        .await?;
         self.send_machine(writing).await?;
         self.send_carries(writing).await?;
         self.send_presence(writing).await?;
@@ -1625,6 +1658,10 @@ impl<S: Store> End<S> {
         {
             return match refused {
                 Refused::Answered(answer) => send(writing, &answer).await,
+                Refused::HeldAlready => {
+                    self.held_again.count();
+                    Ok(())
+                }
                 Refused::Dropped(why) => {
                     eprintln!("{why}, so it isn't taken");
                     Ok(())
@@ -1633,7 +1670,11 @@ impl<S: Store> End<S> {
         }
         match frame {
             Frame::Hello(_) => return Err(refusal("the other end said hello twice".to_owned())),
-            Frame::Have { messages, living } => {
+            Frame::Have {
+                messages,
+                since,
+                living,
+            } => {
                 // What an earlier link to that machine left out of reach is
                 // settled now: those still living come again as presences,
                 // and the rest have ended. An end that names none can't
@@ -1641,6 +1682,7 @@ impl<S: Store> End<S> {
                 let living: HashSet<String> = living.into_iter().flatten().collect();
                 store::let_go(&self.store, &self.other, |session| living.contains(session));
                 self.has.extend(messages);
+                self.listed_from = since;
                 self.catch_up(writing).await?;
             }
             Frame::Message { id, body } if self.worker => {
@@ -1798,7 +1840,10 @@ impl<S: Store> End<S> {
     /// one between presences, nor say what no session said.
     fn message_refused(&self, id: &str, body: &Value) -> Option<Refused> {
         let other = &self.other;
-        if self.store.message(id).is_some() {
+        if let Some(held) = self.store.message(id) {
+            if have::held_as_said(&held, body, other) {
+                return Some(Refused::HeldAlready);
+            }
             return Some(Refused::Dropped(format!(
                 "{other} said {id} again, which a worker can't write over"
             )));
@@ -2585,6 +2630,9 @@ impl<S: Store> End<S> {
     /// what this link carried here stands, and what this end's machine is
     /// now, and whether it has handed over.
     async fn keep(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
+        // Told each minute, so a link-up's bout is one line, and a link
+        // that stands says of those heard since in a line of their own.
+        self.tell_held_again();
         self.hearing.arrived(self.arrived.load(Ordering::Relaxed));
         if self.hearing.gone(now()) {
             return Err(io::Error::new(
@@ -2736,9 +2784,12 @@ impl<S: Store> End<S> {
         }
     }
 
-    /// Sends every message within reach the other end lacks.
+    /// Sends every message within reach the other end lacks, from where
+    /// its Have's list began, if it said.
     async fn catch_up(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
-        let ids = self.store.message_ids(self.reach);
+        let ids = self
+            .store
+            .message_ids(have::offered_from(self.reach, self.listed_from));
         self.send_messages(ids, writing).await?;
         self.hearing.caught_up.get_or_insert_with(now);
         self.send_presence(writing).await
@@ -3038,6 +3089,10 @@ fn said_on_worker(mut body: Value, worker: &str) -> Value {
 enum Refused {
     /// An ask, answered with why.
     Answered(Box<Frame>),
+    /// A message this machine holds just as it was said, let go and
+    /// counted, since a line for each of a link-up's thousand would bury
+    /// the refusals that matter.
+    HeldAlready,
     /// Anything else, let go and said here.
     Dropped(String),
 }
@@ -4683,6 +4738,7 @@ mod tests {
                 Frame::Hello(realm("kestrel").hello()),
                 Frame::Have {
                     messages: Vec::new(),
+                    since: None,
                     living: Some(
                         [
                             "booked", "unbooked", "spaced", "longest", "longer", "unheld",
@@ -4739,6 +4795,7 @@ mod tests {
                 Frame::Hello(realm("tern").hello()),
                 Frame::Have {
                     messages: Vec::new(),
+                    since: None,
                     living: Some(vec!["lent".to_owned()]),
                 },
                 started("lent", true, Some("OAR001")),
@@ -4972,6 +5029,7 @@ mod tests {
             &[
                 Frame::Have {
                     messages: Vec::new(),
+                    since: None,
                     living: Some(vec!["walgit".to_owned()]),
                 },
                 Frame::Machine(Box::new(tern)),
@@ -5017,6 +5075,7 @@ mod tests {
                 Frame::Hello(hello),
                 Frame::Have {
                     messages: Vec::new(),
+                    since: None,
                     living: Some(Vec::new()),
                 },
             ],
@@ -5181,6 +5240,7 @@ mod tests {
                 &[
                     Frame::Have {
                         messages: Vec::new(),
+                        since: None,
                         living: Some(vec!["walgit".to_owned()]),
                     },
                     Frame::Carries { carries: told },
@@ -5296,6 +5356,70 @@ mod tests {
             )
         })
         .await;
+    }
+
+    /// What skiff's end, reaching back an hour, offers a far end whose
+    /// Have lists nothing and says `since`, of a message it holds from half
+    /// an hour ago and one from a second ago: the two ids, and those it
+    /// offered, up to the newer, which a store lists last.
+    async fn offered_after_a_have(since: Option<i64>) -> ((String, String), Vec<String>) {
+        let skiff = Memory::default();
+        skiff
+            .mark_linked("kestrel", now() - 60 * 60 * 1000)
+            .expect("a memory store marks");
+        let older = recent(30 * 60 * 1000, "WREN01", 0);
+        let newer = recent(1000, "WREN01", 1);
+        said(&skiff, &older, "@HARB01");
+        said(&skiff, &newer, "@HARB01");
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let _skiff_end = end(&skiff, "skiff", near);
+        let (far_reading, mut far_writing) = tokio::io::split(far);
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("kestrel").hello()),
+                Frame::Have {
+                    messages: Vec::new(),
+                    since,
+                    living: Some(Vec::new()),
+                },
+            ],
+        )
+        .await;
+        let mut lines = BufReader::new(far_reading).lines();
+        let heard = heard_until(
+            &mut lines,
+            |frame| matches!(frame, Frame::Message { id, .. } if *id == newer),
+        )
+        .await;
+        let offered = heard
+            .into_iter()
+            .filter_map(|frame| match frame {
+                Frame::Message { id, .. } => Some(id),
+                _ => None,
+            })
+            .collect();
+        ((older, newer), offered)
+    }
+
+    #[tokio::test]
+    async fn an_end_offers_nothing_older_than_where_the_other_ends_have_begins() {
+        let ((_, newer), offered) = offered_after_a_have(Some(now() - 10 * 60 * 1000)).await;
+        assert_eq!(
+            offered,
+            [newer],
+            "kestrel holds what it left out from before its list began, so only the newer crosses"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_end_offers_an_older_end_everything_within_its_own_reach() {
+        let ((older, newer), offered) = offered_after_a_have(None).await;
+        assert_eq!(
+            offered,
+            [older, newer],
+            "a Have that says nowhere its list begins is taken as today"
+        );
     }
 
     #[tokio::test]
@@ -6196,6 +6320,7 @@ mod tests {
                 Frame::Hello(realm("lent").hello()),
                 Frame::Have {
                     messages: Vec::new(),
+                    since: None,
                     living: Some(Vec::new()),
                 },
             ],
@@ -6237,6 +6362,7 @@ mod tests {
             Frame::Hello(realm("tern").hello()),
             Frame::Have {
                 messages: Vec::new(),
+                since: None,
                 living: Some(Vec::new()),
             },
             Frame::Share(Say::Want {
@@ -6401,6 +6527,7 @@ mod tests {
                 Frame::Hello(realm("tern").hello()),
                 Frame::Have {
                     messages: Vec::new(),
+                    since: None,
                     living: Some(Vec::new()),
                 },
                 message(&forged, "github@tern"),
@@ -6474,6 +6601,7 @@ mod tests {
                 Frame::Hello(realm("tern").hello()),
                 Frame::Have {
                     messages: Vec::new(),
+                    since: None,
                     living: Some(Vec::new()),
                 },
                 present("sak9fz"),
@@ -6576,6 +6704,7 @@ mod tests {
                 Frame::Hello(realm("tern").hello()),
                 Frame::Have {
                     messages: Vec::new(),
+                    since: None,
                     living: Some(Vec::new()),
                 },
                 planted("posing", "WCJQSG"),
@@ -6651,6 +6780,7 @@ mod tests {
                     Frame::Hello(realm("tern").hello()),
                     Frame::Have {
                         messages: Vec::new(),
+                        since: None,
                         living: Some(Vec::new()),
                     },
                     Frame::Machine(Box::new(tern)),
@@ -6741,6 +6871,7 @@ mod tests {
                 Frame::Hello(realm("tern").hello()),
                 Frame::Have {
                     messages: Vec::new(),
+                    since: None,
                     living: Some(Vec::new()),
                 },
                 message(&asked, "question"),
@@ -6843,6 +6974,7 @@ mod tests {
                 Frame::Hello(realm("tern").hello()),
                 Frame::Have {
                     messages: Vec::new(),
+                    since: None,
                     living: Some(Vec::new()),
                 },
                 Frame::Lend { ask: 7, lend },
@@ -6922,6 +7054,7 @@ mod tests {
             Frame::Hello(realm("tern").hello()),
             Frame::Have {
                 messages: Vec::new(),
+                since: None,
                 living: Some(Vec::new()),
             },
         ];
@@ -7070,6 +7203,7 @@ mod tests {
                 Frame::Hello(realm("tern").hello()),
                 Frame::Have {
                     messages: Vec::new(),
+                    since: None,
                     living: Some(Vec::new()),
                 },
                 present("sak9fz"),
@@ -7205,6 +7339,7 @@ mod tests {
             Frame::Hello(realm("lent").hello()),
             Frame::Have {
                 messages: Vec::new(),
+                since: None,
                 living: Some(Vec::new()),
             },
         ];
@@ -7409,6 +7544,7 @@ mod tests {
                 Frame::Hello(realm("tern").hello()),
                 Frame::Have {
                     messages: Vec::new(),
+                    since: None,
                     living: Some(Vec::new()),
                 },
             ],
@@ -7465,6 +7601,7 @@ mod tests {
                 Frame::Hello(realm("tern").hello()),
                 Frame::Have {
                     messages: Vec::new(),
+                    since: None,
                     living: Some(Vec::new()),
                 },
                 Frame::Machine(Box::new(tern)),
@@ -7492,6 +7629,7 @@ mod tests {
                 }),
                 Frame::Have {
                     messages: Vec::new(),
+                    since: None,
                     living: Some(Vec::new()),
                 },
             ],

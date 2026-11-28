@@ -196,11 +196,12 @@ same code, each line a JSON value:
    no `--machine` goes by the node's name. A name that isn't a mesh name
    (letters, digits, `-`, `_` and `@`), as a guest's `(none)` isn't, is
    refused, saying to pass `--machine`.
-2. `{"Have": {"messages": [ids], "living": [sessions]}}`: every message
-   the end holds within the link's reach, and its machine's living
-   sessions, with, to an end saying `parks`, those parked this boot: a
-   park whose presence names an earlier boot has no holder left to wake
-   it, and one naming no boot is taken as this one's. An end older
+2. `{"Have": {"messages": [ids], "since": ms, "living": [sessions]}}`:
+   every message the end holds within the link's reach, where that
+   reach begins, and its machine's living sessions, with, to an end
+   saying `parks`, those parked this boot: a park whose presence names
+   an earlier boot has no holder left to wake it, and one naming no
+   boot is taken as this one's. An end older
    than `living` names none, and every session of its machine out of
    reach is let go, to come again as it sends each.
    The reach goes back to a minute before the end last heard the
@@ -215,6 +216,13 @@ same code, each line a JSON value:
    first link reaches back to nothing, since a
    session takes every message that arrives as new, and a week of talk
    from before the machines were linked was never its to hear.
+   `since` is where the reach begins, in milliseconds since the epoch:
+   `messages` lists every message the end holds sent then or since.
+   Each end reads its reach on its own, so the other end's may begin
+   earlier; it offers nothing sent before `since`, which this end holds
+   or has let go, so it never hands back what this end left out as
+   older than its list. An end older than `since` names none, and is
+   offered all that lies within the other end's reach.
 3. `{"Message": {"id", "body"}}`: a message the other end lacks, first
    for each the Have didn't list, then each new one as it lands, and
    each minute any since the link began that it hasn't yet sent or
@@ -524,6 +532,9 @@ Three seams shape a link:
   `"worker"`, the
   machine's name, both from the link's own name for it, never from
   what the worker says, so each session reads it as the worker's word.
+  One this machine holds already is never written over. One said just
+  as held, or as kept from that worker, is counted, and the log says
+  the count once a minute; one said otherwise has a line of its own.
   Its sessions' presence crosses as any machine's does. The name it
   first says hello as is the one it
   is held to: a redial of the same place saying another is refused.
