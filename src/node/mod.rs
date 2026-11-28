@@ -26154,7 +26154,7 @@ esac
     #[test]
     fn a_machine_made_for_a_proven_agent_is_named_every_agents_room() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let book = Book::at(dir.path().join("made.jsonl"));
+        let book = Book::at(dir.path().join("made.jsonl")).of_realm("work");
         for (name, asker) in [
             ("tern", Some("ASKER1")),
             ("wren", Some(made::PERSON)),
