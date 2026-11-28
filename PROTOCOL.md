@@ -3379,8 +3379,13 @@ read only from `usage` at the top of the upstream's JSON or of its
 the most each count said, once the answer said it was done; never
 clamped to its reservation, so a cap is passed only by what was truly
 spent. One whose upstream refused it, 400 or more with no usage, is
-charged nothing. Any other, as a stream cut partway, is charged its
-reservation.
+charged nothing. One not answered whole, as a stream cut partway, whose
+upstream stated its tokens asked, as a stream's `message_start` does
+before any text, is charged those at their own prices and `max_tokens`
+answered, never under what it can have cost, since it may have been
+made whole upstream but never answers past its most. Any other, cut
+before it stated them or whole but never saying what it used, is
+charged its reservation.
 
 Before each, the lender reads spend-watch's word,
 `spend-watch/budgets.json` in the account's runtime folder. Where it
