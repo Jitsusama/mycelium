@@ -153,7 +153,8 @@ fn holds(watcher: &dyn Watcher, path: &Path) -> bool {
 /// path given back, held inside a recursive root or not, in a batch or
 /// alone, so it counts a start at least as often as macOS does. It lists
 /// what it holds, as notify's own watchers do, and may be made to refuse a
-/// path, as a system out of watches would.
+/// path, as a system out of watches would, to fail to start its stream
+/// once a batch is applied, or to fail to list what it holds.
 #[cfg(test)]
 pub mod counting {
     use std::collections::BTreeMap;
@@ -175,6 +176,11 @@ pub mod counting {
         refused: Option<PathBuf>,
         /// Whether it takes the path it refuses before refusing it.
         partway: bool,
+        /// Whether its stream fails to start after a batch alters what it
+        /// holds.
+        stalled: bool,
+        /// Whether it fails to list what it holds.
+        unlisted: bool,
     }
 
     impl Counting {
@@ -187,6 +193,8 @@ pub mod counting {
                 watched: BTreeMap::new(),
                 refused: None,
                 partway: false,
+                stalled: false,
+                unlisted: false,
             };
             (watcher, starts)
         }
@@ -212,6 +220,18 @@ pub mod counting {
         /// Refuses `path` from now on, holding it still if it holds it.
         pub fn refuse(&mut self, path: PathBuf) {
             self.refused = Some(path);
+        }
+
+        /// Fails from now on to start its stream after a batch alters what
+        /// it holds, holding the batch's paths still, as macOS's does when
+        /// its file-events stream won't start.
+        pub fn stall(&mut self) {
+            self.stalled = true;
+        }
+
+        /// Fails from now on to list what it holds.
+        pub fn unlist(&mut self) {
+            self.unlisted = true;
         }
 
         /// Applies `op`, answering whether it altered what's watched.
@@ -289,10 +309,20 @@ pub mod counting {
                 }
             }
             self.start(altered);
+            if altered && self.stalled {
+                return Err(UpdatePathsError {
+                    source: notify::Error::generic("the stream didn't start"),
+                    origin: None,
+                    remaining: Vec::new(),
+                });
+            }
             Ok(())
         }
 
         fn watched_paths(&self) -> notify::Result<Vec<(PathBuf, RecursiveMode)>> {
+            if self.unlisted {
+                return Err(notify::Error::generic("its paths can't be listed"));
+            }
             Ok(self
                 .watched
                 .iter()
@@ -481,6 +511,56 @@ mod tests {
             answer_all(&mut watcher, &[], &new),
             [Answer::Held],
             "a path the watcher still holds was answered as holding nothing"
+        );
+    }
+
+    #[test]
+    fn paths_a_batch_applied_but_whose_stream_didn_t_start_are_answered_held() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        for folder in [&a, &b] {
+            fs::create_dir(folder).expect("made");
+        }
+        // `b` is refused first, so the rest of the batch is applied again
+        // after it, and that stream is the one that doesn't start.
+        let (mut watcher, _) = Counting::refusing(b.clone());
+        watcher.stall();
+        let new = [
+            (b, RecursiveMode::NonRecursive),
+            (a.clone(), RecursiveMode::NonRecursive),
+        ];
+        assert_eq!(
+            answer_all(&mut watcher, &[], &new),
+            [Answer::Refused, Answer::Held],
+            "a path held by a stream that didn't start was answered watched, or the \
+             refused one held"
+        );
+        assert_eq!(
+            watcher.watched_paths().expect("its paths listed"),
+            [(a, RecursiveMode::NonRecursive)],
+            "the fake holds the path it took though its stream didn't start"
+        );
+    }
+
+    #[test]
+    fn a_path_refused_by_a_watcher_that_can_t_list_its_paths_is_answered_held() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        for folder in [&a, &b] {
+            fs::create_dir(folder).expect("made");
+        }
+        // It holds nothing of `b`, but can't say so, so `b` may be held.
+        let (mut watcher, _) = Counting::refusing(b.clone());
+        watcher.unlist();
+        let new = [
+            (a, RecursiveMode::NonRecursive),
+            (b, RecursiveMode::NonRecursive),
+        ];
+        assert_eq!(
+            answer_all(&mut watcher, &[], &new),
+            [Answer::Watched, Answer::Held],
+            "a path refused by a watcher that can't say what it holds was answered \
+             as holding nothing"
         );
     }
 
