@@ -167,7 +167,8 @@ same code, each line a JSON value:
 
 1. `{"Hello": {"machine", "realm", "version", "facts", "starts",
    "steers", "releases", "updates", "runs", "carries", "shows",
-   "ends", "ends_starts", "lends", "reopens", "parks"}}`, first,
+   "ends", "ends_starts", "lends", "reopens", "parks",
+   "plain_runs"}}`, first,
    from each end. Each end's
    membership admits the other or refuses it, and nothing else crosses
    until it has. `facts` says the end hears and says what a machine is; an end
@@ -190,7 +191,10 @@ same code, each line a JSON value:
    keeps a session parked on the other machine as parked, its process
    gone and its address there to send to, which wakes it; only such an
    end is told of one, since an end older than it would take it as
-   running.
+   running. `plain_runs` says its node runs the person's run sent to it
+   as an agent's (`asked_by`) through a shell that reads no profile of
+   its home; an end older than it would drop `asked_by` and run it
+   through the login shell, so none is asked of it.
    `machine` is the name the end's machine goes by, one name for every
    command there: the node's `--machine`, else the system's name up to
    its first dot, which the node records in its folder's `machine` file
@@ -360,7 +364,8 @@ same code, each line a JSON value:
     membership proved which machine asked, as for an update, and hands
     it to its own node's socket pinned to its machine, its `from` the
     asking machine and, where it says no `by`, as a strictly fenced
-    agent's; otherwise it refuses. Only the end that dialled asks a
+    agent's; otherwise it refuses. A run saying `asked_by` is asked
+    only of an end saying `plain_runs`. Only the end that dialled asks a
     run: the dialled end refuses one its node asks, since its link runs
     outside the node. Either way it answers `{"Ran": {"ask", "ran"}}` a line for
     each `Ran` the run says, the last its `Exited` or `Failed`. It sends
@@ -2667,7 +2672,12 @@ does, and why none will come: a node books its own makes again as it
 starts, before it dials them, so the room was made by another node, or
 by this one in a line of its book that can't be read, names no realm
 or names a provider it no longer asks. A refusal the room itself sends
-back reads as an agent's. The
+back reads as an agent's. A room
+whose hello doesn't say `plain_runs` would drop who asked and run the
+person's command through its login shell, profile and all, so the run
+is never sent there: it is refused before it goes, saying the room's
+mycelium is too old to run the person's command without its home's
+profile and tools. The
 run says `"asked_by": "Person"`, which only a node says: one an asker
 puts there without naming a machine it comes from is cleared. The room
 runs it through `/bin/sh -c`, never the login

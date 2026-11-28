@@ -98,6 +98,13 @@ pub struct Hello {
     /// of one; an end older than this would take one as running.
     #[serde(default)]
     pub parks: bool,
+    /// Whether its node runs the person's run sent to it as an agent's
+    /// (`asked_by`) through a shell that reads no profile of its home and
+    /// finds no tool there; an end older than this drops `asked_by` and
+    /// runs it through the login shell, profile and all, so none is asked
+    /// of it.
+    #[serde(default)]
+    pub plain_runs: bool,
 }
 
 /// Which machines a node links with.
@@ -145,6 +152,7 @@ impl Membership for Realm {
             reopens: true,
             lends: true,
             parks: true,
+            plain_runs: true,
         }
     }
 

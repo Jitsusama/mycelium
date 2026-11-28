@@ -1098,14 +1098,21 @@ async fn greet(
 }
 
 /// What an end that said `said` in its hello is too old to do of what is
-/// `asked`, if it is: it carries only what it said it carries, and a
-/// reopening only where its node judges one too.
+/// `asked`, if it is: it carries only what it said it carries, a
+/// reopening only where its node judges one too, and a run saying who
+/// asked it (`asked_by`) only where its node runs that through a shell
+/// reading no profile, since an older one drops who asked and runs it as
+/// any agent's, through the login shell.
 fn cannot_carry(asked: &Asked, said: &Hello) -> Option<&'static str> {
     let (carries, cannot) = match asked {
         Asked::Start(_) => (said.starts, "start sessions"),
         Asked::Reopen(_) => (said.starts && said.reopens, "judge a reopening"),
         Asked::Steer(_) => (said.steers, "carry steers"),
         Asked::Update => (said.updates, "be asked to update"),
+        Asked::Run(run, _) if run.asked_by.is_some() => (
+            said.runs && said.plain_runs,
+            "run the person's command without its home's profile and tools",
+        ),
         Asked::Run(..) => (said.runs, "run commands"),
         Asked::Lend(..) => (said.lends, "lend model calls"),
         Asked::Carry { .. } => (said.carries, "carry sessions"),
@@ -4567,6 +4574,57 @@ mod tests {
         );
     }
 
+    // Followups 506 and 532: an end older than `asked_by` drops it and
+    // runs the person's run through the login shell, profile and all, as
+    // an agent's, so the person's run sent as an agent's is asked only of
+    // an end whose node reads it.
+    #[test]
+    fn the_persons_run_sent_as_an_agents_is_asked_only_of_an_end_that_reads_who_asked() {
+        let run = |asked_by| {
+            let (ran, _) = mpsc::channel(1);
+            let said: Run = serde_json::from_value(json!({
+                "work": {"needs": [], "prefers": [], "tolerates": [], "may_wait": false},
+                "command": ["true"],
+                "by": {"Agent": "fence"}
+            }))
+            .expect("a run as a node says it");
+            Asked::Run(Run { asked_by, ..said }, ran)
+        };
+        let older = Hello {
+            plain_runs: false,
+            ..realm("kestrel").hello()
+        };
+        let person = Some(By::Person);
+        assert_eq!(cannot_carry(&run(person), &realm("kestrel").hello()), None);
+        assert_eq!(
+            cannot_carry(&run(person), &older),
+            Some("run the person's command without its home's profile and tools"),
+            "an end that doesn't say it reads who asked is asked none, so the person's \
+             command never runs there as an agent's unsaid"
+        );
+        assert_eq!(
+            cannot_carry(&run(None), &older),
+            None,
+            "it is still asked any other run"
+        );
+        let runless = Hello {
+            runs: false,
+            ..realm("kestrel").hello()
+        };
+        assert_eq!(
+            cannot_carry(&run(person), &runless),
+            Some("run the person's command without its home's profile and tools"),
+            "nor of an end that runs nothing, whatever it reads"
+        );
+        assert!(
+            serde_json::from_value::<Hello>(
+                json!({"machine": "tern", "realm": "work", "version": VERSION})
+            )
+            .is_ok_and(|said| !said.plain_runs),
+            "an end whose hello doesn't say it reads who asked"
+        );
+    }
+
     // An end older than a starter's end can't read who asks one, so it
     // would end the link that asked: it is asked only the person's.
     #[test]
@@ -5358,6 +5416,7 @@ mod tests {
             reopens: true,
             lends: true,
             parks: true,
+            plain_runs: true,
         };
         send(&mut far_writing, &Frame::Hello(personal))
             .await
