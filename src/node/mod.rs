@@ -5509,9 +5509,10 @@ impl<S: Store> Shared<S> {
     /// record outlives the node, and a session may write it ready.
     fn as_heard(&self, mut machines: Vec<facts::Machine>) -> Vec<facts::Machine> {
         for one in machines.iter_mut().filter(|one| one.name != self.machine) {
-            one.heard_this_run =
-                store::last_linked(&self.store, &one.name).is_some_and(|at| at >= self.began);
-            if !one.heard_this_run {
+            one.heard = store::last_linked(&self.store, &one.name)
+                .is_some_and(|at| at >= self.began)
+                .into();
+            if one.heard.is_unheard() {
                 one.state = Readiness::Unreachable;
             }
         }
@@ -27155,7 +27156,7 @@ esac
         };
         let heard: Vec<(&str, bool)> = machines
             .iter()
-            .map(|one| (one.name.as_str(), one.heard_this_run))
+            .map(|one| (one.name.as_str(), one.heard.is_this_run()))
             .collect();
         assert_eq!(
             heard,
@@ -27168,7 +27169,7 @@ esac
             "only a link let in or standing since the node began spoke of its machine"
         );
         let mut forged = placement::tests::machine("tern", "linux", 32, &["basin"]);
-        forged.heard_this_run = true;
+        forged.heard = facts::Heard::ThisRun;
         shared
             .store
             .put_machine(&forged)
@@ -27179,7 +27180,7 @@ esac
         assert!(
             machines
                 .iter()
-                .any(|one| one.name == "tern" && !one.heard_this_run),
+                .any(|one| one.name == "tern" && one.heard.is_unheard()),
             "a record saying it was heard says nothing"
         );
     }

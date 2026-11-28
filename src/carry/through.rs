@@ -156,7 +156,7 @@ impl Through {
 /// was.
 fn out_of_reach(linked: Option<&crate::facts::Machine>) -> bool {
     linked.is_some_and(|one| {
-        one.state == crate::facts::Readiness::Unreachable && !one.heard_this_run
+        one.state == crate::facts::Readiness::Unreachable && one.heard.is_unheard()
     })
 }
 
@@ -1328,7 +1328,7 @@ mod tests {
         fs::write(notes.join("s-busy01.done.json"), "{}").expect("a done file");
         let dropped = |name: &str, worker: bool| facts::Machine {
             state: facts::Readiness::Unreachable,
-            heard_this_run: true,
+            heard: facts::Heard::ThisRun,
             worker,
             declared: worker.then(|| Declared {
                 takes_carries: true,
