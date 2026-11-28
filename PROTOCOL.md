@@ -2324,7 +2324,7 @@ would wait longer than a minute from when the one before it would have
 gone. With `ordered`, an agent's start that is word for word a carry's
 arrival is weighed uncounted, as the carry line its order keeps would
 free it; that line is kept only after the ask, and the start itself is
-still held to it. At most 256 starts are weighed in one ask. It weighs
+still held to it. At most 128 starts are weighed in one ask. It weighs
 the realm's machines alone, never a machine made from an offer. It
 holds no room either: the carry's starts follow it by as long as its
 sessions take to end, up to 15 minutes, and other starts in that time

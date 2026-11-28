@@ -73,9 +73,15 @@ pub const UNTOLD_FOR_AN_AGENT: &str =
 /// node in an hour uncounted: past it, each counts as new work. A
 /// machine's sessions coming back after a restart fit within it, and an
 /// agent that ends the sessions it starts to bring them back free gains
-/// at most this many an hour beside the [`NODE_AN_HOUR`]. It stays
-/// twice that, so a wave past the node's number still comes back whole.
-pub const RESUMED_AN_HOUR: usize = 2 * NODE_AN_HOUR;
+/// at most this many an hour beside the [`NODE_AN_HOUR`]. It is set on
+/// its own, past the node's number, so a wave past that still comes
+/// back whole, and raising the node's pace widens it only by a choice.
+pub const RESUMED_AN_HOUR: usize = 256;
+
+const _: () = assert!(
+    NODE_AN_HOUR == 128 && RESUMED_AN_HOUR == 256 && CELL_AN_HOUR == 8,
+    "PROTOCOL.md tells clients these numbers, so change it with them"
+);
 
 /// How long after a start that brings a session back a second is
 /// refused, in milliseconds: the first may still be on its way, its pi

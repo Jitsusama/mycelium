@@ -104,8 +104,8 @@ const STARTS_LISTED: usize = 100;
 const START_WAITS_MOST: i64 = 60_000;
 
 /// The most starts one `Takes` weighs, so one line can't ask the node to
-/// place, and log, without end: past all a cell's resumes in an hour.
-const TAKES_MOST: usize = starts::RESUMED_AN_HOUR;
+/// place, and log, without end: a carry of more asks in parts.
+const TAKES_MOST: usize = 128;
 
 /// How long a link waits before dialling again after it dropped, at first
 /// and at most; each failure in a row doubles the wait.
@@ -20744,8 +20744,9 @@ esac
         );
         assert_eq!(kept(), before, "no ask keeps anything in the book");
         let many = takes(vec![arrival("s-a"); TAKES_MOST + 1], true).await;
+        let bound = format!("past the {TAKES_MOST} an ask weighs");
         assert!(
-            matches!(&many, Err(why) if why.contains("past the 128 an ask weighs")),
+            matches!(&many, Err(why) if why.contains(&bound)),
             "an ask is bounded: {many:?}"
         );
     }
@@ -21672,13 +21673,16 @@ esac
             );
         }
         let newest = booked(socket).await;
-        let first = newest
+        // The newest before the last, since the starts listed reach back
+        // only so far, and the wave is longer.
+        let before_last = wave.len() - 2;
+        let earlier = newest
             .iter()
-            .find(|kept| kept["resumes"] == wave[0].as_str())
-            .expect("the first brought back is kept");
+            .find(|kept| kept["resumes"] == wave[before_last].as_str())
+            .expect("one brought back is kept");
         assert_eq!(
-            first["folder"],
-            project(0).to_str().expect("a plain path"),
+            earlier["folder"],
+            project(before_last).to_str().expect("a plain path"),
             "it begins in its own folder"
         );
         let last = newest
@@ -21689,8 +21693,12 @@ esac
             last["folder"], "src/project-last",
             "one said from home goes as a folder within it: {last}"
         );
-        assert_eq!(first["started_by"], "WCJQSG", "{first}");
-        assert_eq!(first["reopens"], wave[0].as_str(), "it reopens its session");
+        assert_eq!(earlier["started_by"], "WCJQSG", "{earlier}");
+        assert_eq!(
+            earlier["reopens"],
+            wave[before_last].as_str(),
+            "it reopens its session"
+        );
     }
 
     /// The starts the node on `socket` keeps, newest last, as the person
