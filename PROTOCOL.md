@@ -3311,6 +3311,14 @@ has stopped taking them, and past that, or once the reader hangs up, it writes
 `{"unlend": ask}`, the link lets the lend go, and what was handed on
 ends short.
 
+A `"Hands"` line on a `"Carry"` connection is taken only where the
+node judges the client that opened it a link's end, as it judges a
+relayed start's end: anywhere no person works, since only the node's
+own account reaches its socket there, and where a person works only
+from the node's own process or the person's login, never an agent's.
+Any other is refused, said once in the node's log, so no process of
+the account can carry in the lender's name and plant a budget.
+
 `mycelium lend serve --listen PATH [--budget NAME]` serves pi's model
 requests on `PATH` as a machine's model relay does, so a pi whose
 `PI_PROXY_RELAY` names `PATH`'s folder sends there. It makes that

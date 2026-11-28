@@ -5791,6 +5791,49 @@ impl<S: Store> Shared<S> {
         self.take_hands(from, hands)
     }
 
+    /// Whether the client carrying a link's asks may hand this machine a
+    /// lend over that connection, judged as a relayed start's end is
+    /// ([`Self::end_start`]): anywhere no person works, since there only
+    /// the node's own account reaches this socket and its sessions ask on
+    /// the worker's, and where a person works only from the node's own
+    /// process or the person's login, as an ssh login's link's end is.
+    /// An agent's process could otherwise carry for the machine this one
+    /// borrows from and plant a budget that outlives it.
+    async fn carries_hands(&self) -> Result<(), String> {
+        if self.processes.is_unattended() {
+            return Ok(());
+        }
+        let (by, _) = self.judged().await?;
+        if asker::relays(self.client, by) {
+            return Ok(());
+        }
+        Err(format!(
+            "{} takes a lend carried to it only from a link's end, and a person works here, \
+             so this asker, judged {by}, hands it nothing",
+            self.machine
+        ))
+    }
+
+    /// Takes `hands` as [`Self::take_hands`] does, carried over a link's
+    /// connection by a client [`Self::carries_hands`] judged as `carrier`
+    /// says, refused where it isn't taken. A refusal is said in the log
+    /// once a run.
+    fn take_hands_carried(
+        &self,
+        from: &str,
+        hands: crate::lend::Hands,
+        carrier: &Result<(), String>,
+    ) -> Result<Response, String> {
+        static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if let Err(why) = carrier {
+            if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("mycelium: a lend carried in {from:?}'s name is refused: {why}");
+            }
+            return Err(why.clone());
+        }
+        self.take_hands(from, hands)
+    }
+
     /// Lends this machine's own sessions from now on as `hands` says, as
     /// the link reaching `from` carried it, where `from` is the machine
     /// this one borrows from; refused from any other. Only a link's end
@@ -10873,7 +10916,8 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             return;
         }
         if let Ok(Request::Carry { machine, reopens }) = request {
-            let taking = |hands| shared.take_hands(&machine, hands);
+            let carrier = shared.carries_hands().await;
+            let taking = |hands| shared.take_hands_carried(&machine, hands, &carrier);
             link::carried::to_link(&shared.asks, (&machine, reopens), lines, writing, taking).await;
             return;
         }
@@ -20446,6 +20490,66 @@ esac
             "the node's own process, as a link it keeps there, is taken"
         );
         assert!(shared.handed.lends());
+    }
+
+    // Round 3's F1, F9 and F24: a client of the account's socket could
+    // carry for the machine a room borrows from and plant a budget, with
+    // an upstream of its choice, that outlives it. A lend carried is
+    // taken only from a link's end, judged as a relayed start's end is.
+    #[tokio::test]
+    async fn a_lend_carried_is_taken_only_from_a_links_end() {
+        let hands = || crate::lend::Hands {
+            lend: json!({
+                "vms": [{"prefix": "skiff", "budget": "room", "requests_a_day": 3}],
+                "budgets": {"room": {
+                    "upstream": "/elsewhere/relay.sock", "host": "models.example",
+                    "paths": ["/v1/messages"], "auth_header": "authorization",
+                }},
+            }),
+            key: crate::lend::Key("Bearer planted-key".to_owned()),
+        };
+        let own = i32::try_from(std::process::id()).ok();
+        for (processes, client, taken) in [
+            (Processes::Folder("/nowhere/proc".into()), Some(1), false),
+            (Processes::Folder("/nowhere/proc".into()), None, false),
+            (Processes::Folder("/nowhere/proc".into()), own, true),
+            (
+                Processes::Folder("/nowhere/proc".into()).unattended(),
+                Some(1),
+                true,
+            ),
+        ] {
+            let (to_dial, _) = mpsc::unbounded_channel();
+            let membership = Realm {
+                name: "work".to_owned(),
+                machine: "skiff".to_owned(),
+            };
+            let given = Given {
+                lends_from: Some("osprey".to_owned()),
+                processes,
+                ..bare("/nowhere/steer".into(), None)
+            };
+            let (mut shared, _) = Shared::of(
+                Memory::default(),
+                (membership.hello(), "/nowhere/node".into()),
+                given,
+                to_dial,
+            );
+            shared.client = client;
+            let carrier = shared.carries_hands().await;
+            let handed = shared.take_hands_carried("osprey", hands(), &carrier);
+            if taken {
+                assert_eq!(handed, Ok(Response::Handed), "{client:?} is a link's end");
+                assert!(shared.handed.lends(), "so skiff lends what osprey handed");
+            } else {
+                assert!(
+                    matches!(&handed, Err(why) if why.contains("only from a link's end")
+                        && !why.contains("planted-key")),
+                    "{client:?} where a person works isn't a link's end: {handed:?}"
+                );
+                assert!(!shared.handed.lends(), "so skiff lends nothing of it");
+            }
+        }
     }
 
     /// What `lent_here` makes of `answers`, this machine's own lend ending
