@@ -1949,21 +1949,6 @@ fn leaving_as_made(
     machine
 }
 
-/// Lets go of each machine `book` says was made and stands, though its
-/// time was up [`ENDED_LET_GO_AFTER`] before `now`, where no link reaches
-/// it. Its provider ended it at its time whatever else happened, so one
-/// deleted where this node never saw, made by a provider it no longer
-/// asks, or kept before makes named their realm, would otherwise stay
-/// among the realm's machines, out of reach, for good.
-///
-/// Only one the realm lists as out of reach, or doesn't list, is let go:
-/// one a link reaches is alive, and a state that comes later fails
-/// toward keeping it. A name a make not yet ended holds is that make's,
-/// so none ended under it leaves the realm's machines. One this realm's
-/// book names is booked as let go; one that names no realm is nobody's
-/// to book, so it only leaves this realm's machines, once, and only
-/// within [`UNNAMED_LOOKED_FOR`] of its time. Answers the makes booked as
-/// let go.
 /// Of the machines `released`, those no link reaches, as
 /// [`let_go_ended`] judges one: one the realm doesn't list, or lists as
 /// unreachable. One of the same name a link reaches, made again
@@ -1982,6 +1967,21 @@ fn unreached(
     released.into_iter().filter(unreached).collect()
 }
 
+/// Lets go of each machine `book` says was made and stands, though its
+/// time was up [`ENDED_LET_GO_AFTER`] before `now`, where no link reaches
+/// it. Its provider ended it at its time whatever else happened, so one
+/// deleted where this node never saw, made by a provider it no longer
+/// asks, or kept before makes named their realm, would otherwise stay
+/// among the realm's machines, out of reach, for good.
+///
+/// Only one the realm lists as out of reach, or doesn't list, is let go:
+/// one a link reaches is alive, and a state that comes later fails
+/// toward keeping it. A name a make not yet ended holds is that make's,
+/// so none ended under it leaves the realm's machines. One this realm's
+/// book names is booked as let go; one that names no realm is nobody's
+/// to book, so it only leaves this realm's machines, once, and only
+/// within [`UNNAMED_LOOKED_FOR`] of its time. Answers the makes booked as
+/// let go.
 fn let_go_ended(book: &Book, store: &impl Store, now: jiff::Timestamp) -> Vec<Made> {
     let standing = match book.standing() {
         Ok(standing) => standing,
