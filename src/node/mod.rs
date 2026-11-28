@@ -8699,7 +8699,7 @@ impl<S: Store> Shared<S> {
         // declared is kept (`relayed_to_a_room`). Only where the asker is
         // a link's end, never a session or a fenced process, which could
         // say `proven` of its own relay.
-        let speaks = link_end::speaks_for_a_link(self.client, &self.processes);
+        let speaks = link_end::speaks_for_a_link(self.client, self.client_started, &self.processes);
         if proven && !speaks {
             eprintln!(
                 "a start relayed from {from:?} says its link's key proved it, but its asker \
@@ -28292,6 +28292,10 @@ esac
             let process = procs.join(pid.to_string());
             fs::create_dir_all(&process).expect("its folder is made");
             fs::write(process.join("status"), status).expect("its status is written");
+            // Its start, the twentieth field after its name, so the node
+            // can tell its id wasn't taken again since it connected.
+            let stat = format!("{pid} (x) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {pid}0 0\n");
+            fs::write(process.join("stat"), stat).expect("its stat is written");
         }
         let unattended = Processes::Folder(procs).unattended();
         let mut link = holding_skiff(dir, Memory::default(), None, unattended);
@@ -28301,6 +28305,7 @@ esac
         link.starts_apart = true;
         // Never the node's own process.
         link.client = Some(31);
+        link.client_started = Some(310);
         let fenced = Start {
             work: Work {
                 fence: Some(DeclaredFence {

@@ -1905,15 +1905,18 @@ pub fn unclaimed_because(asker: Option<i32>, processes: &Processes) -> &'static 
 /// Whether process `pid` may gain no privileges, as a fence sets, while
 /// the node itself may.
 fn gains_less(procs: &Path, pid: i32) -> bool {
-    let barred = |process: &str| {
-        fs::read_to_string(procs.join(process).join("status")).is_ok_and(|status| {
-            status
-                .lines()
-                .find_map(|line| line.strip_prefix("NoNewPrivs:"))
-                .is_some_and(|value| value.trim() == "1")
-        })
-    };
-    barred(&pid.to_string()) && !barred("self")
+    barred(procs, &pid.to_string()) && !barred(procs, "self")
+}
+
+/// Whether `process` in `procs`, by its id or as `self`, may gain no
+/// privileges, as a fence sets and never sheds.
+pub(super) fn barred(procs: &Path, process: &str) -> bool {
+    fs::read_to_string(procs.join(process).join("status")).is_ok_and(|status| {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("NoNewPrivs:"))
+            .is_some_and(|value| value.trim() == "1")
+    })
 }
 
 /// Whether process `pid` sees other mounts than the node does, as one a
