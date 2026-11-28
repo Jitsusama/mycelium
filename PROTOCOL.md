@@ -1682,8 +1682,10 @@ on by number where it says one, the `next` thing it does and what it
 the `at` it said so; a `doing` it can't read, or whose line is longer, is
 left out whole), its latest `events`, newest first and at most 20 (each
 `at`, its `kind` as `commit`, `push`, `pr`, `merge` or `stage`, `where`
-as a repository's key or a quest's id, and a `title` cut to 120
-characters and then, cut or not, ending in no space, no joiner or
+as a repository's key or a quest's id, and a `title` served with its
+controls and line and paragraph separators as spaces and its direction
+marks dropped, as every other line a peer says is, then cut to 120 of
+the characters left and, cut or not, ending in no space, no joiner or
 non-joiner left joining nothing and no Khmer coeng with no letter to
 subscript, so a title of those alone reads as empty, its event kept;
 each node cleans a title as it reads the presence, so two running
