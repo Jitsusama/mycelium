@@ -21614,9 +21614,12 @@ esac
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let at = jiff::Timestamp::now().to_string();
-        // More sessions ended here than the node starts in an hour.
+        // More sessions ended here than the node starts in an hour. Each id
+        // is as long as the rest, since a resume of one that begins another
+        // counts as a start (pi may open the other), and s-gone-10 would
+        // begin s-gone-100.
         let wave = (0..=starts::NODE_AN_HOUR)
-            .map(|one| format!("s-gone-{one:02}"))
+            .map(|one| format!("s-gone-{one:03}"))
             .collect::<Vec<_>>();
         let project = |one: usize| dir.path().join(format!("project-{one}"));
         for (one, session) in wave.iter().enumerate() {
