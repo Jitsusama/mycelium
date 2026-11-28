@@ -1505,8 +1505,8 @@ where
                 let dial = shared.book_for(&made);
                 let carries = (sharing.clone(), shared.starting(&dial, &socket.path), refusals.clone());
                 let kept = shared.kept_past_handover(&made);
-                let linked =
-                    keep_linked(dial.clone(), store.clone(), membership.clone(), carries, true, kept);
+                let (store, membership) = (store.clone(), membership.clone());
+                let linked = keep_linked(dial.clone(), store, membership, carries, true, kept);
                 let keeping = shared.keeping(&made);
                 links.spawn(keep_made(dial, made, keeping, unwanted, linked));
             }
