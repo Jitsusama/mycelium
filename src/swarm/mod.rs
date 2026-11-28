@@ -787,11 +787,12 @@ pub(crate) enum Held<T> {
     /// No living session holds it, or each that does leads the team going
     /// by it, so the steer is left to find a team.
     Left,
-    /// The first of the living sessions holding it takes the steer, as
-    /// none of them leads the team going by it.
+    /// The one living session holding it takes the steer, as it doesn't
+    /// lead the team going by it.
     One(T),
-    /// Each living session holding it, some leading the team going by it
-    /// and some not, so the steer is refused.
+    /// Each living session holding it, where some lead the team going by
+    /// it and some don't, or several lead nothing, so the steer is
+    /// refused.
     Split(Vec<T>),
 }
 
@@ -812,19 +813,26 @@ impl<T> Held<T> {
 /// none is, those holding it in another; the team going by it is found
 /// by the same rule, so `KELP01` and `kelp01` are steered apart. Where
 /// every holder leads that team, the team takes the steer, as an
-/// orchestrator's team goes by its lead's address; where none does, the
-/// first holder takes it. Where they disagree it is refused, naming
-/// each: a session record is a peer's presence, so a peer may publish a
-/// twin of a working session that leads a team keyed by its address, or
-/// a twin of a lead that leads nothing, and whichever side a rule picked,
-/// the steer could reach the peer's rather than the one the person meant.
+/// orchestrator's team goes by its lead's address; where one holder
+/// leads nothing, it takes the steer. Where they disagree, or several
+/// lead nothing, it is refused, naming each: a session record is a
+/// peer's presence, so a peer may publish a twin of a working session
+/// that leads a team keyed by its address, a twin of a lead that leads
+/// nothing, or a twin of a working session that leads nothing either,
+/// and whichever a rule picked, the steer could reach the peer's rather
+/// than the one the person meant. The node delivers a steer to an
+/// address's inbox, so the twin picked is the session the swarm says it
+/// reaches and judges it by, as whether it is paused. Records saying the
+/// same id are one session's, not twins, so each id is held once.
 pub(crate) fn held<'s, S>(
     teams: &[Value],
     living: &'s [S],
     said: impl Fn(&'s S) -> (&'s str, Option<&'s str>),
     asked: &str,
 ) -> Held<&'s S> {
-    let holders = own_case_first(living, asked, |each| said(each).0);
+    let mut ids = BTreeSet::new();
+    let mut holders = own_case_first(living, asked, |each| said(each).0);
+    holders.retain(|&holder| said(holder).1.is_none_or(|id| ids.insert(id)));
     let keyed = own_case_first(teams, asked, address);
     let leads = |holder: &'s S| {
         said(holder)
@@ -832,11 +840,11 @@ pub(crate) fn held<'s, S>(
             .is_some_and(|id| keyed.iter().any(|team| team["lead"].as_str() == Some(id)))
     };
     let leading = holders.iter().filter(|&&holder| leads(holder)).count();
-    match holders.first() {
-        None => Held::Left,
-        Some(_) if leading == holders.len() => Held::Left,
-        Some(first) if leading == 0 => Held::One(*first),
-        Some(_) => Held::Split(holders),
+    match holders.as_slice() {
+        [] => Held::Left,
+        _ if leading == holders.len() => Held::Left,
+        [one] => Held::One(*one),
+        _ => Held::Split(holders),
     }
 }
 
@@ -1077,22 +1085,13 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
         lines.push(row(look, 0, &Label::titled("on their own"), &counts, false));
     }
     lines.push(String::new());
-    // The first team on the list is the example, typed as a person would.
+    // The first team on the list is the example, typed as a person would,
+    // and only by a name that reaches it alone, as a shell completes it.
     let first = within
         .get("")
         .and_then(|top| ordered(top.iter().copied()).first().copied());
-    // A chosen short name is a peer's text, and the example is copied
-    // into a shell, so it is given only as a word a shell and `swarm`
-    // read as one name, then as the team's address, and otherwise not.
     let example = first
-        .and_then(|team| {
-            let typed = unmarked(names::typed(team, &shorts));
-            if names::one_word(&typed) {
-                Some(typed)
-            } else {
-                typeable(address(team)).then(|| address(team).to_owned())
-            }
-        })
+        .and_then(|team| reaching(swarm, team, &shorts))
         .unwrap_or_else(|| "<team>".to_owned());
     lines.push(look.paint(
         FAINT,
@@ -1104,36 +1103,42 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
     look.joined(&lines)
 }
 
-/// Each team as a person types it, its short name where it has one, in
-/// the order the overview lists them, for a shell to complete. Each is
-/// cleaned as a page draws it, since a peer gives the name and a shell
-/// may draw what it completes; matching cleans both sides, so the
-/// cleaned name still reaches its team. A team with no short name is
-/// given by its title where that is one word, and else by its address,
-/// as the hint gives its example; and only a name that, shown or
-/// steered, goes to its team alone is given at all, as a title isn't
-/// held to a short name's rules, and an address may be a session's, so
-/// a team none reaches is given by none.
+/// Each team as a person types it, as [`reaching`] gives it, in the
+/// order the overview lists them, for a shell to complete. Short names
+/// are worked out once for the whole list, since each costs a pass over
+/// the teams and living sessions, and each name tried looks among them.
 #[must_use]
 pub fn typed(swarm: &Swarm) -> Vec<String> {
     let shorts = shorts_of(swarm);
     ordered(swarm.teams.iter())
         .into_iter()
-        .filter_map(|team| {
-            let typed = unmarked(names::typed(team, &shorts));
-            let address = address(team).to_owned();
-            [
-                Some(typed).filter(|typed| names::one_word(typed)),
-                Some(address).filter(|address| typeable(address)),
-            ]
-            .into_iter()
-            .flatten()
-            .find(|name| {
-                named(swarm, name).is_ok_and(|found| std::ptr::eq(found, team))
-                    && steers::reaches(swarm, name, team)
-            })
-        })
+        .filter_map(|team| reaching(swarm, team, &shorts))
         .collect()
+}
+
+/// What a person types to reach `team` alone, with `shorts` as
+/// [`shorts_of`] gives them: its short name, else its title, where that
+/// is one word, cleaned as a page draws it, since a peer gives the name
+/// and a shell may draw it, and matching cleans both sides; else its
+/// address, where a shell and `swarm` read it as one name. A title isn't
+/// held to a short name's rules, and an address may be a session's, so
+/// only a name that, shown or steered, reaches that team alone is given,
+/// and a team none reaches is given by none. The overview's hint and a
+/// shell's completions both ask here, so neither offers a name the other
+/// wouldn't, nor one that reaches another team or a session.
+fn reaching(swarm: &Swarm, team: &Value, shorts: &BTreeMap<String, String>) -> Option<String> {
+    let typed = unmarked(names::typed(team, shorts));
+    let address = address(team).to_owned();
+    [
+        Some(typed).filter(|typed| names::one_word(typed)),
+        Some(address).filter(|address| typeable(address)),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|name| {
+        named(swarm, name, shorts).is_ok_and(|found| std::ptr::eq(found, team))
+            && steers::reaches(swarm, name, team, shorts)
+    })
 }
 
 /// The short names a row of a team is shown with, and how wide they are.
@@ -1177,8 +1182,11 @@ fn nest<'a>(
 /// The team `asked` names, by its address, its short name or a part of
 /// its title, or why none or several are, naming each of several as it's
 /// typed, so one can be picked.
-fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
-    let shorts = shorts_of(swarm);
+fn named<'a>(
+    swarm: &'a Swarm,
+    asked: &str,
+    shorts: &BTreeMap<String, String>,
+) -> Result<&'a Value, String> {
     let naming = |team: &'a Value| Naming {
         address: address(team),
         short: shorts.get(address(team)).map(String::as_str),
@@ -1194,7 +1202,7 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
                     .iter()
                     .map(|team| {
                         (
-                            unmarked(names::typed(team, &shorts)),
+                            unmarked(names::typed(team, shorts)),
                             Some(address(team)).filter(|address| typeable(address)),
                         )
                     })
@@ -1234,7 +1242,12 @@ pub(crate) enum Picked<'a, T> {
 /// `naming` says each; or none, or each of several. Where the address is
 /// `first`, as a team's is, it comes before a short name, which a peer
 /// picks and could clean to another's address to hide it; a network's
-/// name is a group a peer may pick as well, so it isn't. An address
+/// name is a group a peer may pick as well, so it isn't, save where the
+/// caller was asked by the mesh's spelling of a group, led by `#` or
+/// holding `/`, as `named_network` asks. That is safe there, since
+/// networks are keyed by their group's name, so two never share one,
+/// and `#` says the mesh's spelling, which names a group whole and never
+/// a short name, so a peer's short name can't stand in for it. An address
 /// matched in its own case comes before one matched in another, so two
 /// keyed alike but for case are each reached by the address told apart.
 /// A short name and a title are matched as they are drawn, cleaned on
@@ -1302,7 +1315,8 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
 ///
 /// When no team, or more than one, goes by what was asked.
 pub fn team(swarm: &Swarm, asked: &str, look: &Look) -> Result<String, String> {
-    let team = named(swarm, asked)?;
+    let shorts = shorts_of(swarm);
+    let team = named(swarm, asked, &shorts)?;
     let titled: BTreeMap<&str, &str> = swarm
         .teams
         .iter()
@@ -1351,7 +1365,6 @@ pub fn team(swarm: &Swarm, asked: &str, look: &Look) -> Result<String, String> {
             .filter(|other| other["within"] == json!(address(team))),
     );
     if !inner.is_empty() {
-        let shorts = shorts_of(swarm);
         let width = shorts_width(inner.iter().copied(), &shorts);
         lines.extend([String::new(), header(look, 0, &Standing::EACH)]);
         for other in inner {

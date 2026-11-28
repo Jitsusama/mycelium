@@ -1995,6 +1995,70 @@ fn a_machine_is_found_by_its_name_as_drawn() {
     );
 }
 
+/// The harbour with a machine named `osprey` held as `held`, and a cell
+/// like it as `other` says, both put first.
+fn ospreys(held: &str, other: impl FnOnce(&mut super::Cell)) -> Mycelium {
+    let mut mycelium = mycelium();
+    let at = mycelium
+        .cells
+        .iter()
+        .position(|each| each.is == Is::Machine)
+        .expect("a machine");
+    let mut machine = mycelium.cells.remove(at);
+    machine.name = held.to_owned();
+    let mut twin = machine.clone();
+    twin.name = "os\u{200B}prey".to_owned();
+    other(&mut twin);
+    mycelium.cells.insert(0, twin);
+    mycelium.cells.insert(0, machine);
+    mycelium
+}
+
+#[test]
+fn cells_drawn_alike_are_named_by_what_tells_them_apart() {
+    let mycelium = ospreys("osprey\u{fdd0}", |twin| {
+        twin.is = Is::Receptor;
+        twin.machine = Some("skiff".to_owned());
+    });
+    assert_eq!(
+        mycelium.named_cell("osprey").map(|each| each.name.as_str()),
+        Err("osprey could be the machine osprey or the receptor osprey on skiff".to_owned()),
+        "cells drawn alike were named by the name that draws alike"
+    );
+}
+
+#[test]
+fn cells_nothing_shown_tells_apart_say_so_and_how_to_reach_one() {
+    let mycelium = ospreys("osprey\u{fdd0}", |_| {});
+    assert_eq!(
+        mycelium.named_cell("osprey").map(|each| each.name.as_str()),
+        Err(
+            "osprey could be any of 2 cells drawn alike as osprey, which nothing shown \
+             tells apart: type one's name as it is held, hidden characters and all, as \
+             cells -o json lists it"
+                .to_owned()
+        ),
+        "machines drawn alike were named as if told apart"
+    );
+    assert_eq!(
+        mycelium
+            .named_cell("os\u{200B}prey")
+            .map(|each| each.name.as_str()),
+        Ok("os\u{200B}prey"),
+        "a name typed as it is held didn't reach its cell"
+    );
+}
+
+#[test]
+fn a_cell_named_as_typed_comes_before_one_drawn_alike() {
+    let mycelium = ospreys("osprey", |_| {});
+    assert_eq!(
+        mycelium.named_cell("osprey").map(|each| each.name.as_str()),
+        Ok("osprey"),
+        "a cell drawn alike stood beside one named as typed"
+    );
+}
+
 #[test]
 fn every_cell_lists_worst_first_and_one_says_its_networks() {
     let mycelium = mycelium();

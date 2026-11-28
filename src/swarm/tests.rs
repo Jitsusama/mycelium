@@ -197,6 +197,22 @@ fn into_a_pipe_a_time_is_stamped_in_the_looks_zone_on_its_own_day() {
 }
 
 #[test]
+fn a_machine_with_no_zone_found_says_its_times_in_utc() {
+    // The look's time is the machine's, and where no zone is found
+    // jiff gives one named Etc/Unknown; a time drawn into a pipe says
+    // its zone, so it must name UTC rather than that.
+    let whole = Look {
+        now: whole().now.with_time_zone(jiff::tz::TimeZone::unknown()),
+        ..whole()
+    };
+    assert_eq!(
+        whole.stamped("2026-11-12T20:00:00Z").as_deref(),
+        Some("Thu 12 Nov 2026 20:00 UTC (+00:00)"),
+        "a zone not found was stamped otherwise than as UTC"
+    );
+}
+
+#[test]
 fn a_team_page_by_a_session_s_address_says_a_steer_reaches_that_session() {
     // Keyed by a session it isn't led by, the team is shown by that
     // address, but a steer typed with it reaches the session alone.
@@ -225,9 +241,23 @@ fn a_team_page_by_a_session_s_address_says_a_steer_reaches_that_session() {
         shown.lines().nth(2),
         Some(
             "a steer to BUSY is refused: Harbour's lead (s-lead) and Busy one (s-busy) each \
-             say that address, and only some lead the team going by it"
+             say that address, and nothing tells which is meant"
         ),
         "the page let a refused steer seem to reach the team or a session:\n{shown}"
+    );
+}
+
+#[test]
+fn a_team_page_by_its_lead_s_address_says_nothing_of_where_a_steer_goes() {
+    // A session holds the address, but it leads the team going by it,
+    // so a steer typed with it reaches the team the page shows.
+    let mut swarm = swarm();
+    swarm.teams[1]["key"] = json!("team:LEAD");
+    swarm.teams[2]["within"] = json!("LEAD");
+    let shown = team(&swarm, "LEAD", &look()).expect("Harbour is found by its key");
+    assert!(
+        !shown.contains("a steer to"),
+        "a team its lead's address steers said a steer goes elsewhere:\n{shown}"
     );
 }
 
@@ -456,6 +486,34 @@ fn each_team_leads_with_its_short_name_and_the_list_says_how_to_type_one() {
         typed(&titled_swarm()),
         ["part-deux", "reef", "deploy"],
         "what a shell completes, in the list's order"
+    );
+}
+
+#[test]
+fn a_hint_names_no_team_by_a_title_another_shares() {
+    // Titled alike, neither has a short name, and the title typed
+    // reaches both, so the hint gives each by what reaches it alone.
+    let moving = json!({"worst": "moving", "members": [],
+                        "counts": {"needs-you": 0, "stuck": 0, "moving": 1, "quiet": 0}});
+    let swarm = Swarm {
+        realm: "work".to_owned(),
+        teams: vec![
+            team_of("DOCK01", "Dock", None, &moving),
+            team_of("DOCK02", "Dock", None, &moving),
+        ],
+        sessions: Vec::new(),
+    };
+    let shown = overview(&swarm, &look());
+    let hint = shown.lines().last().unwrap_or_default();
+    assert!(
+        hint.ends_with(" swarm DOCK01") || hint.ends_with(" swarm DOCK02"),
+        "the hint named a team by what reaches another too:\n{shown}"
+    );
+    let example = hint.rsplit(' ').next().unwrap_or_default();
+    assert_eq!(
+        typed(&swarm).first().map(String::as_str),
+        Some(example),
+        "the hint and a shell gave the first team by different names"
     );
 }
 

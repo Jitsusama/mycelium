@@ -188,7 +188,7 @@ fn a_peer_s_team_under_a_session_s_address_never_takes_its_words() {
     // the session is sure to be the one meant, so both are named.
     swarm.sessions[0]["address"] = json!("BUSY");
     let refused = "a steer to BUSY is refused: Harbour's lead (s-lead) and Busy one \
-                   (s-busy) each say that address, and only some lead the team going by it";
+                   (s-busy) each say that address, and nothing tells which is meant";
     assert_eq!(
         aim(&swarm, say, "BUSY"),
         Err(refused.to_owned()),
@@ -242,11 +242,41 @@ fn a_team_goes_by_its_lead_s_address() {
     twin["address"] = json!("LEAD");
     swarm.sessions.insert(0, twin);
     let refused = "a steer to LEAD is refused: Harbour's lead (s-twin) and Harbour's lead \
-                   (s-lead) each say that address, and only some lead the team going by it";
+                   (s-lead) each say that address, and nothing tells which is meant";
     assert_eq!(
         aim(&swarm, Act::Pause, "LEAD"),
         Err(refused.to_owned()),
         "a session saying its lead's address, or the lead, took the steer"
+    );
+}
+
+#[test]
+fn twins_that_lead_nothing_refuse_a_steer_where_one_session_s_records_take_it() {
+    // A peer may publish a twin of a working session that leads
+    // nothing either; found first, it would take the session's steer,
+    // and nothing tells which is the peer's, so both are named.
+    let mut twinned = swarm();
+    let mut twin = twinned.sessions[2].clone();
+    twin["id"] = json!("s-twin");
+    twinned.sessions.insert(0, twin);
+    assert_eq!(
+        aim(&twinned, say("Stop that"), "BUSY"),
+        Err(
+            "a steer to BUSY is refused: Busy one (s-twin) and Busy one (s-busy) each \
+             say that address, and nothing tells which is meant"
+                .to_owned()
+        ),
+        "the first of two sessions saying an address, leading nothing, took its steer"
+    );
+    // Two records saying one id are that session's, not twins.
+    let mut doubled = swarm();
+    let again = doubled.sessions[2].clone();
+    doubled.sessions.insert(0, again);
+    let aimed = aim(&doubled, say("Stop that"), "BUSY").expect("one session's records");
+    assert_eq!(
+        addresses(&aimed),
+        ["BUSY"],
+        "a session's records were taken for twins"
     );
 }
 

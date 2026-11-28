@@ -305,6 +305,18 @@ pub enum Is {
     Builder,
 }
 
+impl Is {
+    /// The word it is said by, as it is written in a cell's record.
+    fn word(self) -> &'static str {
+        match self {
+            Self::Session => "session",
+            Self::Machine => "machine",
+            Self::Receptor => "receptor",
+            Self::Builder => "builder",
+        }
+    }
+}
+
 /// What a builder takes, and why it stands as it does.
 #[derive(Debug, Clone, Serialize)]
 pub struct Builds {
@@ -801,7 +813,8 @@ impl Mycelium {
         // A machine's, builder's or receptor's name is a peer's text,
         // drawn cleaned, so typed as drawn it finds the cell, as its name
         // would before a part of a title. One typed as it is held comes
-        // first, and several drawn alike are each named.
+        // first, and several drawn alike are each told apart, as
+        // `drawn_alike` says.
         if !self
             .cells
             .iter()
@@ -816,7 +829,7 @@ impl Mycelium {
             match alike.as_slice() {
                 [] => {}
                 [one] => return Ok(one),
-                _ => return Err(several(asked, &alike, |each| each.name.clone())),
+                _ => return Err(drawn_alike(asked, &drawn, &alike)),
             }
         }
         match swarm::picked(&self.cells, asked, false, Cell::naming) {
@@ -824,6 +837,42 @@ impl Mycelium {
             swarm::Picked::None => Err(format!("no cell is named {asked}")),
             swarm::Picked::Several(many) => Err(several(asked, &many, |each| each.name.clone())),
         }
+    }
+}
+
+/// That `asked` could be any of `alike`, cells whose names are each
+/// drawn as `drawn`. Their names can't tell them apart, as each draws
+/// the same, so each is named by its kind and the machine it runs on,
+/// where no two are named alike so; and where two are, it says plainly
+/// that nothing shown tells them apart, and that a name typed as it is
+/// held, hidden characters and all, reaches its cell before any drawn
+/// alike, as `named_cell` looks for it first.
+fn drawn_alike(asked: &str, drawn: &str, alike: &[&Cell]) -> String {
+    let told: Vec<String> = alike
+        .iter()
+        .map(|cell| match &cell.machine {
+            Some(machine) => format!(
+                "the {} {drawn} on {}",
+                cell.is.word(),
+                swarm::unmarked(machine)
+            ),
+            None => format!("the {} {drawn}", cell.is.word()),
+        })
+        .collect();
+    let apart = told
+        .iter()
+        .enumerate()
+        .all(|(at, each)| !told[..at].contains(each));
+    if apart {
+        let told: Vec<&str> = told.iter().map(String::as_str).collect();
+        format!("{asked} could be {}", swarm::either(&told))
+    } else {
+        format!(
+            "{asked} could be any of {} cells drawn alike as {drawn}, which nothing shown \
+             tells apart: type one's name as it is held, hidden characters and all, as \
+             cells -o json lists it",
+            alike.len()
+        )
     }
 }
 

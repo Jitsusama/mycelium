@@ -547,11 +547,25 @@ fn a_long_name_is_cut_in_its_row_and_broken_in_its_sentence() {
             .find(|line| line.starts_with("  kestrel-"))
             .unwrap_or_default();
         assert!(
-            long_lines.is_empty()
-                && row.contains("…  no room")
-                && shown.lines().filter(|line| line.contains("xxxx")).count() > 2,
-            "a long name passed {width} columns, hid how it stands, or went \
-             unsaid: {long_lines:?}\n{shown}"
+            long_lines.is_empty() && row.contains("…  no room"),
+            "a long name passed {width} columns or hid how it stands: \
+             {long_lines:?}\n{shown}"
+        );
+        // Its sentence's lines, each after the indent it hangs from,
+        // joined as the name is broken, mid-word, so it reads whole.
+        let hung = " ".repeat("stale: ".len());
+        let mut lines = shown
+            .lines()
+            .skip_while(|line| !line.starts_with("stale: "));
+        let first = lines.next().and_then(|line| line.strip_prefix("stale: "));
+        let sentence: String = first
+            .into_iter()
+            .chain(lines.map_while(|line| line.strip_prefix(hung.as_str())))
+            .collect();
+        assert!(
+            sentence.starts_with(&format!("{long}'s facts are")),
+            "at {width} columns the name went unsaid whole in its sentence: \
+             {sentence:?}\n{shown}"
         );
     }
     let whole = said(&flagged, "work", crate::swarm::WHOLE, false);
