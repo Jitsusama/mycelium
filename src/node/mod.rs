@@ -70,6 +70,7 @@ mod cell;
 mod viewed;
 pub use cell::{KIND as CELL_KIND, records as cell_records};
 mod crossing;
+pub mod demand;
 mod ended;
 mod enters;
 mod feeding;
@@ -1160,6 +1161,9 @@ pub struct Given {
     pub providers: Vec<String>,
     /// Where it keeps each machine it makes and lets go.
     pub book: Book,
+    /// The marks of the machines it was given by `--via`, and the budget
+    /// its makes are held to.
+    pub demand: demand::Given,
     /// The realms its messages may go to and come from, and where it
     /// keeps each crossing.
     pub flows: Flows,
@@ -1491,7 +1495,8 @@ where
             Some(dial) = found.recv() => {
                 let dial = Arc::new(dial);
                 let carries = (sharing.clone(), shared.starting(&dial, &socket.path), refusals.clone());
-                let linked = keep_linked(dial, store.clone(), membership.clone(), carries, false);
+                let linked =
+                    keep_linked(dial, store.clone(), membership.clone(), carries, false, || false);
                 links.spawn(async move {
                     linked.await;
                 });
@@ -1499,8 +1504,9 @@ where
             Some((made, unwanted)) = made.recv() => {
                 let dial = shared.book_for(&made);
                 let carries = (sharing.clone(), shared.starting(&dial, &socket.path), refusals.clone());
+                let kept = shared.kept_past_handover(&made);
                 let linked =
-                    keep_linked(dial.clone(), store.clone(), membership.clone(), carries, true);
+                    keep_linked(dial.clone(), store.clone(), membership.clone(), carries, true, kept);
                 let keeping = shared.keeping(&made);
                 links.spawn(keep_made(dial, made, keeping, unwanted, linked));
             }
@@ -1572,13 +1578,17 @@ enum Linked {
 /// it once. Where `ends_when_gone`, as for a machine this node made, a
 /// way in saying its machine is gone ends the link, since nothing is left
 /// to dial; elsewhere, as for a machine the node was given, it is dialled
-/// again as any link that dropped, since the node can't let it go.
+/// again as any link that dropped, since the node can't let it go. A
+/// machine whose handover `kept` says keeps it, as a room made for agents
+/// while cells may still come, isn't released as it hands over but
+/// dialled again, so what keeps it lets it go once it has stood empty.
 async fn keep_linked(
     dial: Arc<impl Dial>,
     store: impl Store,
     membership: impl Membership,
     (shares, starting, refusals): (Option<Places>, Starting, Refusals),
     ends_when_gone: bool,
+    kept: impl Fn() -> bool,
 ) -> Linked {
     let words = dial.there(&[]);
     if refusals.stands(&words) {
@@ -1643,6 +1653,11 @@ async fn keep_linked(
             );
         }
         match ended {
+            Ok(link::Ending::HandedOver) if kept() => eprintln!(
+                "the machine over {} handed over, but it is a room cells may still come to, \
+                 so it is kept till it stands empty a while",
+                dial.describe()
+            ),
             Ok(link::Ending::HandedOver) => match dial.release().await {
                 Some(Ok(())) => {
                     eprintln!(
@@ -1680,6 +1695,9 @@ struct Keeping<S> {
     book: Book,
     store: S,
     unbook: Box<dyn FnOnce() + Send>,
+    /// How it is used now, so a room made for agents is let go once it
+    /// has stood empty a while ([`demand::emptied`]).
+    used: Box<dyn Fn() -> demand::Use + Send>,
 }
 
 /// Tells `to_dial` of each machine `book` says this node made before it
@@ -1838,11 +1856,15 @@ async fn keep_made(
         book,
         store,
         unbook,
+        used,
     }: Keeping<impl Store>,
     unwanted: Arc<Notify>,
     linked: impl Future<Output = Linked>,
 ) {
     let left = jiff::Timestamp::now().duration_until(made.until);
+    // A room's link keeps it past its handover ([`keep_linked`]), so it is
+    // let go here once nothing has run there a while.
+    let emptied = demand::emptied(used);
     // A link lets its machine go itself once its work has handed over.
     let (release, gone) = tokio::select! {
         linked = linked => match linked {
@@ -1852,6 +1874,7 @@ async fn keep_made(
         () = unwanted.notified() => {
             (Some("nothing started on it once it was made".to_owned()), false)
         }
+        () = emptied => (Some(demand::emptied_why()), false),
         () = tokio::time::sleep(Duration::try_from(left).unwrap_or_default()) => {
             (Some("its time was up".to_owned()), false)
         }
@@ -2546,6 +2569,9 @@ struct Shared<S> {
     murmurs: Arc<Murmurs>,
     /// Where it keeps each machine it makes and lets go.
     book: Book,
+    /// What its machines' makers marked them, and the budget its makes
+    /// are held to.
+    demand: Arc<demand::Demand>,
     /// The node's loop, which links each machine made, and lets it go
     /// when told it isn't wanted.
     to_dial: mpsc::UnboundedSender<(Made, Arc<Notify>)>,
@@ -2737,6 +2763,7 @@ impl<S: Clone> Clone for Shared<S> {
             builders: self.builders.clone(),
             murmurs: self.murmurs.clone(),
             book: self.book.clone(),
+            demand: self.demand.clone(),
             to_dial: self.to_dial.clone(),
             flows: self.flows.clone(),
             measured: self.measured.clone(),
@@ -4122,6 +4149,7 @@ impl<S: Store> Shared<S> {
             serves,
             providers,
             book,
+            demand,
             flows,
             parked,
             held: held_here,
@@ -4161,6 +4189,7 @@ impl<S: Store> Shared<S> {
             .as_ref()
             .map(|places| keep_forages(places, &forages, &said, &inner, &hello.machine, &starts));
         let (held, keeping_receptors) = keep_receptors(receptors.clone(), &hello.realm, &said);
+        let demand = Arc::new(demand::Demand::of(demand, &hello.realm));
         let shared = Self {
             processes: processes.into(),
             // Beside the carries it judges, so it needs no place of its own.
@@ -4201,6 +4230,7 @@ impl<S: Store> Shared<S> {
             murmurs: Arc::new(Murmurs::start(scratch, hello.machine.clone())),
             providers: providers.into(),
             book,
+            demand,
             to_dial,
             held: held_here,
             parked,
@@ -5444,10 +5474,12 @@ impl<S: Store> Shared<S> {
 
     /// Each other machine of the realm that hasn't left, as its links last
     /// carried it, held for agents where this node names it a room
-    /// ([`made::Book::agent_rooms`]).
+    /// ([`made::Book::agent_rooms`]), and reaching and refusing as its
+    /// maker marked it ([`demand::Demand::mark`]).
     fn others(&self) -> Vec<facts::Machine> {
         let now = jiff::Timestamp::now();
         let rooms = self.book.agent_rooms();
+        let doubt = self.book.ends().doubt;
         self.store
             .machines()
             .into_iter()
@@ -5464,6 +5496,7 @@ impl<S: Store> Shared<S> {
                 } else {
                     facts::HeldFor::AsBooked
                 };
+                self.demand.mark(&mut one, &doubt);
                 one
             })
             .collect()
@@ -9880,6 +9913,9 @@ impl<S: Store> Shared<S> {
                 made::UNKNOWN
             );
         }
+        // Counted against the budget till the book keeps its line, so two
+        // makes at once can't both pass it.
+        let reserved = self.demand.makes.room_for(&self.book, &offer.costs).await?;
         let made = made::make(offer, lasting, &who.told)
             .await
             .map_err(|refused| match &who.unknown_because {
@@ -9895,6 +9931,7 @@ impl<S: Store> Shared<S> {
                 made.machine
             );
         }
+        drop(reserved);
         let unwanted = Arc::new(Notify::new());
         // The loop runs for as long as the node answers anything.
         let _ = self.to_dial.send((made.clone(), unwanted.clone()));
@@ -10504,10 +10541,43 @@ impl<S: Store> Shared<S> {
     /// booking, let go with it.
     fn keeping(&self, made: &Made) -> Keeping<S> {
         let (shared, made) = (self.clone(), made.clone());
+        let (looking, machine) = (self.clone(), made.machine.clone());
         Keeping {
             book: self.book.clone(),
             store: self.store.clone(),
             unbook: Box::new(move || shared.unbook(&made)),
+            used: Box::new(move || looking.used(&machine)),
+        }
+    }
+
+    /// How `machine`, made by this node, is used now: whether it is a room
+    /// made for agents, and if so whether a session runs there or a start
+    /// placed there is on its way.
+    fn used(&self, machine: &str) -> demand::Use {
+        if !self.book.agent_rooms().contains(machine) {
+            return demand::Use::NoRoom;
+        }
+        let inner = self.lock();
+        let running = inner
+            .state
+            .sessions()
+            .iter()
+            .any(|one| one.machine == machine);
+        if running || inner.starts.placed_on(machine, jiff::Timestamp::now()) {
+            demand::Use::Used
+        } else {
+            demand::Use::Empty
+        }
+    }
+
+    /// Whether `made`'s link keeps it as its work hands over, as
+    /// [`demand::kept_past_handover`] judges it each time, by whether it
+    /// is a room then.
+    fn kept_past_handover(&self, made: &Made) -> impl Fn() -> bool + Send + 'static {
+        let (book, machine, until) = (self.book.clone(), made.machine.clone(), made.until);
+        move || {
+            let room = book.agent_rooms().contains(&machine);
+            demand::kept_past_handover(room, jiff::Timestamp::now(), until)
         }
     }
 
@@ -10523,6 +10593,7 @@ impl<S: Store> Shared<S> {
             inner.booked.remove(&made.machine);
             inner.promised.remove(&made.machine);
             inner.ends.remove(&made.machine);
+            self.demand.unbooked(made);
         }
     }
 
@@ -10542,6 +10613,7 @@ impl<S: Store> Shared<S> {
         };
         inner.ends.insert(made.machine.clone(), made.until);
         drop(inner);
+        self.demand.booked(made);
         Arc::new(Program {
             program: made.provider.clone(),
             place: made.place.clone(),
@@ -11632,6 +11704,10 @@ mod tests {
     use crate::record::Intent;
     use crate::store::memory::Memory;
 
+    // Kept apart, so the tests of machines made from demand don't grow
+    // this file further.
+    mod from_demand;
+
     /// How long the test waits on the node before failing. Each wait ends
     /// the moment what it waits for happens, so this only bounds a hang:
     /// five seconds failed a dial and a start on a Mac building its system
@@ -11843,6 +11919,7 @@ mod tests {
             serves: BTreeMap::new(),
             providers: Vec::new(),
             book: Book::at("/nowhere/made.jsonl".into()),
+            demand: demand::Given::default(),
             flows: Flows::default(),
             parked: "/nowhere/parked".into(),
             held: "/nowhere/held".into(),
@@ -12196,6 +12273,7 @@ mod tests {
             serves,
             providers,
             book,
+            demand: demand::Given::default(),
             flows: Flows::default(),
             parked,
             held,
@@ -12651,6 +12729,7 @@ mod tests {
             membership,
             (None, starting, Refusals::default()),
             false,
+            || false,
         ));
 
         dials.recv().await.expect("the link is dialled");
@@ -12680,6 +12759,7 @@ mod tests {
             membership,
             (None, starting, Refusals::default()),
             true,
+            || false,
         ));
 
         dials.recv().await.expect("the link is dialled");
@@ -12727,6 +12807,7 @@ mod tests {
             membership,
             (None, starting, refusals.clone()),
             false,
+            || false,
         ));
 
         dials.recv().await.expect("the link is dialled");
@@ -28146,6 +28227,7 @@ esac
             },
             asker: None,
             sessions_at_most: None,
+            marks: None,
         }
     }
 
@@ -30632,6 +30714,7 @@ esac
             membership,
             (None, starting_in(dir.path()), Refusals::default()),
             true,
+            || false,
         );
         let keeping = shared.keeping(&made);
         let leaves = || {

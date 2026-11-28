@@ -72,6 +72,54 @@ pub struct Made {
     /// machines it makes without changing what they run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sessions_at_most: Option<u32>,
+    /// The networks it reaches and the taints it carries as its offer
+    /// declared them, kept as its maker's word, which placement holds it
+    /// to whatever the machine says of itself later ([`Marks`]). A make
+    /// kept before makes said them, or whose offer declared nothing, marks
+    /// nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marks: Option<Marks>,
+}
+
+/// What a machine's maker says it reaches and refuses: an offer's
+/// declared `reach` and `taints` as a make keeps them, or what the
+/// person's configuration says of a machine dialled `--via` with
+/// `--via-marks`. Only the maker's word gives a machine a network such
+/// as `world`, since one a machine could claim of itself would draw the
+/// cells that need it onto ground it chose.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Marks {
+    /// The networks it reaches.
+    #[serde(default)]
+    pub reach: Vec<String>,
+    /// The taints it carries.
+    #[serde(default)]
+    pub taints: Vec<crate::declared::Taint>,
+}
+
+impl Marks {
+    /// A `--via-marks` word, `PLACE=MARKS`, MARKS being JSON in the shape
+    /// a make's line keeps them, as the place and its marks.
+    ///
+    /// # Errors
+    ///
+    /// When it has no `=`, names no place, or its marks don't read,
+    /// saying which.
+    pub fn of_via(said: &str) -> Result<(String, Self), String> {
+        let (place, marks) = said
+            .split_once('=')
+            .filter(|(place, _)| !place.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "{said} isn't a place and its marks, written PLACE=MARKS, such as \
+                     sandbox-1={{\"reach\":[\"world\"]}}"
+                )
+            })?;
+        let marks = serde_json::from_str(marks)
+            .map_err(|error| format!("the marks of {place} don't read: {error}"))?;
+        Ok((place.to_owned(), marks))
+    }
 }
 
 /// What a program says it made.
@@ -142,6 +190,10 @@ pub async fn make(offer: &Offer, lasting: Duration, asker: &str) -> Result<Made,
             .declared
             .as_ref()
             .and_then(|declared| declared.sessions_at_most),
+        marks: offer.facts.declared.as_ref().map(|declared| Marks {
+            reach: declared.reach.clone(),
+            taints: declared.taints.clone(),
+        }),
     })
 }
 
@@ -969,6 +1021,7 @@ mod tests {
                 costs: offer_of(String::new()).costs,
                 asker: Some("person".to_owned()),
                 sessions_at_most: None,
+                marks: None,
             },
             "what was made, where, until when, at what rate and for whom"
         );
@@ -1184,6 +1237,7 @@ mod tests {
             costs: offer_of(String::new()).costs,
             asker: None,
             sessions_at_most: None,
+            marks: None,
         };
         std::thread::scope(|scope| {
             for _ in 0..8 {
@@ -1212,6 +1266,7 @@ mod tests {
             costs: offer_of(String::new()).costs,
             asker: None,
             sessions_at_most: None,
+            marks: None,
         }
     }
 

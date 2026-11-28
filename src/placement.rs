@@ -731,6 +731,16 @@ impl Starts {
         }
     }
 
+    /// Whether a start placed on `machine` still counts there at `now`, as
+    /// one that hasn't yet shown in its room, so a machine a start is on
+    /// its way to never reads as standing empty.
+    #[must_use]
+    pub fn placed_on(&self, machine: &str, now: jiff::Timestamp) -> bool {
+        self.placed
+            .iter()
+            .any(|(one, at)| one == machine && now.duration_since(*at) < STARTS_COUNT_FOR)
+    }
+
     /// Each of `machines`' load as of `now`, with `sessions` naming the
     /// machine each session running runs on; forgets each start its
     /// machine's room now shows, or that is past its time.

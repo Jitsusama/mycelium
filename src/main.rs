@@ -805,6 +805,18 @@ struct Node {
     /// for each. PROTOCOL.md says what the program is asked.
     #[arg(long = "via", value_parser = Program::parse)]
     programs: Vec<Program>,
+    /// What a `--via` machine reaches and refuses, as `PLACE=MARKS`, MARKS
+    /// being JSON as a make's line keeps them, such as
+    /// `sandbox-1={"reach":["world"]}`; given again for each. It is the
+    /// maker's word, which only the person's configuration writes, so a
+    /// `--via` machine with none reaches no network only a maker may say.
+    #[arg(long = "via-marks", value_parser = mycelium::made::Marks::of_via)]
+    via_marks: Vec<(String, mycelium::made::Marks)>,
+    /// A JSON file holding each realm's budget for the machines it makes,
+    /// read again at each make; PROTOCOL.md says its shape. Unnamed, as
+    /// where it isn't there, makes are unbounded.
+    #[arg(long = "makes-within")]
+    makes_within: Option<PathBuf>,
     /// A provider's program to ask what machines it could make, by its
     /// path or as found on `PATH`; given again for each. PROTOCOL.md says
     /// what it is asked.
@@ -2223,6 +2235,11 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
     // given, else the system's, recorded once its realm is settled.
     let machine = place::node_machine(node.here.machine.as_deref())?;
     let (dials, serves) = (node.dials(), node.serves(&machine)?);
+    let demand = node::demand::Given {
+        via_marks: node::demand::via_marks(&node.programs, node.via_marks)
+            .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?,
+        makes_within: node.makes_within,
+    };
     let providers = node.providers;
     let declared = node.declared.unwrap_or_else(place::declared);
     let processes = processes_here(node.unattended);
@@ -2278,6 +2295,7 @@ fn run_node(node: Node, realm: String, named: Option<&Path>) -> io::Result<()> {
         serves,
         providers,
         book,
+        demand,
         flows,
         parked: place::parked(),
         held,
