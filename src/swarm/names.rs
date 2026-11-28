@@ -450,25 +450,54 @@ pub(crate) fn held_back<'a>(
 }
 
 /// Why nothing answers `asked`, naming each of `held` whose quest gives
-/// it that name, held back.
-pub(crate) fn unnamed(asked: &str, held: &[&Value], nothing: &str) -> String {
+/// it that name, held back, and how to reach it instead: by its address,
+/// where `typeable` says typing it reaches that team, else by its title.
+/// A held-back name finds nothing by a title holding it, so a team whose
+/// own title holds its name, as `Tide;plan` holds `tide;plan`, is
+/// reached by its address alone, and the refusal names it.
+pub(crate) fn unnamed(
+    asked: &str,
+    held: &[&Value],
+    nothing: &str,
+    typeable: &dyn Fn(&str) -> bool,
+) -> String {
     let why = "held back as, typed or drawn, it reads as more than one name or as other than \
                a name";
-    match held {
-        [] => format!("{nothing} {asked}"),
-        [team] => format!(
-            "{nothing} {asked}: {}'s quest gives it that name, {why}; ask for it by its title",
-            unmarked(title(team))
-        ),
-        [many @ .., last] => {
-            let many: Vec<String> = many.iter().map(|team| unmarked(title(team))).collect();
-            format!(
-                "{nothing} {asked}: the quests of {} and {} each give their team that name, \
-                 {why}; ask for one by its title",
-                many.join(", "),
-                unmarked(title(last))
-            )
+    let typed: Vec<Option<&str>> = held
+        .iter()
+        .map(|team| Some(address(team)).filter(|address| typeable(address)))
+        .collect();
+    let titles: Vec<String> = held.iter().map(|team| unmarked(title(team))).collect();
+    let ask = match typed.as_slice() {
+        [Some(address)] => format!("ask for it by its address, {address}"),
+        [None] => "ask for it by its title".to_owned(),
+        _ if typed.iter().all(Option::is_some) => {
+            let each: Vec<&str> = typed.iter().flatten().copied().collect();
+            format!("ask for one by its address, {}", super::either(&each))
         }
+        _ if typed.iter().all(Option::is_none) => "ask for one by its title".to_owned(),
+        _ => {
+            let each: Vec<String> = titles
+                .iter()
+                .zip(&typed)
+                .map(|(title, address)| match address {
+                    Some(address) => format!("for {title} by its address, {address}"),
+                    None => format!("for {title} by its title"),
+                })
+                .collect();
+            // Each but the last may end in an address, so each is set
+            // apart by a comma, as a list of one or the other is.
+            format!("ask {}", each.join(", or "))
+        }
+    };
+    match titles.as_slice() {
+        [] => format!("{nothing} {asked}"),
+        [title] => format!("{nothing} {asked}: {title}'s quest gives it that name, {why}; {ask}"),
+        [many @ .., last] => format!(
+            "{nothing} {asked}: the quests of {} and {last} each give their team that name, \
+             {why}; {ask}",
+            many.join(", ")
+        ),
     }
 }
 
@@ -500,7 +529,7 @@ pub(crate) fn says_again(title: &str, short: &str) -> bool {
 mod tests {
     use serde_json::json;
 
-    use super::{says_again, short_names, typed_form};
+    use super::{says_again, short_names, typed_form, unnamed};
 
     #[test]
     fn every_dash_is_typed_as_the_keyboard_s_hyphen_and_nothing_beside_one() {
@@ -630,6 +659,26 @@ mod tests {
             [("QUICKW", "harbour")],
             "the quest's own name, typed in lower case, over the one the other's title \
              would give; and an act given as a name goes to none"
+        );
+    }
+
+    #[test]
+    fn a_refusal_names_each_held_back_team_by_what_reaches_it() {
+        let teams = [
+            json!({"key": "team:KESTRL", "title": "Kestrel"}),
+            json!({"key": "team:team", "title": "Skiff"}),
+        ];
+        let held: Vec<_> = teams.iter().collect();
+        let typeable = |address: &str| address != "team";
+        let said = unnamed("tide;plan", &held, "no team is named", &typeable);
+        assert!(
+            said.ends_with("ask for Kestrel by its address, KESTRL, or for Skiff by its title"),
+            "each team was not named by what reaches it: {said}"
+        );
+        let said = unnamed("tide;plan", &held[1..], "no team is named", &typeable);
+        assert!(
+            said.ends_with("ask for it by its title"),
+            "a team whose address can't be typed was offered it: {said}"
         );
     }
 

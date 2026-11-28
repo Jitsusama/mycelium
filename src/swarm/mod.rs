@@ -1033,7 +1033,7 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
     };
     match found {
         Picked::One(team) => Ok(team),
-        Picked::None => Err(names::unnamed(asked, &held, "no team is named")),
+        Picked::None => Err(names::unnamed(asked, &held, "no team is named", &typeable)),
         Picked::Several(many) => {
             // Each is a peer's text, so it is held to one line.
             let named = told_apart(

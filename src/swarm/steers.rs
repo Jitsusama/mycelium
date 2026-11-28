@@ -217,22 +217,22 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
     {
         return Ok(one);
     }
+    // An address is named where typing it steers the one it names. An
+    // act's word or `team` isn't, since `swarm` reads the first act it
+    // finds as the act, so typed before the act it would do another, and
+    // a team's address that a living session goes by steers that
+    // session, unless it leads the team.
+    let typeable = |address: &str| crate::forage::is_address(address) && names::one_word(address);
     match found.as_slice() {
         [] => Err(names::unnamed(
             asked,
             &held,
             "nothing in the swarm is named",
+            &|address| typeable(address) && session_by_address(swarm, address).is_none(),
         )),
         many => {
             // Each is a peer's text, so each is held to one line.
-            // Two drawn alike are each given their address too, where
-            // typing it steers the one it names. An act's word or `team`
-            // isn't, since `swarm` reads the first act it finds as the
-            // act, so typed before the act it would do another, and a
-            // team's address that a living session goes by steers that
-            // session, unless it leads the team.
-            let typeable =
-                |address: &str| crate::forage::is_address(address) && names::one_word(address);
+            // Two drawn alike are each given their address too.
             let typed = told_apart(
                 &many
                     .iter()
@@ -685,10 +685,50 @@ mod tests {
             Err(
                 "nothing in the swarm is named reef-pause: Harbour's quest gives it that name, \
                  held back as, typed or drawn, it reads as more than one name or as other than \
-                 a name; ask for it by its title"
+                 a name; ask for it by its address, HARBOR"
                     .to_owned()
             ),
             "a held-back name steered a session, or said nothing of why"
+        );
+    }
+
+    #[test]
+    fn a_held_back_team_whose_title_holds_its_name_is_steered_by_its_address() {
+        // Its title is searched no more than any other's is for a name
+        // held back, so its address is all that reaches it, and the
+        // refusal names it.
+        let mut swarm = swarm();
+        swarm.teams[1]["title"] = json!("Tide;plan");
+        swarm.teams[1]["swarm"] = json!("tide;plan");
+        let why = "held back as, typed or drawn, it reads as more than one name or as other \
+                   than a name";
+        assert_eq!(
+            aim(&swarm, Act::Pause, "tide;plan").map(|aimed| addresses(&aimed).len()),
+            Err(format!(
+                "nothing in the swarm is named tide;plan: Tide;plan's quest gives it that name, \
+                 {why}; ask for it by its address, HARBOR"
+            )),
+            "a held-back name named no way to reach its team"
+        );
+        let aimed = aim(&swarm, Act::Pause, "HARBOR")
+            .unwrap_or_else(|why| panic!("its address missed it: {why}"));
+        assert_eq!(
+            addresses(&aimed),
+            ["LEAD", "BUSY", "ASK"],
+            "its address steered another"
+        );
+        // A living session going by that address takes it, so the title
+        // is all the refusal can offer.
+        let moored = json!({"key": "session:s-harbor", "id": "s-harbor",
+                            "address": "HARBOR", "title": "Moored", "state": "busy"});
+        swarm.sessions.push(moored);
+        assert_eq!(
+            aim(&swarm, Act::Pause, "tide;plan").map(|aimed| addresses(&aimed).len()),
+            Err(format!(
+                "nothing in the swarm is named tide;plan: Tide;plan's quest gives it that name, \
+                 {why}; ask for it by its title"
+            )),
+            "an address a session takes was offered for its team"
         );
     }
 
@@ -705,7 +745,7 @@ mod tests {
             aim(&swarm, Act::Pause, "reef-pause").map(|aimed| addresses(&aimed).len()),
             Err(format!(
                 "nothing in the swarm is named reef-pause: Harbour's quest gives it that name, \
-                 {why}; ask for it by its title"
+                 {why}; ask for it by its address, HARBOR"
             )),
             "a held-back name steered a team found by its title"
         );
@@ -715,7 +755,8 @@ mod tests {
             aim(&swarm, Act::Pause, "reef-pause").map(|aimed| addresses(&aimed).len()),
             Err(format!(
                 "nothing in the swarm is named reef-pause: the quests of Reef and Harbour each \
-                 give their team that name, {why}; ask for one by its title"
+                 give their team that name, {why}; ask for one by its address, REEF01 or \
+                 HARBOR"
             )),
             "a held-back name given by two quests named one"
         );

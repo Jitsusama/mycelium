@@ -722,7 +722,7 @@ fn a_name_a_quest_gave_and_that_is_held_back_says_why_it_reaches_no_team() {
         Err(
             "no team is named tide;plan: Harbour's quest gives it that name, held back as, \
              typed or drawn, it reads as more than one name or as other than a name; ask for it \
-             by its title"
+             by its address, HARBOR"
                 .to_owned()
         ),
         "a held-back name said nothing of why"
@@ -743,6 +743,28 @@ fn a_name_a_quest_gave_and_that_is_held_back_says_why_it_reaches_no_team() {
 /// Why a held-back name reaches no team, as a refusal words it.
 const HELD_BACK: &str =
     "held back as, typed or drawn, it reads as more than one name or as other than a name";
+
+#[test]
+fn a_held_back_team_whose_title_holds_its_name_is_reached_by_its_address() {
+    // A held-back name finds nothing by a title holding it, its team's
+    // own among them, so the refusal names the address that reaches it.
+    let mut held = swarm();
+    held.teams[1]["title"] = json!("Tide;plan");
+    held.teams[1]["swarm"] = json!("tide;plan");
+    assert_eq!(
+        team(&held, "tide;plan", &look()),
+        Err(format!(
+            "no team is named tide;plan: Tide;plan's quest gives it that name, {HELD_BACK}; \
+             ask for it by its address, HARBOR"
+        )),
+        "a held-back name named no way to reach its team"
+    );
+    let found = team(&held, "HARBOR", &look()).unwrap_or_default();
+    assert!(
+        found.starts_with("Tide;plan"),
+        "its address missed it: {found}"
+    );
+}
 
 #[test]
 fn a_name_a_quest_gave_and_that_is_refused_keeps_any_drawn_alike_from_another() {
@@ -770,7 +792,7 @@ fn a_name_a_quest_gave_and_that_is_refused_keeps_any_drawn_alike_from_another() 
                 team(&twins, asked, &look()),
                 Err(format!(
                     "no team is named {asked}: the quests of Reef and Harbour each give their \
-                     team that name, {HELD_BACK}; ask for one by its title"
+                     team that name, {HELD_BACK}; ask for one by its address, REEF01 or HARBOR"
                 )),
                 "{asked} reached a team, or named only one, beside {refused}"
             );
@@ -789,7 +811,7 @@ fn a_name_a_quest_gave_and_that_is_refused_keeps_any_drawn_alike_from_another() 
         team(&drawn, "kelp", &look()),
         Err(format!(
             "no team is named kelp: Harbour's quest gives it that name, {HELD_BACK}; ask for \
-             it by its title"
+             it by its address, HARBOR"
         )),
         "kelp reached Kelp beside ke\u{1C0}p"
     );
