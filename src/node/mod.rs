@@ -77,6 +77,7 @@ mod formed;
 pub use formed::Formed;
 mod glyph;
 mod hub;
+pub use hub::{Holder as HubHolder, KIND as HUB_KIND, records as hub_records};
 mod network;
 mod once;
 pub use network::{Holding, Standing, records as network_records};
@@ -2859,7 +2860,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             tie::KIND => return Some(self.tie_records()),
             ended::KIND => Some(self.ended_records()),
             feed::KIND => Some(self.fed_records()),
-            hub::KIND => Some(self.hub_records()),
+            hub::KIND => return Some(self.hub_records()),
             // Shown but any whose act is done; the node's own judgements
             // read every record.
             _ => self.served.shown(kind),
@@ -4871,7 +4872,7 @@ impl<S: Store> Shared<S> {
 
     /// Each subject the realm's running cells declare, and its hubs, the
     /// cells heard least lately first, by their own talk ([`hub::heard`]).
-    fn hub_records(&self) -> BTreeMap<String, serde_json::Value> {
+    fn hub_records(&self) -> BTreeMap<String, daemon::Record> {
         let heard: HashMap<String, f64> = self
             .tie_records()
             .into_values()
