@@ -1077,22 +1077,13 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
         lines.push(row(look, 0, &Label::titled("on their own"), &counts, false));
     }
     lines.push(String::new());
-    // The first team on the list is the example, typed as a person would.
+    // The first team on the list is the example, typed as a person would,
+    // and only by a name that reaches it alone, as a shell completes it.
     let first = within
         .get("")
         .and_then(|top| ordered(top.iter().copied()).first().copied());
-    // A chosen short name is a peer's text, and the example is copied
-    // into a shell, so it is given only as a word a shell and `swarm`
-    // read as one name, then as the team's address, and otherwise not.
     let example = first
-        .and_then(|team| {
-            let typed = unmarked(names::typed(team, &shorts));
-            if names::one_word(&typed) {
-                Some(typed)
-            } else {
-                typeable(address(team)).then(|| address(team).to_owned())
-            }
-        })
+        .and_then(|team| reaching(swarm, team, &shorts))
         .unwrap_or_else(|| "<team>".to_owned());
     lines.push(look.paint(
         FAINT,
@@ -1104,36 +1095,42 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
     look.joined(&lines)
 }
 
-/// Each team as a person types it, its short name where it has one, in
-/// the order the overview lists them, for a shell to complete. Each is
-/// cleaned as a page draws it, since a peer gives the name and a shell
-/// may draw what it completes; matching cleans both sides, so the
-/// cleaned name still reaches its team. A team with no short name is
-/// given by its title where that is one word, and else by its address,
-/// as the hint gives its example; and only a name that, shown or
-/// steered, goes to its team alone is given at all, as a title isn't
-/// held to a short name's rules, and an address may be a session's, so
-/// a team none reaches is given by none.
+/// Each team as a person types it, as [`reaching`] gives it, in the
+/// order the overview lists them, for a shell to complete. Short names
+/// are worked out once for the whole list, since each costs a pass over
+/// the teams and living sessions, and each name tried looks among them.
 #[must_use]
 pub fn typed(swarm: &Swarm) -> Vec<String> {
     let shorts = shorts_of(swarm);
     ordered(swarm.teams.iter())
         .into_iter()
-        .filter_map(|team| {
-            let typed = unmarked(names::typed(team, &shorts));
-            let address = address(team).to_owned();
-            [
-                Some(typed).filter(|typed| names::one_word(typed)),
-                Some(address).filter(|address| typeable(address)),
-            ]
-            .into_iter()
-            .flatten()
-            .find(|name| {
-                named(swarm, name).is_ok_and(|found| std::ptr::eq(found, team))
-                    && steers::reaches(swarm, name, team)
-            })
-        })
+        .filter_map(|team| reaching(swarm, team, &shorts))
         .collect()
+}
+
+/// What a person types to reach `team` alone, with `shorts` as
+/// [`shorts_of`] gives them: its short name, else its title, where that
+/// is one word, cleaned as a page draws it, since a peer gives the name
+/// and a shell may draw it, and matching cleans both sides; else its
+/// address, where a shell and `swarm` read it as one name. A title isn't
+/// held to a short name's rules, and an address may be a session's, so
+/// only a name that, shown or steered, reaches that team alone is given,
+/// and a team none reaches is given by none. The overview's hint and a
+/// shell's completions both ask here, so neither offers a name the other
+/// wouldn't, nor one that reaches another team or a session.
+fn reaching(swarm: &Swarm, team: &Value, shorts: &BTreeMap<String, String>) -> Option<String> {
+    let typed = unmarked(names::typed(team, shorts));
+    let address = address(team).to_owned();
+    [
+        Some(typed).filter(|typed| names::one_word(typed)),
+        Some(address).filter(|address| typeable(address)),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|name| {
+        named(swarm, name, shorts).is_ok_and(|found| std::ptr::eq(found, team))
+            && steers::reaches(swarm, name, team, shorts)
+    })
 }
 
 /// The short names a row of a team is shown with, and how wide they are.
@@ -1177,8 +1174,11 @@ fn nest<'a>(
 /// The team `asked` names, by its address, its short name or a part of
 /// its title, or why none or several are, naming each of several as it's
 /// typed, so one can be picked.
-fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
-    let shorts = shorts_of(swarm);
+fn named<'a>(
+    swarm: &'a Swarm,
+    asked: &str,
+    shorts: &BTreeMap<String, String>,
+) -> Result<&'a Value, String> {
     let naming = |team: &'a Value| Naming {
         address: address(team),
         short: shorts.get(address(team)).map(String::as_str),
@@ -1194,7 +1194,7 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
                     .iter()
                     .map(|team| {
                         (
-                            unmarked(names::typed(team, &shorts)),
+                            unmarked(names::typed(team, shorts)),
                             Some(address(team)).filter(|address| typeable(address)),
                         )
                     })
@@ -1307,7 +1307,8 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
 ///
 /// When no team, or more than one, goes by what was asked.
 pub fn team(swarm: &Swarm, asked: &str, look: &Look) -> Result<String, String> {
-    let team = named(swarm, asked)?;
+    let shorts = shorts_of(swarm);
+    let team = named(swarm, asked, &shorts)?;
     let titled: BTreeMap<&str, &str> = swarm
         .teams
         .iter()
@@ -1356,7 +1357,6 @@ pub fn team(swarm: &Swarm, asked: &str, look: &Look) -> Result<String, String> {
             .filter(|other| other["within"] == json!(address(team))),
     );
     if !inner.is_empty() {
-        let shorts = shorts_of(swarm);
         let width = shorts_width(inner.iter().copied(), &shorts);
         lines.extend([String::new(), header(look, 0, &Standing::EACH)]);
         for other in inner {

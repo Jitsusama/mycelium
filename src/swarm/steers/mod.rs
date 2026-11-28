@@ -7,7 +7,7 @@
 //! a peer's. A team is named as the swarm's overview names it; a session
 //! by its address, or by its name when no team's matches.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
@@ -123,31 +123,40 @@ pub(super) fn refused(asked: &str, holders: &[&Value]) -> String {
 }
 
 /// Whether a steer naming `asked` goes to `team` alone, as `named`
-/// reads it, and to no session or other team.
-pub(super) fn reaches(swarm: &Swarm, asked: &str, team: &Value) -> bool {
-    matches!(named(swarm, asked), Ok(Named::Team(found)) if std::ptr::eq(found, team))
+/// reads it with `shorts` as [`shorts_of`] gives them, and to no session
+/// or other team.
+pub(super) fn reaches(
+    swarm: &Swarm,
+    asked: &str,
+    team: &Value,
+    shorts: &BTreeMap<String, String>,
+) -> bool {
+    matches!(named(swarm, asked, shorts), Ok(Named::Team(found)) if std::ptr::eq(found, team))
 }
 
 /// The team or session `asked` names: a living session by its address,
 /// as [`session_by_address`] finds it, or why a steer by it is refused
 /// there, then a team by its address, then a team by its short name,
 /// then a team by a part of its name, then a living session by a part
-/// of its. An address comes before a short
-/// name because a peer picks its team's short name, and could otherwise
-/// pick another's address and take the words meant for it, or clean to
-/// it and hide it. A team whose address is `asked` in its own case comes
-/// before one keyed alike but for case. Several are each named as
-/// they're typed, a team by its short name, so one can be picked; two
-/// teams whose short names clean alike are several, as `picked` finds
-/// them, so neither takes a steer meant for the other.
-fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
+/// of its, with `shorts` as [`shorts_of`] gives them. An address comes
+/// before a short name because a peer picks its team's short name, and
+/// could otherwise pick another's address and take the words meant for
+/// it, or clean to it and hide it. A team whose address is `asked` in
+/// its own case comes before one keyed alike but for case. Several are
+/// each named as they're typed, a team by its short name, so one can be
+/// picked; two teams whose short names clean alike are several, as
+/// `picked` finds them, so neither takes a steer meant for the other.
+fn named<'a>(
+    swarm: &'a Swarm,
+    asked: &str,
+    shorts: &BTreeMap<String, String>,
+) -> Result<Named<'a>, String> {
     let living = || {
         swarm
             .sessions
             .iter()
             .filter(|session| Standing::of(session).is_some())
     };
-    let shorts = shorts_of(swarm);
     // A short name's words may be typed apart, as `part deux`. Short
     // names and titles are matched as the swarm's pages draw them,
     // cleaned on both sides, as `picked` matches them, so the name a page
@@ -222,7 +231,7 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
                     .iter()
                     .map(|one| match one {
                         Named::Team(record) => (
-                            unmarked(names::typed(record, &shorts)),
+                            unmarked(names::typed(record, shorts)),
                             Some(address(record)).filter(|address| {
                                 typeable(address)
                                     && matches!(session_by_address(swarm, address), Held::Left)
@@ -320,7 +329,7 @@ pub fn aim(swarm: &Swarm, act: Act, asked: &str) -> Result<Aim, String> {
         Act::Pause => !paused(session),
         Act::Resume => paused(session),
     };
-    let (team, sessions) = match named(swarm, asked)? {
+    let (team, sessions) = match named(swarm, asked, &shorts_of(swarm))? {
         Named::Session(session) if changes(session) => (None, vec![aimed(session, &steer)]),
         Named::Session(session) => {
             let name = unmarked(title(session));

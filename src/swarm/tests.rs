@@ -474,6 +474,34 @@ fn each_team_leads_with_its_short_name_and_the_list_says_how_to_type_one() {
 }
 
 #[test]
+fn a_hint_names_no_team_by_a_title_another_shares() {
+    // Titled alike, neither has a short name, and the title typed
+    // reaches both, so the hint gives each by what reaches it alone.
+    let moving = json!({"worst": "moving", "members": [],
+                        "counts": {"needs-you": 0, "stuck": 0, "moving": 1, "quiet": 0}});
+    let swarm = Swarm {
+        realm: "work".to_owned(),
+        teams: vec![
+            team_of("DOCK01", "Dock", None, &moving),
+            team_of("DOCK02", "Dock", None, &moving),
+        ],
+        sessions: Vec::new(),
+    };
+    let shown = overview(&swarm, &look());
+    let hint = shown.lines().last().unwrap_or_default();
+    assert!(
+        hint.ends_with(" swarm DOCK01") || hint.ends_with(" swarm DOCK02"),
+        "the hint named a team by what reaches another too:\n{shown}"
+    );
+    let example = hint.rsplit(' ').next().unwrap_or_default();
+    assert_eq!(
+        typed(&swarm).first().map(String::as_str),
+        Some(example),
+        "the hint and a shell gave the first team by different names"
+    );
+}
+
+#[test]
 fn a_short_name_finds_its_team_and_several_are_offered_by_theirs() {
     let swarm = titled_swarm();
     let found = team(&swarm, "Part-Deux", &look()).expect("found by its short name");
