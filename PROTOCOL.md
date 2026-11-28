@@ -4099,7 +4099,10 @@ before.
 A watch sends what
 changed by key, with only the fields that differ, a dropped one as null; nothing
 while nothing changes; and no sooner than 250 ms after its last send, so
-a reader too slow for it is sent the latest rather than a backlog. A
+a reader too slow for it is sent the latest rather than a backlog.
+Every watch of a kind shares one reading of its records each 250 ms,
+so while they change steadily a change may reach a watch up to 500 ms
+after it was made; a lone change still goes within 250 ms. A
 watch asked `when` some fields move, as a shut launcher asks for a
 session's `told`, sends only the records whose change moves one of
 them, and those brought or taken, each with all that moved in it since

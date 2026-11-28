@@ -1,5 +1,5 @@
-//! A record as the interface carries it, what changed between two sets of
-//! them, and each kind's records built once for every watch of it.
+//! A record as the interface carries it, a kind's records as one build
+//! holds them, and what changed between two sets of them.
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -10,7 +10,6 @@ use serde::{Serialize, Serializer};
 use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 
-use super::Holds;
 use super::split::{self, Field, Piece};
 
 /// A record held as the bytes it is sent as, and when it was heard. A
@@ -161,6 +160,12 @@ impl Build {
         &self.records
     }
 
+    /// The records, shared, for the build after this one to keep each
+    /// that didn't change as the very one this holds.
+    pub(super) fn shared_records(&self) -> Arc<Shared> {
+        Arc::clone(&self.records)
+    }
+
     /// What changed from `sent` to this build's records, those `keys`
     /// names or all, asked `deep`, as [`changes`] says it. A record `sent`
     /// holds as the build before held it takes the change worked out once
@@ -219,46 +224,6 @@ impl Build {
         let said = Arc::new(said);
         moved.insert(deep.to_vec(), Arc::clone(&said));
         said
-    }
-}
-
-/// A kind's records as last built, by kind, with the count of its `told`
-/// they were built at.
-type Builds = HashMap<String, (u64, Arc<Build>)>;
-
-/// Each kind's records as built for the latest change its `told` says,
-/// shared by every watch of the kind. A node with a hundred sessions and
-/// a dozen watches of them built each session's record a dozen times for
-/// every change (12 November); built once, each watch only compares. A
-/// record that didn't change is kept as it was, so each watch finds it
-/// unchanged by its address alone, and every watch holds one copy of it
-/// rather than its own (14 November: 93 watches each held a copy of
-/// every record, and compared every field of each on every change).
-#[derive(Default)]
-pub struct Built(Mutex<Builds>);
-
-impl Built {
-    /// `kind`'s records as `holds` holds them once its `told` has counted
-    /// to `told`, built only by the first to ask at that count. A daemon
-    /// changes what it holds before it counts, so records built at a count
-    /// hold at least that change.
-    pub fn records(&self, holds: &impl Holds, kind: &str, told: u64) -> Option<Arc<Build>> {
-        // Held while building, so watches woken by one change wait for the
-        // first's build rather than each making their own.
-        let mut builds = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((at, build)) = builds.get(kind)
-            && *at == told
-        {
-            return Some(Arc::clone(build));
-        }
-        let fresh = holds.records(kind)?;
-        let last = builds
-            .get(kind)
-            .map(|(_, build)| Arc::clone(&build.records));
-        let records = shared(last.as_deref(), fresh);
-        let build = Arc::new(Build::after(records, last));
-        builds.insert(kind.to_owned(), (told, Arc::clone(&build)));
-        Some(build)
     }
 }
 
@@ -468,7 +433,6 @@ fn quoted(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use tokio::sync::watch;
 
     use super::*;
 
@@ -646,76 +610,6 @@ mod tests {
                 Vec::new()
             ),
             "a name is matched as it reads, not as it is escaped"
-        );
-    }
-
-    /// A daemon holding one session, which counts how often its records
-    /// are built.
-    #[derive(Default)]
-    struct Counting {
-        builds: std::sync::atomic::AtomicU32,
-        step: Mutex<String>,
-    }
-
-    impl Holds for Counting {
-        fn kinds(&self) -> BTreeMap<String, Vec<&'static str>> {
-            BTreeMap::from([("session".to_owned(), vec!["step"])])
-        }
-
-        fn records(&self, kind: &str) -> Option<BTreeMap<String, Record>> {
-            (kind == "session").then(|| {
-                self.builds
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let step = self.step.lock().expect("its step").clone();
-                BTreeMap::from([(
-                    "session:a".to_owned(),
-                    Record::from(record("session", "a", 1, json!({"step": step}))),
-                )])
-            })
-        }
-
-        fn told(&self, _: &str) -> Option<watch::Receiver<u64>> {
-            None
-        }
-
-        fn health(&self) -> Map<String, Value> {
-            Map::new()
-        }
-    }
-
-    #[test]
-    fn records_are_built_once_for_each_change_however_many_watch() {
-        let holds = Counting::default();
-        let built = Built::default();
-        let builds = || holds.builds.load(std::sync::atomic::Ordering::Relaxed);
-        let first = built.records(&holds, "session", 1).expect("held");
-        let again = built.records(&holds, "session", 1).expect("held");
-        assert_eq!(
-            builds(),
-            1,
-            "a second watch at the same change shares the build"
-        );
-        assert!(Arc::ptr_eq(&first, &again), "the very same records");
-        *holds.step.lock().expect("its step") = "next".to_owned();
-        let next = built.records(&holds, "session", 2).expect("held");
-        assert_eq!(builds(), 2, "the next change builds them again");
-        assert_eq!(
-            next.records()["session:a"].value()["step"],
-            json!("next"),
-            "as they stand after it"
-        );
-        assert!(
-            !Arc::ptr_eq(&next.records()["session:a"], &first.records()["session:a"]),
-            "a record that changed is a new one"
-        );
-        let after = built.records(&holds, "session", 3).expect("held");
-        assert!(
-            Arc::ptr_eq(&after.records()["session:a"], &next.records()["session:a"]),
-            "a record a change left as it was is the very one every watch holds"
-        );
-        assert!(
-            built.records(&holds, "machine", 2).is_none(),
-            "a kind it doesn't hold has none"
         );
     }
 

@@ -6,7 +6,9 @@ use std::sync::Arc;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
+use tokio::time::Instant;
 
+use super::built::Given;
 use super::records::{Build, Change, Record, Shared, shared};
 use super::{BETWEEN_SENDS, Holds};
 
@@ -32,6 +34,13 @@ pub(super) struct Watching {
 /// with that record's next that does, or at once when `when` is changed
 /// to let it through. A field `deep` names says only what moved inside it
 /// since it was last sent, held back or not.
+///
+/// Records built for another watch within [`BETWEEN_SENDS`] are shared
+/// though `told` has counted past them, so a stream of changes builds a
+/// kind once each [`BETWEEN_SENDS`] however many watch it. Given such,
+/// the watch asks again once [`BETWEEN_SENDS`] passes, when a newer build
+/// may be made, so the last change of a stream still reaches it, within
+/// twice [`BETWEEN_SENDS`].
 pub(super) async fn keep_watching<H: Holds>(
     holds: Arc<H>,
     id: Value,
@@ -40,17 +49,15 @@ pub(super) async fn keep_watching<H: Holds>(
     mut when: watch::Receiver<Option<Vec<String>>>,
     answering: mpsc::Sender<String>,
 ) {
-    let held = |holds: &H, told: u64| {
-        match holds.built() {
-            Some(built) => built.records(holds, &kind, told),
-            None => holds
-                .records(&kind)
-                .map(|fresh| Arc::new(Build::after(shared(None, fresh), None))),
-        }
-        .unwrap_or_default()
+    // Read before the build is awaited, as what `told` lends can't be held
+    // across it.
+    let at = *told.borrow_and_update();
+    let Some(first) = held(&holds, &kind, at).await else {
+        return;
     };
-    let first = held(&holds, *told.borrow_and_update());
+    let mut again = asks_again(&first);
     let mut sent: Shared = first
+        .build
         .records()
         .iter()
         .filter(|(key, _)| keys.as_ref().is_none_or(|keys| keys.contains(*key)))
@@ -65,25 +72,33 @@ pub(super) async fn keep_watching<H: Holds>(
         return;
     }
     loop {
+        let owed = tokio::time::sleep_until(again.unwrap_or_else(Instant::now));
         tokio::select! {
-            heard = told.changed() => {
+            // While it owes a newer build, it asks for one then, reading
+            // whatever `told` has counted to by that moment.
+            heard = told.changed(), if again.is_none() => {
                 if heard.is_err() {
                     return;
                 }
                 tokio::time::sleep(BETWEEN_SENDS).await;
             }
+            () = owed, if again.is_some() => {}
             asked = when.changed() => {
                 if asked.is_err() {
                     return;
                 }
             }
         }
-        let now = held(&holds, *told.borrow_and_update());
+        let at = *told.borrow_and_update();
+        let Some(now) = held(&holds, &kind, at).await else {
+            return;
+        };
+        again = asks_again(&now);
         let Some((changed, gone)) = answer(
             (when.borrow().as_deref(), keys.as_deref()),
             &deep,
             &mut sent,
-            &now,
+            &now.build,
         ) else {
             continue;
         };
@@ -98,6 +113,37 @@ pub(super) async fn keep_watching<H: Holds>(
             return;
         }
     }
+}
+
+/// When a watch given `given` asks again of its own accord: once
+/// [`BETWEEN_SENDS`] passes, where `given` may lack a change it was told
+/// of, as by then a newer build may be made, and it sends no sooner than
+/// that after this send; else never, as `told` wakes it for the next.
+fn asks_again(given: &Given) -> Option<Instant> {
+    given.behind.then(|| Instant::now() + BETWEEN_SENDS)
+}
+
+/// `kind`'s records as `holds` holds them once its `told` has counted to
+/// `told`, shared with its other watches where it shares them, and empty
+/// for a kind it doesn't hold. They are built off the node's one async
+/// thread, as a network's or a cell's records take every session, team
+/// and machine to make (27 November: 21% of that thread), and every link,
+/// watch and ask waits behind it. None, where the build couldn't run, as
+/// when the runtime is stopping, which ends the watch.
+async fn held<H: Holds>(holds: &Arc<H>, kind: &str, told: u64) -> Option<Given> {
+    let holds = Arc::clone(holds);
+    let kind = kind.to_owned();
+    let building = tokio::task::spawn_blocking(move || {
+        match holds.built() {
+            Some(built) => built.records(holds.as_ref(), &kind, told),
+            None => holds.records(&kind).map(|fresh| Given {
+                build: Arc::new(Build::after(shared(None, fresh), None)),
+                behind: false,
+            }),
+        }
+        .unwrap_or_default()
+    });
+    building.await.ok()
 }
 
 /// A watch's first answer, `records` whole, its fields in the order a
@@ -173,9 +219,12 @@ fn sends(when: Option<&[String]>, sent: &Shared, changed: Vec<Arc<Change>>) -> V
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+    use std::time::Duration;
 
-    use serde_json::json;
+    use serde_json::{Map, json};
 
+    use super::super::{Built, record};
     use super::*;
 
     /// Each of `records` as the change a watch sends of it new.
@@ -398,6 +447,180 @@ mod tests {
                 json!({"key": "session:b", "step": "y"}),
             ],
             "one moving its digest is sent, and one come, but not another's step"
+        );
+    }
+
+    /// A daemon whose one session moves each time it is told to, sharing
+    /// its builds as a node does, and counting them.
+    struct Moving {
+        builds: AtomicU32,
+        moved: AtomicU64,
+        told: watch::Sender<u64>,
+        built: Built,
+    }
+
+    impl Moving {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                builds: AtomicU32::new(0),
+                moved: AtomicU64::new(0),
+                told: watch::Sender::new(0),
+                built: Built::default(),
+            })
+        }
+
+        /// Moves its session, then counts the change, as a daemon changes
+        /// what it holds before it counts; answering how far it has moved.
+        fn moves(&self) -> u64 {
+            let moved = self.moved.fetch_add(1, Ordering::SeqCst) + 1;
+            self.told.send_replace(moved);
+            moved
+        }
+
+        fn builds(&self) -> u32 {
+            self.builds.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Holds for Moving {
+        fn kinds(&self) -> BTreeMap<String, Vec<&'static str>> {
+            BTreeMap::from([("session".to_owned(), vec!["moved"])])
+        }
+
+        fn records(&self, kind: &str) -> Option<BTreeMap<String, Record>> {
+            (kind == "session").then(|| {
+                self.builds.fetch_add(1, Ordering::SeqCst);
+                let moved = self.moved.load(Ordering::SeqCst);
+                let session = record("session", "skiff", 1, json!({"moved": moved}));
+                BTreeMap::from([("session:skiff".to_owned(), Record::from(session))])
+            })
+        }
+
+        fn told(&self, kind: &str) -> Option<watch::Receiver<u64>> {
+            (kind == "session").then(|| self.told.subscribe())
+        }
+
+        fn health(&self) -> Map<String, Value> {
+            Map::new()
+        }
+
+        fn built(&self) -> Option<&Built> {
+            Some(&self.built)
+        }
+    }
+
+    /// A watch running of `holds`'s session: how far it was last sent the
+    /// session moved, and what keeps its `when` open, as its connection
+    /// would, since the watch ends once that closes.
+    type Running = (
+        watch::Receiver<Option<u64>>,
+        watch::Sender<Option<Vec<String>>>,
+    );
+
+    /// Starts watch `id` of `holds`'s session, its answers read as they
+    /// come, as a client keeping up reads them.
+    fn watch_moving(holds: &Arc<Moving>, id: u64) -> Running {
+        let (answering, mut answers) = mpsc::channel(4);
+        let (when, asked) = watch::channel(None);
+        let (seeing, seen) = watch::channel(None);
+        tokio::spawn(keep_watching(
+            Arc::clone(holds),
+            json!(id),
+            ("session".to_owned(), None, Vec::new()),
+            holds.told.subscribe(),
+            asked,
+            answering,
+        ));
+        tokio::spawn(async move {
+            while let Some(answer) = answers.recv().await {
+                if let Some(moved) = moved(&answer) {
+                    seeing.send_replace(Some(moved));
+                }
+            }
+        });
+        (seen, when)
+    }
+
+    /// How far an answer says the session moved, from its records whole
+    /// or from its change.
+    fn moved(answer: &str) -> Option<u64> {
+        let answer: Value = serde_json::from_str(answer).ok()?;
+        let records = answer.get("records").or_else(|| answer.get("changed"))?;
+        records.get(0)?.get("moved")?.as_u64()
+    }
+
+    /// How often the stream moves the session: never on a multiple of
+    /// [`BETWEEN_SENDS`], so no change falls due at the very moment a
+    /// watch asks.
+    const TICK: Duration = Duration::from_millis(70);
+
+    /// Starts `watches` watches of `holds`'s session, each at a change of
+    /// its own, so they wake at different moments, as a node's watches
+    /// begun at different times do.
+    async fn watches_apart(holds: &Arc<Moving>, watches: u64) -> Vec<Running> {
+        let mut running = Vec::new();
+        for id in 0..watches {
+            running.push(watch_moving(holds, id));
+            holds.moves();
+            tokio::time::sleep(TICK).await;
+        }
+        running
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn many_watches_under_a_stream_of_changes_build_once_each_window() {
+        let holds = Moving::new();
+        let _running = watches_apart(&holds, 8).await;
+        let (began, before) = (Instant::now(), holds.builds());
+        for _ in 0..40 {
+            holds.moves();
+            tokio::time::sleep(TICK).await;
+        }
+        let builds = u128::from(holds.builds() - before);
+        let windows = began.elapsed().as_millis() / BETWEEN_SENDS.as_millis();
+        assert!(
+            builds <= windows + 1,
+            "eight watches built the session {builds} times in {windows} windows of \
+             BETWEEN_SENDS; at most one build each, and one at the start"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_last_change_of_a_stream_reaches_every_watch() {
+        let holds = Moving::new();
+        let mut running = watches_apart(&holds, 8).await;
+        for _ in 0..20 {
+            holds.moves();
+            tokio::time::sleep(TICK).await;
+        }
+        let last = holds.moves();
+        let by = Instant::now() + 2 * BETWEEN_SENDS + TICK;
+        for (id, (seen, _when)) in running.iter_mut().enumerate() {
+            let sent = tokio::time::timeout_at(by, seen.wait_for(|moved| *moved == Some(last)));
+            assert!(
+                matches!(sent.await, Ok(Ok(_))),
+                "watch {id} is sent the stream's last change within twice BETWEEN_SENDS"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_lone_change_reaches_a_watch_within_between_sends() {
+        let holds = Moving::new();
+        let (mut seen, _when) = watch_moving(&holds, 1);
+        let first = seen.wait_for(Option::is_some).await.map(|moved| *moved);
+        assert_eq!(
+            first.ok(),
+            Some(Some(0)),
+            "the watch is sent the session whole"
+        );
+        tokio::time::sleep(BETWEEN_SENDS * 4).await;
+        let moved = holds.moves();
+        let by = Instant::now() + BETWEEN_SENDS + Duration::from_millis(10);
+        let sent = tokio::time::timeout_at(by, seen.wait_for(|now| *now == Some(moved)));
+        assert!(
+            matches!(sent.await, Ok(Ok(_))),
+            "a lone change is sent within BETWEEN_SENDS and a little"
         );
     }
 }

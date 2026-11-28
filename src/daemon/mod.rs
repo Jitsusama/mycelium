@@ -12,7 +12,8 @@
 //! Here is what a daemon holds and does, and the answering of one
 //! connection; what is asked is read in `ask`, a record's shape and its
 //! changes are `records`, a record's fields are told apart in its bytes
-//! in `split`, and a running watch is `watching`.
+//! in `split`, each kind's records built once for its watches is
+//! `built`, and a running watch is `watching`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -23,13 +24,15 @@ use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, Lines};
 use tokio::sync::{mpsc, watch};
 
 mod ask;
+mod built;
 pub mod fields;
 mod records;
 mod split;
 mod watching;
 
 pub use ask::{Ask, Refusal, What, read, refused};
-pub use records::{Build, Built, Record, changes, key, record};
+pub use built::{Built, Given};
+pub use records::{Build, Record, changes, key, record};
 use watching::{Watching, keep_watching};
 
 /// How many answers wait for a slow reader before a watch waits too; a
