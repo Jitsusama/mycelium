@@ -330,10 +330,14 @@ impl Lender {
     /// When this lender reads its file, or `hands` is no lend.
     pub fn hand(&self, hands: Hands) -> Result<(), String> {
         let Source::Handed(held) = &self.source else {
-            return Err("this machine lends as its own file says, and is handed nothing".to_owned());
+            return Err(
+                "this machine lends as its own file says, and is handed nothing".to_owned(),
+            );
         };
         handed_written(&hands)?;
-        *held.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hands);
+        *held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hands);
         Ok(())
     }
 
@@ -374,7 +378,9 @@ impl Lender {
         let (file, declarers) = match &self.source {
             Source::File(file, declarers) => (file, declarers),
             Source::Handed(held) => {
-                let held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let held = held
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let Some(hands) = held.as_ref() else {
                     return Err(refused(503, "this machine was handed no lend yet"));
                 };

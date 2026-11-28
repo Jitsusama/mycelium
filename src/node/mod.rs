@@ -11318,8 +11318,14 @@ async fn lent_here(
     }
     if matches!(lent_on(answers, lines, writing).await, Handed::Unsaid) {
         let why = "this machine's own lend ended partway through its answer";
-        let _ = write(writing, &Lent::Refused { status: 503, why: why.to_owned() })
-            .await;
+        let _ = write(
+            writing,
+            &Lent::Refused {
+                status: 503,
+                why: why.to_owned(),
+            },
+        )
+        .await;
     }
     Here::Ended
 }

@@ -47,8 +47,8 @@
 pub mod carried;
 mod declared_heard;
 pub mod dial;
-pub mod hands;
 pub mod discovery;
+pub mod hands;
 pub mod membership;
 pub mod refused;
 mod started;
