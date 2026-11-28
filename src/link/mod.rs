@@ -7065,6 +7065,243 @@ mod tests {
         );
     }
 
+    /// A lender over a lend file in `dir` lending tern through `models`
+    /// and handing it `room`, whose key a script in `dir` prints as
+    /// `Bearer room-key`.
+    fn handing_tern(dir: &std::path::Path) -> Lender {
+        let script = dir.join("key.sh");
+        std::fs::write(&script, "printf 'Bearer room-key\\n'\n").expect("the key's script");
+        let shell = std::env::var("BASH").unwrap_or_else(|_| "/bin/sh".to_owned());
+        let budget = |upstream: &str| {
+            json!({"upstream": upstream, "host": "models.example",
+                   "paths": ["/v1/messages"], "auth_header": "authorization",
+                   "key": [shell, script]})
+        };
+        let lend = json!({
+            "vms": [{"prefix": "tern", "budget": "models", "hands": "room",
+                     "requests_a_day": 3}],
+            "budgets": {"models": budget("relay/models.sock"), "room": budget("relay/room.sock")},
+        });
+        let file = dir.join("lends.json");
+        std::fs::write(&file, lend.to_string()).expect("the lend written");
+        Lender::new(
+            file,
+            vec![0, 65534, rustix::process::getuid().as_raw()],
+            dir.join("lend"),
+            Some(dir.to_owned()),
+        )
+    }
+
+    /// What skiff, lending through [`handing_tern`], says to tern over a
+    /// link tern dialled, shaped by `shaped`, tern saying `hello`: each
+    /// frame until skiff answers a lend tern asks once it has said its
+    /// `Have`, and has handed tern its lend too where `handed` says it
+    /// will.
+    async fn said_to_tern(
+        shaped: impl FnOnce(Connection) -> Connection + Send + 'static,
+        hello: Hello,
+        handed: bool,
+    ) -> Vec<Frame> {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let starting = Starting {
+            lender: Some(Arc::new(handing_tern(dir.path()))),
+            ..steering(dir.path())
+        };
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        tokio::spawn(async move {
+            let connection = shaped(connection(reading, writing));
+            run(
+                Memory::default(),
+                &realm("skiff"),
+                connection,
+                None,
+                Some(starting),
+            )
+            .await
+        });
+        let (far_reading, mut far_writing) = tokio::io::split(far);
+        // A path not lent is refused before any key is had or relay asked.
+        let elsewhere = Lend {
+            budget: None,
+            method: "POST".to_owned(),
+            path: "/elsewhere".to_owned(),
+            headers: Vec::new(),
+            body: String::new(),
+        };
+        let have = Frame::Have {
+            messages: Vec::new(),
+            living: Some(Vec::new()),
+        };
+        let asked = [
+            Frame::Hello(hello),
+            have,
+            Frame::Lend {
+                ask: 7,
+                lend: elsewhere,
+            },
+        ];
+        says(&mut far_writing, &asked).await;
+        let mut lines = BufReader::new(far_reading).lines();
+        let mut said = Vec::new();
+        tokio::time::timeout(PATIENCE, async {
+            let lent = |said: &[Frame]| said.iter().any(|f| matches!(f, Frame::Lent { .. }));
+            let hands = |said: &[Frame]| said.iter().any(|f| matches!(f, Frame::Hands(_)));
+            while !lent(&said) || (handed && !hands(&said)) {
+                let line = lines.next_line().await.expect("the pipe reads");
+                said.push(serde_json::from_str(&line.expect("skiff says more")).expect("a frame"));
+            }
+        })
+        .await
+        .expect("skiff answers the lend");
+        said
+    }
+
+    #[tokio::test]
+    async fn a_lend_is_handed_after_the_have_to_a_machine_lent_to_whose_end_takes_one() {
+        let releasing = |connection| Connection {
+            releases: true,
+            ..connection
+        };
+        let working = |connection| Connection {
+            worker: true,
+            ..connection
+        };
+        for said in [
+            said_to_tern(releasing, realm("tern").hello(), true).await,
+            said_to_tern(working, realm("tern").hello(), true).await,
+        ] {
+            let have = said.iter().position(|f| matches!(f, Frame::Have { .. }));
+            let handed = said.iter().position(|f| matches!(f, Frame::Hands(_)));
+            assert!(
+                matches!((have, handed), (Some(have), Some(handed)) if have < handed),
+                "its Have comes first: {said:?}"
+            );
+            let Some(Frame::Hands(hands)) = handed.map(|at| &said[at]) else {
+                panic!("skiff hands tern its lend: {said:?}");
+            };
+            assert_eq!(hands.key, crate::lend::Key("Bearer room-key".to_owned()));
+            assert_eq!(hands.lend["vms"][0]["prefix"], "tern");
+            assert_eq!(hands.lend["vms"][0]["budget"], "room");
+        }
+        let older = Hello {
+            hands: false,
+            ..realm("tern").hello()
+        };
+        let said = said_to_tern(working, older, false).await;
+        assert!(
+            !said.iter().any(|f| matches!(f, Frame::Hands(_))),
+            "an end that doesn't say it takes one is handed none: {said:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lend_a_worker_hands_this_machine_never_reaches_its_node() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let mut asked_of_node = asked_of_a_node(&dir.path().join("node.sock"));
+        for worker in [false, true] {
+            let skiff = Memory::default();
+            let message = recent(0, "SAK9FZ", usize::from(worker));
+            let _tern = tern_hands_skiff(&skiff, dir.path(), worker, &message).await;
+            if worker {
+                // Its message after the lend has been taken, so the lend
+                // was weighed before it.
+                until(&skiff, |store| store.message(&message).is_some()).await;
+                while let Ok(asked) = asked_of_node.try_recv() {
+                    assert!(!handed(&asked), "a worker's lend is dropped at its link");
+                }
+            } else {
+                // A peer's lend reaches the node, which judges it, so the
+                // worker's would have too had its link let it through.
+                tokio::time::timeout(PATIENCE, async {
+                    while let Some(asked) = asked_of_node.recv().await {
+                        if handed(&asked) {
+                            return;
+                        }
+                    }
+                })
+                .await
+                .expect("a peer's lend reaches the node");
+            }
+        }
+    }
+
+    /// Has tern, linked to skiff as its worker or not, hand skiff a lend
+    /// and then, as a session it holds, say the message `message`, skiff's
+    /// node on `dir`'s `node.sock`; tern's end, which the test keeps while
+    /// skiff reads.
+    async fn tern_hands_skiff(
+        skiff: &Memory,
+        dir: &std::path::Path,
+        worker: bool,
+        message: &str,
+    ) -> (ReadHalf<DuplexStream>, WriteHalf<DuplexStream>) {
+        let store = skiff.clone();
+        let starting = steering(dir);
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        tokio::spawn(async move {
+            let connection = Connection {
+                worker,
+                ..connection(reading, writing)
+            };
+            run(store, &realm("skiff"), connection, None, Some(starting)).await
+        });
+        let (far_reading, mut far_writing) = tokio::io::split(far);
+        let hands = Frame::Hands(Hands {
+            lend: json!({"vms": [], "budgets": {}}),
+            key: crate::lend::Key("Bearer worker-key".to_owned()),
+        });
+        let said = Frame::Message {
+            id: message.to_owned(),
+            body: json!({"id": message, "from": "SAK9FZ", "to": ["@WCJQSG"], "text": "done"}),
+        };
+        let have = Frame::Have {
+            messages: Vec::new(),
+            living: Some(Vec::new()),
+        };
+        let frames = [
+            Frame::Hello(realm("tern").hello()),
+            have,
+            hands,
+            present("sak9fz"),
+            said,
+        ];
+        says(&mut far_writing, &frames).await;
+        (far_reading, far_writing)
+    }
+
+    /// Whether a node was asked to take a lend tern handed it.
+    fn handed(asked: &crate::wire::Request) -> bool {
+        matches!(asked, crate::wire::Request::Hands { from, .. } if from == "tern")
+    }
+
+    /// A node on `node` telling the test each request it is asked,
+    /// answering none.
+    fn asked_of_a_node(node: &std::path::Path) -> mpsc::UnboundedReceiver<crate::wire::Request> {
+        let (telling, asked) = mpsc::unbounded_channel();
+        let listener = tokio::net::UnixListener::bind(node).expect("the node listens");
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let telling = telling.clone();
+                tokio::spawn(async move {
+                    let (reading, mut writing) = stream.into_split();
+                    let Ok(Some(line)) = BufReader::new(reading).lines().next_line().await else {
+                        return;
+                    };
+                    if let Ok(request) = serde_json::from_str(&line) {
+                        let _ = telling.send(request);
+                    }
+                    let reply: Reply = Err("this node answers nothing".to_owned());
+                    let mut said = serde_json::to_vec(&reply).expect("a reply");
+                    said.push(b'\n');
+                    let _ = writing.write_all(&said).await;
+                });
+            }
+        });
+        asked
+    }
+
     #[tokio::test]
     async fn a_workers_replies_reach_only_its_own_sessions_talks() {
         let dir = tempfile::tempdir().expect("a temporary folder");
