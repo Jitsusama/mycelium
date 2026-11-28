@@ -273,6 +273,10 @@ pub struct Lender {
     source: Source,
     /// Where the day's counts and the cuts are kept.
     folder: PathBuf,
+    /// Where this machine's own lend keeps its cuts, which cut off a lend
+    /// handed here too, so `mycelium lend cut` reaches it; none for a
+    /// lend file's, whose cuts are its folder's.
+    cut_beside: Option<PathBuf>,
     /// The folder an upstream named within it is found in, if there is
     /// one.
     runtime: Option<PathBuf>,
@@ -294,6 +298,7 @@ impl Lender {
         Self {
             source: Source::File(file, declarers),
             folder,
+            cut_beside: None,
             runtime,
             counting: Mutex::new(()),
         }
@@ -301,12 +306,14 @@ impl Lender {
 
     /// A lender of what the machine that made this one hands it, lending
     /// nothing until it hands something, keeping its counts and cuts in
-    /// `folder` and finding an upstream not named whole within `runtime`.
+    /// `folder`, cut off by the cuts in `cut_beside` too, and finding an
+    /// upstream not named whole within `runtime`.
     #[must_use]
-    pub fn handed_in(folder: PathBuf, runtime: Option<PathBuf>) -> Self {
+    pub fn handed_in(folder: PathBuf, cut_beside: PathBuf, runtime: Option<PathBuf>) -> Self {
         Self {
             source: Source::Handed(Mutex::new(None)),
             folder,
+            cut_beside: Some(cut_beside),
             runtime,
             counting: Mutex::new(()),
         }
@@ -314,11 +321,16 @@ impl Lender {
 
     /// A lender of what the machine that made this one hands it, keeping
     /// its counts and cuts in a folder of their own within this machine's
-    /// [`folder`], apart from a lend file's, and finding an upstream
-    /// within the login's runtime folder.
+    /// [`folder`], apart from a lend file's, though cut off by the cuts
+    /// kept there, which `mycelium lend cut` writes; and finding an
+    /// upstream within the login's runtime folder.
     #[must_use]
     pub fn handed() -> Self {
-        Self::handed_in(folder().join("handed"), crate::place::login_runtime())
+        Self::handed_in(
+            folder().join("handed"),
+            folder(),
+            crate::place::login_runtime(),
+        )
     }
 
     /// Takes `hands` as what may be lent from now on, in place of all it
@@ -464,20 +476,9 @@ impl Lender {
     /// lend can't be told apart from one meant to have ended; why goes
     /// to this machine's log.
     fn cut_off_why(&self, machine: &str) -> Option<String> {
-        match cuts(&self.folder) {
-            Ok(cuts) => cuts
-                .iter()
-                .any(|cut| cut == machine || cut == EVERY)
-                .then(|| format!("{machine} is cut off from this machine's lend")),
-            Err(error) => {
-                eprintln!(
-                    "mycelium: this machine's lend cuts, in {}, can't be read, so it lends \
-                     nothing: {error}",
-                    self.folder.display()
-                );
-                Some("this machine's lend cuts can't be read, so it lends nothing".to_owned())
-            }
-        }
+        std::iter::once(&self.folder)
+            .chain(&self.cut_beside)
+            .find_map(|folder| cut_off_in(folder, machine))
     }
 
     /// Counts a request of `machine`'s against its `limits`, refusing it
@@ -652,6 +653,25 @@ fn cutting(folder: &Path) -> io::Result<fs::File> {
 #[must_use]
 pub fn folder() -> PathBuf {
     crate::place::state().join("lend")
+}
+
+/// Why `machine` is cut off by the cuts `folder` keeps, where it is, as
+/// [`Lender::cut_off_why`] says it.
+fn cut_off_in(folder: &Path, machine: &str) -> Option<String> {
+    match cuts(folder) {
+        Ok(cuts) => cuts
+            .iter()
+            .any(|cut| cut == machine || cut == EVERY)
+            .then(|| format!("{machine} is cut off from this machine's lend")),
+        Err(error) => {
+            eprintln!(
+                "mycelium: this machine's lend cuts, in {}, can't be read, so it lends \
+                 nothing: {error}",
+                folder.display()
+            );
+            Some("this machine's lend cuts can't be read, so it lends nothing".to_owned())
+        }
+    }
 }
 
 /// The machines cut off, as `folder` keeps them; none where nothing was

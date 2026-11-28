@@ -966,6 +966,7 @@ async fn a_lender_handed_its_lend_lends_nothing_until_handed_and_then_with_the_k
     let mut lending = Lending::new();
     let handed = Arc::new(Lender::handed_in(
         lending.folder.path().join("handed"),
+        lending.folder.path().join("own"),
         Some(lending.folder.path().to_owned()),
     ));
     assert!(!handed.lends(), "nothing was handed yet");
@@ -1006,7 +1007,7 @@ async fn a_lender_handed_its_lend_lends_nothing_until_handed_and_then_with_the_k
 async fn a_hand_running_a_key_command_or_with_a_key_of_two_lines_or_to_a_file_is_refused() {
     let folder = tempfile::tempdir().expect("a folder");
     let relay = folder.path().join("relay.sock");
-    let handed = Lender::handed_in(folder.path().join("handed"), None);
+    let handed = Lender::handed_in(folder.path().join("handed"), folder.path().to_owned(), None);
     let mut commanded = hands(&relay, "Bearer handed-key");
     commanded.lend["budgets"]["room"]["key"] = json!(["/bin/sh", "-c", "printf key"]);
     let why = handed
@@ -1084,7 +1085,11 @@ async fn a_machine_its_vm_hands_a_budget_is_handed_it_alone_with_its_key() {
         }),
         "the lend names skiff-1 alone, and its budget no key command"
     );
-    let taking = Lender::handed_in(lending.folder.path().join("handed"), None);
+    let taking = Lender::handed_in(
+        lending.folder.path().join("handed"),
+        lending.folder.path().to_owned(),
+        None,
+    );
     taking.hand(handing).expect("what is handed is taken");
     let uncapped = lending
         .lender
@@ -1104,5 +1109,28 @@ async fn a_machine_its_vm_hands_a_budget_is_handed_it_alone_with_its_key() {
         lending.lender.handing("tern-1").await,
         Ok(None),
         "a vm handed no budget is handed nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_handed_lend_is_cut_off_by_this_machines_own_cuts() {
+    let mut lending = Lending::new();
+    let own = lending.folder.path().join("own");
+    let handed = Arc::new(Lender::handed_in(own.join("handed"), own.clone(), None));
+    let relay = lending.folder.path().join("relay/agents.sock");
+    handed
+        .hand(hands(&relay, "Bearer handed-key"))
+        .expect("the lend is taken");
+
+    cut(&own, &Cut::Machine("skiff-1".to_owned())).expect("cut");
+    let mut answers = answer(&handed, "skiff-1", lend("/v1/messages"));
+    assert_eq!(refusal(&mut answers).await, 403, "a cut by name holds");
+    uncut(&own, &Cut::Machine("skiff-1".to_owned())).expect("let back");
+    cut(&own, &Cut::All).expect("cut every one");
+    let mut answers = answer(&handed, "skiff-2", lend("/v1/messages"));
+    assert_eq!(refusal(&mut answers).await, 403, "a cut of every one holds");
+    assert!(
+        !lending.relay.was_asked(),
+        "nothing cut off reaches the relay"
     );
 }

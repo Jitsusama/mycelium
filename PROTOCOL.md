@@ -3262,12 +3262,13 @@ its budgets name no `key` command, and keeps it in memory alone,
 never on disk or in a log; each it takes replaces the last whole, so
 a process asking in that machine's name can put its own budget and
 key in place but never read or spend the one handed. Its counts and
-cuts are kept in `lend/handed/` under the account's state folder.
-Once it holds one, each lend is lent by it first, as a lender lends
-its own, and borrowed from the lender as above only where that lend
-is refused 403 or 503 before anything is said, such as a budget
-asked that isn't the one handed, or an upstream that can't be
-reached; a refusal past the day's count stands.
+cuts are kept in `lend/handed/` under the account's state folder,
+and the cuts in `lend/cuts.json`, which `mycelium lend cut` writes,
+cut it off too. Once it holds one, each lend is lent by it first, as
+a lender lends its own, and borrowed from the lender as above only
+where that lend is refused 403 or 503 before anything is said, such
+as a budget asked that isn't the one handed, or an upstream that
+can't be reached; a refusal past the day's count stands.
 
 Where the lender dialled this machine, as a maker dials its workers,
 the link runs apart from the node, and the lend crosses the `"Carry"`
