@@ -128,6 +128,10 @@ pub struct Folders {
     /// by its file, which any session running as this account could
     /// write.
     workers: Arc<Mutex<BTreeSet<String>>>,
+    /// When this store's node said each machine left, since it opened,
+    /// the earliest kept: the node's word alone, never a file's, as the
+    /// workers are.
+    left: Arc<Mutex<BTreeMap<String, jiff::Timestamp>>>,
 }
 
 /// Whether each session's process lives, as last judged, kept until an end
@@ -177,6 +181,7 @@ impl Folders {
             kept: Arc::default(),
             judged: Arc::default(),
             workers: Arc::default(),
+            left: Arc::default(),
         })
     }
 
@@ -837,6 +842,23 @@ impl Store for Folders {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .contains(machine)
+    }
+
+    fn mark_left(&self, machine: &str, at: jiff::Timestamp) {
+        self.left
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(machine.to_owned())
+            .and_modify(|kept| *kept = (*kept).min(at))
+            .or_insert(at);
+    }
+
+    fn left_at(&self, machine: &str) -> Option<jiff::Timestamp> {
+        self.left
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(machine)
+            .copied()
     }
 
     fn told_carries(&self) -> BTreeMap<String, Vec<Value>> {

@@ -1997,8 +1997,10 @@ worker home does; and
 as `{"personal": "pi-claude"}`, of which a realm hears only its own; and
 `leaves_at`, the time it leaves the realm, as a machine lent for a while
 does, in RFC 3339, after which it is no longer one of `"Machines"`, a
-leaving that came while a link ran standing whatever that link says of
-the machine after; from ten minutes before then, its node puts a steer
+leaving the node itself said while a link ran standing whatever that
+link says of the machine after (kept in the node's memory alone, never
+read back from a record a session may write, so a node started again
+forgets it); from ten minutes before then, its node puts a steer
 into the inbox of each session running there, once, saying when it
 leaves and to commit and push, to put what can't be pushed and a note of
 what's next where its work is shared, and to stop, with `from`
@@ -2579,9 +2581,10 @@ it links, a start or run is placed there only when that asker asks, so
 another agent's work goes elsewhere or waits. A machine whose book
 line names no asker, as one written before makes told askers, is read
 as an agent's whose asker is unknown, as its worker mark reads it, so
-no asker's start or run goes there but as to a room, below. The
-person's own starts go only to a machine booked for the person, never
-to one an agent's make booked, whose worker home that agent wrote. A
+no asker's start or run goes there, nor is it named a room, below:
+releasing it and making another is what serves. The person's own
+starts go only to a machine booked for the person, never to one an
+agent's make booked, whose worker home that agent wrote. A
 preview is held to it as its run would be, and an ordered carry there
 of another's session is refused but to a room, below; only a start
 pinned to the machine
@@ -3135,24 +3138,26 @@ ending comes back, and then the ask fails, saying so; the machine's
 never on one made for it, in `folder` as for `"Start"`, through the
 person's login shell there without a terminal (the person's run sent
 to a room as an agent's, through `/bin/sh -c`, reading no profile and
-with no folder of that home, nor one its user could write, on its path),
-its kit's tools first on its path as for `"Start"`, and with nothing on
-its input. This machine runs it as the node's own; another, through the link
-reaching it, as A Link says. The node judges who asks, as `by`,
-`"Person"` or `{"Agent": kind}`: an agent, in the strictest fence the
-presences of its process and its forebears say, and in a strict one
-where it can't tell; an agent too where its process runs as one of
-the machine's agents, may gain no privileges the node may, or sees
-other mounts; else the person. A node started with `--unattended`, as
-one in a cell lent from a basin is, where the person reaches it only
-over a link, takes no asker for the person: one it would tell as the
-person is a strictly fenced agent there, since its node runs as fenced
-as the agents beside it and nothing else would tell them apart. That
-holds for every word the node takes only from the person, a steer
-claiming the person and their own login's acts too, and for a link's
-end run there, so a run another machine asked is refused, saying so,
-and so is a carry the person asks of it from another machine, since
-the link's end claims the person on their behalf.
+with no folder of that home, nor one its user could write, on its path,
+though only folders are judged, never the entries in one or where an
+entry's link leads), its kit's tools first on its path as for
+`"Start"`, and with nothing on its input. This machine runs it as the
+node's own; another, through the link reaching it, as A Link says.
+The node judges who asks, as `by`, `"Person"` or `{"Agent": kind}`:
+an agent, in the strictest fence the presences of its process and its
+forebears say, and in a strict one where it can't tell; an agent too
+where its process runs as one of the machine's agents, may gain no
+privileges the node may, or sees other mounts; else the person. A node
+started with `--unattended`, as one in a cell lent from a basin is,
+where the person reaches it only over a link, takes no asker for the
+person: one it would tell as the person is a strictly fenced agent
+there, since its node runs as fenced as the agents beside it and
+nothing else would tell them apart. That holds for every word the node
+takes only from the person, a steer claiming the person and their own
+login's acts too, and for a link's end run there, so a run another
+machine asked is refused, saying so, and so is a carry the person asks
+of it from another machine, since the link's end claims the person on
+their behalf.
 It is a flag on the node's command line rather than a word declared,
 since a file can fail to be read. A
 `by` the request says only makes it stricter, and an agent runs

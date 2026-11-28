@@ -269,6 +269,17 @@ pub trait Store: Clone + Send + Sync + 'static {
     /// as well as write one.
     fn is_worker(&self, machine: &str) -> bool;
 
+    /// Keeps that this store's node said `machine` left at `at`
+    /// ([`left`]), the earliest such kept. Kept in memory alone, as a
+    /// worker's mark is, so a leaving only the node said stands against
+    /// what the machine's link says after, never one a session wrote in
+    /// its record.
+    fn mark_left(&self, machine: &str, at: jiff::Timestamp);
+
+    /// When this store's node last said, since the store opened, that
+    /// `machine` left ([`Store::mark_left`]).
+    fn left_at(&self, machine: &str) -> Option<jiff::Timestamp>;
+
     /// The carries each machine's node last told of, by machine: this
     /// machine's own as its node put them, and each other's as its link
     /// heard them.
@@ -317,6 +328,7 @@ pub fn left(store: &impl Store, machine: &str, at: jiff::Timestamp) {
             eprintln!("couldn't say {machine} has left: {error}");
         }
     }
+    store.mark_left(machine, at);
     let_go(store, machine, |_| false);
 }
 

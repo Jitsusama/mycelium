@@ -41,6 +41,9 @@ struct Held {
     /// The machines a link last said it reached as a worker, by its
     /// admission or its puts, which alone make one, as over folders.
     workers: BTreeSet<String>,
+    /// When the node said each machine left, the earliest kept, as over
+    /// folders.
+    left: BTreeMap<String, jiff::Timestamp>,
     /// The carries each machine's node told of.
     carries: BTreeMap<String, Vec<Value>>,
     /// Processes said to have ended, whose sessions are ended whatever
@@ -582,6 +585,18 @@ impl Store for Memory {
 
     fn is_worker(&self, machine: &str) -> bool {
         self.held().workers.contains(machine)
+    }
+
+    fn mark_left(&self, machine: &str, at: jiff::Timestamp) {
+        self.held()
+            .left
+            .entry(machine.to_owned())
+            .and_modify(|kept| *kept = (*kept).min(at))
+            .or_insert(at);
+    }
+
+    fn left_at(&self, machine: &str) -> Option<jiff::Timestamp> {
+        self.held().left.get(machine).copied()
     }
 
     fn told_carries(&self) -> BTreeMap<String, Vec<Value>> {

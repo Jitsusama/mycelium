@@ -393,7 +393,10 @@ const IN_ITS_REALM: &str = r#"export MYCELIUM_REALM="$1"; if [ -n "$2" ]; then P
 /// along the way can be pointed elsewhere before the command is looked
 /// up, and one it can't enter, which may not be there yet, goes too. A
 /// path left with nothing is `/usr/bin:/bin`, never empty, which a shell
-/// reads as the run's folder. The home is the one its first word names,
+/// reads as the run's folder; that and the kit's bin, put first after,
+/// are trusted as given. Only folders are judged, never the entries in
+/// one, nor where a link among them leads, so a link in a kept folder
+/// that points into the home still finds what is there. The home is the one its first word names,
 /// the node's own, and the `HOME` it is given as well, so a launcher that
 /// takes `HOME` away or points it elsewhere leaves none of either on the
 /// path. It shifts that word off. With no home, or `/` for one, only the
@@ -410,7 +413,7 @@ const RUNS: &str = r#"exec "$@""#;
 /// says only that, since a name mistyped or missing everywhere isn't
 /// found either, and ends as the shell would, with 127. A name with a
 /// slash is looked for by no path, so the shell says its own.
-const FOUND_OR_SAID: &str = r#"case $1 in */*) ;; *) command -v "$1" >/dev/null 2>&1 || { printf 'mycelium: %s is not found on this run'\''s path, %s, which holds no folder of its home\n' "$1" "$PATH" >&2; exit 127; };; esac; "#;
+const FOUND_OR_SAID: &str = r#"case $1 in */*) ;; *) command -v "$1" >/dev/null 2>&1 || { printf 'mycelium: %s is not found on this run'\''s path, %s, which holds no folder its user could write\n' "$1" "$PATH" >&2; exit 127; };; esac; "#;
 
 /// The words that run a program held in `realm` through the person's
 /// login shell, as a terminal would run it, so it has their environment
@@ -471,7 +474,8 @@ fn in_its_realm(
 /// command or fake its end. It has the environment its launcher gives
 /// it, but with no folder of `home`, the home it runs in, nor of the
 /// `HOME` it is given, nor one its user could write or replace, on its
-/// path ([`OUT_OF_ITS_HOME`]), and the kit's tools first. A command
+/// path ([`OUT_OF_ITS_HOME`], which judges folders, not their entries),
+/// and the kit's tools first. A command
 /// found only in the home isn't found, rather than found as the home's
 /// writer left it, and the run says where it looked ([`FOUND_OR_SAID`]).
 /// The node starts it with no variable that loads code
@@ -1103,7 +1107,7 @@ mod tests {
         assert_eq!(
             String::from_utf8_lossy(&said.stderr),
             "mycelium: tide-gauge is not found on this run's path, /usr/bin:/bin, \
-             which holds no folder of its home\n",
+             which holds no folder its user could write\n",
             "it says where it looked"
         );
         // A kit outside the home, holding the tool, goes first on the path,
@@ -1225,8 +1229,8 @@ mod tests {
         for (file, named) in start_files {
             assert!(!marker(file).exists(), "a plain run read {named}");
         }
-        // The same run, its shell's flags turned to the login shell's, as
-        // a run of the person's own takes them, reads the home's .profile
+        // The same run, its shell's flags turned to the held session's
+        // (`login_shell`'s, `-lic`), reads the home's .profile
         // and the file ENV names, so the markers missing above are the
         // plain run's doing, not a shell's that reads nothing whatever it
         // is told.

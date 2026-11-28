@@ -2391,8 +2391,12 @@ fn may_name_room(book: &Book, machine: &str, who: &str) -> Result<(), String> {
             "{machine} isn't named a room, since this node's book holds no such machine made \
              and standing: one another node made, or the person's own, is never one"
         )),
-        Some(None | Some(made::PERSON)) => Err(format!(
+        Some(Some(made::PERSON)) => Err(format!(
             "{machine} isn't named a room, since it was made for the person"
+        )),
+        Some(None) => Err(format!(
+            "{machine} isn't named a room, since its make was booked before makes said for \
+             whom: it takes no asker's work, so release it and make another"
         )),
         Some(Some(made::UNKNOWN)) => Err(format!(
             "{machine} isn't named a room, since no proven agent asked for it: its make is \
@@ -26307,7 +26311,7 @@ esac
             .expect("the make is kept");
         for (machine, who, why) in [
             ("wren", made::PERSON, "made for the person"),
-            ("osprey", made::PERSON, "made for the person"),
+            ("osprey", made::PERSON, "before makes said for whom"),
             ("harbour", made::UNKNOWN, "no proven agent asked for it"),
             ("kestrel", "ASKER1", "holds no such machine"),
             ("skiff", "ASKER1", "holds no such machine"),

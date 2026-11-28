@@ -367,6 +367,10 @@ pub async fn run(
     .await?;
     pinned(&store, named.as_deref(), &other.machine)?;
     know_how_it_runs(starting.as_ref(), &other.machine);
+    // Taken before the claim is waited on, so a leaving said while this
+    // link already held it, or waited to admit and ask, reads as this
+    // link's, never another's.
+    let linked_at = jiff::Timestamp::now();
     let (claim, asked_before) = takeover::claimed(&store, &other.machine).await?;
     let reach = reach_start(&store, &other.machine);
     // As it stood before admission, which marks a machine never linked
@@ -419,7 +423,7 @@ pub async fn run(
         asks: HashMap::new(),
         runs,
         next_ask: 0,
-        linked_at: jiff::Timestamp::now(),
+        linked_at,
         exchange: shares.map(|places| {
             let exchange = exchange_with(places, &membership.hello(), &other, worker);
             if worker {
@@ -2479,19 +2483,25 @@ impl<S: Store> End<S> {
         // again, leaving later or never, mustn't put it back among the
         // machines. One still to come is the machine's own to move, and one
         // from before this link was let in is another link's, as of a
-        // machine since made again under its name.
+        // machine since made again under its name. Only the node's own
+        // word, kept in memory, is read, never the record a session may
+        // write, which would hold a machine out for the link's life.
         let now = jiff::Timestamp::now();
-        if let Some(kept) = self
-            .store
-            .machines()
-            .into_iter()
-            .find(|one| one.name == self.other)
-            && let Some(left) = kept.declared.filter(|declared| declared.has_left(now))
-            && let Some(leaves) = left.leaves_at
+        if let Some(leaves) = self.store.left_at(&self.other)
+            && leaves <= now
             && leaves >= self.linked_at
         {
-            let declared = said.declared.get_or_insert(left);
-            declared.leaves_at = Some(declared.leaves_at.map_or(leaves, |own| own.min(leaves)));
+            if said.declared.is_none() {
+                said.declared = self
+                    .store
+                    .machines()
+                    .into_iter()
+                    .find(|one| one.name == self.other)
+                    .and_then(|kept| kept.declared);
+            }
+            if let Some(declared) = said.declared.as_mut() {
+                declared.leaves_at = Some(declared.leaves_at.map_or(leaves, |own| own.min(leaves)));
+            }
         }
         self.kept(&said.name, self.store.put_machine(&said));
     }
@@ -6739,12 +6749,8 @@ mod tests {
     #[tokio::test]
     async fn a_machine_made_again_under_a_left_ones_name_is_among_the_machines() {
         let skiff = Memory::default();
-        let mut gone = tern_undeclared();
-        gone.declared = Some(crate::declared::Declared {
-            leaves_at: Some(jiff::Timestamp::from_second(1_000_000_000).expect("a time")),
-            ..declares(false)
-        });
-        skiff.put_machine(&gone).expect("a machine that has left");
+        let old = jiff::Timestamp::from_second(1_000_000_000).expect("a time");
+        store::left(&skiff, "tern", old);
         let (_skiff_end, _far_reading, mut far_writing) =
             skiff_over(skiff.clone(), |connection| connection, None);
         let mut tern = tern_undeclared();
@@ -6779,6 +6785,57 @@ mod tests {
                 .and_then(|declared| declared.leaves_at),
             None,
             "a leaving from before the link was let in isn't the new machine's"
+        );
+    }
+
+    /// A record a session wrote saying a machine left is no word of the
+    /// node's, so the machine's link saying it again puts it back.
+    #[tokio::test]
+    async fn a_leaving_a_session_wrote_doesnt_stand_against_the_link() {
+        let skiff = Memory::default();
+        let (_skiff_end, _far_reading, mut far_writing) =
+            skiff_over(skiff.clone(), |connection| connection, None);
+        let kept = |store: &Memory| {
+            store
+                .machines()
+                .into_iter()
+                .find(|machine| machine.name == "tern")
+                .and_then(|machine| machine.declared)
+        };
+        let mut tern = tern_undeclared();
+        tern.declared = Some(declares(false));
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("tern").hello()),
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(Vec::new()),
+                },
+                Frame::Machine(Box::new(tern)),
+            ],
+        )
+        .await;
+        until(&skiff, |store| kept(store).is_some()).await;
+
+        let mut written = tern_undeclared();
+        written.declared = Some(crate::declared::Declared {
+            leaves_at: Some(jiff::Timestamp::now()),
+            ..declares(false)
+        });
+        skiff.put_machine(&written).expect("a session's record");
+        let mut tern = tern_undeclared();
+        tern.declared = Some(declares(true));
+        says(&mut far_writing, &[Frame::Machine(Box::new(tern))]).await;
+        until(&skiff, |store| {
+            kept(store).is_some_and(|declared| declared.costs_money)
+        })
+        .await;
+
+        assert_eq!(
+            kept(&skiff).and_then(|declared| declared.leaves_at),
+            None,
+            "only the node says a machine left, so the link's word stands over the record"
         );
     }
 
