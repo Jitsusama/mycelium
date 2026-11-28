@@ -428,9 +428,13 @@ same code, each line a JSON value:
     this, in place of all handed before (Borrowing a Lend). An end
     whose node lends to the other end, its file naming a budget it
     `hands` that machine, sends it to an end saying `hands`, as the
-    link comes up and every ten minutes after. The other end hands it
-    to its node as `{"Hands": {"from", "hands"}}`, `from` the link's
-    other end; a worker's end drops one, since only its maker hands.
+    link comes up and every ten minutes after. The other end hands its
+    node the last it was handed alone, and again each time it reaches
+    its node anew: as `{"Hands": {"from", "hands"}}` from the node's
+    own process, `from` the link's other end, for a link its node
+    keeps, or as `{"hands"}` over the `Carry` connection, for one the
+    other machine dialled. A worker's end drops one, since only its
+    maker hands.
 
 Two ends of one `version` link whichever of them is newer, for as
 long as each change keeps to three rules. A new field is optional, so
@@ -1643,7 +1647,7 @@ reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"EndStart": {"held", "from", "cell"}}` | as `End`, from a link proved to be machine `from`, ending for its starter `cell` a start relayed from there (A Held Session) |
 | `{"Run": {"work", "folder", "command", "by", "from", "asked_by"}}` | `{"Running": {"machine"}}`, then a `Ran` a line |
 | `{"Lend": {"budget", "method", "path", "headers", "body"}}` | a `Lent` a line, no reply first (Borrowing a Lend) |
-| `{"Hands": {"from", "hands"}}` | `"Handed"`, from a link to the machine this one borrows from, taking its lend as this machine's own (Borrowing a Lend) |
+| `{"Hands": {"from", "hands"}}` | `"Handed"`, from a link the node keeps to the machine this one borrows from, asked by the node's own process alone, taking its lend as this machine's own (Borrowing a Lend) |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
 | `{"Send": {"from", "groups", "intent", "text", "re", "realm"}}` | `{"Sent": message}`, or refused |
@@ -1696,6 +1700,10 @@ carries what its node asks of that machine. The node writes each ask as
 `{"ask", "asked"}`, where `asked` is `{"Start": start}`, `{"Reopen":
 start}`, `{"Steer": {"address", "steer", "checked"}}` or `"Update"`,
 and the link writes back `{"ask", "reply"}` with the other end's reply.
+The link writes `{"hands": hands}` too, the last lend the other end
+handed it, as it connects and each time it is handed another, which
+the node takes as `Hands` from that machine (Borrowing a Lend); a
+node that refuses it says why in its log, once for each reason.
 A link says `reopens` as it connects, since one older can't read a
 `Reopen`; to one that doesn't, the node hands none, and answers it
 itself as `<machine>'s link here is too old to carry a reopening`. A
@@ -3267,18 +3275,23 @@ can't be had says so too, and leaves what was handed standing.
 The borrowing node takes one only over a link whose far key proved
 it, never one whose hello alone names the machine, and only from the
 machine `--lends-from` names, refusing any other, and only where its
-budgets name no `key` command. It keeps it in memory alone, never on
-disk or in a log, for 25 minutes past the last it was handed, so a
-lender that stops handing can't leave one standing; each it takes
-replaces the last whole, so a process asking in that machine's name
-can put its own budget and key in place but never read or spend the
-one handed. Its counts and cuts are kept in `lend/handed/` under the
+budgets name no `key` command. It takes one only from that link's
+own end, by the path its asks come, and refuses a client of its
+socket that names the machine, saying so in its log once, so no
+process of the account can put its own budget and upstream in place.
+It keeps it in memory alone, never on disk or in a log, for 25
+minutes past the last it was handed, so a lender that stops handing
+can't leave one standing; each it takes replaces the last whole, and
+one it refuses leaves nothing handed, never the one before it, which
+it says in its log once, so it borrows each lend until a lend it can
+take is handed. Its counts and cuts are kept in `lend/handed/` under the
 account's state folder, and the cuts in `lend/cuts.json`, which
 `mycelium lend cut` writes, cut it off too. Once it holds one, each
 lend is lent by it first, as a lender lends its own, and borrowed
 from the lender as above only where that lend is refused 403 for a
 budget asked that isn't the one handed, or 503 for an upstream that
-can't be reached, before anything is said. Every other refusal
+can't be reached or counts that can't be kept, as where its state
+folder faults, before anything is said. Every other refusal
 stands, a cut's and a day's count's among them. The key goes to an
 upstream under the borrowing login's own runtime folder, which an
 agent a worker runs can't write.

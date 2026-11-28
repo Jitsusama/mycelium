@@ -72,7 +72,7 @@ use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::carry::kept;
 use crate::facts::{self, Machine, Readiness};
@@ -375,7 +375,8 @@ pub async fn run(
     // As it stood before admission, which marks a machine never linked
     // as of now.
     let began = admitted(&store, &other.machine, worker)?;
-    let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine).await;
+    let (handed_on, handed) = watch::channel(None);
+    let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine, handed).await;
     let (answering, mut answered) = mpsc::unbounded_channel();
     let (runs, mut run_said) = Runs::new();
     let (starters, mut learned) = started::Starters::new();
@@ -414,6 +415,7 @@ pub async fn run(
             Housed::InItsNode
         },
         node: starting.map(|starting| starting.node),
+        handed_on,
         starters,
         answering,
         asks: HashMap::new(),
@@ -441,14 +443,13 @@ pub async fn run(
     if let Err(error) = end.open(&mut writing).await {
         return end.leave(Err(error));
     }
-    let _handing = match &end.lender {
-        Lending::By(lender) if end.said.hands => Some(hands::Handing::start(
+    let _handing = handing_through(&end.lender, &end.said).map(|lender| {
+        hands::Handing::start(
             Arc::clone(lender),
             end.other.clone(),
             end.runs.saying.clone(),
-        )),
-        _ => None,
-    };
+        )
+    });
 
     let (mut keeping, mut looking) = paces();
     let mut queued = VecDeque::new();
@@ -877,9 +878,15 @@ const ASKS_TAKEN_WITHIN: Duration = Duration::from_secs(5);
 /// would otherwise find no link reaching it. A node that can't be reached
 /// ends the wait at once, and is asked again as [`carried::from_node`]
 /// says, while the link carries on.
+///
+/// What `machine` hands this one, as `handed` says it last, goes to the
+/// node the way its asks come: over the node's socket from the node's own
+/// process, for a link it keeps, and over the connection carrying its
+/// asks, for one `machine` dialled. The node takes it from nowhere else.
 async fn asked_of(
     starting: Option<&Starting>,
     machine: &str,
+    handed: watch::Receiver<Option<Hands>>,
 ) -> (Option<mpsc::UnboundedReceiver<Ask>>, Option<Box<dyn Send>>) {
     let Some(starting) = starting else {
         return (None, None);
@@ -887,10 +894,12 @@ async fn asked_of(
     match &starting.asking {
         Some(Asking::Kept(asks, there)) => {
             let (asked, reaching) = asks.reach(machine, there.clone());
-            (Some(asked), Some(Box::new(reaching)))
+            let handing = hands::to_node(starting.node.clone(), machine, handed);
+            (Some(asked), Some(Box::new((reaching, handing))))
         }
         Some(Asking::Dialled) => {
-            let (asked, carrying, taken) = carried::from_node(starting.node.clone(), machine);
+            let (asked, carrying, taken) =
+                carried::from_node(starting.node.clone(), machine, handed);
             match tokio::time::timeout(ASKS_TAKEN_WITHIN, taken).await {
                 Ok(Ok(())) => {}
                 Ok(Err(_)) => eprintln!(
@@ -996,6 +1005,16 @@ fn health_of(starting: Option<&Starting>) -> OwnHealth {
     OwnHealth {
         told,
         _watching: watching,
+    }
+}
+
+/// The lender this end hands the other its lend through, if any: only
+/// one it lends through, and only to an end whose `said` hello takes
+/// what is handed, since an older end would refuse each frame of it.
+fn handing_through<'a>(lending: &'a Lending, said: &Hello) -> Option<&'a Arc<Lender>> {
+    match lending {
+        Lending::By(lender) if said.hands => Some(lender),
+        _ => None,
     }
 }
 
@@ -1302,6 +1321,9 @@ struct End<S> {
     housed: Housed,
     /// This machine's node's socket, which starts asked of it go to.
     node: Option<PathBuf>,
+    /// What the other end handed this machine last, which goes to its
+    /// node as [`asked_of`] says.
+    handed_on: watch::Sender<Option<Hands>>,
     /// What answers the lends the other end asks of this machine: a
     /// worker, or a machine this end's way in releases
     /// ([`Connection::releases`]), which a provider's program reaches and
@@ -1707,8 +1729,12 @@ impl<S: Store> End<S> {
                  which is dropped",
                 self.other
             ),
+            Frame::Hands(_) if self.node.is_none() => eprintln!(
+                "mycelium: {} handed this machine a lend, which no node here takes",
+                self.other
+            ),
             Frame::Hands(handed) => {
-                hands::take(self.node.clone(), &self.other, handed);
+                self.handed_on.send_replace(Some(handed));
             }
             Frame::Carry {
                 ask,
@@ -4356,7 +4382,7 @@ mod tests {
         let path = dir.path().join("node.sock");
         let listener = tokio::net::UnixListener::bind(&path).expect("the node binds");
         let starting = dialled_starting(dir.path(), path);
-        let asking = asked_of(Some(&starting), "skiff");
+        let asking = asked_of(Some(&starting), "skiff", watch::channel(None).1);
         tokio::pin!(asking);
         assert!(
             still_waiting(&mut asking).await,
@@ -4406,7 +4432,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let starting = dialled_starting(dir.path(), dir.path().join("node.sock"));
         let began = tokio::time::Instant::now();
-        let asking = asked_of(Some(&starting), "skiff");
+        let asking = asked_of(Some(&starting), "skiff", watch::channel(None).1);
         let (asked, carrying) = tokio::time::timeout(PATIENCE, asking)
             .await
             .expect("the link goes on in time");
@@ -4801,7 +4827,7 @@ mod tests {
     /// refuses all but who started what.
     fn naming_node(
         node: &std::path::Path,
-        naming: tokio::sync::watch::Receiver<Naming>,
+        naming: watch::Receiver<Naming>,
         holding: mpsc::UnboundedSender<()>,
     ) {
         let listener = tokio::net::UnixListener::bind(node).expect("the node listens");
@@ -4917,7 +4943,7 @@ mod tests {
     async fn a_held_sessions_presence_goes_before_its_node_names_its_starter_and_again_after() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let node = dir.path().join("node.sock");
-        let (naming, named_as) = tokio::sync::watch::channel(Naming::Waiting);
+        let (naming, named_as) = watch::channel(Naming::Waiting);
         let (holding, mut held) = mpsc::unbounded_channel();
         naming_node(&node, named_as, holding);
         let (skiff, _ends) = holding_kestrel(dir.path(), node);
@@ -4944,7 +4970,7 @@ mod tests {
     async fn a_starter_booked_after_the_first_ask_is_said_by_the_next_keep() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let node = dir.path().join("node.sock");
-        let (naming, named_as) = tokio::sync::watch::channel(Naming::Nobody);
+        let (naming, named_as) = watch::channel(Naming::Nobody);
         let (holding, mut held) = mpsc::unbounded_channel();
         naming_node(&node, named_as, holding);
         let (skiff, _ends) = holding_kestrel(dir.path(), node);
@@ -7101,14 +7127,11 @@ mod tests {
     }
 
     /// What skiff, lending through [`handing_tern`], says to tern over a
-    /// link tern dialled, shaped by `shaped`, tern saying `hello`: each
-    /// frame until skiff answers a lend tern asks once it has said its
-    /// `Have`, and has handed tern its lend too where `handed` says it
-    /// will.
+    /// link tern dialled, shaped by `shaped`: each frame until skiff has
+    /// answered a lend tern asks once it has said its `Have`, and has
+    /// handed tern its lend.
     async fn said_to_tern(
         shaped: impl FnOnce(Connection) -> Connection + Send + 'static,
-        hello: Hello,
-        handed: bool,
     ) -> Vec<Frame> {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let starting = Starting {
@@ -7142,7 +7165,7 @@ mod tests {
             living: Some(Vec::new()),
         };
         let asked = [
-            Frame::Hello(hello),
+            Frame::Hello(realm("tern").hello()),
             have,
             Frame::Lend {
                 ask: 7,
@@ -7155,7 +7178,7 @@ mod tests {
         tokio::time::timeout(PATIENCE, async {
             let lent = |said: &[Frame]| said.iter().any(|f| matches!(f, Frame::Lent { .. }));
             let hands = |said: &[Frame]| said.iter().any(|f| matches!(f, Frame::Hands(_)));
-            while !lent(&said) || (handed && !hands(&said)) {
+            while !lent(&said) || !hands(&said) {
                 let line = lines.next_line().await.expect("the pipe reads");
                 said.push(serde_json::from_str(&line.expect("skiff says more")).expect("a frame"));
             }
@@ -7175,10 +7198,7 @@ mod tests {
             worker: true,
             ..connection
         };
-        for said in [
-            said_to_tern(releasing, realm("tern").hello(), true).await,
-            said_to_tern(working, realm("tern").hello(), true).await,
-        ] {
+        for said in [said_to_tern(releasing).await, said_to_tern(working).await] {
             let have = said.iter().position(|f| matches!(f, Frame::Have { .. }));
             let handed = said.iter().position(|f| matches!(f, Frame::Hands(_)));
             assert!(
@@ -7192,21 +7212,39 @@ mod tests {
             assert_eq!(hands.lend["vms"][0]["prefix"], "tern");
             assert_eq!(hands.lend["vms"][0]["budget"], "room");
         }
+    }
+
+    // Round 2's F3 and F9: an older end's link was read only as far as
+    // its Lent, before any lend would have been handed, so it proved
+    // nothing; whether one is handed at all is weighed here instead.
+    #[test]
+    fn a_lend_is_handed_only_through_a_lender_to_an_end_that_takes_one() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let lending = Lending::By(Arc::new(handing_tern(dir.path())));
         let older = Hello {
             hands: false,
             ..realm("tern").hello()
         };
-        let said = said_to_tern(working, older, false).await;
         assert!(
-            !said.iter().any(|f| matches!(f, Frame::Hands(_))),
-            "an end that doesn't say it takes one is handed none: {said:?}"
+            handing_through(&lending, &realm("tern").hello()).is_some(),
+            "an end that takes one is handed it"
         );
+        assert!(
+            handing_through(&lending, &older).is_none(),
+            "an end that doesn't say it takes one is handed none"
+        );
+        for lending in [Lending::Nothing, Lending::NotToIt] {
+            assert!(
+                handing_through(&lending, &realm("tern").hello()).is_none(),
+                "an end not lent to is handed none"
+            );
+        }
     }
 
     #[tokio::test]
     async fn a_lend_reaches_the_node_only_from_a_proven_peer_never_a_worker_or_a_hello() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let mut asked_of_node = asked_of_a_node(&dir.path().join("node.sock"));
+        let mut asked_of_node = handed_to_a_node(&dir.path().join("node.sock"));
         let proven = || Proven {
             by: realm("skiff"),
             far: "tern".to_owned(),
@@ -7238,8 +7276,8 @@ mod tests {
         let _tern =
             tern_hands_skiff((&skiff, proven()), dir.path(), (false, "proven"), &message).await;
         tokio::time::timeout(PATIENCE, async {
-            while let Some(asked) = asked_of_node.recv().await {
-                match handed_by(&asked) {
+            while let Some(handed) = asked_of_node.recv().await {
+                match handed_by(&handed) {
                     Some("proven") => return,
                     Some(which) => panic!("the {which} lend reached the node"),
                     None => {}
@@ -7248,6 +7286,49 @@ mod tests {
         })
         .await
         .expect("a proven peer's lend reaches the node");
+    }
+
+    #[tokio::test]
+    async fn a_link_hands_its_node_the_last_lend_handed_again_as_it_reaches_it_anew() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let node = dir.path().join("node.sock");
+        let listener = tokio::net::UnixListener::bind(&node).expect("the node listens");
+        let (handed_on, handed) = watch::channel(None);
+        let (_asked, _carrying, _taken) = carried::from_node(node, "tern", handed);
+        let hands = |which: &str| Hands {
+            lend: json!({"vms": [{"prefix": "skiff", "budget": "room"}], "budgets": {}}),
+            key: crate::lend::Key(format!("Bearer {which}")),
+        };
+        handed_on.send_replace(Some(hands("older")));
+        handed_on.send_replace(Some(Hands::taken_back()));
+        for reached in ["first", "again"] {
+            let (stream, _) = tokio::time::timeout(PATIENCE, listener.accept())
+                .await
+                .expect("the link reaches its node in time")
+                .expect("the node takes the call");
+            let (reading, mut writing) = stream.into_split();
+            let mut lines = BufReader::new(reading).lines();
+            let said = |line: Option<String>| -> Value {
+                serde_json::from_str(&line.expect("the link says more")).expect("a line")
+            };
+            let first = said(lines.next_line().await.expect("it reads"));
+            assert!(first.get("Carry").is_some(), "it asks to carry: {first}");
+            let carrying = serde_json::to_string(&Reply::Ok(Response::Carrying)).expect("a reply");
+            writing
+                .write_all(format!("{carrying}\n").as_bytes())
+                .await
+                .expect("the node answers");
+            let next = tokio::time::timeout(PATIENCE, lines.next_line())
+                .await
+                .unwrap_or_else(|_| panic!("{reached}, the link hands its node its lend"));
+            let next = said(next.expect("it reads"));
+            let handed: Hands =
+                serde_json::from_value(next["hands"].clone()).expect("a lend handed on");
+            assert!(
+                handed.is_taken_back(),
+                "{reached}, the node hears the last handed alone, never the older: {next}"
+            );
+        }
     }
 
     /// Has tern, linked to skiff as its worker or not and admitted by
@@ -7262,7 +7343,10 @@ mod tests {
         message: &str,
     ) -> (ReadHalf<DuplexStream>, WriteHalf<DuplexStream>) {
         let store = skiff.clone();
-        let starting = steering(dir);
+        let starting = Starting {
+            asking: Some(Asking::Dialled),
+            ..steering(dir)
+        };
         let (near, far) = tokio::io::duplex(1 << 16);
         let (reading, writing) = tokio::io::split(near);
         tokio::spawn(async move {
@@ -7298,13 +7382,10 @@ mod tests {
 
     /// Which lend tern handed a node was asked to take, as its key names
     /// it, if one was.
-    fn handed_by(asked: &crate::wire::Request) -> Option<&str> {
-        match asked {
-            crate::wire::Request::Hands { from, hands } if from == "tern" => {
-                hands.key.0.strip_prefix("Bearer ")
-            }
-            _ => None,
-        }
+    fn handed_by((from, hands): &(String, Hands)) -> Option<&str> {
+        (from == "tern")
+            .then(|| hands.key.0.strip_prefix("Bearer "))
+            .flatten()
     }
 
     #[tokio::test]
@@ -7365,30 +7446,44 @@ mod tests {
         hands
     }
 
-    /// A node on `node` telling the test each request it is asked,
-    /// answering none.
-    fn asked_of_a_node(node: &std::path::Path) -> mpsc::UnboundedReceiver<crate::wire::Request> {
-        let (telling, asked) = mpsc::unbounded_channel();
+    /// A node on `node` carrying the asks of each link that asks it to,
+    /// telling the test each lend a link hands it over that connection,
+    /// with the machine the link reaches, and each one asked of its
+    /// socket plainly, with the machine it names.
+    fn handed_to_a_node(node: &std::path::Path) -> mpsc::UnboundedReceiver<(String, Hands)> {
+        let (telling, handed) = mpsc::unbounded_channel();
         let listener = tokio::net::UnixListener::bind(node).expect("the node listens");
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 let telling = telling.clone();
                 tokio::spawn(async move {
                     let (reading, mut writing) = stream.into_split();
-                    let Ok(Some(line)) = BufReader::new(reading).lines().next_line().await else {
+                    let mut lines = BufReader::new(reading).lines();
+                    let Ok(Some(line)) = lines.next_line().await else {
                         return;
                     };
-                    if let Ok(request) = serde_json::from_str(&line) {
-                        let _ = telling.send(request);
-                    }
-                    let reply: Reply = Err("this node answers nothing".to_owned());
+                    let machine = match serde_json::from_str(&line) {
+                        Ok(crate::wire::Request::Carry { machine, .. }) => machine,
+                        Ok(crate::wire::Request::Hands { from, hands }) => {
+                            let _ = telling.send((from, hands));
+                            return;
+                        }
+                        _ => return,
+                    };
+                    let reply: Reply = Ok(Response::Carrying);
                     let mut said = serde_json::to_vec(&reply).expect("a reply");
                     said.push(b'\n');
                     let _ = writing.write_all(&said).await;
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        let said: Value = serde_json::from_str(&line).unwrap_or_default();
+                        if let Ok(hands) = serde_json::from_value(said["hands"].clone()) {
+                            let _ = telling.send((machine.clone(), hands));
+                        }
+                    }
                 });
             }
         });
-        asked
+        handed
     }
 
     #[tokio::test]

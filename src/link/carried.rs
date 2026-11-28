@@ -14,6 +14,12 @@
 //! node never waits on a lend's reader to read the next line: a reader
 //! [`STALLED_AFTER`] pieces behind has its lend let go, as one that hangs
 //! up does, so no lend holds up the other asks of that machine.
+//!
+//! A lend the other machine hands this one ([`crate::lend::Hands`]) goes
+//! to the node over this connection too, the last handed alone, and again
+//! each time the link reaches its node anew: the node takes one only from
+//! here, from the link to the machine it borrows from, never from a plain
+//! client of its socket naming that machine.
 
 use std::collections::HashMap;
 use std::io;
@@ -24,11 +30,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, Lines};
 use tokio::net::UnixStream;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{AbortHandle, JoinSet};
 
 use super::starts::{Ask, Asked, Asks};
-use crate::lend::{BACKLOG, Lend, Lent};
+use crate::lend::{BACKLOG, Hands, Lend, Lent};
 use crate::steer::Steer;
 use crate::wire::{Reply, Request, Response, Start};
 
@@ -162,6 +168,11 @@ enum FromLink {
         ask: u64,
         lent: Lent,
     },
+    /// What the machine at the other end of the link handed this one to
+    /// lend its own sessions from, in place of all it handed before.
+    Hands {
+        hands: Hands,
+    },
 }
 
 /// Hands what the node asks of `machine` to the link at the other end of a
@@ -173,11 +184,16 @@ enum FromLink {
 /// A link that doesn't say it carries a reopening (`reopens`) is older
 /// than reopenings and couldn't read one, so each is answered here
 /// instead, rather than handed to it.
+///
+/// What the link says `machine` handed this one goes to `taking`, which
+/// takes it only where `machine` is the machine this one borrows from;
+/// what it refuses is said in the log.
 pub async fn to_link<R, W>(
     asks: &Asks,
     (machine, reopens): (&str, bool),
     mut lines: Lines<R>,
     mut writing: W,
+    taking: impl Fn(Hands) -> Reply,
 ) where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -197,6 +213,7 @@ pub async fn to_link<R, W>(
     let mut lending = HashMap::new();
     let (gone, mut let_go) = mpsc::unbounded_channel();
     let mut next = 0;
+    let mut said_why = None;
     loop {
         tokio::select! {
             ask = asked.recv() => {
@@ -271,6 +288,16 @@ pub async fn to_link<R, W>(
                             }
                         }
                     }
+                    // Each reason is said once, as it changes, since the
+                    // same lend is handed again every ten minutes.
+                    Ok(FromLink::Hands { hands }) => match taking(hands) {
+                        Ok(_) => said_why = None,
+                        Err(why) if said_why.as_ref() == Some(&why) => {}
+                        Err(why) => {
+                            eprintln!("what {machine} handed this machine isn't taken: {why}");
+                            said_why = Some(why);
+                        }
+                    },
                     Err(_) => {}
                 }
             }
@@ -322,10 +349,13 @@ impl Drop for Carrying {
 /// what this answers is held, and asked again whenever the node can't be
 /// reached, as while it restarts. The last it answers hears once the node
 /// first takes the asks, or the first asking fails: a node that can't be
-/// reached places no start to miss them.
+/// reached places no start to miss them. What `machine` last `handed`
+/// this one goes to the node each time it reaches it, and again as it
+/// changes.
 pub(super) fn from_node(
     node: PathBuf,
     machine: &str,
+    mut handed: watch::Receiver<Option<Hands>>,
 ) -> (
     mpsc::UnboundedReceiver<Ask>,
     Carrying,
@@ -340,7 +370,7 @@ pub(super) fn from_node(
         loop {
             // Each new reason is said once, so a node that stays away for
             // long fills no log.
-            let carried = carry(&node, &machine, &asks, &mut taken).await;
+            let carried = carry(&node, &machine, &asks, &mut taken, &mut handed).await;
             if let Some(taken) = taken.take() {
                 let _ = taken.send(());
             }
@@ -361,12 +391,16 @@ pub(super) fn from_node(
 
 /// Asks the node at `node` for what it asks of `machine`, sending each to
 /// the link through `asks` and each answer back, until the node hangs up,
-/// telling `taken`, if it is still there, once the node takes them.
+/// telling `taken`, if it is still there, once the node takes them. What
+/// `machine` last `handed` this one goes to the node as it takes them,
+/// so a node that started again holds it anew, and again each time it
+/// changes, the last alone, so an older lend never follows a newer one.
 async fn carry(
     node: &Path,
     machine: &str,
     asks: &mpsc::UnboundedSender<Ask>,
     taken: &mut Option<oneshot::Sender<()>>,
+    handed: &mut watch::Receiver<Option<Hands>>,
 ) -> io::Result<()> {
     let (reading, mut writing) = UnixStream::connect(node).await?.into_split();
     let mut lines = BufReader::new(reading).lines();
@@ -388,6 +422,10 @@ async fn carry(
         }
         Ok(Err(why)) => return Err(io::Error::other(why)),
         _ => return Err(io::Error::other(format!("the node answered {first}"))),
+    }
+    let held = handed.borrow_and_update().clone();
+    if let Some(hands) = held {
+        write(&mut writing, &FromLink::Hands { hands }).await?;
     }
     // The node's lines are read apart from this end's writing, so a write
     // the node is slow to take never stops what the node writes being
@@ -454,6 +492,13 @@ async fn carry(
             },
             // A lend's reading that ended, or was let go, has nothing more.
             Some(_) = reading.join_next() => {}
+            // Ended once the link drops what it was handed, as it ends.
+            Ok(()) = handed.changed() => {
+                let held = handed.borrow_and_update().clone();
+                if let Some(hands) = held {
+                    write(&mut writing, &FromLink::Hands { hands }).await?;
+                }
+            }
         }
     }
 }
@@ -569,6 +614,7 @@ mod tests {
                     ("kestrel", false),
                     BufReader::new(reading).lines(),
                     writing,
+                    |_| Err("this node takes nothing handed".to_owned()),
                 )
                 .await;
             }
@@ -641,6 +687,7 @@ mod tests {
                     ("tern", true),
                     BufReader::new(reading).lines(),
                     watched,
+                    |_| Err("this node takes nothing handed".to_owned()),
                 )
                 .await;
             });
@@ -793,8 +840,16 @@ mod tests {
         let listener = tokio::net::UnixListener::bind(&path).expect("the node binds");
         let (asks, mut asked) = mpsc::unbounded_channel();
         let (taken, first_taken) = oneshot::channel();
-        let linking =
-            tokio::spawn(async move { carry(&path, "tern", &asks, &mut Some(taken)).await });
+        let linking = tokio::spawn(async move {
+            carry(
+                &path,
+                "tern",
+                &asks,
+                &mut Some(taken),
+                &mut watch::channel(None).1,
+            )
+            .await
+        });
         let (stream, _) = listener.accept().await.expect("the link asks its node");
         let (reading, mut writing) = stream.into_split();
         let mut node = BufReader::new(reading).lines();
@@ -877,8 +932,16 @@ mod tests {
         let listener = tokio::net::UnixListener::bind(&path).expect("the node binds");
         let (asks, _asked) = mpsc::unbounded_channel();
         let (taken, _first_taken) = oneshot::channel();
-        let linking =
-            tokio::spawn(async move { carry(&path, "tern", &asks, &mut Some(taken)).await });
+        let linking = tokio::spawn(async move {
+            carry(
+                &path,
+                "tern",
+                &asks,
+                &mut Some(taken),
+                &mut watch::channel(None).1,
+            )
+            .await
+        });
         let (stream, _) = listener.accept().await.expect("the link asks its node");
         // Held, so the link never reads the node as gone.
         let (reading, _writing) = stream.into_split();

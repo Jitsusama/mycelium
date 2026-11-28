@@ -5738,7 +5738,7 @@ impl<S: Store> Shared<S> {
             Request::Places {} => Err("places are answered by `places`".to_owned()),
             Request::Run(_) => Err("a run is answered by `run`".to_owned()),
             Request::Lend(_) => Err("a lend is answered by `lend`".to_owned()),
-            Request::Hands { from, hands } => self.take_hands(&from, hands),
+            Request::Hands { from, hands } => self.take_hands_asked(&from, hands),
             Request::Offers => Err("offers are answered by `offers`".to_owned()),
             Request::Steer { .. } => Err("a steer is answered by `steer`".to_owned()),
             Request::End { .. } => Err("an end is answered by `end`".to_owned()),
@@ -5762,12 +5762,40 @@ impl<S: Store> Shared<S> {
         }
     }
 
+    /// Takes `hands` as [`Self::take_hands`] does, asked over this node's
+    /// socket: only from this node's own process, as a link it keeps in
+    /// that process asks it, never from another client, which could name
+    /// the machine this one borrows from and send every session's model
+    /// calls, prompts and all, to an upstream of its choice. A link the
+    /// other machine dialled hands it over the connection carrying its
+    /// asks instead ([`link::carried::to_link`]). A refusal is said in
+    /// the log once a run.
+    fn take_hands_asked(&self, from: &str, hands: crate::lend::Hands) -> Result<Response, String> {
+        static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let own = self
+            .client
+            .is_some_and(|pid| u32::try_from(pid).is_ok_and(|pid| pid == std::process::id()));
+        if !own {
+            if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!(
+                    "mycelium: a client of this node's socket, not a link's end, handed it a \
+                     lend in {from:?}'s name, which is refused"
+                );
+            }
+            return Err(
+                "a lend is handed this machine only by its link to the machine it borrows \
+                 from, never by a client of its socket"
+                    .to_owned(),
+            );
+        }
+        self.take_hands(from, hands)
+    }
+
     /// Lends this machine's own sessions from now on as `hands` says, as
     /// the link reaching `from` carried it, where `from` is the machine
-    /// this one borrows from; refused from any other. A process here
-    /// asking it in that machine's name hands only what it holds itself:
-    /// a key and the budget it came with are taken together, and never
-    /// said back, so none can read or spend a key it didn't hand.
+    /// this one borrows from; refused from any other. Only a link's end
+    /// asks it ([`Self::take_hands_asked`]): a key and the budget it came
+    /// with are taken together, and never said back.
     fn take_hands(&self, from: &str, hands: crate::lend::Hands) -> Result<Response, String> {
         if self.lends_from.as_deref() != Some(from) {
             // A machine that hands nothing here takes nothing back, so its
@@ -5779,9 +5807,19 @@ impl<S: Store> Shared<S> {
                 "{from} isn't the machine this one borrows from, so it hands nothing here"
             ));
         }
-        let first = !self.handed.lends();
-        self.handed.hand(hands)?;
-        if first {
+        let held = self.handed.lends();
+        // What isn't a lend replaces what was handed with nothing, so it
+        // fails closed, said once as it goes rather than each time after.
+        if let Err(why) = self.handed.hand(hands) {
+            if held {
+                eprintln!(
+                    "mycelium: what {from} handed this machine isn't a lend, so it holds none \
+                     and borrows each from {from}: {why}"
+                );
+            }
+            return Err(why);
+        }
+        if !held {
             eprintln!(
                 "mycelium: {from} handed this machine a lend of its own, so its sessions' \
                  calls go straight up"
@@ -10835,7 +10873,8 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             return;
         }
         if let Ok(Request::Carry { machine, reopens }) = request {
-            link::carried::to_link(&shared.asks, (&machine, reopens), lines, writing).await;
+            let taking = |hands| shared.take_hands(&machine, hands);
+            link::carried::to_link(&shared.asks, (&machine, reopens), lines, writing, taking).await;
             return;
         }
         if let Ok(Request::Health) = request {
@@ -20318,34 +20357,95 @@ esac
             }),
             key: crate::lend::Key("Bearer handed-key".to_owned()),
         };
-        let refused = shared.answer(Request::Hands {
-            from: "kestrel".to_owned(),
-            hands: hands(),
-        });
+        let refused = shared.take_hands("kestrel", hands());
         assert!(
             matches!(&refused, Err(why) if why.contains("kestrel") && !why.contains("handed-key")),
             "a machine skiff doesn't borrow from hands it nothing: {refused:?}"
         );
         assert!(!shared.handed.lends(), "so skiff lends nothing itself");
         assert_eq!(
-            shared.answer(Request::Hands {
-                from: "kestrel".to_owned(),
-                hands: crate::lend::Hands::taken_back(),
-            }),
+            shared.take_hands("kestrel", crate::lend::Hands::taken_back()),
             Ok(Response::Handed),
             "what it takes back, it never handed, so it passes unsaid"
         );
+        assert_eq!(shared.take_hands("osprey", hands()), Ok(Response::Handed));
+        assert!(
+            shared.handed.lends(),
+            "what osprey hands skiff, skiff lends"
+        );
+        // Round 2's F11: a stranger's take-back passes unsaid, and takes
+        // back nothing osprey handed.
+        assert_eq!(
+            shared.take_hands("kestrel", crate::lend::Hands::taken_back()),
+            Ok(Response::Handed)
+        );
+        assert!(
+            shared.handed.lends(),
+            "what osprey handed stands past kestrel's take-back"
+        );
+        let mut unkeyed = hands();
+        unkeyed.key = crate::lend::Key(String::new());
+        assert!(
+            shared.take_hands("osprey", unkeyed).is_err(),
+            "what isn't a lend is refused"
+        );
+        assert!(
+            !shared.handed.lends(),
+            "and leaves nothing handed, never the lend it would have replaced"
+        );
+    }
+
+    // Round 2's F24: any client of a room's socket could name the machine
+    // it borrows from and hand it a budget and an upstream of its choice.
+    #[test]
+    fn a_lend_asked_of_the_socket_is_taken_only_from_the_nodes_own_process() {
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let given = Given {
+            lends_from: Some("osprey".to_owned()),
+            ..bare("/nowhere/steer".into(), None)
+        };
+        let (mut shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            given,
+            to_dial,
+        );
+        let hands = || crate::lend::Hands {
+            lend: json!({
+                "vms": [{"prefix": "skiff", "budget": "room", "requests_a_day": 3}],
+                "budgets": {"room": {
+                    "upstream": "/elsewhere/relay.sock", "host": "models.example",
+                    "paths": ["/v1/messages"], "auth_header": "authorization",
+                }},
+            }),
+            key: crate::lend::Key("Bearer chosen-key".to_owned()),
+        };
+        for client in [None, Some(1)] {
+            shared.client = client;
+            let refused = shared.answer(Request::Hands {
+                from: "osprey".to_owned(),
+                hands: hands(),
+            });
+            assert!(
+                matches!(&refused, Err(why) if why.contains("client of its socket")),
+                "a client naming osprey is refused: {refused:?}"
+            );
+            assert!(!shared.handed.lends(), "and skiff lends nothing of it");
+        }
+        shared.client = i32::try_from(std::process::id()).ok();
         assert_eq!(
             shared.answer(Request::Hands {
                 from: "osprey".to_owned(),
                 hands: hands(),
             }),
-            Ok(Response::Handed)
+            Ok(Response::Handed),
+            "the node's own process, as a link it keeps there, is taken"
         );
-        assert!(
-            shared.handed.lends(),
-            "what osprey hands skiff, skiff lends"
-        );
+        assert!(shared.handed.lends());
     }
 
     /// What `lent_here` makes of `answers`, this machine's own lend ending
@@ -20458,8 +20558,60 @@ esac
             .expect("cut");
         let cut = handed_on(&shared, lend(None)).await;
         assert!(
-            matches!(&cut, Lent::Refused { status: 403, why } if !why.contains("no link")),
+            matches!(&cut, Lent::Refused { status: 403, why } if why.contains("cut off")),
             "a cut stands, never borrowed past: {cut:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lend_handed_here_whose_counts_cant_be_kept_is_borrowed() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let given = Given {
+            lends_from: Some("osprey".to_owned()),
+            ..bare("/nowhere/steer".into(), None)
+        };
+        let (mut shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            given,
+            to_dial,
+        );
+        let own = dir.path().join("own");
+        // A folder where its counts' lock goes, so none can be kept,
+        // though its cuts can still be read.
+        fs::create_dir_all(own.join("handed").join("counts.lock")).expect("a folder in the way");
+        shared.handed = Arc::new(crate::lend::lender::Lender::handed_in(
+            own.join("handed"),
+            own.clone(),
+            None,
+        ));
+        let hands = crate::lend::Hands {
+            lend: json!({
+                "vms": [{"prefix": "skiff", "budget": "room", "requests_a_day": 3}],
+                "budgets": {"room": {
+                    "upstream": dir.path().join("relay.sock"), "host": "forge.example",
+                    "paths": ["/push"], "auth_header": "authorization", "kind": "forge",
+                }},
+            }),
+            key: crate::lend::Key("Bearer handed-key".to_owned()),
+        };
+        shared.handed.hand(hands).expect("the lend is taken");
+        let lend = Lend {
+            budget: None,
+            method: "POST".to_owned(),
+            path: "/push".to_owned(),
+            headers: Vec::new(),
+            body: String::new(),
+        };
+        let borrowed = handed_on(&shared, lend).await;
+        assert!(
+            matches!(&borrowed, Lent::Refused { status: 503, why } if why.contains("no link")),
+            "a state folder at fault borrows from osprey, which no link reaches: {borrowed:?}"
         );
     }
 

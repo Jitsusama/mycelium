@@ -6,15 +6,18 @@
 //! new key reaches it within that, and takes it back within
 //! [`LOOKED_EVERY`] of a cut or of `hands` leaving its lend file. The
 //! handed end takes one only over a link its far key proved, and gives
-//! it to its node, which takes it only from the machine it borrows from
-//! ([`crate::wire::Request::Hands`]) and keeps it in memory alone, for
+//! it to its node the way the node's asks come: from the node's own
+//! process, for a link it keeps, or over the connection carrying its
+//! asks, for one the other machine dialled ([`super::carried`]). The node
+//! takes it only from there, and only from the machine it borrows from,
+//! and keeps it in memory alone, for
 //! [`crate::lend::lender::HANDED_LASTS`] past the last it was handed.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use super::starts::RunSaid;
 use crate::client::Client;
@@ -130,30 +133,49 @@ impl Drop for Handing {
     }
 }
 
-/// Gives what `from`, the machine at the other end, `handed` this one to
-/// this machine's node at `node`, which takes it only where `from` is the
-/// machine it borrows from; a link carrying nothing to a node hands
-/// nothing on. It runs on its own, so the link's loop never waits on the
-/// node, and what the node refuses is said in the log.
-pub(super) fn take(node: Option<PathBuf>, from: &str, handed: Hands) {
-    let Some(node) = node else {
-        eprintln!("mycelium: {from} handed this machine a lend, which no node here takes");
-        return;
-    };
+/// Handing what `from`, the machine at the other end, last handed this
+/// one on to this machine's node at `node`, from the node's own process,
+/// for as long as it is held: dropping it stops it, as the link ends.
+pub(super) struct ToNode(tokio::task::JoinHandle<()>);
+
+impl Drop for ToNode {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Gives what `from` last `handed` this machine to its node at `node`,
+/// for a link the node keeps in its own process, which is the one asker
+/// of its socket it takes a lend from. One at a time and the last alone,
+/// so an older lend never reaches the node after a newer one; it runs on
+/// its own, so the link's loop never waits on the node, and what the node
+/// refuses is said in the log.
+pub(super) fn to_node(
+    node: PathBuf,
+    from: &str,
+    mut handed: watch::Receiver<Option<Hands>>,
+) -> ToNode {
     let from = from.to_owned();
-    tokio::spawn(async move {
-        let asked = Request::Hands {
-            from: from.clone(),
-            hands: handed,
-        };
-        let reply = tokio::task::spawn_blocking(move || Client::connect(&node)?.ask(&asked)).await;
-        let why = match reply {
-            Ok(Ok(Ok(Response::Handed))) => return,
-            Ok(Ok(Ok(other))) => format!("its node answered {other:?}"),
-            Ok(Ok(Err(why))) => why,
-            Ok(Err(error)) => format!("its node didn't answer: {error}"),
-            Err(error) => format!("handing it on stopped: {error}"),
-        };
-        eprintln!("mycelium: what {from} handed this machine isn't taken: {why}");
-    });
+    ToNode(tokio::spawn(async move {
+        while handed.changed().await.is_ok() {
+            let Some(hands) = handed.borrow_and_update().clone() else {
+                continue;
+            };
+            let asked = Request::Hands {
+                from: from.clone(),
+                hands,
+            };
+            let node = node.clone();
+            let reply =
+                tokio::task::spawn_blocking(move || Client::connect(&node)?.ask(&asked)).await;
+            let why = match reply {
+                Ok(Ok(Ok(Response::Handed))) => continue,
+                Ok(Ok(Ok(other))) => format!("its node answered {other:?}"),
+                Ok(Ok(Err(why))) => why,
+                Ok(Err(error)) => format!("its node didn't answer: {error}"),
+                Err(error) => format!("handing it on stopped: {error}"),
+            };
+            eprintln!("mycelium: what {from} handed this machine isn't taken: {why}");
+        }
+    }))
 }
