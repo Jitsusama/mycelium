@@ -116,11 +116,9 @@ pub fn records(holders: &[Holder]) -> BTreeMap<String, daemon::Record> {
             (subject, at)
         })
         .collect();
-    // Compared in place, since a key cloned out would copy each subject
-    // at every comparison.
-    subjects.sort_by(|(one, at), (other, other_at)| {
-        at.len().cmp(&other_at.len()).then_with(|| one.cmp(other))
-    });
+    // Stable, and `held` gave the subjects in key order, so those held
+    // alike stay in key order with no subject compared.
+    subjects.sort_by_key(|(_, at)| at.len());
     let mut hubbing = vec![0_usize; holders.len()];
     subjects
         .into_iter()
@@ -288,6 +286,25 @@ mod tests {
             hubs(&made, "lonely"),
             ["SKIFFS"],
             "a subject whose every holder hubs another still has a hub"
+        );
+    }
+
+    #[test]
+    fn subjects_held_alike_are_hubbed_in_the_order_of_their_keys() {
+        // Said in the other order, so only the keys' order can put them.
+        let made = read_back(&[
+            holder("KESTRL", &["beta", "alpha"], 0.0),
+            holder("OSPREY", &["beta", "alpha"], 1.0),
+        ]);
+        assert_eq!(
+            hubs(&made, "alpha"),
+            ["KESTRL"],
+            "the first in key order takes the quietest holder"
+        );
+        assert_eq!(
+            hubs(&made, "beta"),
+            ["OSPREY"],
+            "the next takes who is free"
         );
     }
 
