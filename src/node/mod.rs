@@ -28246,8 +28246,16 @@ esac
             Some("PI_SANDBOX=strict"),
             "and one no key proved strict, fenced by pi itself"
         );
-        // A session that ran strict here, resumed over a proven link
-        // declaring the agent fence, comes back strict.
+        // A session that ran strict here and ended here, as a relayed
+        // reopening must have, resumed over a proven link declaring the
+        // agent fence, comes back strict.
+        link.lock().state.set_sessions(vec![on_quest(
+            "s-harbour",
+            "HARBOR",
+            "skiff",
+            "ended",
+            "QEST-20261115-HARBOR",
+        )]);
         let ran = ("s-harbour".to_owned(), crate::declared::Kind::Strict);
         link.fences.raise(&BTreeMap::from([ran]));
         let resumed = Start {
