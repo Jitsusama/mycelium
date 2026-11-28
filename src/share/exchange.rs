@@ -3014,6 +3014,15 @@ mod tests {
             !scratch.join("notes/old.md").exists(),
             "with kestrel's own notes moved aside"
         );
+        let aside = fs::read_dir(kestrel.places.state.join("before-share"))
+            .expect("something moved aside")
+            .map(|entry| entry.expect("an entry").path())
+            .find_map(|at| fs::read_to_string(at.join(QUEST).join("scratch/notes/old.md")).ok());
+        assert_eq!(
+            aside.as_deref(),
+            Some("kestrel's own\n"),
+            "where all they held is kept"
+        );
         assert!(
             far.take_up_again.is_none(),
             "and nothing is left to try again"
@@ -5542,6 +5551,46 @@ mod tests {
         assert!(
             !shares(&skiff) && !shares(&kestrel),
             "and neither end shares the quest"
+        );
+    }
+
+    // #586 round 2 F34: the sweep of an ended quest keeps the copies this
+    // machine moved aside beside themselves, its own work, and takes the
+    // rest away as concluding does.
+    #[test]
+    fn an_ended_quests_sweep_keeps_this_machines_own_copy_moved_aside() {
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        let readme = |status: &str| format!("---\nid: {QUEST}\nstatus: {status}\n---\n# Shared\n");
+        let shares = |machine: &Machine| machine.places.ledgers().shares(QUEST);
+        let scratch = kestrel.places.scratch.join(QUEST);
+        let copy = scratch.join(super::super::ended::beside("notes", "20261127T000000Z"));
+        skiff.write("README.md", &readme("active"));
+        share(&skiff, QUEST);
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
+        talk(&mut near, &mut far);
+        fs::create_dir_all(&copy).expect("made");
+        fs::write(copy.join("old.md"), "kestrel's own\n").expect("written");
+        fs::create_dir_all(scratch.join("notes")).expect("made");
+        fs::write(scratch.join("notes/plan.md"), "shared\n").expect("written");
+
+        skiff.write("README.md", &readme("concluded"));
+        for _ in 0..3 {
+            talk(&mut near, &mut far);
+        }
+
+        assert!(
+            !shares(&skiff) && !shares(&kestrel),
+            "neither end shares the ended quest"
+        );
+        assert!(
+            !scratch.join("notes").exists(),
+            "the Mac's scratch is taken away"
+        );
+        assert_eq!(
+            fs::read_to_string(copy.join("old.md")).as_deref().ok(),
+            Some("kestrel's own\n"),
+            "but for its own copy moved aside, kept whole"
         );
     }
 

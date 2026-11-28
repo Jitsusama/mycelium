@@ -9,7 +9,8 @@
 //! never while a process has its working folder or an open file inside,
 //! since a session or a build still at work there would lose it. A copy
 //! the machine moved aside beside itself before sharing, its own work, is
-//! kept ([`take_away_keeping_aside`]).
+//! kept ([`take_away_keeping_aside`]); a session concluding the quest on
+//! this machine still takes the whole scratch, that copy with it.
 
 use std::fs;
 use std::io;
@@ -132,18 +133,31 @@ pub fn take_away(folder: &Path, users: &dyn Users) -> Removal {
 /// Takes `folder` away as [`take_away`] does, but for the copies this
 /// machine moved aside beside themselves in it before sharing
 /// ([`is_beside`]): they are its own work, which no other machine holds,
-/// so they are kept, and `folder` is left holding only them.
+/// so they are kept, and `folder` is left holding only them. A `folder`
+/// that is a link is only unlinked, as [`take_away`] does, never emptied
+/// where it leads. One that can't be read through, whole or an entry of
+/// it, is stuck rather than taken away whole, since a copy aside may be
+/// what couldn't be read.
 pub fn take_away_keeping_aside(folder: &Path, users: &dyn Users) -> Removal {
-    let Ok(entries) = fs::read_dir(folder) else {
-        return take_away(folder, users);
+    match fs::symlink_metadata(folder) {
+        Ok(meta) if meta.is_dir() => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Removal::Absent,
+        Err(error) => return Removal::Stuck(error),
+        Ok(_) => return take_away(folder, users),
+    }
+    let paths: io::Result<Vec<PathBuf>> = fs::read_dir(folder).and_then(|entries| {
+        entries
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect()
+    });
+    let paths = match paths {
+        Ok(paths) => paths,
+        Err(error) => return Removal::Stuck(error),
     };
-    let (kept, rest): (Vec<PathBuf>, Vec<PathBuf>) = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .partition(|path| {
-            path.file_name()
-                .is_some_and(|name| is_beside(&name.to_string_lossy()))
-        });
+    let (kept, rest): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|path| {
+        path.file_name()
+            .is_some_and(|name| is_beside(&name.to_string_lossy()))
+    });
     if kept.is_empty() {
         return take_away(folder, users);
     }
@@ -264,6 +278,59 @@ mod tests {
             "with no copy aside the scratch goes whole"
         );
         assert!(!scratch.exists());
+    }
+
+    // #586 round 2 F50: a scratch that is a link is only unlinked, as a
+    // whole take-away does, so nothing where it leads is emptied.
+    #[cfg(unix)]
+    #[test]
+    fn a_scratch_that_is_a_link_is_unlinked_and_what_it_leads_to_is_left() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let elsewhere = dir.path().join("elsewhere");
+        let copy = elsewhere.join(beside("notes", "20261127T000000Z"));
+        fs::create_dir_all(&copy).expect("made");
+        fs::write(elsewhere.join("plan.md"), "not the scratch's\n").expect("written");
+        let scratch = dir.path().join("scratch");
+        std::os::unix::fs::symlink(&elsewhere, &scratch).expect("linked");
+
+        let taken = take_away_keeping_aside(&scratch, &Said(false));
+
+        assert!(matches!(taken, Removal::Removed), "unlinked: {taken:?}");
+        assert!(fs::symlink_metadata(&scratch).is_err(), "the link is gone");
+        assert!(
+            elsewhere.join("plan.md").exists() && copy.exists(),
+            "and what it led to is left whole"
+        );
+    }
+
+    // #586 round 2 F27: a scratch that can't be read through may hold a
+    // copy aside, so it's stuck rather than made writable and taken away
+    // whole.
+    #[cfg(unix)]
+    #[test]
+    fn a_scratch_that_cant_be_read_is_stuck_with_its_copy_aside_kept() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let scratch = dir.path().join("scratch");
+        let copy = scratch.join(beside("notes", "20261127T000000Z"));
+        fs::create_dir_all(&copy).expect("made");
+        fs::write(copy.join("old.md"), "this machine's own\n").expect("written");
+        fs::set_permissions(&scratch, fs::Permissions::from_mode(0o300)).expect("unreadable");
+        if fs::read_dir(&scratch).is_ok() {
+            fs::set_permissions(&scratch, fs::Permissions::from_mode(0o700)).expect("readable");
+            println!("skipped: this user reads a folder whatever its mode");
+            return;
+        }
+
+        let taken = take_away_keeping_aside(&scratch, &Said(false));
+        fs::set_permissions(&scratch, fs::Permissions::from_mode(0o700)).expect("readable");
+
+        assert!(matches!(taken, Removal::Stuck(_)), "stuck: {taken:?}");
+        assert_eq!(
+            fs::read_to_string(copy.join("old.md")).expect("kept"),
+            "this machine's own\n",
+            "the copy aside is kept with all it held"
+        );
     }
 
     #[test]

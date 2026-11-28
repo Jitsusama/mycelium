@@ -612,9 +612,11 @@ hearing the other end is said at the next look:
   folder is on another filesystem, as a scratch kept as a subvolume of
   its own is, the copy moves beside itself instead, under a name
   starting with a dot that no end shares, and it is kept when the
-  node takes the rest of an ended quest's scratch away. A quest
-  whose copy can't move aside is refused alone, logged with its id,
-  and the rest are still taken up; it is taken up again a minute on.
+  node takes the rest of an ended quest's scratch away, though a
+  session concluding the quest on that machine takes the whole
+  scratch, the copy with it. A quest whose copy can't move aside is
+  refused alone, logged with its id, and the rest are still taken up;
+  it is taken up again a minute on.
   A quest's own record moves only once the first of the sharing end's
   files comes to be written in its place; until then it stays where it
   was, neither read nor said, so a link that drops first leaves it
@@ -628,8 +630,9 @@ hearing the other end is said at the next look:
   where the quest ended, then stops sharing it and isn't taken up
   again, its record left as it is. A scratch where a process has its
   working folder or an open file is let be, with the quest still
-  shared, and tried again a minute on; one that can't be removed is
-  left and said. Linux's `/proc` says what works where, and `lsof`
+  shared, and tried again a minute on; one that can't be removed, or
+  read through to find its copies aside, is left and said, and one
+  that is a link is only unlinked. Linux's `/proc` says what works where, and `lsof`
   does on a Mac; where neither answers, the scratch counts as in use.
   An end older than `ended` names none, so a quest stays shared with
   it.
