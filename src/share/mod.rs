@@ -20,6 +20,7 @@ pub mod ledger;
 pub mod log;
 pub mod packing;
 pub mod pieces;
+pub mod rate;
 pub mod reached;
 pub mod settle;
 pub mod tree;

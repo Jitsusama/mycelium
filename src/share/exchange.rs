@@ -30,6 +30,7 @@ use super::ledger::{
 };
 use super::packing::{Packing, pack, unpack};
 use super::pieces::{PIECE, Pieces, Staged};
+use super::rate::{self, Rates};
 use super::settle::{Merge, Settled, State, settle};
 use super::tree::{Place, Quest, Shared, content, may_name};
 use super::watch::Watch;
@@ -490,6 +491,8 @@ pub struct Exchange {
     pieces: Pieces,
     /// How far each of those crossings has been asked ahead.
     ahead: Ahead,
+    /// How fast each of those crossings has come, said once it is whole.
+    rates: Rates,
     /// The shared scratch folders, watched so a look walks only those that
     /// changed.
     watch: Watch,
@@ -666,6 +669,7 @@ impl Exchange {
             findings: Vec::new(),
             pieces,
             ahead: Ahead::default(),
+            rates: Rates::default(),
             unsaid: BTreeMap::new(),
             cloning: Cloning::default(),
             theirs: None,
@@ -904,17 +908,23 @@ impl Exchange {
             self.gate_refused(id, key, why);
             return Vec::new();
         }
+        let sent = u64::try_from(body.len()).unwrap_or(u64::MAX);
         let (Some(hash), Ok(body)) = (theirs.hash.as_deref(), unpacked(body, packed)) else {
             self.gate_refused(id, key, Refused::Hash);
             return Vec::new();
         };
-        match self.pieces.stage(id, key, hash, at, len, &body) {
+        let staged = self.pieces.stage(id, key, hash, at, len, &body);
+        if let Ok(staged) = &staged {
+            self.timed(id, key, (at, sent), staged);
+        }
+        match staged {
             Ok(Staged::More(next)) => {
                 let piece = u64::try_from(body.len()).unwrap_or(u64::MAX);
                 self.asks_ahead(id, key, hash, Landed { at, piece, len }, next)
             }
             Ok(Staged::Whole(whole)) => {
                 self.ahead.done(id, key);
+                self.crossed(id, key, len);
                 self.gate_whole(id, key, hash, &whole);
                 Vec::new()
             }
@@ -1333,6 +1343,7 @@ impl Exchange {
     fn stop(&mut self, ledgers: &Ledgers, id: &str, why: &str) -> io::Result<()> {
         ledgers.stop(id)?;
         self.ahead.forget(id);
+        self.rates.forget(id);
         self.unsaid.remove(id);
         self.held_back.remove(id);
         self.to_want.remove(id);
@@ -2140,8 +2151,11 @@ impl Exchange {
         if !self.places.ledgers().shares(id) {
             return Ok(Vec::new());
         }
+        let sent = u64::try_from(body.len()).unwrap_or(u64::MAX);
         let body = unpacked(body, packed)?;
-        match self.pieces.stage(id, key, hash, at, len, &body)? {
+        let staged = self.pieces.stage(id, key, hash, at, len, &body)?;
+        self.timed(id, key, (at, sent), &staged);
+        match staged {
             Staged::More(next) => {
                 // The next piece is asked in the same turn as the first,
                 // of a file this end asked for; a piece unasked takes none.
@@ -2165,10 +2179,33 @@ impl Exchange {
             }
             Staged::Whole(whole) => {
                 self.ahead.done(id, key);
+                self.crossed(id, key, len);
                 self.take_file(id, key, theirs, Some(&whole), mode)
             }
             // The crossing begun again over it carries on.
             Staged::Astray => Ok(Vec::new()),
+        }
+    }
+
+    /// Counts a piece of file `key` of quest `id` at `at`, sent as `sent`
+    /// bytes of base64, toward how fast the file crosses, unless `staged`
+    /// says it went astray. A first piece times the crossing from when it
+    /// was asked for.
+    fn timed(&mut self, id: &str, key: &str, (at, sent): (u64, u64), staged: &Staged) {
+        if matches!(staged, Staged::Astray) {
+            return;
+        }
+        let file = (id.to_owned(), key.to_owned());
+        let asked = self.wanted.get(&file).copied().unwrap_or_else(Instant::now);
+        self.rates.landed(id, key, &rate::Piece { at, sent, asked });
+    }
+
+    /// Says how file `key` of quest `id` crossed, whole now at `len` bytes,
+    /// naming the machine whose link it came over, so a slow crossing says
+    /// which link was slow and at what rate.
+    fn crossed(&mut self, id: &str, key: &str, len: u64) {
+        if let Some(crossed) = self.rates.whole(id, key, len) {
+            eprintln!("{key} of {id} crossed from {}: {crossed}", self.other);
         }
     }
 
