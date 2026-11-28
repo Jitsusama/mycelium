@@ -120,6 +120,35 @@ async fn the_stop_waits_for_a_whole_answer_to_leave_not_only_to_be_queued() {
 }
 
 #[tokio::test]
+async fn a_whole_answer_still_queued_at_the_bound_is_cut_and_says_so() {
+    let mut lending = keyless();
+    let (carrying, mut answers) = carried_for(&lending.lender, "agents-tern");
+    let asked = lending.relay.asked().await;
+    asked.answer.send(used_whole()).expect("the relay answers");
+    let (lent, _) = whole(&mut answers).await;
+    assert_eq!(lent.last(), Some(&Lent::Done), "{lent:?}");
+    tokio::time::pause();
+    // Its last piece is queued, and the link never lets the answer go.
+    let drained = draining(&lending.lender, pending());
+    let took = drained.await.expect("the drain ends");
+    assert!(
+        took >= LENDS_DRAIN_WITHIN,
+        "it waits out the bound: {took:?}"
+    );
+    let (outcome, _) = carrying.await.expect("it was carried");
+    assert_eq!(
+        outcome, "cut by the node's stop",
+        "its line says the stop cut it, never that it was sent"
+    );
+    assert_eq!(
+        lending.spent("agents-tern"),
+        USED,
+        "it is charged what its answer says it used"
+    );
+    drop(answers);
+}
+
+#[tokio::test]
 async fn a_lend_asked_while_another_drains_is_refused_as_one_to_ask_again() {
     let mut lending = keyless();
     let (carrying, _held) = carried_for(&lending.lender, "agents-wren");

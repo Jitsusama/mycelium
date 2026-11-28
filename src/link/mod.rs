@@ -1931,7 +1931,7 @@ impl<S: Store> End<S> {
                 eprintln!("{} asked {} to lend, refused: {why}", self.other, self.here);
                 let refused = Lent::Refused { status: 403, why };
                 // The link outlives this call, so its loop is there to send it.
-                let _ = self.runs.saying.send(RunSaid::Lent(ask, refused));
+                let _ = self.runs.saying.send(RunSaid::Lent(ask, refused, None));
                 return;
             }
         };
@@ -2014,6 +2014,7 @@ impl<S: Store> End<S> {
         said: RunSaid,
         writing: &mut (impl AsyncWrite + Unpin),
     ) -> io::Result<()> {
+        let mut written = None;
         let frame = match said {
             RunSaid::Ran(ask, ran) => {
                 if ran.ends() {
@@ -2026,10 +2027,11 @@ impl<S: Store> End<S> {
                 self.runs.asked.remove(&ask);
                 Frame::Unrun { ask }
             }
-            RunSaid::Lent(ask, lent) => {
+            RunSaid::Lent(ask, lent, told) => {
                 if lent.ends() {
                     self.runs.lending.remove(&ask);
                 }
+                written = told;
                 Frame::Lent { ask, lent }
             }
             RunSaid::Unlend(ask) => {
@@ -2037,7 +2039,15 @@ impl<S: Store> End<S> {
                 Frame::Unlend { ask }
             }
         };
-        send(writing, &frame).await
+        let sent = send(writing, &frame).await;
+        // Told only once it went through: one that didn't, or that a stop
+        // dropped still queued, lets its sender go untold.
+        if sent.is_ok()
+            && let Some(written) = written
+        {
+            let _ = written.send(());
+        }
+        sent
     }
 
     /// Keeps the presence the other end sent of `session`, with the leases
@@ -3041,7 +3051,11 @@ impl Piece for Lent {
 /// Sends the other end each piece this machine's lender `answers` for its
 /// lend `ask`, through the link's loop at `saying`, one more each time the
 /// other end takes one, as its `window` allows. The other end letting go,
-/// which drops `stopped`'s sender, lets the lender's answer go.
+/// which drops `stopped`'s sender, lets the lender's answer go. The
+/// answer is held until the loop has written its last piece, not only
+/// queued it, since the lender counts the lend in flight until it is let
+/// go, and a node's stop, which ends the loop with what is queued, waits
+/// on that count.
 async fn hand_lent(
     ask: u64,
     mut answers: mpsc::Receiver<Lent>,
@@ -3066,10 +3080,20 @@ async fn hand_lent(
             why: "the lender ended before its answer did".to_owned(),
         });
         permit.forget();
-        let ends = lent.ends();
-        if saying.send(RunSaid::Lent(ask, lent)).is_err() || ends {
-            return;
+        if !lent.ends() {
+            if saying.send(RunSaid::Lent(ask, lent, None)).is_err() {
+                return;
+            }
+            continue;
         }
+        let (written, wrote) = oneshot::channel();
+        if saying.send(RunSaid::Lent(ask, lent, Some(written))).is_ok() {
+            tokio::select! {
+                _ = wrote => {}
+                _ = &mut stopped => {}
+            }
+        }
+        return;
     }
 }
 
@@ -6998,6 +7022,64 @@ mod tests {
             "and so does the lend of a machine skiff made for the person, which is no worker: \
              {lent:?}"
         );
+    }
+
+    /// A lend's answer handed on to the link's loop: what feeds the
+    /// answer, the loop's queue, and what the other end letting go drops.
+    fn handing_lent() -> (
+        mpsc::Sender<Lent>,
+        mpsc::UnboundedReceiver<RunSaid>,
+        oneshot::Sender<()>,
+    ) {
+        let (lender, answers) = mpsc::channel(BACKLOG);
+        let (saying, said) = mpsc::unbounded_channel();
+        let (stop, stopped) = oneshot::channel();
+        let window = Arc::new(tokio::sync::Semaphore::new(BACKLOG));
+        tokio::spawn(hand_lent(7, answers, saying, (window, stopped)));
+        (lender, said, stop)
+    }
+
+    #[tokio::test]
+    async fn a_lends_answer_is_held_until_the_loop_wrote_its_last_piece() {
+        let (lender, mut said, _stop) = handing_lent();
+        lender.send(Lent::Done).await.expect("the link takes it");
+        let Some(RunSaid::Lent(7, Lent::Done, Some(written))) = said.recv().await else {
+            panic!("the last piece is queued with what tells it was written");
+        };
+        tokio::task::yield_now().await;
+        assert!(
+            !lender.is_closed(),
+            "queued alone, the answer is still held, so the lend counts in flight"
+        );
+        written.send(()).expect("the link waits to hear it");
+        tokio::time::timeout(Duration::from_secs(5), lender.closed())
+            .await
+            .expect("written, the answer is let go");
+    }
+
+    #[tokio::test]
+    async fn a_lends_answer_dropped_still_queued_is_let_go_untold() {
+        let (lender, mut said, _stop) = handing_lent();
+        lender.send(Lent::Done).await.expect("the link takes it");
+        let Some(RunSaid::Lent(7, Lent::Done, Some(written))) = said.recv().await else {
+            panic!("the last piece is queued with what tells it was written");
+        };
+        // As a loop that ends with it still queued drops it.
+        drop(written);
+        tokio::time::timeout(Duration::from_secs(5), lender.closed())
+            .await
+            .expect("the answer is let go with the link");
+    }
+
+    #[tokio::test]
+    async fn a_lends_pieces_before_its_last_are_queued_with_nothing_to_tell() {
+        let (lender, mut said, _stop) = handing_lent();
+        let piece = Lent::Body("aGk=".to_owned());
+        lender.send(piece.clone()).await.expect("the link takes it");
+        let Some(RunSaid::Lent(7, queued, None)) = said.recv().await else {
+            panic!("a piece before the last is queued alone");
+        };
+        assert_eq!(queued, piece);
     }
 
     #[tokio::test]

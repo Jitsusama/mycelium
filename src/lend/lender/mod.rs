@@ -689,7 +689,19 @@ async fn carry(
         None => Ended::Refused(refused(503, STOPPING)),
     };
     let (outcome, told) = match ended {
-        Ended::Whole => ("sent".to_owned(), None),
+        Ended::Whole => {
+            // Said once the link has written it, so a whole answer the
+            // stop cut while still queued is in the log as cut rather
+            // than sent; its borrower hears its link end partway through.
+            let outcome = if delivered(lender, sending).await {
+                "sent"
+            } else {
+                CUT
+            };
+            say(machine, &used, began.elapsed(), outcome);
+            drop(in_flight);
+            return (outcome.to_owned(), used);
+        }
         Ended::Refused(refusal) => (format!("refused: {}", refusal.why), Some(refusal)),
         Ended::Gone => ("let go: its borrower stopped reading".to_owned(), None),
         Ended::Cut => (CUT.to_owned(), Some(refused(503, CUT_WHY))),
@@ -716,15 +728,16 @@ async fn carry(
     (outcome, used)
 }
 
-/// Once the link has taken the last piece of a lend's answer, which it
-/// shows by letting the answer go, or the node's stop cut what is left.
-/// The stop counts a lend in flight until then, so it never ends with a
-/// whole answer, already charged, still queued for a link it then closes.
-async fn delivered(lender: &Lender, sending: &mpsc::Sender<Lent>) {
+/// Whether the link wrote the last piece of a lend's answer to the other
+/// end, which it shows by letting the answer go, before the node's stop
+/// cut what is left. The stop counts a lend in flight until then, so it
+/// never ends with a whole answer, already charged, still queued for a
+/// link it then closes.
+async fn delivered(lender: &Lender, sending: &mpsc::Sender<Lent>) -> bool {
     tokio::select! {
         biased;
-        () = sending.closed() => {}
-        () = lender.lends.cut() => {}
+        () = sending.closed() => true,
+        () = lender.lends.cut() => false,
     }
 }
 

@@ -504,8 +504,10 @@ pub(super) enum RunSaid {
     Taken(u64),
     /// A run asked of the other machine has been let go.
     Unrun(u64),
-    /// What this machine's lender answers a lend the other end asked.
-    Lent(u64, Lent),
+    /// What this machine's lender answers a lend the other end asked,
+    /// and for the piece that ends it, what is told once the loop has
+    /// written it to the other end.
+    Lent(u64, Lent, Option<oneshot::Sender<()>>),
     /// A lend asked of the other machine has been let go.
     Unlend(u64),
 }
