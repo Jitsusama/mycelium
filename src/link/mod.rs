@@ -6562,6 +6562,77 @@ mod tests {
         );
     }
 
+    // Our stack round on #559 (2026-11-28, F30): a session carried onto a
+    // worker comes up there before it ends here, and an idle one says its
+    // presence only once, so a worker's word of it dropped then was never
+    // heard again and the carry's answer step failed a session that ran.
+    #[tokio::test]
+    async fn a_session_carried_onto_a_worker_stands_there_once_it_ends_here_unless_it_parked() {
+        let skiff = Memory::default();
+        let session = |id: &str, address: &str| json!({"session": id, "addresses": [address]});
+        skiff.start_here("moved", session("moved", "MOVED1"), true);
+        skiff.start_here("dozing", session("dozing", "DOZING"), true);
+        let (_skiff_end, _far_reading, mut far_writing) = skiff_over(
+            skiff.clone(),
+            |connection| Connection {
+                worker: true,
+                ..connection
+            },
+            None,
+        );
+        let said = |id: &str, address: &str| Frame::Presence {
+            session: id.to_owned(),
+            body: session(id, address),
+            leases: None,
+            held: None,
+            started_by: None,
+        };
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("tern").hello()),
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(Vec::new()),
+                },
+                said("moved", "MOVED1"),
+                said("dozing", "DOZING"),
+                said("zz-after", "ZZAFTR"),
+            ],
+        )
+        .await;
+        // Tern's sessions go in order, so once the later one is here, skiff
+        // has heard both and kept its own.
+        until(&skiff, |store| {
+            store.presences().iter().any(|p| p.session == "zz-after")
+        })
+        .await;
+        let on_tern = |store: &Memory, id: &str| {
+            store
+                .presences()
+                .iter()
+                .any(|p| p.session == id && p.elsewhere.as_deref() == Some("tern") && p.lives)
+        };
+        assert!(
+            !on_tern(&skiff, "moved") && !on_tern(&skiff, "dozing"),
+            "neither is tern's while it lives here"
+        );
+
+        // One parks, which its holder starts again here, and then the other
+        // ends, its carry done.
+        skiff.start_here(
+            "dozing",
+            json!({"session": "dozing", "addresses": ["DOZING"], "state": "parked"}),
+            false,
+        );
+        skiff.start_here("moved", session("moved", "MOVED1"), false);
+        until(&skiff, |store| on_tern(store, "moved")).await;
+        assert!(
+            !on_tern(&skiff, "dozing"),
+            "a worker takes no name of a session parked here, whenever it said it"
+        );
+    }
+
     #[tokio::test]
     async fn a_worker_takes_no_name_a_session_living_elsewhere_answers_to() {
         let skiff = Memory::default();
