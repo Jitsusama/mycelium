@@ -3256,22 +3256,37 @@ vm entry's `requests_a_day` and `usd_a_day` and that budget less its
 `key` and its `spend_watch`, since spend-watch is the lender's own,
 and `key`, the key the command printed. The borrowing machine holds
 a model's lend to `usd_a_day` and the day's count alone, asking no
-spend-watch of its own. A file that names no budget to hand sends
-none, and one whose budget is missing, or whose key can't be had,
-sends none and says why in the lender's log, once for each reason.
-The borrowing node takes it only from the link to the machine
-`--lends-from` names, refusing any other, and only where its budgets
-name no `key` command, and keeps it in memory alone, never on disk or
-in a log; each it takes replaces the last whole, so
-a process asking in that machine's name can put its own budget and
-key in place but never read or spend the one handed. Its counts and
-cuts are kept in `lend/handed/` under the account's state folder,
-and the cuts in `lend/cuts.json`, which `mycelium lend cut` writes,
-cut it off too. Once it holds one, each lend is lent by it first, as
-a lender lends its own, and borrowed from the lender as above only
-where that lend is refused 403 or 503 before anything is said, such
-as a budget asked that isn't the one handed, or an upstream that
-can't be reached; a refusal past the day's count stands.
+spend-watch of its own. Each minute the lender's end reads its file
+and its cuts again, without the key: where the file no longer hands
+that machine a budget, or `mycelium lend cut` cut it off there, it
+sends a `"Hands"` whose `lend` names no vm and whose `key` is empty,
+once, which takes back what was handed. A link that comes up with
+nothing to hand sends one too, and so does a file that can't be read,
+which says why in the lender's log, once for each reason; a key that
+can't be had says so too, and leaves what was handed standing.
+The borrowing node takes one only over a link whose far key proved
+it, never one whose hello alone names the machine, and only from the
+machine `--lends-from` names, refusing any other, and only where its
+budgets name no `key` command. It keeps it in memory alone, never on
+disk or in a log, for 25 minutes past the last it was handed, so a
+lender that stops handing can't leave one standing; each it takes
+replaces the last whole, so a process asking in that machine's name
+can put its own budget and key in place but never read or spend the
+one handed. Its counts and cuts are kept in `lend/handed/` under the
+account's state folder, and the cuts in `lend/cuts.json`, which
+`mycelium lend cut` writes, cut it off too. Once it holds one, each
+lend is lent by it first, as a lender lends its own, and borrowed
+from the lender as above only where that lend is refused 403 for a
+budget asked that isn't the one handed, or 503 for an upstream that
+can't be reached, before anything is said. Every other refusal
+stands, a cut's and a day's count's among them. The key goes to an
+upstream under the borrowing login's own runtime folder, which an
+agent a worker runs can't write.
+
+A machine that falls back counts a lend on both machines, so in a day
+it may make up to twice `requests_a_day` and spend up to twice
+`usd_a_day`: its own count and cap hold what it lends itself, and the
+lender's what it borrows. This is a known bound, not a fault.
 
 Where the lender dialled this machine, as a maker dials its workers,
 the link runs apart from the node, and the lend crosses the `"Carry"`
