@@ -8675,6 +8675,10 @@ impl<S: Store> Shared<S> {
                 self.machine
             ));
         }
+        // A session that ran here, resumed or carried back, comes back no
+        // looser than it ran, as a start asked here does, so a room taking
+        // a proven relay's declaration never lets it down to that.
+        let asked = self.brought_back_declaring(asked);
         let persons_carry = asked.carries;
         let judged = judged_as(
             by,
@@ -28205,6 +28209,19 @@ esac
             fenced_as(&link, &given, false, fenced.clone()).await,
             Some("PI_SANDBOX=strict"),
             "and one no key proved strict, fenced by pi itself"
+        );
+        // A session that ran strict here, resumed over a proven link
+        // declaring the agent fence, comes back strict.
+        let ran = ("s-harbour".to_owned(), crate::declared::Kind::Strict);
+        link.fences.raise(&std::collections::BTreeMap::from([ran]));
+        let resumed = Start {
+            command: ["pi", "--session", "s-harbour"].map(str::to_owned).to_vec(),
+            ..fenced.clone()
+        };
+        assert_eq!(
+            fenced_as(&link, &given, true, resumed).await,
+            Some("PI_SANDBOX=strict"),
+            "a resume of a session that ran strict here, strict"
         );
         // A session pi fenced as the node's own account can open its
         // socket and say its own relay was proven; the fence's mark on it
