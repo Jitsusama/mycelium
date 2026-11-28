@@ -526,8 +526,6 @@ pub fn folder() -> PathBuf {
     crate::place::state().join("lend")
 }
 
-/// The machines cut off, as `folder` keeps them; none where nothing was
-/// ever cut.
 /// Whether `file` is a plain file, past any links, so reading it ends.
 fn plain(file: &Path) -> Result<(), String> {
     let said = fs::metadata(file).map_err(|error| error.to_string())?;
@@ -538,9 +536,13 @@ fn plain(file: &Path) -> Result<(), String> {
     }
 }
 
+/// The machines cut off, as `folder` keeps them; none where nothing was
+/// ever cut. Where they don't parse, the error says only what kind of
+/// fault and where, as [`unparsed`] does, never what was found.
 fn cuts(folder: &Path) -> io::Result<Vec<String>> {
     match fs::read(folder.join("cuts.json")) {
-        Ok(text) => serde_json::from_slice(&text).map_err(io::Error::other),
+        Ok(text) => serde_json::from_slice(&text)
+            .map_err(|error| io::Error::other(unparsed_as(&error, "a list of machines"))),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(error) => Err(error),
     }
@@ -1368,11 +1370,16 @@ async fn unquiet<T>(reading: impl Future<Output = T>) -> Result<T, Ended> {
 /// fault and where, never the words found there, which may be a key
 /// pasted in the wrong place.
 fn unparsed(error: &serde_json::Error) -> String {
+    unparsed_as(error, "a lend")
+}
+
+/// Why a file meant to hold `what` doesn't parse, as [`unparsed`] says it.
+fn unparsed_as(error: &serde_json::Error, what: &str) -> String {
     let kind = match error.classify() {
-        serde_json::error::Category::Io => "couldn't be read",
-        serde_json::error::Category::Syntax => "isn't JSON",
-        serde_json::error::Category::Data => "isn't a lend",
-        serde_json::error::Category::Eof => "ends early",
+        serde_json::error::Category::Io => "couldn't be read".to_owned(),
+        serde_json::error::Category::Syntax => "isn't JSON".to_owned(),
+        serde_json::error::Category::Data => format!("isn't {what}"),
+        serde_json::error::Category::Eof => "ends early".to_owned(),
     };
     format!(
         "it {kind} at line {}, column {}",

@@ -35,10 +35,17 @@ impl Lender {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
 
     use serde_json::json;
 
     use super::super::{Cut, Lender, cut};
+
+    /// Longer than reading a lend should take, so a test fails rather
+    /// than hangs.
+    const PATIENCE: Duration = Duration::from_secs(10);
 
     /// A lend that may be taken, lending nothing anyone asks yet.
     fn taken() -> serde_json::Value {
@@ -72,12 +79,15 @@ mod tests {
         );
         assert_eq!(state(&lender), "refused", "a lend file that isn't there");
 
-        fs::write(&file, "{\"vms\": [").expect("a broken lend is written");
+        // Serde's own error would quote this string, which may be a key
+        // pasted in the wrong place.
+        fs::write(&file, "{\"vms\": \"sk-pasted-key\", \"budgets\": {}}")
+            .expect("a broken lend is written");
         let health = lender.health();
         assert_eq!(health["state"], "refused", "{health}");
         let why = health["why"].as_str().expect("why");
         assert!(why.contains("isn't taken"), "{why}");
-        assert!(!why.contains("vms"), "it never says the words found: {why}");
+        assert!(!why.contains("sk-pasted"), "it never says the words found: {why}");
 
         fs::write(&file, taken().to_string()).expect("the lend is fixed");
         assert_eq!(state(&lender), "answering", "fixed, it answers with nothing asked");
@@ -88,7 +98,14 @@ mod tests {
             .status()
             .expect("mkfifo runs");
         assert!(made.success(), "mkfifo made no pipe: {made}");
-        assert_eq!(state(&lender), "refused", "a pipe is refused, not read");
+        // Read apart, so a pipe read by mistake fails the test rather than
+        // hanging it.
+        let (said, heard) = mpsc::channel();
+        thread::spawn(move || said.send(state(&lender)));
+        let stood = heard
+            .recv_timeout(PATIENCE)
+            .expect("a pipe is never read");
+        assert_eq!(stood, "refused", "a pipe is refused, not read");
     }
 
     #[test]
@@ -108,7 +125,11 @@ mod tests {
         assert_eq!(state(&lender), "answering", "one machine cut leaves the rest");
         cut(&cuts, &Cut::All).expect("all are cut");
         assert_eq!(state(&lender), "refused");
-        fs::write(cuts.join("cuts.json"), "[").expect("the cuts are broken");
-        assert_eq!(state(&lender), "refused", "cuts that can't be read lend nothing");
+        fs::write(cuts.join("cuts.json"), "\"sk-pasted-key\"")
+            .expect("the cuts are broken");
+        let health = lender.health();
+        assert_eq!(health["state"], "refused", "cuts that can't be read lend nothing");
+        let why = health["why"].as_str().expect("why");
+        assert!(!why.contains("sk-pasted"), "it never says the words found: {why}");
     }
 }
