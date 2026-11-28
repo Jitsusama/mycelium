@@ -140,12 +140,14 @@ pub struct Load {
     /// where its pressure is at [`OVER_CPU_PRESSURE`]. It is
     /// [`over`](Self::over) when this isn't empty or it is past its
     /// [`lively`](Self::lively) ceiling; a reading kept before it was said
-    /// has none.
+    /// has none. Empty says only that no limit is known past: its queue
+    /// may say it is past none, or be too old to say or say no room at
+    /// all, and these read the same here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub past: Vec<Limit>,
     /// Why it is past the ceiling it is kept lively to, where it is:
-    /// such a machine is over though its queue is past no limit, since
-    /// the person at it feels it before the queue does.
+    /// such a machine is over though its queue names no limit it is past,
+    /// since the person at it feels it before the queue does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lively: Option<String>,
     /// Whether it has room for more: not over, stalling under
@@ -562,10 +564,7 @@ mod tests {
             "it says the ceiling it is past: {:?}",
             tern.lively
         );
-        assert!(
-            tern.past.is_empty(),
-            "its queue is past no limit of its own"
-        );
+        assert!(tern.past.is_empty(), "its queue names no limit it is past");
         assert!(
             reading.flags.contains(&Flag::HotWhileCool {
                 hot: "tern".to_owned(),

@@ -144,14 +144,14 @@ fn sentences(reading: &Reading) -> Vec<(&'static str, String)> {
             .map(|flag| sentence(flag, reading))
             .collect()
     };
-    // A machine that stands lively is over though its queue says it has
-    // room, so why is said, or it reads as one out of room.
+    // A machine that stands lively is over though its queue names no
+    // limit it is past, so why is said, or it reads as one out of room.
     sentences.extend(reading.machines.iter().filter_map(|one| {
         let why = one.lively.as_deref().filter(|_| lively_only(one))?;
         Some((
             "lively",
             format!(
-                "{} is over though its queue is past no limit, since {}",
+                "{} is over though its queue names no limit it is past, since {}",
                 unmarked(&one.machine),
                 unmarked(why),
             ),
@@ -196,8 +196,8 @@ fn aged(seconds: i64) -> String {
     }
 }
 
-/// How a machine stands, in a word: lively where it is over only by the
-/// ceiling it is kept lively to, its queue past no limit.
+/// How a machine stands, in a word: lively where it is over by the
+/// ceiling it is kept lively to and its queue names no limit it is past.
 fn stands(one: &Load) -> &'static str {
     if !one.ready {
         "not ready"
@@ -212,8 +212,9 @@ fn stands(one: &Load) -> &'static str {
     }
 }
 
-/// Whether `one` takes work and is over only by the ceiling it is kept
-/// lively to, its queue past no limit.
+/// Whether `one` takes work and is over by the ceiling it is kept lively
+/// to while its queue names no limit it is past: one that says it is past
+/// none and one too old to say read the same, as [`Load::past`] says.
 fn lively_only(one: &Load) -> bool {
     one.ready && one.over && one.past.is_empty() && one.lively.is_some()
 }
