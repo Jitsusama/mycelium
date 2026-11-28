@@ -1008,9 +1008,21 @@ impl Owner {
 /// A claim on `lock`, a machine's lock file, where no other holds it.
 fn locked(lock: fs::File) -> io::Result<Option<Claim>> {
     match rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
-        Ok(()) => Ok(Some(Box::new(lock))),
+        Ok(()) => Ok(Some(Box::new(Held(lock)))),
         Err(rustix::io::Errno::WOULDBLOCK) => Ok(None),
         Err(error) => Err(error.into()),
+    }
+}
+
+/// A machine's lock file, locked, let go as it drops.
+struct Held(fs::File);
+
+impl Drop for Held {
+    /// Unlocks it outright rather than leave that to its closing, since a
+    /// flock belongs to the open file and a process forked meanwhile holds
+    /// that open until it execs. One that fails is let go as it closes.
+    fn drop(&mut self) {
+        let _ = rustix::fs::flock(&self.0, FlockOperation::Unlock);
     }
 }
 
