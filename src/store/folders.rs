@@ -1002,9 +1002,6 @@ impl Owner {
     }
 }
 
-/// Reads `path` as `T`, or nothing when it is gone, half-written or not of
-/// this kind; the mesh rewrites these files as it runs, so a file that
-/// fails now is read again at its next change.
 /// A claim on `lock`, a machine's lock file, where no other holds it.
 fn locked(lock: fs::File) -> io::Result<Option<Claim>> {
     match rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
@@ -1026,6 +1023,9 @@ impl Drop for Held {
     }
 }
 
+/// Reads `path` as `T`, or nothing when it is gone, half-written or not of
+/// this kind; the mesh rewrites these files as it runs, so a file that
+/// fails now is read again at its next change.
 fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
