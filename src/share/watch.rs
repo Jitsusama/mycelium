@@ -11,6 +11,9 @@
 //! stream again for each change, starts it once a quest newly looked at
 //! rather than once a path, and not at all at a look that starts nothing
 //! (see [`crate::watching`]).
+//!
+//! Long because its tests sit beside it: each case drives a watch through
+//! looks and forgets with a counting watcher, and they share its helpers.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -23,6 +26,7 @@ use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
 
 use super::tree::{Place, Shared, crosses};
+use crate::watching::Answer;
 
 /// A quest's scratch folder, by the quest's id and the folder's name.
 pub type Folder = (String, String);
@@ -43,6 +47,9 @@ pub struct Watch {
     /// The folders the watcher may hold though they aren't watched: one
     /// heard gone or made anew, or one a batch failed to start. Each is
     /// given back when its quest is forgotten, unless watched again first.
+    /// One whose watch the watcher refused isn't among them unless it was
+    /// before, as the watcher never held it, and giving back a path it
+    /// doesn't hold would split the forget's batch in two.
     stale: BTreeSet<Folder>,
     /// The records it may hold though they aren't watched, likewise.
     records_stale: BTreeSet<String>,
@@ -187,7 +194,8 @@ impl Watch {
     }
 
     /// Stops watching quest `id`'s record and folders, once it is shared
-    /// no longer.
+    /// no longer, giving back in one batch every one the watcher holds,
+    /// watched or stale.
     pub fn forget(&mut self, id: &str) {
         let ours = |(quest, _): &Folder| quest == id;
         let mut gone: Vec<PathBuf> = self
@@ -292,22 +300,17 @@ impl Watch {
         let Some(watcher) = self.watcher.as_mut() else {
             return;
         };
-        let mut answers = crate::watching::watch_all(watcher.as_mut(), &[], &new).into_iter();
-        for (folder, took) in folders.into_iter().zip(answers.by_ref()) {
-            if took {
-                self.stale.remove(folder);
-                self.watched.insert(folder.clone());
-            } else {
-                self.stale.insert(folder.clone());
-            }
+        let mut answers = crate::watching::answer_all(watcher.as_mut(), &[], &new).into_iter();
+        for (folder, answer) in folders.into_iter().zip(answers.by_ref()) {
+            keep(answer, folder.clone(), &mut self.watched, &mut self.stale);
         }
-        if let (Some(id), Some(took)) = (record, answers.next()) {
-            if took {
-                self.records_stale.remove(id);
-                self.records_watched.insert(id.to_owned());
-            } else {
-                self.records_stale.insert(id.to_owned());
-            }
+        if let (Some(id), Some(answer)) = (record, answers.next()) {
+            keep(
+                answer,
+                id.to_owned(),
+                &mut self.records_watched,
+                &mut self.records_stale,
+            );
         }
     }
 
@@ -348,6 +351,26 @@ impl Watch {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Keeps `path`, a folder or record a batch asked to watch, as watched or
+/// stale by the watcher's `answer`. One refused that the watcher holds
+/// nothing of is neither, so a forget gives back only what it holds; one
+/// it holds still is answered held and goes stale. Either way it is
+/// walked, and watched again at its next look.
+fn keep<T: Ord>(answer: Answer, path: T, watched: &mut BTreeSet<T>, stale: &mut BTreeSet<T>) {
+    match answer {
+        Answer::Watched => {
+            stale.remove(&path);
+            watched.insert(path);
+        }
+        Answer::Held => {
+            stale.insert(path);
+        }
+        Answer::Refused => {
+            stale.remove(&path);
         }
     }
 }
@@ -424,6 +447,7 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use crate::watching::counting::Counting;
 
     const QUEST: &str = "QEST-20261013-4UHC5Q";
 
@@ -433,6 +457,28 @@ mod tests {
 
     fn named(folder: &str) -> String {
         folder.to_owned()
+    }
+
+    /// A watch of `scratch` and `records` by the counting watcher
+    /// `counting`.
+    fn counted(scratch: &Path, records: &Path, counting: Counting) -> Watch {
+        Watch::watched_by(scratch.to_owned(), records.to_owned(), |_| {
+            let watcher: Box<dyn Watcher + Send> = Box::new(counting);
+            Ok(watcher)
+        })
+    }
+
+    /// The paths `watch`'s watcher holds.
+    fn held_by(watch: &Watch) -> BTreeSet<PathBuf> {
+        watch
+            .watcher
+            .as_ref()
+            .expect("a watcher")
+            .watched_paths()
+            .expect("its paths listed")
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect()
     }
 
     /// Takes what the watcher has yet to tell of before the test, such as
@@ -583,8 +629,6 @@ mod tests {
     fn a_quest_newly_looked_at_starts_the_stream_once_and_a_look_after_none() {
         use std::sync::atomic::Ordering;
 
-        use crate::watching::counting::Counting;
-
         let dir = tempfile::tempdir().expect("a temporary folder");
         let (scratch, records) = (dir.path().join("scratch"), dir.path().join("records"));
         for folder in ["notes", "bench", "logs"] {
@@ -592,10 +636,7 @@ mod tests {
         }
         fs::create_dir_all(records.join(QUEST)).expect("made");
         let (counting, starts) = Counting::made();
-        let mut watch = Watch::watched_by(scratch.clone(), records, |_| {
-            let watcher: Box<dyn Watcher + Send> = Box::new(counting);
-            Ok(watcher)
-        });
+        let mut watch = counted(&scratch, &records, counting);
         let all = shared(&["notes", "bench", "logs", "not-yet"]);
         let (walk, record) = watch.to_look_at(QUEST, &all);
         assert_eq!((walk.len(), record), (4, true), "{walk:?}");
@@ -632,12 +673,7 @@ mod tests {
 
         watch.forget(QUEST);
         assert_eq!(starts.load(Ordering::SeqCst), 3, "and given back at once");
-        let held = watch
-            .watcher
-            .as_ref()
-            .expect("a watcher")
-            .watched_paths()
-            .expect("its paths listed");
+        let held = held_by(&watch);
         assert!(held.is_empty(), "forget kept some paths watched: {held:?}");
         let (walk, record) = watch.to_look_at(QUEST, &all);
         assert_eq!((walk.len(), record), (4, true), "{walk:?}");
@@ -649,10 +685,8 @@ mod tests {
     }
 
     #[test]
-    fn a_quest_forgotten_while_a_folder_and_its_record_are_stale_gives_both_back() {
+    fn a_quest_forgotten_while_a_folder_and_its_record_are_stale_gives_all_back_at_once() {
         use std::sync::atomic::Ordering;
-
-        use crate::watching::counting::Counting;
 
         let dir = tempfile::tempdir().expect("a temporary folder");
         let (scratch, records) = (dir.path().join("scratch"), dir.path().join("records"));
@@ -661,10 +695,7 @@ mod tests {
         }
         fs::create_dir_all(records.join(QUEST)).expect("made");
         let (counting, starts) = Counting::made();
-        let mut watch = Watch::watched_by(scratch.clone(), records.clone(), |_| {
-            let watcher: Box<dyn Watcher + Send> = Box::new(counting);
-            Ok(watcher)
-        });
+        let mut watch = counted(&scratch, &records, counting);
         watch.to_look_at(QUEST, &shared(&["notes", "bench"]));
 
         // Heard of whole, the folder and the record go stale, held by the
@@ -681,27 +712,19 @@ mod tests {
             watch.stale,
             watch.records_stale
         );
-
-        let held = watch
-            .watcher
-            .as_ref()
-            .expect("a watcher")
-            .watched_paths()
-            .expect("its paths listed");
         assert_eq!(
-            held.len(),
-            3,
-            "stale or not, the watcher holds both folders and the record: {held:?}"
+            held_by(&watch),
+            BTreeSet::from([
+                scratch.join(QUEST).join("bench"),
+                scratch.join(QUEST).join("notes"),
+                records.join(QUEST),
+            ]),
+            "stale or not, the watcher holds both folders and the record"
         );
 
         let before = starts.load(Ordering::SeqCst);
         watch.forget(QUEST);
-        let held = watch
-            .watcher
-            .as_ref()
-            .expect("a watcher")
-            .watched_paths()
-            .expect("its paths listed");
+        let held = held_by(&watch);
         assert!(
             held.is_empty(),
             "forget kept a stale path watched: {held:?}"
@@ -716,6 +739,89 @@ mod tests {
             "forget kept the quest stale: {:?} {:?}",
             watch.stale,
             watch.records_stale
+        );
+    }
+
+    #[test]
+    fn a_quest_forgotten_after_a_folder_s_watch_was_refused_gives_all_back_at_once() {
+        use std::sync::atomic::Ordering;
+
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (scratch, records) = (dir.path().join("scratch"), dir.path().join("records"));
+        for folder in ["notes", "bench"] {
+            fs::create_dir_all(scratch.join(QUEST).join(folder)).expect("made");
+        }
+        fs::create_dir_all(records.join(QUEST)).expect("made");
+        let (counting, starts) = Counting::refusing(scratch.join(QUEST).join("bench"));
+        let mut watch = counted(&scratch, &records, counting);
+        let both = shared(&["notes", "bench"]);
+        assert_eq!(watch.to_look_at(QUEST, &both), (both.clone(), true));
+        assert_eq!(
+            watch.to_look_at(QUEST, &both),
+            (BTreeSet::from([named("bench")]), false),
+            "the refused folder is walked again at a later look, and only it"
+        );
+        assert!(
+            watch.stale.is_empty(),
+            "a folder the watcher holds nothing of went stale: {:?}",
+            watch.stale
+        );
+        assert_eq!(
+            held_by(&watch),
+            BTreeSet::from([scratch.join(QUEST).join("notes"), records.join(QUEST)]),
+            "the watcher holds all but the folder it refused"
+        );
+
+        let before = starts.load(Ordering::SeqCst);
+        watch.forget(QUEST);
+        let held = held_by(&watch);
+        assert!(held.is_empty(), "forget kept a path watched: {held:?}");
+        assert_eq!(
+            starts.load(Ordering::SeqCst) - before,
+            1,
+            "forget gave its paths back in more than one batch"
+        );
+        assert!(
+            watch.stale.is_empty() && watch.records_stale.is_empty(),
+            "forget kept the quest stale: {:?} {:?}",
+            watch.stale,
+            watch.records_stale
+        );
+    }
+
+    #[test]
+    fn a_quest_forgotten_after_a_folder_was_refused_partway_gives_it_back_too() {
+        use std::sync::atomic::Ordering;
+
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (scratch, records) = (dir.path().join("scratch"), dir.path().join("records"));
+        for folder in ["notes", "bench"] {
+            fs::create_dir_all(scratch.join(QUEST).join(folder)).expect("made");
+        }
+        fs::create_dir_all(records.join(QUEST)).expect("made");
+        // Linux's watcher, out of watches partway down a folder, keeps what
+        // it took of it, so the folder is held though refused.
+        let (counting, starts) = Counting::refusing_partway(scratch.join(QUEST).join("bench"));
+        let mut watch = counted(&scratch, &records, counting);
+        let both = shared(&["notes", "bench"]);
+        assert_eq!(watch.to_look_at(QUEST, &both), (both.clone(), true));
+        assert_eq!(
+            watch.stale,
+            BTreeSet::from([(QUEST.to_owned(), named("bench"))]),
+            "a folder refused but held didn't go stale"
+        );
+
+        let before = starts.load(Ordering::SeqCst);
+        watch.forget(QUEST);
+        let held = held_by(&watch);
+        assert!(
+            held.is_empty(),
+            "forget kept a folder refused partway watched: {held:?}"
+        );
+        assert_eq!(
+            starts.load(Ordering::SeqCst) - before,
+            1,
+            "forget gave its paths back in more than one batch"
         );
     }
 }

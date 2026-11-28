@@ -1309,7 +1309,10 @@ pub fn taints(machine: &Machine) -> Vec<Taint> {
             "its queue starts no build beside a VM test for want of a processor",
         ));
     }
-    if let Some(lively) = machine.declared.as_ref().and_then(|said| said.kept_lively)
+    if let Some(lively) = machine
+        .declared
+        .as_ref()
+        .and_then(|said| said.kept_lively.as_ref())
         && let Some(room) = &machine.room
         && let Some(why) = past_lively(lively, room)
     {
@@ -1384,7 +1387,7 @@ struct Judged {
 
 /// Why a machine kept lively to `lively` is past its ceiling, as `room`
 /// says, if it is.
-pub(crate) fn past_lively(lively: Lively, room: &Room) -> Option<String> {
+pub(crate) fn past_lively(lively: &Lively, room: &Room) -> Option<String> {
     // Over the last minute where its node says it, so a burst of a few
     // seconds never crosses the ceiling; over ten from a node too old.
     let (cpu, over) = room
@@ -1408,8 +1411,23 @@ pub(crate) fn past_lively(lively: Lively, room: &Room) -> Option<String> {
     {
         return Some(format!(
             "it is kept lively, at memory pressure {most} at most, and is at {:.1} over a minute",
-            // Rounded up to a tenth, as the processor's is to a whole.
-            (full * 10.0).ceil() / 10.0
+            // Rounded up to a tenth, as the processor's is to a whole, less
+            // a hair first, since tenths in binary land just above
+            // themselves (1.1 times 10 is past 11) and would read a tenth
+            // high; the kernel says hundredths, so the hair never reaches
+            // the ceiling.
+            ((full * 10.0) - 1e-9).ceil() / 10.0
+        ));
+    }
+    // Over the last minute alone too: disk stalls that hold every task at
+    // once stop the machine as surely as memory's do.
+    if let (Some(most), Some(full)) = (lively.io_full, room.io_full_minute)
+        && full > f64::from(most)
+    {
+        return Some(format!(
+            "it is kept lively, at disk pressure {most} at most, and is at {:.1} over a minute",
+            // Rounded as memory's is, a hair less first.
+            ((full * 10.0) - 1e-9).ceil() / 10.0
         ));
     }
     lively
@@ -1544,7 +1562,11 @@ fn judge(
         .map(|taint| costs(machine, taint, weights))
         .sum();
     let saturated = rather_not.iter().any(|taint| is_saturated(&taint));
-    let kept = match machine.declared.as_ref().and_then(|said| said.kept_lively) {
+    let kept = match machine
+        .declared
+        .as_ref()
+        .and_then(|said| said.kept_lively.as_ref())
+    {
         Some(_) if work.tolerating(KEPT_LIVELY) => Kept::Not,
         Some(_) if rather_not.iter().any(|taint| taint.key == KEPT_LIVELY) => Kept::Past,
         Some(_) => Kept::Within,
@@ -2040,6 +2062,7 @@ pub(crate) mod tests {
                 saturated: None,
                 cpu_minute: None,
                 memory_full_minute: None,
+                io_full_minute: None,
             }),
             declared: Some(Declared {
                 reach: reach.iter().map(|&one| one.to_owned()).collect(),
@@ -2507,6 +2530,8 @@ pub(crate) mod tests {
             cpu,
             memory_available,
             memory_full: None,
+            io_full: None,
+            io_full_from: Vec::new(),
         });
         machine
     }
@@ -2828,6 +2853,12 @@ pub(crate) mod tests {
              and is at 3.1 over a minute",
             "and says which it read"
         );
+        assert_eq!(
+            said_of(&stalled(Some(1), Some(1.1))),
+            "kestrel would rather not: it is kept lively, at memory pressure 1 at most, \
+             and is at 1.1 over a minute",
+            "a tenth the kernel said reads as itself, never a tenth high"
+        );
         for (most, full, why) in [
             (
                 Some(3),
@@ -2843,6 +2874,62 @@ pub(crate) mod tests {
                 None,
                 Some(40.0),
                 "a machine holding to no memory ceiling is never past one",
+            ),
+        ] {
+            assert_eq!(
+                placed(&stalled(most, full).placement),
+                Some("kestrel"),
+                "{why}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_machine_kept_lively_is_past_its_ceiling_once_its_disks_stall_all_its_work() {
+        let saturated = pressed(machine("osprey", "macos", 8, &[]), 90.0);
+        let anything = needing(Vec::new());
+        let stalled = |most: Option<u32>, full: Option<f64>| {
+            let mut kestrel = lively(pressed(machine("kestrel", "linux", 60, &[]), 5.0), 28, None);
+            kestrel
+                .declared
+                .as_mut()
+                .and_then(|said| said.kept_lively.as_mut())
+                .expect("kept lively")
+                .io_full = most;
+            let room = kestrel.room.as_mut().expect("a room");
+            room.io_full_minute = full;
+            // Memory stalls past where a memory ceiling would sit, which
+            // a ceiling naming only the disks never reads.
+            room.memory_full_minute = Some(40.0);
+            judged_now(&anything, &[kestrel, saturated.clone()])
+        };
+        let past = stalled(Some(1), Some(8.64));
+        assert_eq!(
+            placed(&past.placement),
+            Some("osprey"),
+            "a minute past its disk ceiling is past it, however light its processors"
+        );
+        assert_eq!(
+            said_of(&past),
+            "kestrel would rather not: it is kept lively, at disk pressure 1 at most, \
+             and is at 8.7 over a minute",
+            "and says which it read"
+        );
+        for (most, full, why) in [
+            (
+                Some(1),
+                Some(1.0),
+                "a minute at the ceiling itself is within it",
+            ),
+            (
+                Some(1),
+                None,
+                "a room saying no minute, as an older node's or a Mac's, is within it",
+            ),
+            (
+                None,
+                Some(40.0),
+                "a machine holding to no disk ceiling is never past one",
             ),
         ] {
             assert_eq!(

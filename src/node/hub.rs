@@ -64,9 +64,10 @@ pub struct Holder {
 
 /// Each declared subject's hubs, by key, a subject read by
 /// [`networks::subject_key`] so two cells saying it differently hold the
-/// same one, as the cap counts it.
+/// same one, as the cap counts it. Each is held as its bytes as soon as
+/// it is made, so the kind is never held whole as values too.
 #[must_use]
-pub fn records(holders: &[Holder]) -> BTreeMap<String, serde_json::Value> {
+pub fn records(holders: &[Holder]) -> BTreeMap<String, daemon::Record> {
     let mut held: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
     for (at, holder) in holders.iter().enumerate() {
         for subject in &holder.subjects {
@@ -84,7 +85,11 @@ pub fn records(holders: &[Holder]) -> BTreeMap<String, serde_json::Value> {
             (subject, at)
         })
         .collect();
-    subjects.sort_by_key(|(subject, at)| (at.len(), subject.clone()));
+    // Compared in place, since a key cloned out would copy each subject
+    // at every comparison.
+    subjects.sort_by(|(one, at), (other, other_at)| {
+        at.len().cmp(&other_at.len()).then_with(|| one.cmp(other))
+    });
     let mut hubbing = vec![0_usize; holders.len()];
     subjects
         .into_iter()
@@ -112,7 +117,8 @@ pub fn records(holders: &[Holder]) -> BTreeMap<String, serde_json::Value> {
                 "hubs": listed,
             });
             let key = daemon::key(KIND, &subject);
-            (key, daemon::record(KIND, &subject, 0, fields))
+            let record = daemon::Record::from(daemon::record(KIND, &subject, 0, fields));
+            (key, record)
         })
         .collect()
 }
@@ -160,6 +166,17 @@ mod tests {
         }
     }
 
+    /// The records `holders` make, each read back from its bytes.
+    fn read_back(holders: &[Holder]) -> BTreeMap<String, serde_json::Value> {
+        records(holders)
+            .into_iter()
+            .map(|(key, record)| {
+                let read = serde_json::from_str(record.as_str()).expect("a record reads back");
+                (key, read)
+            })
+            .collect()
+    }
+
     fn hubs(records: &BTreeMap<String, serde_json::Value>, subject: &str) -> Vec<String> {
         records[&daemon::key(KIND, subject)]["hubs"]
             .as_array()
@@ -171,7 +188,7 @@ mod tests {
 
     #[test]
     fn a_subjects_hub_is_its_least_heard_holder_and_names_its_fits() {
-        let made = records(&[
+        let made = read_back(&[
             holder("KESTRL", &["mycelium:hubs"], 3.0),
             holder("OSPREY", &["Mycelium:Hubs"], 0.5),
             holder("TERNSS", &["mycelium:hubs"], 1.0),
@@ -202,7 +219,7 @@ mod tests {
             subjects: networks::subjects(&said),
             heard,
         };
-        let made = records(&[
+        let made = read_back(&[
             cell("KESTRL", json!(["école", "Straße"]), 0.0),
             cell("OSPREY", json!(["ÉCOLE", "STRASSE"]), 1.0),
         ]);
@@ -220,7 +237,7 @@ mod tests {
 
     #[test]
     fn a_cell_hubs_the_rarest_of_its_subjects_and_a_lone_holder_hubs_each() {
-        let made = records(&[
+        let made = read_back(&[
             holder("KESTRL", &["common", "rare"], 0.0),
             holder("OSPREY", &["common"], 1.0),
             holder("SKIFFS", &["lone", "lonely"], 0.0),
@@ -248,7 +265,7 @@ mod tests {
         let many: Vec<Holder> = (0..21)
             .map(|n| holder(&format!("K{n:05}"), &["busy"], f64::from(n)))
             .collect();
-        let made = records(&many);
+        let made = read_back(&many);
         assert_eq!(hubs(&made, "busy"), ["K00000", "K00001", "K00002"]);
         let record = &made["hub:busy"];
         for hub in record["hubs"].as_array().expect("its hubs") {
@@ -272,7 +289,7 @@ mod tests {
                 holder(&format!("K{n:05}"), &["busy", &own], f64::from(n))
             })
             .collect();
-        let made = records(&many);
+        let made = read_back(&many);
         assert_eq!(
             hubs(&made, "busy"),
             ["K00000", "K00001", "K00002"],
@@ -290,7 +307,7 @@ mod tests {
         some[20].subjects = vec!["busy".to_owned()];
         some[19].subjects = vec!["busy".to_owned()];
         assert_eq!(
-            hubs(&records(&some), "busy"),
+            hubs(&read_back(&some), "busy"),
             ["K00019", "K00020", "K00000"],
             "the free come first, then the least heard of those hubbing already"
         );
@@ -312,7 +329,7 @@ mod tests {
             })
             .collect();
         assert_eq!(
-            hubs(&records(&many), "busy"),
+            hubs(&read_back(&many), "busy"),
             ["K00000", "K00002", "K00003"],
             "K00001 is heard less than K00002, but hubs two to their one"
         );

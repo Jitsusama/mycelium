@@ -35,7 +35,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +75,11 @@ pub struct Room {
     /// machine moves. Unknown as [`Room::cpu_minute`] is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_full_minute: Option<f64>,
+    /// The share of the last minute in which all work at once waited on
+    /// its disks, machine-wide, in percent, as the machine's own kernel
+    /// says it ([`io_full_minute`]). Unknown as [`Room::cpu_minute`] is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_full_minute: Option<f64>,
 }
 
 /// A limit of the queue's that a machine can be past.
@@ -224,6 +229,7 @@ fn said(record: &[u8], now: i64) -> Option<Room> {
         saturated: None,
         cpu_minute: None,
         memory_full_minute: None,
+        io_full_minute: None,
     })
 }
 
@@ -247,6 +253,42 @@ pub fn memory_full_minute(procs: &Path) -> Option<f64> {
         &fs::read_to_string(procs.join("pressure/memory")).ok()?,
         "avg60=",
     )
+}
+
+/// The share of the last minute in which every task at once waited on
+/// its disks, machine-wide, as `procs`' `pressure/io` says it, or none
+/// where it says none, as on a Mac.
+#[must_use]
+pub fn io_full_minute(procs: &Path) -> Option<f64> {
+    stalled_all_over(
+        &fs::read_to_string(procs.join("pressure/io")).ok()?,
+        "avg60=",
+    )
+}
+
+/// The share of the last minute in which every task at once of the worst
+/// of `groups` waited on its disks, each a control group named by its
+/// path below `cgroups` (Linux's `/sys/fs/cgroup`, or a stand-in for it),
+/// as its `io.pressure` says it; none where none of them says one. A path
+/// that would climb out of `cgroups` is none of them.
+#[must_use]
+pub fn io_full_minute_of(cgroups: &Path, groups: &[String]) -> Option<f64> {
+    groups
+        .iter()
+        .map(Path::new)
+        .filter(|group| {
+            group.components().next().is_some()
+                && group
+                    .components()
+                    .all(|part| matches!(part, Component::Normal(_)))
+        })
+        .filter_map(|group| {
+            stalled_all_over(
+                &fs::read_to_string(cgroups.join(group).join("io.pressure")).ok()?,
+                "avg60=",
+            )
+        })
+        .reduce(f64::max)
 }
 
 /// This machine's room as its own kernel says it, read from `procs`
@@ -304,6 +346,7 @@ fn felt_from(cpu: &str, memory: &str, io: &str, meminfo: &str, at: &str) -> Opti
         saturated: None,
         cpu_minute: stalled_over(cpu, "avg60="),
         memory_full_minute: stalled_all_over(memory, "avg60="),
+        io_full_minute: stalled_all_over(io, "avg60="),
     })
 }
 
@@ -416,6 +459,10 @@ mod tests {
             unsaid.get("memory_full_minute").is_none(),
             "nor a minute of memory stalls"
         );
+        assert!(
+            unsaid.get("io_full_minute").is_none(),
+            "nor a minute of disk stalls"
+        );
         let older: Room = serde_json::from_value(unsaid).expect("an older room reads");
         assert_eq!(older.cpu_minute, None, "and reads back as none");
         room.cpu_minute = Some(31.5);
@@ -429,6 +476,14 @@ mod tests {
             heard.memory_full_minute,
             Some(3.25),
             "a minute of memory stalls said is heard"
+        );
+        room.io_full_minute = Some(1.75);
+        let said_on = serde_json::to_string(&room).expect("a room is json");
+        let heard: Room = serde_json::from_str(&said_on).expect("a room reads");
+        assert_eq!(
+            heard.io_full_minute,
+            Some(1.75),
+            "a minute of disk stalls said is heard"
         );
     }
 
@@ -452,6 +507,7 @@ mod tests {
                 saturated: None,
                 cpu_minute: None,
                 memory_full_minute: None,
+                io_full_minute: None,
             }),
             "its free memory in bytes, its pressure, what it would start, and \
              the limits it is past that this build knows"
@@ -597,6 +653,11 @@ mod tests {
             "nor its memory's"
         );
         assert_eq!(
+            io_full_minute(Path::new("/nowhere/proc")),
+            None,
+            "nor its disks'"
+        );
+        assert_eq!(
             stalled_over("some avg10=1.00 avg60=nan\n", "avg60="),
             None,
             "a minute that is no number is none"
@@ -639,11 +700,78 @@ mod tests {
             Some(3.2),
             "and a room felt says it"
         );
+        fs::write(
+            procs.path().join("pressure").join("io"),
+            "some avg10=30.00 avg60=20.00 avg300=9.00 total=1\n\
+             full avg10=12.00 avg60=8.70 avg300=4.00 total=1\n",
+        )
+        .expect("written");
+        assert_eq!(
+            io_full_minute(procs.path()),
+            Some(8.7),
+            "the minute in which all work waited on its disks, not some"
+        );
+        assert_eq!(
+            felt(procs.path(), FELT_AT).and_then(|room| room.io_full_minute),
+            Some(8.7),
+            "and a room felt says it"
+        );
         fs::remove_file(procs.path().join("pressure").join("io")).expect("removed");
         assert_eq!(
             felt(procs.path(), FELT_AT),
             None,
             "a kernel that says only some of it says none"
+        );
+    }
+
+    #[test]
+    fn disk_pressure_named_by_group_is_the_worst_of_the_groups_that_say_one() {
+        let cgroups = tempfile::tempdir().expect("a temporary folder");
+        for (group, full) in [("agents.slice", "2.20"), ("work/jobs.slice", "4.50")] {
+            let folder = cgroups.path().join(group);
+            fs::create_dir_all(&folder).expect("its group");
+            fs::write(
+                folder.join("io.pressure"),
+                format!(
+                    "some avg10=9.00 avg60=7.00 avg300=2.00 total=1\n\
+                     full avg10=3.00 avg60={full} avg300=1.00 total=1\n"
+                ),
+            )
+            .expect("written");
+        }
+        // A capped survey of the disks, stalled alone, in a group not named.
+        fs::create_dir_all(cgroups.path().join("guard.service")).expect("its group");
+        fs::write(
+            cgroups.path().join("guard.service").join("io.pressure"),
+            "full avg10=9.00 avg60=9.40 avg300=9.00 total=1\n",
+        )
+        .expect("written");
+        let of = |groups: &[&str]| {
+            let groups: Vec<String> = groups.iter().map(ToString::to_string).collect();
+            io_full_minute_of(cgroups.path(), &groups)
+        };
+        assert_eq!(
+            of(&["agents.slice", "work/jobs.slice"]),
+            Some(4.5),
+            "the worst of the groups named, never one not named"
+        );
+        assert_eq!(
+            of(&["agents.slice", "gone.slice"]),
+            Some(2.2),
+            "a group saying none is passed over"
+        );
+        assert_eq!(of(&["gone.slice"]), None, "and none saying one says none");
+        assert_eq!(of(&[]), None, "as no group named does");
+        fs::create_dir_all(cgroups.path().join("agents.slice").join("inner"))
+            .expect("a group within");
+        assert_eq!(
+            of(&[
+                "agents.slice/inner/../../guard.service",
+                "/guard.service",
+                ""
+            ]),
+            None,
+            "a path climbing out, rooted elsewhere or empty is none of them"
         );
     }
 }

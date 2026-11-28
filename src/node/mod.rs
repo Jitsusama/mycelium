@@ -77,6 +77,7 @@ mod formed;
 pub use formed::Formed;
 mod glyph;
 mod hub;
+pub use hub::{Holder as HubHolder, KIND as HUB_KIND, records as hub_records};
 mod link_end;
 mod network;
 mod once;
@@ -1748,18 +1749,47 @@ fn redial_standing(
 
 /// The one of `providers` that is `provider`, or else the only one that is
 /// it built again into the Nix store: the same path past the store's hash.
+/// Each is read through its links too, so a provider asked by a link into
+/// the store is still the one that made a machine by the path it names,
+/// and the other way round, and stays so once the link names a new build.
 fn still_asked<'a>(providers: &'a [String], provider: &str) -> Option<&'a String> {
+    asked_through(providers, provider, resolved)
+}
+
+/// [`still_asked`], with each path read through its links by `resolve`.
+fn asked_through<'a>(
+    providers: &'a [String],
+    provider: &str,
+    resolve: impl Fn(&str) -> String,
+) -> Option<&'a String> {
     if let Some(same) = providers.iter().find(|one| *one == provider) {
         return Some(same);
     }
-    let built = past_the_hash(provider)?;
-    let mut again = providers
+    let theirs = resolve(provider);
+    let ours = providers
         .iter()
-        .filter(|one| past_the_hash(one) == Some(built));
+        .map(|one| (one, resolve(one)))
+        .collect::<Vec<_>>();
+    if let Some(&(same, _)) = ours.iter().find(|(_, path)| *path == theirs) {
+        return Some(same);
+    }
+    let built = past_the_hash(&theirs)?;
+    let mut again = ours
+        .iter()
+        .filter(|(_, path)| past_the_hash(path) == Some(built));
     match (again.next(), again.next()) {
-        (Some(only), None) => Some(only),
+        (Some(&(only, _)), None) => Some(only),
         _ => None,
     }
+}
+
+/// `path` with every link in it followed, or as it is where that can't be
+/// done, as for a build the store has since let go.
+fn resolved(path: &str) -> String {
+    fs::canonicalize(path)
+        .ok()
+        .and_then(|real| real.into_os_string().into_string().ok())
+        .unwrap_or_else(|| path.to_owned())
 }
 
 /// What follows the hash in a path in the Nix store, such as
@@ -2836,7 +2866,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             tie::KIND => return Some(self.tie_records()),
             ended::KIND => Some(self.ended_records()),
             feed::KIND => Some(self.fed_records()),
-            hub::KIND => Some(self.hub_records()),
+            hub::KIND => return Some(self.hub_records()),
             // Shown but any whose act is done; the node's own judgements
             // read every record.
             _ => self.served.shown(kind),
@@ -4851,7 +4881,7 @@ impl<S: Store> Shared<S> {
 
     /// Each subject the realm's running cells declare, and its hubs, the
     /// cells heard least lately first, by their own talk ([`hub::heard`]).
-    fn hub_records(&self) -> BTreeMap<String, serde_json::Value> {
+    fn hub_records(&self) -> BTreeMap<String, daemon::Record> {
         let heard: HashMap<String, f64> = self
             .tie_records()
             .into_values()
@@ -12684,6 +12714,7 @@ mod tests {
                 saturated: None,
                 cpu_minute: None,
                 memory_full_minute: None,
+                io_full_minute: None,
             }),
             ..kestrel_at("2026-10-29T06:00:00Z")
         };
@@ -20572,6 +20603,7 @@ esac
                 saturated: Some(false),
                 cpu_minute: None,
                 memory_full_minute: None,
+                io_full_minute: None,
             }),
             ..fenced("osprey", &["remote"])
         };
@@ -30769,6 +30801,59 @@ esac
             "another program of the same file name isn't it"
         );
         assert_eq!(still_asked(&providers, "/opt/bin/rent"), None);
+    }
+
+    #[test]
+    fn a_provider_is_still_asked_through_a_link_to_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let real = dir.path().join("lend");
+        fs::write(&real, "").expect("the provider is written");
+        let link = dir.path().join("lend-link");
+        std::os::unix::fs::symlink(&real, &link).expect("a link to it");
+        let path = |one: &Path| one.to_str().expect("a plain path").to_owned();
+        let (real, link) = (path(&real), path(&link));
+        // The folder may itself sit behind a link, as on a Mac.
+        let real = resolved(&real);
+
+        let by_link = [link.clone()];
+        assert_eq!(
+            still_asked(&by_link, &real),
+            Some(&by_link[0]),
+            "a machine made by the path a link names is still asked by the link"
+        );
+        let by_path = [real];
+        assert_eq!(
+            still_asked(&by_path, &link),
+            Some(&by_path[0]),
+            "and one made by the link is still asked by the path it names"
+        );
+    }
+
+    #[test]
+    fn a_link_to_a_new_build_still_asks_for_the_machines_the_old_made() {
+        let at =
+            |hash: char, rest: &str| format!("/nix/store/{}-{rest}", hash.to_string().repeat(32));
+        let link = "/state/lend".to_owned();
+        let new = at('b', "lend-1/bin/lend");
+        let old = at('a', "lend-1/bin/lend");
+        let resolve = |path: &str| {
+            if path == link {
+                new.clone()
+            } else {
+                path.to_owned()
+            }
+        };
+        let providers = [link.clone(), at('c', "hire-1/bin/hire")];
+        assert_eq!(
+            asked_through(&providers, &old, resolve),
+            Some(&providers[0]),
+            "the link names the same program built again"
+        );
+        assert_eq!(
+            asked_through(&providers, &at('a', "loan-1/bin/lend"), resolve),
+            None,
+            "another program isn't it, whatever the link names"
+        );
     }
 
     fn sprout_here(cwd: Option<&Path>) -> Sprout {
