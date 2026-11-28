@@ -232,6 +232,20 @@ fn a_team_page_by_a_session_s_address_says_a_steer_reaches_that_session() {
 }
 
 #[test]
+fn a_team_page_by_its_lead_s_address_says_nothing_of_where_a_steer_goes() {
+    // A session holds the address, but it leads the team going by it,
+    // so a steer typed with it reaches the team the page shows.
+    let mut swarm = swarm();
+    swarm.teams[1]["key"] = json!("team:LEAD");
+    swarm.teams[2]["within"] = json!("LEAD");
+    let shown = team(&swarm, "LEAD", &look()).expect("Harbour is found by its key");
+    assert!(
+        !shown.contains("a steer to"),
+        "a team its lead's address steers said a steer goes elsewhere:\n{shown}"
+    );
+}
+
+#[test]
 fn a_lead_titled_as_its_team_is_named_by_its_address() {
     let mut swarm = swarm();
     if let Some(lead) = swarm
