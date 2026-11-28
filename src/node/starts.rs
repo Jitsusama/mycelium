@@ -40,13 +40,15 @@ const PIS_FOLDERS: [&str; 2] = ["/run/current-system/sw/bin/", "/etc/profiles/pe
 /// look like a session brought back.
 const RESUMING: [&str; 1] = ["--session"];
 
-/// The most sessions one cell may start in an hour.
-pub const CELL_AN_HOUR: usize = 8;
+/// The most sessions one cell may start in an hour: room for a hub
+/// starting its lanes in an hour, since a cell that sends each piece to a
+/// cloud room outgrew eight.
+pub const CELL_AN_HOUR: usize = 32;
 
 /// The most sessions agents together may start through one node in an
-/// hour: room for eight cells' whole hours at once, since a realm with a
-/// dozen cloud machines to start on outgrew four.
-pub const NODE_AN_HOUR: usize = 64;
+/// hour: room for sixteen cells' whole hours at once, since a realm
+/// whose cells start their work in cloud rooms outgrew eight.
+pub const NODE_AN_HOUR: usize = 128;
 
 /// What a refusal of an agent's start, while the person's stop stands,
 /// ends by telling it to do: only the person lifts it, and an agent is
@@ -73,8 +75,15 @@ pub const UNTOLD_FOR_AN_AGENT: &str =
 /// node in an hour uncounted: past it, each counts as new work. A
 /// machine's sessions coming back after a restart fit within it, and an
 /// agent that ends the sessions it starts to bring them back free gains
-/// at most this many an hour beside the [`NODE_AN_HOUR`].
-pub const RESUMED_AN_HOUR: usize = 128;
+/// at most this many an hour beside the [`NODE_AN_HOUR`]. It is set on
+/// its own, past the node's number, so a wave past that still comes
+/// back whole, and raising the node's pace widens it only by a choice.
+pub const RESUMED_AN_HOUR: usize = 256;
+
+const _: () = assert!(
+    NODE_AN_HOUR == 128 && RESUMED_AN_HOUR == 256 && CELL_AN_HOUR == 32,
+    "PROTOCOL.md tells clients these numbers, so change it with them"
+);
 
 /// How long after a start that brings a session back a second is
 /// refused, in milliseconds: the first may still be on its way, its pi
@@ -1186,11 +1195,11 @@ mod tests {
 
     // WCJQSG (2026-11-19): an orchestrator carrying its quest's sessions
     // to another machine begins no new work, so it spends none of its
-    // cell's eight; bringing one back and forth is still bounded.
+    // cell's number; bringing one back and forth is still bounded.
     #[test]
     fn a_carry_an_orchestrator_ordered_starts_its_sessions_uncounted_once_an_hour() {
         let (_dir, starts) = book();
-        // Past the cell's eight, as a quest of many sessions carries.
+        // Past the cell's number, as a quest of many sessions carries.
         for one in 0..=CELL_AN_HOUR {
             let at = NOW + i64::try_from(one).expect("few");
             started(&starts, carrying("OSPREY", &format!("s-{one}"), at), "h");
@@ -1244,7 +1253,7 @@ mod tests {
         ];
         let (third, why) = starts.would_refuse(&three, 0).expect("the third doesn't");
         assert_eq!(third, 2, "the third is the one refused");
-        assert!(why.contains("OSPREY started 8"), "{why}");
+        assert!(why.contains(&osprey_full()), "{why}");
         started(&starts, agent("OSPREY", NOW + 200), "h");
         started(&starts, agent("OSPREY", NOW + 201), "h");
         let late = agent("OSPREY", NOW + 300);
@@ -1289,7 +1298,7 @@ mod tests {
     #[test]
     fn each_start_asked_waits_its_minute_from_when_the_one_before_it_went() {
         let (_dir, starts) = book();
-        // The cell's eight: the oldest leaves the hour 30 s after the ask,
+        // The cell's number: the oldest leaves the hour 30 s after the ask,
         // the next 70 s after it, which is 40 s after the first asked goes,
         // and the rest twenty minutes on.
         started(&starts, agent("OSPREY", NOW), "h");
@@ -1457,7 +1466,7 @@ mod tests {
         let refused = starts
             .admit(resuming("OSPREY", "s-more", NOW + 201))
             .expect_err("one more resume in the hour counts");
-        assert!(refused.contains("OSPREY started 8"), "{refused}");
+        assert!(refused.contains(&osprey_full()), "{refused}");
         started(&starts, resuming("OSPREY", "s-more", NOW + HOUR + 1), "h");
     }
 
@@ -1493,8 +1502,8 @@ mod tests {
         let (_dir, starts) = ahead(HOUR / 2);
         let refused = starts
             .admit(resuming("OSPREY", "s-more", NOW))
-            .expect_err("a clock set back half an hour gains no fresh 128");
-        assert!(refused.contains("OSPREY started 8"), "{refused}");
+            .expect_err("a clock set back half an hour gains no fresh hour");
+        assert!(refused.contains(&osprey_full()), "{refused}");
         let (_dir, starts) = ahead(2 * HOUR);
         started(&starts, resuming("OSPREY", "s-more", NOW), "h");
     }
@@ -1786,6 +1795,11 @@ mod tests {
         (dir, starts)
     }
 
+    /// How a refusal names OSPREY once it has started its whole hour.
+    fn osprey_full() -> String {
+        format!("OSPREY started {CELL_AN_HOUR}")
+    }
+
     fn started(starts: &Starts, asked: Kept, held: &str) {
         let admitted = starts.admit(asked).expect("it may start");
         starts.keep(admitted, Ok(("kestrel".to_owned(), held.to_owned())), 0);
@@ -1886,7 +1900,7 @@ mod tests {
         let refused = starts
             .admit(agent("OSPREY", NOW + 100))
             .expect_err("past its number");
-        assert!(refused.contains("OSPREY started 8"), "{refused}");
+        assert!(refused.contains(&osprey_full()), "{refused}");
         started(&starts, agent("SKIFFS", NOW + 100), "h");
         started(&starts, agent("OSPREY", NOW + HOUR + 10), "h");
     }

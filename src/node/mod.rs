@@ -104,8 +104,8 @@ const STARTS_LISTED: usize = 100;
 const START_WAITS_MOST: i64 = 60_000;
 
 /// The most starts one `Takes` weighs, so one line can't ask the node to
-/// place, and log, without end: past all a cell's resumes in an hour.
-const TAKES_MOST: usize = starts::RESUMED_AN_HOUR;
+/// place, and log, without end: a carry of more asks in parts.
+const TAKES_MOST: usize = 128;
 
 /// How long a link waits before dialling again after it dropped, at first
 /// and at most; each failure in a row doubles the wait.
@@ -20654,7 +20654,7 @@ esac
         );
     }
 
-    // An orchestrator past its eight starts an hour still carries, since
+    // An orchestrator past its cell's starts an hour still carries, since
     // its ordered arrivals start uncounted, and the ask weighs a carry's
     // starts together, so one past the limit is refused before any
     // session ends.
@@ -20677,6 +20677,7 @@ esac
             once: None,
         };
         let unstarted = Err("skiff's node starts no sessions".to_owned());
+        let at_most = format!("a cell starts at most {} an hour", starts::CELL_AN_HOUR);
         for _ in 0..starts::CELL_AN_HOUR - 1 {
             assert_eq!(
                 ask(socket.clone(), Request::Start(new_work())).await,
@@ -20702,11 +20703,11 @@ esac
         let one = takes(vec![arrival("s-a")], false).await;
         assert!(
             matches!(&one, Ok(Response::Placement(Placement::Placed { machine, .. })) if machine == "skiff"),
-            "one more start fits the cell's eight: {one:?}"
+            "one more start fits the cell's number: {one:?}"
         );
         let two = takes(vec![arrival("s-a"), arrival("s-b")], false).await;
         assert!(
-            matches!(&two, Err(why) if why.contains("a cell starts at most 8 an hour")),
+            matches!(&two, Err(why) if why.contains(&at_most)),
             "two don't, weighed together: {two:?}"
         );
         assert_eq!(kept(), before, "neither ask kept anything in the book");
@@ -20717,8 +20718,8 @@ esac
         let before = kept();
         let full = takes(vec![arrival("s-a")], false).await;
         assert!(
-            matches!(&full, Err(why) if why.contains("a cell starts at most 8 an hour")),
-            "the cell's eight leave no room: {full:?}"
+            matches!(&full, Err(why) if why.contains(&at_most)),
+            "the cell's number leaves no room: {full:?}"
         );
         let ordered = takes(vec![arrival("s-a"), arrival("s-b"), arrival("s-c")], true).await;
         assert!(
@@ -20734,18 +20735,19 @@ esac
         };
         let not_from_here = takes(vec![elsewhere("s-a")], true).await;
         assert!(
-            matches!(&not_from_here, Err(why) if why.contains("a cell starts at most 8 an hour")),
+            matches!(&not_from_here, Err(why) if why.contains(&at_most)),
             "an arrival from another machine is no carry from here: {not_from_here:?}"
         );
         let fooled = takes(vec![new_work(), new_work()], true).await;
         assert!(
-            matches!(&fooled, Err(why) if why.contains("a cell starts at most 8 an hour")),
+            matches!(&fooled, Err(why) if why.contains(&at_most)),
             "but ordered frees only a carry's arrival, word for word: {fooled:?}"
         );
         assert_eq!(kept(), before, "no ask keeps anything in the book");
         let many = takes(vec![arrival("s-a"); TAKES_MOST + 1], true).await;
+        let bound = format!("past the {TAKES_MOST} an ask weighs");
         assert!(
-            matches!(&many, Err(why) if why.contains("past the 128 an ask weighs")),
+            matches!(&many, Err(why) if why.contains(&bound)),
             "an ask is bounded: {many:?}"
         );
     }
@@ -21509,11 +21511,12 @@ esac
         // Charged to WCJQSG, the nearest claim, rather than to agents of no
         // known cell, whose refusal ends the same way.
         assert!(
-            refused.starts_with(
-                "WCJQSG started 8 sessions in the last hour, and a cell starts at most 8 an hour; \
-                 there is room again in 60 minutes"
-            ) && refused.ends_with("tell your orchestrator, as a finding"),
-            "a failed start counts toward the nearest claim, so the ninth is refused: {refused}"
+            refused.starts_with(&format!(
+                "WCJQSG started {0} sessions in the last hour, and a cell starts at most {0} an \
+                 hour; there is room again in 60 minutes",
+                starts::CELL_AN_HOUR
+            )) && refused.ends_with("tell your orchestrator, as a finding"),
+            "a failed start counts toward the nearest claim, so one past it is refused: {refused}"
         );
         let book = fs::read_to_string(socket.with_file_name("starts.jsonl"))
             .expect("every start is written down");
@@ -21613,9 +21616,12 @@ esac
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let at = jiff::Timestamp::now().to_string();
-        // More sessions ended here than the node starts in an hour.
+        // More sessions ended here than the node starts in an hour. Each id
+        // is as long as the rest, since a resume of one that begins another
+        // counts as a start (pi may open the other), and s-gone-10 would
+        // begin s-gone-100.
         let wave = (0..=starts::NODE_AN_HOUR)
-            .map(|one| format!("s-gone-{one:02}"))
+            .map(|one| format!("s-gone-{one:03}"))
             .collect::<Vec<_>>();
         let project = |one: usize| dir.path().join(format!("project-{one}"));
         for (one, session) in wave.iter().enumerate() {
@@ -21672,13 +21678,16 @@ esac
             );
         }
         let newest = booked(socket).await;
-        let first = newest
+        // The newest before the last, since the starts listed reach back
+        // only so far, and the wave is longer.
+        let before_last = wave.len() - 2;
+        let earlier = newest
             .iter()
-            .find(|kept| kept["resumes"] == wave[0].as_str())
-            .expect("the first brought back is kept");
+            .find(|kept| kept["resumes"] == wave[before_last].as_str())
+            .expect("one brought back is kept");
         assert_eq!(
-            first["folder"],
-            project(0).to_str().expect("a plain path"),
+            earlier["folder"],
+            project(before_last).to_str().expect("a plain path"),
             "it begins in its own folder"
         );
         let last = newest
@@ -21689,8 +21698,12 @@ esac
             last["folder"], "src/project-last",
             "one said from home goes as a folder within it: {last}"
         );
-        assert_eq!(first["started_by"], "WCJQSG", "{first}");
-        assert_eq!(first["reopens"], wave[0].as_str(), "it reopens its session");
+        assert_eq!(earlier["started_by"], "WCJQSG", "{earlier}");
+        assert_eq!(
+            earlier["reopens"],
+            wave[before_last].as_str(),
+            "it reopens its session"
+        );
     }
 
     /// The starts the node on `socket` keeps, newest last, as the person
@@ -21840,7 +21853,8 @@ esac
         )
         .await
         .expect_err("in another folder it counts");
-        assert!(refused.starts_with("WCJQSG started 8"), "{refused}");
+        let full = format!("WCJQSG started {}", starts::CELL_AN_HOUR);
+        assert!(refused.starts_with(&full), "{refused}");
         // One whose start failed brought nothing back, so it may come back
         // at once, still uncounted.
         assert_eq!(
@@ -21856,7 +21870,8 @@ esac
         )
         .await
         .expect_err("on another machine it counts");
-        assert!(refused.starts_with("WCJQSG started 8"), "{refused}");
+        let full = format!("WCJQSG started {}", starts::CELL_AN_HOUR);
+        assert!(refused.starts_with(&full), "{refused}");
         let newest = booked(socket).await;
         let there = newest.last().expect("its start is kept");
         assert_eq!(there["refused"], refused.as_str(), "{there}");
@@ -28038,10 +28053,11 @@ esac
             .await
             .expect_err("and is counted here, as an agent's");
         assert!(
-            refused.starts_with(
+            refused.starts_with(&format!(
                 "no person works on skiff, so it takes a relayed start as an agent's, and \
-                 refused it: agents of no known cell started 8 sessions"
-            ),
+                 refused it: agents of no known cell started {} sessions",
+                starts::CELL_AN_HOUR
+            )),
             "and says it was judged an agent's: {refused}"
         );
         let refused = link
@@ -28050,7 +28066,10 @@ esac
             .expect_err("the person's carry is counted the same");
         assert!(
             refused.starts_with("no person works on skiff, so it takes the person's carry")
-                && refused.contains("agents of no known cell started 8 sessions")
+                && refused.contains(&format!(
+                    "agents of no known cell started {} sessions",
+                    starts::CELL_AN_HOUR
+                ))
                 && !refused.contains("orchestrator"),
             "the person reads why, and isn't sent to an orchestrator: {refused}"
         );
@@ -28380,7 +28399,10 @@ esac
             .await
             .expect_err("and is counted here, as an agent's");
         assert!(
-            refused.contains("and refused it: agents of no known cell started 8 sessions"),
+            refused.contains(&format!(
+                "and refused it: agents of no known cell started {} sessions",
+                starts::CELL_AN_HOUR
+            )),
             "{refused}"
         );
         assert!(
