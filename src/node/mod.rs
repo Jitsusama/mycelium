@@ -24690,12 +24690,12 @@ esac
         assert_eq!(
             refused.ended,
             Some(Ran::Failed(
-                "this asks as a strictly fenced agent, so it runs on kestrel only in that \
-                 fence: this machine declares no way to run a command as its strictly fenced \
-                 sessions run"
+                "kestrel refused the run: this asks as a strictly fenced agent, so it runs on \
+                 kestrel only in that fence: this machine declares no way to run a command as \
+                 its strictly fenced sessions run"
                     .to_owned()
             )),
-            "kestrel runs an agent's command only as its fence says"
+            "kestrel runs an agent's command only as its fence says, naming itself in its refusal"
         );
         declares_runs(&far_socket, true);
         let fenced = run_through(near_socket, run_of("kestrel", SAYS_ITS_FENCE))

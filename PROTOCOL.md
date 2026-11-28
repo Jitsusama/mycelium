@@ -368,7 +368,9 @@ same code, each line a JSON value:
     only of an end saying `plain_runs`. Only the end that dialled asks a
     run: the dialled end refuses one its node asks, since its link runs
     outside the node. Either way it answers `{"Ran": {"ask", "ran"}}` a line for
-    each `Ran` the run says, the last its `Exited` or `Failed`. It sends
+    each `Ran` the run says, the last its `Exited` or `Failed`; a
+    `Failed` for what its node refused names its machine first, as
+    `"osprey refused the run: "` and the node's why. It sends
     at most eight pieces of output ahead of `{"Taken": {"ask"}}`, which
     the asking end sends as its asker takes each, so a run writing
     faster than its asker reads waits rather than filling the link.
@@ -2672,7 +2674,8 @@ does, and why none will come: a node books its own makes again as it
 starts, before it dials them, so the room was made by another node, or
 by this one in a line of its book that can't be read, names no realm
 or names a provider it no longer asks. A refusal the room itself sends
-back reads as an agent's. A room
+back reads as an agent's, and names the room, so it isn't taken as the
+asking node's own: `osprey refused the run:` and its why. A room
 whose hello doesn't say `plain_runs` would drop who asked and run the
 person's command through its login shell, profile and all, so the run
 is never sent there: it is refused before it goes, saying the room's
