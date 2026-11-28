@@ -53,6 +53,7 @@ pub mod dial;
 pub mod discovery;
 pub mod membership;
 pub mod refused;
+mod runs;
 mod started;
 pub mod starts;
 pub mod steers;
@@ -93,7 +94,8 @@ use crate::store::{self, Change, Claim, Store};
 use crate::wire::{Ran, Reply, Response, Run, Start, Started};
 use dial::Connection;
 use membership::{Hello, Membership};
-use starts::{Ask, Asked, Asking, RunSaid, RunningHere, Starting};
+use runs::{RunSaid, RunningHere};
+use starts::{Ask, Asked, Asking, Starting};
 use steers::{Following, Replies};
 
 /// How far back a link reaches for messages at most: the mesh's own week,
@@ -1989,7 +1991,7 @@ impl<S: Store> End<S> {
                 return;
             }
         };
-        let window = Arc::new(tokio::sync::Semaphore::new(starts::RUN_WINDOW));
+        let window = Arc::new(tokio::sync::Semaphore::new(runs::RUN_WINDOW));
         let (stop, stopped) = oneshot::channel();
         self.runs.here.insert(
             ask,
@@ -1999,7 +2001,7 @@ impl<S: Store> End<S> {
             },
         );
         self.handover.ran = true;
-        tokio::spawn(starts::run(
+        tokio::spawn(runs::run(
             (node, self.here.clone()),
             run,
             (ask, self.runs.saying.clone()),
