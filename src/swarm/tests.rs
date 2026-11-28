@@ -684,7 +684,9 @@ fn a_short_a_keyboard_types_is_kept_and_one_it_cannot_is_not() {
         "\u{24E3}\u{24D8}\u{24D3}\u{24D4}",
         "\u{1D57}\u{2071}\u{1D48}\u{1D49}",
         "\u{217D}\u{217C}\u{2170}",
-        "ke\u{1C0}p",
+        // Not `ke\u{1C0}p`, drawn as Kelp's own short, which it takes
+        // from Kelp, as a refused name a quest gave says.
+        "ho\u{1C0}d",
         "q\u{301}",
         "v2\u{20E3}",
         "g\u{259}\u{301}\u{302}\u{303}\u{304}",
@@ -738,27 +740,68 @@ fn a_name_a_quest_gave_and_that_is_held_back_says_why_it_reaches_no_team() {
     );
 }
 
+/// Why a held-back name reaches no team, as a refusal words it.
+const HELD_BACK: &str =
+    "held back as, typed or drawn, it reads as more than one name or as other than a name";
+
+#[test]
+fn a_name_a_quest_gave_and_that_is_refused_keeps_any_drawn_alike_from_another() {
+    // Harbour's quest gives `kelp --names`, held back as a flag, and
+    // Reef's `kelp---names`, which is how Harbour's is typed, so one
+    // asking for it, typed or quoted, may mean either, and neither takes
+    // it. A name refused as untypable is drawn alike with the keyboard's
+    // spelling too, as a Cyrillic i is with `tide` and a hyphen bullet is
+    // with `tide-plan`, and one retyping it by eye types that.
+    for (refused, alike) in [
+        ("kelp --names", "kelp---names"),
+        ("t\u{456}de", "tide"),
+        ("tide\u{2043}plan", "tide-plan"),
+    ] {
+        let mut twins = swarm();
+        twins.teams[1]["swarm"] = json!(refused);
+        twins.teams[0]["swarm"] = json!(alike);
+        let names = typed(&twins);
+        assert!(
+            !names.iter().any(|name| name == alike),
+            "{alike} was kept beside {refused}: {names:?}"
+        );
+        for asked in [alike, refused] {
+            assert_eq!(
+                team(&twins, asked, &look()),
+                Err(format!(
+                    "no team is named {asked}: the quests of Reef and Harbour each give their \
+                     team that name, {HELD_BACK}; ask for one by its title"
+                )),
+                "{asked} reached a team, or named only one, beside {refused}"
+            );
+        }
+    }
+    // A short worked out from a title is kept from its team as surely,
+    // and its title found by it no more, as one asking may mean Harbour.
+    let mut drawn = swarm();
+    drawn.teams[1]["swarm"] = json!("ke\u{1C0}p");
+    let names = typed(&drawn);
+    assert!(
+        !names.iter().any(|name| name == "kelp"),
+        "kelp was kept beside ke\u{1C0}p: {names:?}"
+    );
+    assert_eq!(
+        team(&drawn, "kelp", &look()),
+        Err(format!(
+            "no team is named kelp: Harbour's quest gives it that name, {HELD_BACK}; ask for \
+             it by its title"
+        )),
+        "kelp reached Kelp beside ke\u{1C0}p"
+    );
+}
+
 #[test]
 fn two_shorts_drawn_alike_keep_neither() {
     // So a lookalike drawn as another team's short is never a twin that
-    // steers it: the keyboard's spelling keeps its team. A hyphen bullet
-    // is refused as untypable before the twin rule judges it; the cases
-    // after it reach the rule.
-    let mut twins = swarm();
-    twins.teams[0]["swarm"] = json!("tide-plan");
-    twins.teams[1]["swarm"] = json!("tide\u{2043}plan");
-    let names = typed(&twins);
-    assert_eq!(
-        names
-            .iter()
-            .filter(|name| name.contains("tide"))
-            .collect::<Vec<_>>(),
-        ["tide-plan"],
-        "a lookalike twin was drawn beside its team: {names:?}"
-    );
-    // Two whose letters Unicode's confusables draw alike, as a dotless i
-    // and an i, or spelt composed and apart, are drawn alike, so neither
-    // keeps it.
+    // steers it. Two whose letters Unicode's confusables draw alike, as a
+    // dotless i and an i, or spelt composed and apart, are drawn alike,
+    // so neither keeps it; one refused as untypable keeps it from the
+    // other too, as the case of a refused name a quest gave says.
     for (one, other) in [
         ("tide-plan", "t\u{131}de-plan"),
         ("tid\u{E9}", "tide\u{301}"),

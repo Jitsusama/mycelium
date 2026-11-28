@@ -371,7 +371,16 @@ pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
             (address(team), typed.collect())
         })
         .collect();
-    let named: Vec<(&str, String)> = teams
+    // One that cleans to nothing would be drawn blank, and offered to a
+    // shell as an empty word.
+    let fit = |name: &str| !acts_for(name) && typable(name) && !name.is_empty();
+    // Each team's name, and whether it may be kept. A name a quest gave
+    // and that's refused stays, to be counted as a twin: its quest's
+    // person still calls the team by it, and one typing it as it's drawn
+    // would otherwise reach another team whose name is drawn alike, as
+    // `kelp---names` would reach the team given it while the one whose
+    // quest gave `kelp --names` went unnamed.
+    let named: Vec<(&str, String, bool)> = teams
         .iter()
         .filter_map(|team| {
             let me = address(team);
@@ -385,38 +394,46 @@ pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
                     .get("swarm")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                return (!flags(spelt)).then_some((me, name));
+                let kept = !flags(spelt) && fit(&name);
+                return Some((me, name, kept));
             }
             // A worked-out name is held in its typed form too, as a
-            // title's word may hold a braille blank or a control.
+            // title's word may hold a braille blank or a control. One
+            // refused is no name anyone calls the team by, so it's let go.
             Some((me, typed_form(&short(title(team), &shared)?)))
-                .filter(|(_, name)| !chosen.contains(name))
+                .filter(|(_, name)| !chosen.contains(name) && fit(name))
+                .map(|(me, name)| (me, name, true))
         })
-        // One that cleans to nothing would be drawn blank, and offered to
-        // a shell as an empty word.
-        .filter(|(_, name)| !acts_for(name) && typable(name) && !name.is_empty())
         .collect();
     named
         .iter()
+        .filter(|(_, _, kept)| *kept)
         // Two that clean alike, or whose letters Unicode's confusables
         // draw alike, as a dotless i is drawn as an i, are drawn alike,
         // and typed reach both.
-        .filter(|(_, name)| {
-            let drawn: String = skeleton(&unmarked(name)).collect();
+        .filter(|(_, name, _)| {
             named
                 .iter()
-                .filter(|(_, other)| skeleton(&unmarked(other)).eq(drawn.chars()))
+                .filter(|(_, other, _)| drawn_alike(name, other))
                 .count()
                 == 1
         })
-        .map(|(team, name)| ((*team).to_owned(), name.clone()))
+        .map(|(team, name, _)| ((*team).to_owned(), name.clone()))
         .collect()
 }
 
-/// Each team whose quest gives it the name `asked` is typed as, where
-/// that name was held back, so one asking for it is told why it reaches
-/// nothing, rather than nothing at all, or another whose title holds it;
-/// every such team, as two quests may give the same name.
+/// Whether `one` and `other`, each in its [`typed_form`], are drawn
+/// alike: cleaned alike, or with letters Unicode's confusables draw
+/// alike, as a dotless i is drawn as an i.
+fn drawn_alike(one: &str, other: &str) -> bool {
+    skeleton(&unmarked(one)).eq(skeleton(&unmarked(other)))
+}
+
+/// Each team whose quest gives it a name drawn as `asked` is, typed,
+/// where that name was held back, so one asking for it is told why it
+/// reaches nothing, rather than nothing at all, or another whose title
+/// holds it; every such team, as two quests may give names drawn alike,
+/// and one typing either by eye may have meant the other.
 pub(crate) fn held_back<'a>(
     teams: &'a [Value],
     shorts: &BTreeMap<String, String>,
@@ -426,7 +443,8 @@ pub(crate) fn held_back<'a>(
     teams
         .iter()
         .filter(|team| {
-            given(team).is_some_and(|name| name == asked) && !shorts.contains_key(address(team))
+            given(team).is_some_and(|name| drawn_alike(&name, &asked))
+                && !shorts.contains_key(address(team))
         })
         .collect()
 }
