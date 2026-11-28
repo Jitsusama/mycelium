@@ -758,12 +758,12 @@ pub(crate) fn shorts_of(swarm: &Swarm) -> BTreeMap<String, String> {
 }
 
 /// Each team's short name, as [`short_names`] gives it, unless it cleans
-/// to another team's address, or to the address of a session among
-/// `living`, by its address and id, unless that session leads the team
-/// and the team goes by that address too. A steer typed with such a name
-/// reaches what has that address first, and a session leaves it to a
-/// team only where both hold, as `session_by_address` asks, so a page
-/// never draws, nor a hint offers, a name that reaches another.
+/// to another team's address, or a steer typed with it is taken by a
+/// session among `living`, by its address and id, or refused, as
+/// [`held`] judges for `session_by_address` too. A steer typed with such
+/// a name reaches what has that address first, so judging it by the one
+/// rule the steer follows means a page never draws, nor a hint or a
+/// shell offers, a name a steer refuses or sends elsewhere.
 pub(crate) fn shorts_beside<'a>(
     teams: &[Value],
     living: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
@@ -772,21 +772,90 @@ pub(crate) fn shorts_beside<'a>(
     let mut shorts = short_names(teams);
     shorts.retain(|team, short| {
         let short = unmarked(short);
-        let lead = teams
-            .iter()
-            .find(|each| address(each) == team)
-            .and_then(|each| each["lead"].as_str());
         let a_team = teams
             .iter()
             .map(address)
             .any(|other| other != team && other.eq_ignore_ascii_case(&short));
-        let its_own = team.eq_ignore_ascii_case(&short);
-        let a_session = living.iter().any(|(other, id)| {
-            other.eq_ignore_ascii_case(&short) && !(its_own && id.is_some() && *id == lead)
-        });
-        !a_team && !a_session
+        !a_team && matches!(held(teams, &living, |each| *each, &short), Held::Left)
     });
     shorts
+}
+
+/// What a steer typed with an address does by it, as [`held`] judges.
+#[derive(Debug)]
+pub(crate) enum Held<T> {
+    /// No living session holds it, or each that does leads the team going
+    /// by it, so the steer is left to find a team.
+    Left,
+    /// The first of the living sessions holding it takes the steer, as
+    /// none of them leads the team going by it.
+    One(T),
+    /// Each living session holding it, some leading the team going by it
+    /// and some not, so the steer is refused.
+    Split(Vec<T>),
+}
+
+impl<T> Held<T> {
+    /// The same judgement, each session it names turned by `turn`.
+    pub(crate) fn map<U>(self, turn: impl Fn(T) -> U) -> Held<U> {
+        match self {
+            Self::Left => Held::Left,
+            Self::One(one) => Held::One(turn(one)),
+            Self::Split(each) => Held::Split(each.into_iter().map(turn).collect()),
+        }
+    }
+}
+
+/// What a steer typed with `asked` does by address among `living`, each
+/// said by `said` as its address and id, beside `teams`. Its holders are
+/// the sessions whose address is `asked` in its own case, and only where
+/// none is, those holding it in another; the team going by it is found
+/// by the same rule, so `KELP01` and `kelp01` are steered apart. Where
+/// every holder leads that team, the team takes the steer, as an
+/// orchestrator's team goes by its lead's address; where none does, the
+/// first holder takes it. Where they disagree it is refused, naming
+/// each: a session record is a peer's presence, so a peer may publish a
+/// twin of a working session that leads a team keyed by its address, or
+/// a twin of a lead that leads nothing, and whichever side a rule picked,
+/// the steer could reach the peer's rather than the one the person meant.
+pub(crate) fn held<'s, S>(
+    teams: &[Value],
+    living: &'s [S],
+    said: impl Fn(&'s S) -> (&'s str, Option<&'s str>),
+    asked: &str,
+) -> Held<&'s S> {
+    let holders = own_case_first(living, asked, |each| said(each).0);
+    let keyed = own_case_first(teams, asked, address);
+    let leads = |holder: &'s S| {
+        said(holder)
+            .1
+            .is_some_and(|id| keyed.iter().any(|team| team["lead"].as_str() == Some(id)))
+    };
+    let leading = holders.iter().filter(|&&holder| leads(holder)).count();
+    match holders.first() {
+        None => Held::Left,
+        Some(_) if leading == holders.len() => Held::Left,
+        Some(first) if leading == 0 => Held::One(*first),
+        Some(_) => Held::Split(holders),
+    }
+}
+
+/// Those of `things` whose `key` is `asked` in its own case, or only
+/// where none is, those whose key is `asked` in another.
+fn own_case_first<'a, T>(
+    things: &'a [T],
+    asked: &str,
+    key: impl Fn(&'a T) -> &'a str,
+) -> Vec<&'a T> {
+    let exactly: Vec<&T> = things.iter().filter(|thing| key(thing) == asked).collect();
+    if exactly.is_empty() {
+        things
+            .iter()
+            .filter(|thing| key(thing).eq_ignore_ascii_case(asked))
+            .collect()
+    } else {
+        exactly
+    }
 }
 
 /// How many of a team's sessions stand as `each`.
@@ -1256,6 +1325,24 @@ pub fn team(swarm: &Swarm, asked: &str, look: &Look) -> Result<String, String> {
     let mut lines = vec![look.paint(BOLD, &unmarked(&head))];
     if let Some(landed) = landed(team, look) {
         lines.push(look.paint(FAINT, &unmarked(&landed)));
+    }
+    // A session holding the address asked that doesn't lead the team
+    // takes a steer typed with it, and sessions holding it that disagree
+    // on leading it refuse one, so the page says so rather than let one
+    // act on the team shown reach that session alone, or seem to reach
+    // the team.
+    match steers::session_by_address(swarm, asked) {
+        Held::Left => {}
+        Held::One(_) => {
+            let asked = unmarked(asked);
+            lines.push(look.paint(
+                FAINT,
+                &format!("a steer to {asked} reaches the session {asked} alone"),
+            ));
+        }
+        Held::Split(holders) => {
+            lines.push(look.paint(FAINT, &steers::refused(asked, &holders)));
+        }
     }
     let inner = ordered(
         swarm

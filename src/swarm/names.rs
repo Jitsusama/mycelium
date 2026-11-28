@@ -168,6 +168,9 @@ fn given(team: &Value) -> Option<String> {
 /// theirs alone.
 #[must_use]
 pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
+    // Given and worked-out names alike are held in their typed form,
+    // which is cleaned as drawn, so one that only cleans like a given one
+    // is already the same text and gives way to it.
     let chosen: Vec<String> = teams.iter().filter_map(given).collect();
     let held: Vec<(&str, BTreeSet<String>)> = teams
         .iter()
@@ -303,6 +306,20 @@ mod tests {
             [("QUICKW", "harbour")],
             "the quest's own name, typed in lower case, over the one the other's title \
              would give; and an act given as a name goes to none"
+        );
+    }
+
+    #[test]
+    fn a_given_name_wins_over_a_worked_out_one_that_only_cleans_like_it() {
+        let teams = [
+            json!({"key": "team:QUICKW", "title": "Quick Wins", "swarm": "Harbour"}),
+            json!({"key": "team:HARBOR", "title": "Harb\u{fdd0}our"}),
+        ];
+        let named = short_names(&teams);
+        assert_eq!(
+            named.get("QUICKW").map(String::as_str),
+            Some("harbour"),
+            "a quest's own name was lost to a title drawn like it: {named:?}"
         );
     }
 

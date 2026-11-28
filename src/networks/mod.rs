@@ -16,6 +16,11 @@
 //! `machine` and `receptor` records, as the swarm reads them, and says nothing back: the
 //! one model every view renders, the terminal's in `shown` and a page's or
 //! an agent's from the JSON lines of [`Mycelium::lines`].
+//!
+//! Long because it holds the model whole, each record a view draws with
+//! the fields it says, beside the finders that reach a network or a cell
+//! by what its pages draw, which must agree with those types to agree
+//! with each other.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -418,6 +423,11 @@ pub struct Cell {
     pub shares: Vec<Share>,
     /// The networks it joined, by name.
     pub networks: Vec<String>,
+    /// Whether the swarm counts it a living session, as its pages and
+    /// steers do, which a parked session whose process has ended isn't,
+    /// though its cell stands as dormant.
+    #[serde(skip)]
+    pub(crate) living: bool,
 }
 
 /// A work tree a session holds now, as its presence says: a worktree
@@ -746,12 +756,15 @@ impl Mycelium {
     ///
     /// When no network, or more than one, goes by what was asked.
     pub fn named_network(&self, asked: &str) -> Result<&Network, String> {
+        // Spelt as the mesh spells a group, it is a whole name, so a
+        // network named so comes before another's short name, and a
+        // group named like a quest's short name can still be opened.
         let mesh_spelt = asked.trim_start_matches('#').replace('/', ".");
         if mesh_spelt != asked {
-            match swarm::picked(&self.networks, &mesh_spelt, false, Network::naming) {
+            match swarm::picked(&self.networks, &mesh_spelt, true, Network::naming) {
                 swarm::Picked::One(one) => return Ok(one),
                 swarm::Picked::Several(many) => {
-                    return Err(several(asked, &many, |each| &each.name));
+                    return Err(several(asked, &many, |each| self.reaching(each)));
                 }
                 swarm::Picked::None => {}
             }
@@ -759,7 +772,22 @@ impl Mycelium {
         match swarm::picked(&self.networks, asked, false, Network::naming) {
             swarm::Picked::One(one) => Ok(one),
             swarm::Picked::None => Err(format!("no network is named {asked}")),
-            swarm::Picked::Several(many) => Err(several(asked, &many, |each| &each.name)),
+            swarm::Picked::Several(many) => Err(several(asked, &many, |each| self.reaching(each))),
+        }
+    }
+
+    /// What to type to reach `network` alone: its name, spelt as the mesh
+    /// spells a group where another network's short name is drawn as it.
+    fn reaching(&self, network: &Network) -> String {
+        let shadowed = self.networks.iter().any(|other| {
+            !std::ptr::eq(other, network)
+                && swarm::unmarked(&other.short)
+                    .eq_ignore_ascii_case(&swarm::unmarked(&network.name))
+        });
+        if shadowed {
+            format!("#{}", network.name.replace('.', "/"))
+        } else {
+            network.name.clone()
         }
     }
 
@@ -770,20 +798,41 @@ impl Mycelium {
     ///
     /// When no cell, or more than one, goes by what was asked.
     pub fn named_cell(&self, asked: &str) -> Result<&Cell, String> {
+        // A machine's, builder's or receptor's name is a peer's text,
+        // drawn cleaned, so typed as drawn it finds the cell, as its name
+        // would before a part of a title. One typed as it is held comes
+        // first, and several drawn alike are each named.
+        if !self
+            .cells
+            .iter()
+            .any(|each| each.name.eq_ignore_ascii_case(asked))
+        {
+            let drawn = swarm::unmarked(asked);
+            let alike: Vec<&Cell> = self
+                .cells
+                .iter()
+                .filter(|each| swarm::unmarked(&each.name).eq_ignore_ascii_case(&drawn))
+                .collect();
+            match alike.as_slice() {
+                [] => {}
+                [one] => return Ok(one),
+                _ => return Err(several(asked, &alike, |each| each.name.clone())),
+            }
+        }
         match swarm::picked(&self.cells, asked, false, Cell::naming) {
             swarm::Picked::One(one) => Ok(one),
             swarm::Picked::None => Err(format!("no cell is named {asked}")),
-            swarm::Picked::Several(many) => Err(several(asked, &many, |each| &each.name)),
+            swarm::Picked::Several(many) => Err(several(asked, &many, |each| each.name.clone())),
         }
     }
 }
 
 /// That `asked` could be any of `many`, each by its `name`, held to one
 /// line, since a cell's name is a peer's text.
-fn several<T>(asked: &str, many: &[&T], name: impl Fn(&T) -> &str) -> String {
+fn several<T>(asked: &str, many: &[&T], name: impl Fn(&T) -> String) -> String {
     let names: Vec<String> = many
         .iter()
-        .map(|each| swarm::unmarked(name(each)))
+        .map(|each| swarm::unmarked(&name(each)))
         .collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     format!("{asked} could be {}", swarm::either(&names))
