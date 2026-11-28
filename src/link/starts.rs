@@ -431,6 +431,31 @@ impl Asks {
         (asked, reaching)
     }
 
+    /// Stands in, for a test, for a link reaching `machine`: what this
+    /// answers is the first run asked of it, answered as begun and ended
+    /// at once, as what the room's end would be sent. The link goes once
+    /// it takes one.
+    #[cfg(test)]
+    pub(crate) fn taking_a_run(&self, machine: &str) -> oneshot::Receiver<Run> {
+        let there: There = Arc::new(|_: &str, words: &[String]| words.to_vec());
+        let (mut asked, reaching) = self.reach(machine, there);
+        let (took, taken) = oneshot::channel();
+        let machine = machine.to_owned();
+        tokio::spawn(async move {
+            while let Some(Ask { asked, answer }) = asked.recv().await {
+                let Asked::Run(run, _) = asked else {
+                    let _ = answer.send(Err("only a run is taken here".to_owned()));
+                    continue;
+                };
+                let _ = answer.send(Ok(Response::Running { machine }));
+                let _ = took.send(run);
+                break;
+            }
+            drop(reaching);
+        });
+        taken
+    }
+
     fn lock(&self) -> MutexGuard<'_, Links> {
         // A panic while holding the lock leaves the links as they were
         // before it, so carrying on with them is sound.

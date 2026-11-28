@@ -27070,6 +27070,76 @@ esac
         );
     }
 
+    // Followup 533: the person's run recast for a room an agent's make
+    // booked goes there saying the person asked it, so the room runs it
+    // plain, and the record of runs keeps who asked beside how it ran.
+    #[tokio::test]
+    async fn the_persons_run_recast_for_a_room_says_who_asked_there_and_in_the_record() {
+        use crate::declared::{Declared, Kind};
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let mut shared = made_for(dir.path(), &[("osprey", "P9R1KI")]);
+        fs::write(dir.path().join(made::AGENT_ROOMS), "osprey\n").expect("named");
+        // Here and the room fence agents alike, so the room stands on
+        // ground as firm as here, with a launcher that runs a command.
+        let fencing = || {
+            let mut fences = fenced("skiff", &[])
+                .declared
+                .and_then(|said| said.fence)
+                .expect("it fences");
+            let doors = fences.remove(&Kind::Strict).expect("strictly");
+            BTreeMap::from([(Kind::Fence, doors)])
+        };
+        let here = Declared {
+            fence: Some(fencing()),
+            ..Declared::default()
+        };
+        shared.declared = dir.path().join("declared.json");
+        fs::write(
+            &shared.declared,
+            serde_json::to_vec(&here).expect("it is JSON"),
+        )
+        .expect("this machine's declaration is written");
+        let mut osprey = placement::tests::machine("osprey", "linux", 32, &["basin"]);
+        let said = osprey.declared.as_mut().expect("declared");
+        said.costs_money = true;
+        said.fence = Some(fencing());
+        shared.store.put_machine(&osprey).expect("kept");
+        let socket = dir.path().join("node.sock");
+        shared.runs = Arc::new(runs_of(&socket));
+        shared.vouched = Some(Arc::new(Vouched {
+            by: By::Person,
+            charged: None,
+            unfenced: None,
+        }));
+        let taken = shared.asks.taking_a_run("osprey");
+        let (machine, ran) = tokio::time::timeout(PATIENCE, shared.run(run_of("osprey", "true")))
+            .await
+            .expect("the run is answered in time")
+            .expect("the person's run goes to the room");
+        drop(ran);
+        let sent = tokio::time::timeout(PATIENCE, taken)
+            .await
+            .expect("the room is asked in time")
+            .expect("the room is asked the run");
+        assert_eq!(
+            (machine.as_str(), sent.by, sent.asked_by),
+            ("osprey", Some(By::Agent(Kind::Fence)), Some(By::Person)),
+            "it goes to the room fenced as an agent's, saying the person asked it"
+        );
+        let kept = fs::read_to_string(socket.with_file_name("runs.jsonl")).expect("it is kept");
+        let started: Value =
+            serde_json::from_str(kept.lines().next().expect("its start is kept")).expect("JSON");
+        assert_eq!(
+            (&started["on"], &started["by"], &started["asked_by"]),
+            (
+                &json!("osprey"),
+                &json!(By::Agent(Kind::Fence)),
+                &json!(By::Person)
+            ),
+            "the record of runs keeps who asked beside how it ran"
+        );
+    }
+
     // Followup 534: kept as a worker and named a room, this node's own
     // machine is held the person's by its guard alone.
     #[tokio::test]
