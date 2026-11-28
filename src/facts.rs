@@ -385,29 +385,33 @@ pub fn measure_in(name: &str, realm: &str, sources: &Sources) -> Machine {
 }
 
 /// This machine's room as of `now`: its queue's where a harness keeps one
-/// here, and otherwise its kernel's own, [`room::felt`], so a machine no
-/// harness runs on, as a room made in the cloud, still says the memory
-/// it has free and the pressure it is under for work to be placed by.
-/// Only a machine whose kernel says neither, as a Mac without a queue,
-/// has no room known.
+/// here, and its kernel's own, [`room::felt`], where no queue's record is
+/// written at all, so a machine no harness runs on, as a room made in the
+/// cloud, still says the memory it has free and the pressure it is under
+/// for work to be placed by. A record gone stale or of another shape says
+/// no room, as before, since a harness that stopped keeping its queue
+/// is a fault no kernel's reading should hide; and a machine within
+/// another never feels its own, since its kernel doesn't see its host's
+/// work, so it has its host's word or none. Nor has a machine whose
+/// kernel can't say all of its pressure and memory free, as a Mac's.
 fn room_of(declared: Option<&Declared>, sources: &Sources, now: jiff::Timestamp) -> Option<Room> {
-    // The queue says the last ten seconds' pressure; the last minute's is
-    // the kernel's own, which no queue's record carries.
-    let queued = sources
-        .queue
-        .as_deref()
-        .and_then(|queue| room::read(queue, now.as_second()))
-        .map(|room| Room {
+    let record = sources.queue.as_deref().filter(|queue| queue.exists());
+    if let Some(queue) = record {
+        // The queue says the last ten seconds' pressure; the last minute's
+        // is the kernel's own, which no queue's record carries.
+        return room::read(queue, now.as_second()).map(|room| Room {
             cpu_minute: room::cpu_minute(&sources.procs),
             memory_full_minute: room::memory_full_minute(&sources.procs),
             io_full_minute: io_full_minute(declared, sources),
             ..room
         });
-    queued.or_else(|| {
-        room::felt(&sources.procs, &now.to_string()).map(|felt| Room {
-            io_full_minute: io_full_minute(declared, sources),
-            ..felt
-        })
+    }
+    if declared.is_some_and(|declared| declared.within.is_some()) {
+        return None;
+    }
+    room::felt(&sources.procs, &now.to_string()).map(|felt| Room {
+        io_full_minute: io_full_minute(declared, sources),
+        ..felt
     })
 }
 
@@ -1585,10 +1589,13 @@ mod tests {
         let home = tempfile::tempdir().expect("a temporary folder");
         let procs = home.path().join("proc");
         std::fs::create_dir_all(procs.join("pressure")).expect("its pressure");
+        // Each window says its own number, so a reading taken from the
+        // wrong one shows.
         let pressure = |some: f64, full: f64| {
+            let (some_minute, full_ten) = (some / 2.0, full * 2.0);
             format!(
-                "some avg10={some:.2} avg60={some:.2} avg300=0.00 total=1\n\
-                 full avg10={full:.2} avg60={full:.2} avg300=0.00 total=1\n"
+                "some avg10={some:.2} avg60={some_minute:.2} avg300=0.00 total=1\n\
+                 full avg10={full_ten:.2} avg60={full:.2} avg300=0.00 total=1\n"
             )
         };
         let write = |name: &str, said: &str| {
@@ -1615,11 +1622,76 @@ mod tests {
             Some(vec![room::Limit::Cpu]),
             "judged over by the node's own lines, with no queue to judge it"
         );
+        assert_eq!(
+            room.cpu_minute,
+            Some(41.0),
+            "and its processors' last minute"
+        );
         assert_eq!(room.io_full_minute, Some(2.5), "and its disks' last minute");
         assert_eq!(
             (room.takes.builds, room.takes.vm_tests),
             (0, 0),
             "a room no queue keeps starts no build or VM test"
+        );
+        let unwritten = Sources {
+            queue: Some(home.path().join("queue.json")),
+            ..sources.clone()
+        };
+        let unkept = measure("tern", &unwritten)
+            .room
+            .expect("a queue named but never written is no queue kept");
+        assert!(
+            (unkept.pressure.cpu - 82.0).abs() < f64::EPSILON,
+            "so its kernel's room is said"
+        );
+        let queue = |heartbeat: i64| {
+            serde_json::json!({
+                "v": 1,
+                "at": "2026-11-26T07:30:00.000Z",
+                "heartbeat": heartbeat,
+                "machine": {"cores": 16, "availableGib": 23.5,
+                    "pressure": {"cpu": 44.0, "memory": 0.0, "io": 0.0}, "vms": 0},
+                "room": {"vms": 1, "builds": 8},
+                "quiet": null,
+                "jobs": []
+            })
+            .to_string()
+        };
+        let kept = unwritten.queue.clone().expect("a queue");
+        std::fs::write(&kept, queue(jiff::Timestamp::now().as_second())).expect("kept");
+        let queued = measure("tern", &unwritten)
+            .room
+            .expect("its queue says its room");
+        assert!(
+            (queued.pressure.cpu - 44.0).abs() < f64::EPSILON,
+            "a queue kept outranks the kernel, since the queue starts its work"
+        );
+        assert_eq!(queued.takes.builds, 8, "and says what it would start");
+        let long_ago = jiff::Timestamp::now().as_second() - 3600;
+        std::fs::write(&kept, queue(long_ago)).expect("kept");
+        assert_eq!(
+            measure("tern", &unwritten).room,
+            None,
+            "a queue gone stale says no room, so a harness stopped isn't hidden"
+        );
+        let declared = home.path().join("declared.json");
+        std::fs::write(
+            &declared,
+            serde_json::json!({
+                "reach": [], "outlives": [], "costs_money": false, "taints": [],
+                "within": {"machine": "osprey", "file": home.path().join("osprey.json")}
+            })
+            .to_string(),
+        )
+        .expect("declared");
+        let within = Sources {
+            declared: Some(declared),
+            ..sources.clone()
+        };
+        assert_eq!(
+            measure("tern", &within).room,
+            None,
+            "a machine within another never feels its own, whose kernel misses its host's work"
         );
         std::fs::remove_file(procs.join("meminfo")).expect("removed");
         assert_eq!(
