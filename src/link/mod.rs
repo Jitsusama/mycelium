@@ -306,7 +306,8 @@ pub enum Ending {
 /// so unless the link is a worker's, which is never sent one whatever its
 /// node.
 fn exchange_with(places: Places, here: &Hello, there: &Hello, worker: bool) -> Exchange {
-    let exchange = Exchange::new(places, here.machine.clone(), there.machine.clone());
+    let exchange =
+        Exchange::new(places, here.machine.clone(), there.machine.clone()).packing(there.packs);
     let mut exchange = if worker {
         exchange.for_worker()
     } else {
@@ -5426,6 +5427,7 @@ mod tests {
             reopens: true,
             lends: true,
             parks: true,
+            packs: true,
         };
         send(&mut far_writing, &Frame::Hello(personal))
             .await

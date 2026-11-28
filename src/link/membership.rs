@@ -98,6 +98,11 @@ pub struct Hello {
     /// of one; an end older than this would take one as running.
     #[serde(default)]
     pub parks: bool,
+    /// Whether it takes a piece of a large file packed, deflated where
+    /// that saves something; an end older than this takes only plain
+    /// pieces, so it is never sent a packed one.
+    #[serde(default)]
+    pub packs: bool,
 }
 
 /// Which machines a node links with.
@@ -145,6 +150,7 @@ impl Membership for Realm {
             reopens: true,
             lends: true,
             parks: true,
+            packs: true,
         }
     }
 
@@ -243,6 +249,18 @@ mod tests {
             name: name.to_owned(),
             machine: machine.to_owned(),
         }
+    }
+
+    #[test]
+    fn an_end_older_than_packing_is_taken_as_taking_only_plain_pieces() {
+        let mut said = serde_json::to_value(realm("work", "kestrel").hello()).expect("said");
+        said.as_object_mut().expect("a hello").remove("packs");
+        let older: Hello = serde_json::from_value(said).expect("an older hello is heard");
+        assert!(!older.packs, "it is never sent a packed piece");
+        assert!(
+            realm("work", "skiff").hello().packs,
+            "while this end takes them"
+        );
     }
 
     #[test]

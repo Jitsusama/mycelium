@@ -18,6 +18,7 @@ pub mod exchange;
 pub mod journey;
 pub mod ledger;
 pub mod log;
+pub mod packing;
 pub mod pieces;
 pub mod reached;
 pub mod settle;

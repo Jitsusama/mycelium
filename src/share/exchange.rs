@@ -28,6 +28,7 @@ use super::ended::{Processes, Removal, Users, take_away};
 use super::ledger::{
     Entry, Held, Ledger, Ledgers, Scan, Sight, clock, is_quest, lasting, shared_of,
 };
+use super::packing::{Packing, pack, unpack};
 use super::pieces::{PIECE, Pieces, Staged};
 use super::settle::{Merge, Settled, State, settle};
 use super::tree::{Place, Quest, Shared, content, may_name};
@@ -451,6 +452,12 @@ pub enum Say {
         /// Who may read, write and run the file.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<u32>,
+        /// How the piece was packed before its base64, or `None` for one
+        /// sent plain ([`super::packing`]). Only an end that says it
+        /// `packs` is sent a packed one, so an end older than this is
+        /// sent every piece plain, and names none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        packed: Option<Packing>,
     },
     /// A file, as it crosses.
     File {
@@ -515,6 +522,9 @@ pub struct Exchange {
     /// Whether the other end is a worker, which is served only the quests
     /// it was given and has nothing it says of a quest taken.
     worker: bool,
+    /// Whether the other end takes a piece's body packed, as it says in
+    /// its hello ([`Self::packing`]).
+    packs: bool,
     /// How the quests shared only for those under them stand with the
     /// other end: withheld, as from a worker, lifted but not yet taken up,
     /// or carried ([`Self::withhold_above`]).
@@ -666,6 +676,7 @@ impl Exchange {
             sweep_again: BTreeMap::new(),
             above_again: true,
             worker: false,
+            packs: false,
             above: Above::Carried,
             held_back: BTreeMap::new(),
             whole: BTreeSet::new(),
@@ -683,6 +694,15 @@ impl Exchange {
     #[must_use]
     pub fn gating(self, gates: Option<Arc<Gates>>) -> Self {
         Self { gates, ..self }
+    }
+
+    /// This end's talk with an end that takes a piece's body packed, as
+    /// `packs` says, which is sent each piece deflated where that saves
+    /// something ([`super::packing`]); an end older than that says
+    /// nothing of it, so it is sent every piece plain.
+    #[must_use]
+    pub fn packing(self, packs: bool) -> Self {
+        Self { packs, ..self }
     }
 
     /// Withholds from the other end every quest shared only for those under
@@ -878,13 +898,13 @@ impl Exchange {
         key: &str,
         theirs: &State,
         (at, len): (u64, u64),
-        body: &str,
+        (body, packed): (&str, Option<Packing>),
     ) -> Vec<Say> {
         if let Err(why) = self.gate_admits(id, key, len) {
             self.gate_refused(id, key, why);
             return Vec::new();
         }
-        let (Some(hash), Ok(body)) = (theirs.hash.as_deref(), STANDARD.decode(body)) else {
+        let (Some(hash), Ok(body)) = (theirs.hash.as_deref(), unpacked(body, packed)) else {
             self.gate_refused(id, key, Refused::Hash);
             return Vec::new();
         };
@@ -1342,8 +1362,10 @@ impl Exchange {
                 at,
                 len,
                 body,
+                packed,
                 ..
             } if gate::sent(file).is_ok() => {
+                let body = (body.as_str(), *packed);
                 Some(Ok(self.gate_piece(quest, file, state, (*at, *len), body)))
             }
             Say::File {
@@ -1475,7 +1497,8 @@ impl Exchange {
                 len,
                 body,
                 mode,
-            } => self.piece(&quest, &file, &state, (at, len), &body, mode),
+                packed,
+            } => self.piece(&quest, &file, &state, (at, len), (&body, packed), mode),
             Say::File {
                 quest,
                 file,
@@ -2066,14 +2089,16 @@ impl Exchange {
             None => quest.read(&shared)?,
             Some(at) => match quest.read_piece(&shared, at)? {
                 Some((piece, len)) if at > 0 || len > PIECE => {
+                    let (body, packed) = self.packed(piece);
                     return Ok(vec![Say::Piece {
                         quest: id.to_owned(),
                         file: key.to_owned(),
                         state: entry.state(),
                         at,
                         len,
-                        body: STANDARD.encode(piece),
+                        body: STANDARD.encode(body),
                         mode,
+                        packed,
                     }]);
                 }
                 // A file of one piece crosses whole.
@@ -2089,6 +2114,15 @@ impl Exchange {
         }])
     }
 
+    /// A piece as it crosses to the other end: deflated, where that end
+    /// takes it so and it saves something, else plain.
+    fn packed(&self, piece: Vec<u8>) -> (Vec<u8>, Option<Packing>) {
+        match self.packs.then(|| pack(&piece)).flatten() {
+            Some(packed) => (packed, Some(Packing::Deflate)),
+            None => (piece, None),
+        }
+    }
+
     /// Stages a piece of a file the other end sent, asking for the next,
     /// and takes the file as a whole one once it is whole.
     fn piece(
@@ -2097,7 +2131,7 @@ impl Exchange {
         key: &str,
         theirs: &State,
         (at, len): (u64, u64),
-        body: &str,
+        (body, packed): (&str, Option<Packing>),
         mode: Option<u32>,
     ) -> io::Result<Vec<Say>> {
         let Some(hash) = theirs.hash.as_deref() else {
@@ -2106,9 +2140,7 @@ impl Exchange {
         if !self.places.ledgers().shares(id) {
             return Ok(Vec::new());
         }
-        let body = STANDARD
-            .decode(body)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let body = unpacked(body, packed)?;
         match self.pieces.stage(id, key, hash, at, len, &body)? {
             Staged::More(next) => {
                 // The next piece is asked in the same turn as the first,
@@ -2384,6 +2416,15 @@ fn has_ended(readme: &str) -> bool {
         .take_while(|line| line.trim_end() != "---")
         .filter_map(|line| line.strip_prefix("status:"))
         .any(|status| matches!(status.trim(), "concluded" | "retired"))
+}
+
+/// A piece's body as it was before it crossed, out of its base64 and
+/// whatever `packed` it ([`super::packing`]).
+fn unpacked(body: &str, packed: Option<Packing>) -> io::Result<Vec<u8>> {
+    let body = STANDARD
+        .decode(body)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    unpack(body, packed)
 }
 
 fn is_journey(shared: &Shared) -> bool {
@@ -3400,6 +3441,7 @@ mod tests {
                     len: 2 * PIECE,
                     body: STANDARD.encode(body),
                     mode: None,
+                    packed: None,
                 }
             };
             let said = near.hear(answer).expect("kestrel hears");
@@ -3440,6 +3482,7 @@ mod tests {
                     len: 2 * PIECE,
                     body: STANDARD.encode(body),
                     mode: None,
+                    packed: None,
                 })
                 .expect("kestrel hears");
             let staged = said.iter().any(|say| {
@@ -3488,6 +3531,7 @@ mod tests {
                 len: u64::try_from(body.len()).expect("a size"),
                 body: STANDARD.encode(part),
                 mode: None,
+                packed: None,
             })
             .expect("kestrel hears");
         }
@@ -4674,6 +4718,100 @@ mod tests {
             fs::read(at(&kestrel)).expect("it crossed") == bytes,
             "and landed whole"
         );
+    }
+
+    /// Each piece skiff sends kestrel of a session's log three pieces
+    /// long, packing them as `packs` says kestrel's hello did, with
+    /// whether kestrel took the log whole.
+    fn log_crossing(packs: bool) -> (Vec<Say>, bool) {
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        let at = |machine: &Machine| machine.places.record(QUEST).join("harness.log");
+        let line = "{\"type\":\"message\",\"role\":\"assistant\",\"text\":\"tern\"}\n";
+        let lines = usize::try_from(3 * PIECE).expect("a size") / line.len();
+        let bytes = line.repeat(lines).into_bytes();
+        fs::create_dir_all(skiff.places.record(QUEST)).expect("made");
+        fs::write(at(&skiff), &bytes).expect("written");
+        share(&skiff, QUEST);
+        let mut near = skiff.exchange(&kestrel).packing(packs);
+        let mut far = kestrel.exchange(&skiff);
+
+        let mut to_far = near.look().expect("skiff looks");
+        far.look().expect("kestrel looks");
+        let mut pieces = Vec::new();
+        for _ in 0..40 {
+            let mut to_near = Vec::new();
+            for say in to_far.drain(..) {
+                if matches!(say, Say::Piece { .. }) {
+                    pieces.push(say.clone());
+                }
+                to_near.extend(far.hear(say).expect("kestrel hears"));
+            }
+            for say in to_near {
+                to_far.extend(near.hear(say).expect("skiff hears"));
+            }
+            if to_far.is_empty() {
+                break;
+            }
+        }
+        let whole = fs::read(at(&kestrel)).is_ok_and(|landed| landed == bytes);
+        (pieces, whole)
+    }
+
+    /// How many bytes of base64 the pieces carried.
+    fn piece_bytes(pieces: &[Say]) -> usize {
+        pieces
+            .iter()
+            .map(|say| match say {
+                Say::Piece { body, .. } => body.len(),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    #[test]
+    fn an_end_that_doesnt_say_it_packs_is_sent_every_piece_plain() {
+        let (pieces, whole) = log_crossing(false);
+        assert_eq!(pieces.len(), 3, "the log crossed in three pieces");
+        for piece in &pieces {
+            assert!(
+                matches!(piece, Say::Piece { packed: None, .. }),
+                "each piece is plain: {piece:?}"
+            );
+            let said = serde_json::to_string(piece).expect("said");
+            assert!(
+                !said.contains("packed"),
+                "an older end is sent no field of packing at all: {said}"
+            );
+        }
+        assert!(whole, "and the log landed whole");
+    }
+
+    // On 27 November 2026 a session's log crossed a tunnel at 3.5 seconds
+    // a piece, about what its 26 KB/s carries of one in base64.
+    #[test]
+    fn an_end_that_packs_is_sent_a_log_deflated_and_takes_it_whole() {
+        let (plain, _) = log_crossing(false);
+        let (packed, whole) = log_crossing(true);
+        assert_eq!(packed.len(), 3, "the log crossed in three pieces");
+        for piece in &packed {
+            assert!(
+                matches!(
+                    piece,
+                    Say::Piece {
+                        packed: Some(Packing::Deflate),
+                        ..
+                    }
+                ),
+                "each piece is deflated: {piece:?}"
+            );
+        }
+        let (packed_bytes, plain_bytes) = (piece_bytes(&packed), piece_bytes(&plain));
+        assert!(
+            packed_bytes * 10 < plain_bytes,
+            "a log crosses in under a tenth of its bytes: {packed_bytes} of {plain_bytes}"
+        );
+        assert!(whole, "and the log landed whole");
     }
 
     #[test]

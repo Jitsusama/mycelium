@@ -164,7 +164,8 @@ same code, each line a JSON value:
 
 1. `{"Hello": {"machine", "realm", "version", "facts", "starts",
    "steers", "releases", "updates", "runs", "carries", "shows",
-   "ends", "ends_starts", "lends", "reopens", "parks"}}`, first,
+   "ends", "ends_starts", "lends", "reopens", "parks", "packs"}}`,
+   first,
    from each end. Each end's
    membership admits the other or refuses it, and nothing else crosses
    until it has. `facts` says the end hears and says what a machine is; an end
@@ -187,7 +188,8 @@ same code, each line a JSON value:
    keeps a session parked on the other machine as parked, its process
    gone and its address there to send to, which wakes it; only such an
    end is told of one, since an end older than it would take it as
-   running.
+   running. `packs` says it takes a piece of a large file deflated, as
+   below; an end older than it is sent every piece plain.
    `machine` is the name the end's machine goes by, one name for every
    command there: the node's `--machine`, else the system's name up to
    its first dot, which the node records in its folder's `machine` file
@@ -630,8 +632,8 @@ hearing the other end is said at the next look:
 - `{"Want": {"quest", "file", "at"}}`: a file whose state is newer
   there, from offset `at`. An end older than `at` names none and is
   sent the file whole.
-- `{"Piece": {"quest", "file", "state", "at", "len", "body", "mode"}}`:
-  for a file over 64 KiB, the 64 KiB of it at `at`, of `len` in all
+- `{"Piece": {"quest", "file", "state", "at", "len", "body", "mode",
+  "packed"}}`: for a file over 64 KiB, the 64 KiB of it at `at`, of `len` in all
   (1 MiB from an end built before pieces shrank). The receiving end
   takes a piece of any length and asks next from where it ends, so the
   sender alone sets the size. It stages it under
@@ -643,7 +645,12 @@ hearing the other end is said at the next look:
   none is asked past `len`. A sender answers each `Want` in turn, so the
   pieces come in order. Once whole, it is taken as a `File`; a piece
   that doesn't follow what is staged is passed over, and a link's start
-  clears what an earlier one left.
+  clears what an earlier one left. To an end that says `packs`, a piece
+  is sent deflated (raw, as RFC 1951 has it) before its base64, with
+  `packed` saying `"deflate"`, where that makes it smaller; `at` and
+  `len` still count the file's own bytes. A piece that deflates no
+  smaller, and every piece to an end older than `packs`, is sent plain
+  with no `packed`. A packed piece that inflates past 64 KiB is refused.
 - `{"File": {"quest", "file", "state", "body", "mode"}}`: the file, in
   base64, or no body once deleted, and its mode's permission bits, so a
   secret at 0600 lands at 0600. Its hash is checked before it is written,

@@ -20,6 +20,9 @@ clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 # The time, for the ids and times of messages the node sends, and when a
 # machine says it leaves.
 jiff = { version = "0.2", features = ["serde"] }
+# A large file's pieces deflated, on a link slow enough that its bytes,
+# not its round trips, are what the file waits on.
+miniz_oxide = "0.8"
 # Folder changes, from inotify on Linux and FSEvents on macOS. The 9
 # release candidate, for its watch of only the kinds of change asked for
 # (`watching`), which 8 has no way to say.
