@@ -366,6 +366,17 @@ pub fn last_linked(store: &impl Store, machine: &str) -> Option<i64> {
 /// machine; one a link claims is left to it, and said where it has marks,
 /// since those then keep no sight of this run's.
 pub fn out_of_reach_of_unclaimed(store: &impl Store, seen: i64) -> io::Result<()> {
+    sweep_unclaimed(store, seen, |_, _| {})
+}
+
+/// [`out_of_reach_of_unclaimed`], handing each claim it made to `keep`
+/// with its machine once that machine is marked, so whoever goes on to
+/// change its marks needn't claim it again; dropped, it is let go.
+fn sweep_unclaimed(
+    store: &impl Store,
+    seen: i64,
+    mut keep: impl FnMut(String, Claim),
+) -> io::Result<()> {
     let now = jiff::Timestamp::now().as_millisecond();
     let mut machines: Vec<String> = store
         .presences()
@@ -384,9 +395,10 @@ pub fn out_of_reach_of_unclaimed(store: &impl Store, seen: i64) -> io::Result<()
     let mut failed = None;
     for machine in machines {
         match store.claim(&machine) {
-            Ok(Some(_claim)) => {
+            Ok(Some(claim)) => {
                 let since = last_linked(store, &machine).unwrap_or(now);
                 out_of_reach(store, &machine, since, Some(seen));
+                keep(machine, claim);
             }
             Ok(None) if marked.contains(&machine) => {
                 eprintln!("left {machine}'s marks out of reach to the link that claims it");
@@ -412,9 +424,17 @@ pub fn out_of_reach_of_unclaimed(store: &impl Store, seen: i64) -> io::Result<()
 /// seen at the next start from this run. The put-away runs whatever the
 /// sweep returns, and a sweep that fails is said after it. A node killed
 /// before it gets here leaves its marks as they stand.
+///
+/// Each machine the sweep claims stays claimed through its put-away.
+/// Claimed again, its lock could still be held, by a link that claimed
+/// it between, or by a child this node forked that has the lock's file
+/// until it runs its program, and the sight would be left.
 pub fn stop_seeing_out_of_reach(store: &impl Store, began: i64, at: i64) -> io::Result<()> {
-    let swept = out_of_reach_of_unclaimed(store, began);
-    put_away_out_of_reach(store, at);
+    let mut held = BTreeMap::new();
+    let swept = sweep_unclaimed(store, began, |machine, claim| {
+        held.insert(machine, claim);
+    });
+    put_away_out_of_reach(store, at, &mut held);
     swept
 }
 
@@ -424,8 +444,9 @@ pub fn stop_seeing_out_of_reach(store: &impl Store, began: i64, at: i64) -> io::
 /// so its marks are that link's to clear as it carries each session, and
 /// are left; one that can't be claimed is left too. Either is said, since
 /// a mark left so keeps this run's sight, and the time the node is down
-/// then counts as seen.
-fn put_away_out_of_reach(store: &impl Store, at: i64) {
+/// then counts as seen. A machine already claimed in `held` is put away
+/// under that claim, never claimed again.
+fn put_away_out_of_reach(store: &impl Store, at: i64, held: &mut BTreeMap<String, Claim>) {
     let mut marked: Vec<(String, String)> = store
         .presences()
         .into_iter()
@@ -435,7 +456,11 @@ fn put_away_out_of_reach(store: &impl Store, at: i64) {
     marked.sort_unstable();
     for each in marked.chunk_by(|one, other| one.0 == other.0) {
         let machine = &each[0].0;
-        match store.claim(machine) {
+        let claim = match held.remove(machine) {
+            Some(claim) => Ok(Some(claim)),
+            None => store.claim(machine),
+        };
+        match claim {
             Ok(Some(_claim)) => {
                 for (_, session) in each {
                     if let Err(error) = store.put_away_unreachable(session, machine, at) {
