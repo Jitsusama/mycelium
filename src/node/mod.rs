@@ -8740,7 +8740,11 @@ impl<S: Store> Shared<S> {
                  isn't a link's end, so the fence it declares isn't kept: {judged}"
             );
         }
-        let room = unattended && proven && speaks && self.opens_nothing();
+        // A session reopened as `reopens` reads it was raised above to
+        // the strictest it ran in here; one opened any other way can't
+        // be told, so its start keeps no looser fence than strict.
+        let told = !starts::opens_an_unnamed_session(&asked.command);
+        let room = unattended && proven && speaks && told && self.opens_nothing();
         let by = asker::relayed_to_a_room(by, asked.work.fence, room);
         let looser = room && by == By::Agent(crate::declared::Kind::Fence);
         let (program, once) = (asked.command.first().cloned(), asked.once.clone());

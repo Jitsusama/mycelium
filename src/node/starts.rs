@@ -333,6 +333,30 @@ pub fn reopens(command: &[String]) -> Option<&str> {
         .then_some(session.as_str())
 }
 
+/// Whether `command` runs a pi, by any path, that may open a session
+/// other than as [`reopens`] reads it: one named another way
+/// (`--session=`, `--session-id`, or among other words), or one pi
+/// picks itself (`-c`, `-r`, `--continue`, `--resume`, `--fork`). It
+/// reads widely, since it serves only to keep such a start no looser,
+/// where the session it opens can't be told nor its fence raised.
+#[must_use]
+pub fn opens_an_unnamed_session(command: &[String]) -> bool {
+    let Some((program, words)) = command.split_first() else {
+        return false;
+    };
+    let pi = Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        == Some(PI);
+    let opens = |word: &String| {
+        ["-c", "-r"].contains(&word.as_str())
+            || ["--session", "--continue", "--resume", "--fork"]
+                .iter()
+                .any(|flag| word.starts_with(flag))
+    };
+    pi && reopens(command).is_none() && words.iter().any(opens)
+}
+
 /// A start let go ahead, held as counted till it is kept.
 #[derive(Debug)]
 #[must_use = "a start let go ahead is kept once it ends"]
@@ -1018,6 +1042,40 @@ mod tests {
     use crate::declared::Kind;
 
     const NOW: i64 = 1_800_000_000_000;
+
+    #[test]
+    fn a_session_opened_but_as_a_reopening_reads_is_told_apart() {
+        let opens = |words: &[&str]| {
+            let command: Vec<String> = words.iter().map(|&word| word.to_owned()).collect();
+            opens_an_unnamed_session(&command)
+        };
+        for words in [
+            &["pi", "--session=s-gone_1"][..],
+            &["pi", "--session", "s-gone_1", "go on"],
+            &["/opt/bin/pi", "-p", "x", "--session", "s-gone_1"],
+            &["pi", "--session-id", "s-gone_1"],
+            &["pi", "-c"],
+            &["pi", "--continue", "go on"],
+            &["pi", "-r"],
+            &["pi", "--fork", "s-gone_1"],
+        ] {
+            assert!(
+                opens(words),
+                "{words:?} opens a session not read as reopened"
+            );
+        }
+        for (words, why) in [
+            (
+                &["pi", "--session", "s-gone_1"][..],
+                "a reopening, raised as it is",
+            ),
+            (&["pi", "go on"], "a new session"),
+            (&["sh", "-c", "true"], "not pi"),
+            (&[], "nothing"),
+        ] {
+            assert!(!opens(words), "{why}: {words:?}");
+        }
+    }
 
     // WCJQSG's ruling (2026-11-19): a strict cell may reopen a session
     // homed on looser ground with nothing carried into it.
