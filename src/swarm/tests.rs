@@ -197,6 +197,22 @@ fn into_a_pipe_a_time_is_stamped_in_the_looks_zone_on_its_own_day() {
 }
 
 #[test]
+fn a_machine_with_no_zone_found_says_its_times_in_utc() {
+    // The look's time is the machine's, and where no zone is found
+    // jiff gives one named Etc/Unknown; a time drawn into a pipe says
+    // its zone, so it must name UTC rather than that.
+    let whole = Look {
+        now: whole().now.with_time_zone(jiff::tz::TimeZone::unknown()),
+        ..whole()
+    };
+    assert_eq!(
+        whole.stamped("2026-11-12T20:00:00Z").as_deref(),
+        Some("Thu 12 Nov 2026 20:00 UTC (+00:00)"),
+        "a zone not found was stamped otherwise than as UTC"
+    );
+}
+
+#[test]
 fn a_team_page_by_a_session_s_address_says_a_steer_reaches_that_session() {
     // Keyed by a session it isn't led by, the team is shown by that
     // address, but a steer typed with it reaches the session alone.
